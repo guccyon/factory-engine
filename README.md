@@ -12,7 +12,7 @@ Blueprint を 1 枚渡すと、そのプロダクト専用の仮想事業部（P
 |---|---|---|
 | `definitions/` | ステージ・成果物の型・ゲート・工場の健康・共通評価仕様・イベント辞書・指標式の宣言（`stages.yaml` `artifacts.yaml` `gates.yaml` `health.yaml` `evalspec.yaml` `events.yaml` `metrics.yaml`） | P0 起案 |
 | `core-gates/` | 汎用ルーブリック（`rubric.yaml`）・AST ルール・互換性チェッカー | P0 起案（ルーブリック v0） |
-| `orchestrator/` | 制御プレーン（ジョブキュー・ロック・予算）。P0 は Postgres 単体 | P0 Week 3 |
+| `orchestrator/` | 制御プレーン。Docker Compose（Postgres のキューとロック、S3 互換ストア、dispatcher）と使い捨てワーカー。Issue ラベル → コンテナ → PR | P0 Week 3（試験運転済み） |
 | `core-skills/` | 役割別スキルのテンプレート（現行の Claude スキルが母体） | 未着手 |
 | `eval-corpus/` | 汎用の Golden Set・ルール検証の正例 / 負例 | 未着手 |
 | `meta-controller/` | Blueprint → base のコンパイルと Reconcile | P6 |
