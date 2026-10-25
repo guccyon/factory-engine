@@ -1,0 +1,84 @@
+# イベント辞書（P0 Week 2 初版）
+# 正本: 開始定義 第 2 節「イベント辞書と指標式が固定されている」。
+# テレメトリは成果物（PR・Issue・コミット・セッション）に起きた出来事をイベントとして記録し、指標は metrics.yaml の式で計算する。
+# P0 ではイベントを別サービスに流す経路がまだないので、health/telemetry/pr_metrics.py が取得元から毎回再構成する。
+# P0a で成果物ストア（Postgres）ができたら、ここに定義したイベントを同じ名前で永続化する。
+
+schema_version: "0.1"
+status: draft
+
+conventions:
+  naming: "<対象>.<出来事>（小文字・スネークケース）"
+  correlation_id:
+    rule: "起点の Ticket（Issue）の ID。Ticket がないときは PR の ID を暫定の相関 ID にし、attribution.fallback=pr に印を付ける"
+    format: "github:<owner>/<repo>#<number>"
+  dedupe_key: "イベント名 ＋ 対象 ID ＋ 発生時刻（秒）。再取得しても同じイベントは 1 回しか数えない"
+  retention:
+    raw_events: "P0 は無期限（件数が小さい）。P1 で 24 ヶ月に見直す"
+    derived_metrics: "再計算できるので保持しない。レポートの数値だけ残す"
+  time: "すべて UTC の ISO 8601。表示時に Asia/Tokyo"
+
+events:
+  ticket.created:
+    source: github_issue
+    required: [ticket_id, created_at, author]
+    note: "lead_time の起点"
+  pr.opened:
+    source: github_pr
+    required: [pr_id, created_at, base_branch, head_branch, ticket_ids, change_types]
+    note: "ticket_ids の付け方は metrics.yaml#attribution。change_types は manifest.yaml の変更種別"
+  pr.commit_pushed:
+    source: github_pr
+    required: [pr_id, sha, committed_at]
+  pr.review_submitted:
+    source: github_pr
+    required: [pr_id, submitted_at, state]            # state: approved | changes_requested | commented
+    note: "P0 の現行運用では別エージェントのレビューは Issue コメント（本文に「レビュー」）として付くので、pr.review_comment も同じ扱いにする"
+  pr.review_comment:
+    source: github_pr
+    required: [pr_id, created_at, is_review_round]     # is_review_round: 本文がレビューの印（REVIEW_MARKER）に一致
+  pr.merged:
+    source: github_pr
+    required: [pr_id, merged_at, merge_commit, files]  # files: {path, status, additions}
+  pr.closed_unmerged:
+    source: github_pr
+    required: [pr_id, closed_at]
+  commit.landed:
+    source: git_log
+    required: [sha, committed_at, subject, files]      # 既定ブランチ first-parent のみ
+    note: "revert / hotfix / churn の判定材料"
+  session.linked_pr:
+    source: claude_code_session_log
+    required: [session_id, pr_id, linked_at]
+    note: "~/.claude/projects/*/*.jsonl の type=pr-link"
+  session.cost_recorded:
+    source: claude_code_session_log
+    required: [session_id, model_usage, total_cost_usd]
+    note: "type=cost-state の最後のレコード（累計）。モデル名は tier に写像する（tier_map）"
+  decision.human_override:
+    source: approval_log
+    required: [subject_id, decided_at, automated_decision, human_decision, reason]
+    note: "P0 は承認ログがないので pr-merge-criteria の判断の記録を手で写す"
+  incident.opened:
+    source: monitoring
+    required: [incident_id, detected_at, severity, related_pr_ids]
+    note: "P0 では発生源がない（Gen1 はモック環境のエラー監視を P2 で）"
+  gate.evaluated:
+    source: inspector
+    required: [pr_id, gate, result, defects]
+    note: "P1 から"
+
+tier_map:                        # モデル名 → tier（budgets.model_tiers）。末尾の [1m] などの文脈長の印は外して照合する
+  claude-opus-5-5: tier-large
+  claude-sonnet-5-5: tier-small
+  claude-haiku-5-5: tier-small
+  default: tier-large
+
+sources:
+  github_issue: { how: "gh api repos/{repo}/issues/{n}", auth: "gh（builder の個人トークン）" }
+  github_pr:    { how: "gh api repos/{repo}/pulls（state=closed, base=既定ブランチ）＋ /commits /files /reviews、issues/{n}/comments" }
+  git_log:      { how: "git log origin/<default> --first-parent --numstat", note: "手元の作業ツリーから。ヘッドレス化後はワーカーの浅いクローンから" }
+  claude_code_session_log: { how: "~/.claude/projects/*/*.jsonl", note: "手元の Mac のセッションだけ。クラウドのセッションは含まれない（欠損の主因）" }
+  approval_log: { how: "未実装。P0 は手入力", gap: true }
+  monitoring:   { how: "未実装", gap: true }
+  inspector:    { how: "未実装（P1）", gap: true }

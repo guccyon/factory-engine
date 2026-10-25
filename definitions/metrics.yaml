@@ -1,0 +1,84 @@
+# 指標の式（PR 単位）と帰属ルール（P0 Week 2 初版）
+# 正本: 開始定義 第 2 節「計測項目（PR 単位）」。工場単位の指標は health.yaml。
+# 数値（N=7 日、21 日、変更率 50%）は初期仮説。Tetsuro の承認後に固定し、P0 Exit で実測により改訂する。
+# 実装: health/telemetry/pr_metrics.py（この式と 1 対 1）
+
+schema_version: "0.1"
+status: draft
+thresholds:                      # 承認待ち（2026-10-25 提案）
+  revert_window_days: 7
+  churn_window_days: 21
+  churn_ratio: 0.50
+
+# --------------------------------------------------------------- 帰属（PR ↔ Ticket）
+attribution:
+  scope: "計測対象は base が既定ブランチ（main）でマージされた PR。統合ブランチ（feature/*）向けの段階 PR は親の統合 PR に含める（lead_time は親で測る）"
+  ticket_ids:
+    order:
+      - "GitHub の closing reference（Closes #N、Development リンク）"
+      - "タイトル・本文の #N 参照のうち、このリポジトリに存在する Issue（PR 番号や他リポジトリの番号は捨てる）"
+    fallback: "Ticket がない PR は pr_created を起点にし、start_source=pr_created_fallback の印を付ける。欠損として数える（lead_time_issue_attribution）"
+  multiple_tickets: "複数 Ticket を含む PR は、最も古い Ticket の created_at を起点にする（lead_time は上振れする側に倒す）"
+  reopened_pr: "再オープンされた PR は最後の merged_at で数える。再オープン前の期間も lead_time に含める"
+  rebase: "リベース・force push でコミットの日時が変わっても PR の created_at / merged_at は変わらないので影響しない。review_loops はコミットの committer date で見るため、リベース後は往復が少なく出ることがある（既知の誤差）"
+  dependabot: "dependabot の PR は change_type=dependency_update。本文の #N は依存先リポジトリの番号なので Ticket にしない"
+
+# --------------------------------------------------------------- 右打ち切り（観測期間不足）
+censoring:
+  rule: "観測窓（7 日・21 日）が as_of 時点で経過していない PR は『未確定（censored）』とし、失敗にも成功にも数えない。率を出すときは分母から外す"
+  fields: [revert_hotfix.censored, churn.censored]
+  early_determination: "窓の途中でも、churn の比率を超えた・revert が入った時点で確定（true）にする。確定しないまま窓が閉じたら false"
+
+# --------------------------------------------------------------- PR 単位の指標
+metrics:
+  lead_time:
+    formula: "merged_at − min(ticket.created_at)。Ticket がなければ merged_at − pr.created_at（fallback 印付き）"
+    unit: hours
+    source: [ticket.created, pr.merged]
+    aux: "pr_open_hours = merged_at − pr.created_at を常に併記"
+  review_loops:
+    formula: "レビュー往復の回数。往復 1 回 ＝ レビューの印のあるコメント（本文が /レビュー|review/ に一致）または state=changes_requested|commented のレビューの後に、マージ前のコミットがあること"
+    unit: count
+    source: [pr.review_comment, pr.review_submitted, pr.commit_pushed]
+    known_error: "レビューを同じアカウント（guccyon）の別エージェントが書くため著者で区別できない。印の正規表現は『レビュー』を含む一般のコメントも拾う。P1 で InspectionReport に置き換える"
+  tokens:
+    formula: "PR にリンクされたセッション（session.linked_pr）の model_usage をモデル別に合計。1 セッションが複数 PR にリンクしているときは均等割り（attribution=even_split）"
+    unit: "tokens（モデル別）、cost_usd_estimate（API 単価換算の参考値。Max 契約は定額）"
+    source: [session.linked_pr, session.cost_recorded]
+    missing_when: "手元の Mac にセッションログがない（クラウドのセッション、pr-link が記録されなかった）"
+  revert:
+    formula: "merged_at から revert_window_days 以内に、既定ブランチの first-parent に subject が /revert/i かつ PR 番号またはマージコミットを含むコミットがある"
+    unit: boolean
+    source: [commit.landed]
+  hotfix:
+    formula: "merged_at から revert_window_days 以内に、subject が /^(fix|hotfix)\\b/i で、PR が触ったファイルのいずれかを変えるコミットがある（マージコミット自身は除く）"
+    unit: boolean
+    source: [commit.landed, pr.merged]
+    known_error: "PR が触ったファイルへの『関係ない fix』も拾う。P1 で Ticket の帰属と組み合わせて絞る"
+  churn:
+    formula: "PR が新規作成したファイル（status=added、CHURN_EXCLUDE に当たらないもの）について、merged_at から churn_window_days 以内の別コミットでの変更行（追加＋削除）/ 作成時行数 > churn_ratio なら true。新規ファイルがなければ null（対象外）"
+    unit: "boolean | null（未確定・対象外）"
+    source: [pr.merged, commit.landed]
+    exclude: ["^\\.claude/memories/", "^docs/", "CHANGELOG.md", "README(.ja)?.md"]
+    exclude_reason: "追記で育つ文書・知見ファイルはコードの手戻りではない（2026-10-25 の照合で .claude/memories/ と docs/ が誤検出された）"
+  incident:
+    formula: "incident.opened.related_pr_ids に含まれる"
+    unit: boolean
+    source: [incident.opened]
+    p0: "発生源がないので欠損（missing=true）"
+  human_override:
+    formula: "decision.human_override の subject_id が PR"
+    unit: boolean
+    source: [decision.human_override]
+    p0: "承認ログがないので pr-merge-criteria の判断の記録から手入力（--human-override）。記録: #68 のみ"
+  gate_results:
+    formula: "gate.evaluated をゲート別に集約"
+    p0: "P1 から"
+
+# --------------------------------------------------------------- 工場単位への集約（health.yaml の式の入力）
+aggregation:
+  throughput: "count(pr.merged where base=default) per ISO week"
+  cost_per_pr: "mean(tokens.cost_usd_estimate) over PRs with tokens not missing。欠損率を併記"
+  override_rate: "count(human_override=true) / count(PR)"
+  review_loops_mean: "mean(review_loops)"
+  lead_time_p50: "median(lead_time.hours) over PRs with start_source=earliest_linked_issue。fallback 分は別に出す"
