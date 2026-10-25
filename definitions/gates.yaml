@@ -39,9 +39,9 @@ gates:
     unit: "違反件数"
     limits: { minutes: 10, jpy: 0 }
     phase: P1
-    existing_examples:              # 棚卸し 2 節。Engine の core-gates に一般化する候補
-      - "guccyon/cornix-layout spec/architecture_spec.rb（依存方向）"
-      - "guccyon/cornix-layout spec/docs/readme_sync_spec.rb（文書の構造一致）"
+    existing_examples:              # 棚卸し 2 節。手元の運用にすでにある型。Engine の core-gates に一般化する候補
+      - "依存方向テスト（レイヤー間の参照を spec で列挙して違反を落とす）"
+      - "対になる文書の構造一致テスト（README の多言語版）"
 
   L2:
     name: "テスト実質強度"

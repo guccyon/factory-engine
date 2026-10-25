@@ -6,7 +6,7 @@ Claude Code のセッションログ（~/.claude/projects/）の 3 つ。
 状態は持たない（毎回計算し直す）。P0a で成果物ストアができたら、出力の JSON をそこに流す。
 
 使い方:
-  pr_metrics.py --repo guccyon/cornix-layout --git-dir ~/src/github.com/guccyon/cornix-layout/main \
+  pr_metrics.py --repo guccyon/rally --git-dir ~/src/github.com/guccyon/rally/main \
                 --limit 20 --out telemetry.json [--as-of 2026-10-25T00:00:00Z]
 
 依存: python3（標準ライブラリのみ）、gh（認証済み）、git

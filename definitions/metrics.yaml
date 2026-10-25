@@ -5,7 +5,7 @@
 
 schema_version: "0.1"
 status: draft
-thresholds:                      # 承認待ち（2026-10-25 提案）
+thresholds:                      # 仮の初期値（2026-10-25）。運用の中で週次レポートを見て調整する。変えたら ADR に記録
   revert_window_days: 7
   churn_window_days: 21
   churn_ratio: 0.50
@@ -17,7 +17,7 @@ attribution:
     order:
       - "GitHub の closing reference（Closes #N、Development リンク）"
       - "タイトル・本文の #N 参照のうち、このリポジトリに存在する Issue（PR 番号や他リポジトリの番号は捨てる）"
-    fallback: "Ticket がない PR は pr_created を起点にし、start_source=pr_created_fallback の印を付ける。欠損として数える（lead_time_issue_attribution）"
+    fallback: "Ticket がない PR は pr_created を起点にし、start_source=pr_created_fallback の印を付ける。欠損として数える（lead_time_issue_attribution）。工場では Ticket のない PR を作らない（intake → Ticket を必ず通す。ADR 0002）"
   multiple_tickets: "複数 Ticket を含む PR は、最も古い Ticket の created_at を起点にする（lead_time は上振れする側に倒す）"
   reopened_pr: "再オープンされた PR は最後の merged_at で数える。再オープン前の期間も lead_time に含める"
   rebase: "リベース・force push でコミットの日時が変わっても PR の created_at / merged_at は変わらないので影響しない。review_loops はコミットの committer date で見るため、リベース後は往復が少なく出ることがある（既知の誤差）"
@@ -60,7 +60,7 @@ metrics:
     unit: "boolean | null（未確定・対象外）"
     source: [pr.merged, commit.landed]
     exclude: ["^\\.claude/memories/", "^docs/", "CHANGELOG.md", "README(.ja)?.md"]
-    exclude_reason: "追記で育つ文書・知見ファイルはコードの手戻りではない（2026-10-25 の照合で .claude/memories/ と docs/ が誤検出された）"
+    exclude_reason: "追記で育つ文書・知見ファイルはコードの手戻りではない（式の試走で真っ先に誤検出された）"
   incident:
     formula: "incident.opened.related_pr_ids に含まれる"
     unit: boolean

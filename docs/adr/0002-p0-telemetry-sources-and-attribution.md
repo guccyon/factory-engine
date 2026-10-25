@@ -1,13 +1,13 @@
 # ADR 0002: P0 の結果テレメトリの取得元と帰属ルール
 
-- 状態: 提案（2026-10-25、Tetsuro の了承待ち。閾値 N=7 日・21 日・変更率 50% の承認を含む）
+- 状態: 承認（2026-10-25。閾値を含む判断は Tetsuro が Claude に委ね、運用の中で調整する）
 - 関係: 開始定義 第 2 節「計測項目（PR 単位）」、第 3 節 Week 2、`definitions/events.yaml` `definitions/metrics.yaml`
 
 ## 文脈
 
 学習の教師信号（revert・hotfix・churn・review_loops・lead_time・tokens）を PR に紐付ける結果テレメトリが、P0 のすべての前提になる。
 現行の自動化はイベントをどこにも流していないので、取得元は GitHub・git log・Claude Code のセッションログの 3 つに限られる。
-cornix-layout を実験台に直近 20 件で手動照合した（50_build-work/health-reports/2026-10-25.html）。
+式は、建設者の手元にある既存リポジトリの直近 20 件で一度だけ通して動作と帰属の落とし穴（他リポジトリの番号の混入、統合 PR の段階 PR、文書の churn 誤検出）を確かめた。その数値は捨て、以後の計測対象は工場自身のリポジトリ（factory-engine / rally）だけにする（2026-10-25 Tetsuro「既存プロダクトは一切考慮に入れない」）。
 
 ## 決定
 
@@ -17,7 +17,8 @@ cornix-layout を実験台に直近 20 件で手動照合した（50_build-work/
 4. churn は新規作成ファイルのうちコードだけを対象にし、`.claude/memories/`・`docs/`・CHANGELOG・README は除く
 5. tokens は Claude Code のセッションログの `pr-link` と `cost-state` から PR に配る。1 セッションが複数 PR にリンクしていれば均等割り。クラウドのセッションは手元にログがないので欠損になる
 6. 実装は状態を持たない Python スクリプト（標準ライブラリ＋ gh ＋ git）。成果物ストアができるまでは JSON を出すだけ
-7. 閾値の初期値は revert/hotfix の窓 7 日、churn の窓 21 日、churn の変更率 50%
+7. 閾値の初期値は revert/hotfix の窓 7 日、churn の窓 21 日、churn の変更率 50%。精度の根拠はまだない。週次の FactoryHealthReport で実測と並べて見直し、変えたら metrics.yaml と本 ADR の後継に記録する
+8. Ticket のない PR は工場では作らない。intake → Ticket（Issue）を必ず通し、lead_time の起点を欠損させない。builder の手作業も Issue を切ってから始める
 
 ## 選ばなかった案
 
@@ -28,7 +29,7 @@ cornix-layout を実験台に直近 20 件で手動照合した（50_build-work/
 
 ## 結果
 
-- 20 件の照合での欠損率: Ticket 帰属 60%、tokens 70%、incident / gate_results 100%。revert/hotfix と churn は全件が観測窓の途中（マージから 5 日以内）で未確定
-- Ticket のない PR が 6 割ある。チャットから直接始めた作業が多く、lead_time の起点がない。工場では intake → Ticket を通す経路を作る理由になる
-- tokens の欠損はクラウドのセッション由来。P0 Week 3 のヘッドレスランナーが session.cost_recorded を直接出すようにする
+- 工場自身のリポジトリにはまだマージ済み PR がなく、第 1 号の健康レポートは「取得元と式が決まった」ことの記録になる。数値は PR が流れ始めてから
+- tokens はクラウドのセッションのログが手元にないと欠損する。P0 Week 3 のヘッドレスランナーが session.cost_recorded を直接出す
 - review_loops の印は粗い（「レビュー」を含むコメントを全部拾う）。P1 の InspectionReport で置き換える
+- 既存リポジトリの数値を根拠にしないので、閾値は運用で決まるまで「仮」の印を付けて出す
