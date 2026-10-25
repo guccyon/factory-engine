@@ -2,3 +2,5 @@
 /tmp/
 .env
 .env.*
+!.env.example
+orchestrator/.env

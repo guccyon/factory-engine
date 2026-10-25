@@ -1,0 +1,77 @@
+# 工場の制御プレーン（P0 最小構成。ローカル Mac の Docker Compose）
+# 状態は postgres / objectstore（S3 互換）に置き、ワーカーは dispatcher が docker run --rm で使い捨てる（ADR 0003）。
+# 秘密情報は .env（.env.example を写す）。リポジトリに入れない。
+name: factory
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory}
+      POSTGRES_DB: factory
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory -d factory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # S3 互換のオブジェクトストア（ワーカーのログなど）。MinIO のイメージが Docker Hub から取得できなくなっていたため versitygw を使う（ADR 0003）
+  objectstore:
+    image: versity/versitygw:latest
+    command: ["--access", "${OBJECTSTORE_ACCESS_KEY:-factory}", "--secret", "${OBJECTSTORE_SECRET_KEY:-factory-objectstore}", "--port", ":7070", "posix", "/data"]
+    volumes:
+      - objectdata:/data
+    ports:
+      - "127.0.0.1:${OBJECTSTORE_PORT:-7070}:7070"
+
+  dispatcher:
+    build: ./dispatcher
+    image: factory-dispatcher:p0
+    depends_on:
+      postgres: { condition: service_healthy }
+      objectstore: { condition: service_started }
+    environment:
+      DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
+      OBJECTSTORE_ENDPOINT: objectstore:7070
+      OBJECTSTORE_ACCESS_KEY: ${OBJECTSTORE_ACCESS_KEY:-factory}
+      OBJECTSTORE_SECRET_KEY: ${OBJECTSTORE_SECRET_KEY:-factory-objectstore}
+      OBJECTSTORE_BUCKET: factory-artifacts
+      # 対象リポジトリ（カンマ区切り）とラベル
+      FACTORY_REPOS: ${FACTORY_REPOS:-guccyon/rally}
+      TRIGGER_LABEL: ${TRIGGER_LABEL:-factory:implement}
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-30}
+      # 同時実行・予算（Blueprint runtime / budgets から。実測で調整）
+      MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      MAX_TURNS: ${MAX_TURNS:-40}
+      TOKEN_BUDGET_PER_JOB: ${TOKEN_BUDGET_PER_JOB:-2000000}
+      JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
+      MODEL_TIER: ${MODEL_TIER:-tier-large}
+      # ワーカーに渡す秘密情報（.env）
+      GH_TOKEN: ${GH_TOKEN:?GitHub token for the worker (.env)}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?claude setup-token の値 (.env)}
+      WORKER_IMAGE: factory-worker:p0
+      WORKER_DRY_RUN: ${WORKER_DRY_RUN:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      WEBHOOK_PORT: 8787
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:${WEBHOOK_HOST_PORT:-8787}:8787"
+    restart: unless-stopped
+
+  # ワーカーのイメージをビルドするためだけのサービス（常駐しない。docker compose build worker）
+  worker:
+    build: ./worker
+    image: factory-worker:p0
+    profiles: ["build-only"]
+    command: ["true"]
+
+volumes:
+  pgdata:
+  objectdata:
