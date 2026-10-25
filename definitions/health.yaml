@@ -1,0 +1,90 @@
+# 工場の健康（Govern）の指標定義
+# 正本: 憲章 06 節、開始定義 第 2 節「計測項目（工場単位・P0 の最小セット）」。
+# 原則: 学習器に自分を採点させない。この指標は learn とは別の経路（govern）で計算する。
+# 指標の定義は Engine（このファイル）、各工場のデータと SLO の値は製品側（.factory-config/ と Blueprint の health:）に置く。
+
+schema_version: "0.1"
+status: draft
+
+independence:
+  computed_by: govern
+  must_not_read: ["overlay/ のルール採否の判断ログを入力にした自己評価"]
+  note: "learn が出した数値を govern がそのまま使わない。PR・Issue・git log・承認ログなど一次ソースから計算し直す"
+
+viewpoints:
+  flow:      { ja: "仕事が詰まっていないか" }
+  quality:   { ja: "検査官の予測が当たっているか", phase: P1 }
+  learning:  { ja: "賢くなっているか、太っているだけか", phase: P1 }
+  economy:   { ja: "単位あたりコスト" }
+  trust:     { ja: "人間との関係が健全か" }
+  integrity: { ja: "工程間の約束が守られているか" }
+
+# P0 の最小セット（FactoryHealthReport 週次）
+metrics:
+  throughput:
+    viewpoint: flow
+    formula: "count(PR merged in week)"
+    source: "GitHub PR"
+    unit: "件 / 週"
+  queue_age:
+    viewpoint: flow
+    formula: "median(now - enqueued_at) over queued jobs at report time"
+    source: "制御プレーンのキュー（P0a 前は Issue のラベル付与 → PR 作成）"
+    unit: "時間"
+  escalation_rate:
+    viewpoint: flow
+    formula: "count(artifacts escalated to human) / count(artifacts produced)"
+    source: "Question / Approval / escalate の記録"
+    unit: "比率"
+  cost_per_pr:
+    viewpoint: economy
+    formula: "sum(tokens by tier × 単価) / count(PR created)"
+    source: "Claude Code のセッションログ"
+    unit: "tokens / PR, 円 / PR"
+    note: "Max 契約は定額なので円は API 単価換算の参考値"
+  tier_escalation_rate:
+    viewpoint: economy
+    formula: "count(tasks escalated cheap→strong) / count(tasks started on cheap)"
+    source: "ランナーのログ"
+    unit: "比率"
+    phase: P0a
+  override_rate:
+    viewpoint: trust
+    formula: "count(human_override) / count(automated decisions shown to human)"
+    source: "承認ログ、pr-merge-criteria の判断の記録"
+    unit: "比率"
+  question_latency:
+    viewpoint: trust
+    formula: "median(answered_at - asked_at) by to (requester | operator | builder)"
+    source: "Question 成果物"
+    unit: "時間"
+  artifact_schema_failures:
+    viewpoint: integrity
+    formula: "count(artifact validation failures) / count(artifacts validated)"
+    source: "成果物ストアの型検証"
+    unit: "件, 比率"
+
+# P1 以降に足す（検査官とルールが存在してから）
+later_metrics:
+  quality: [kappa, pairwise_accuracy, false_positive_rate, miss_rate, kpi_prediction_error]
+  learning: [rule_inflow, rule_outflow, shadow_to_adopted_rate, dead_rule_ratio, rubric_tokens, golden_set_freshness]
+  flow: [lead_time_distribution, wip, oscillation_rate, retry_budget_consumption]
+  integrity: [regeneration_misses, adr_reference_rate, base_overlay_conflicts, reconcile_lag]
+
+# 望ましくない進化の兆候（指標の組み合わせ）。P1 以降に判定を実装
+patterns:
+  goodhart:         { when: ["検査の合格率 ↑", "マージ後の revert・incident が減らない"] }
+  rule_bloat:       { when: ["ルーブリック総量 ↑", "dead_rule_ratio ↑", "lead_time ↑"] }
+  under_confidence: { when: ["escalation_rate ↑", "question 量 ↑", "override_rate 低い"] }
+  over_confidence:  { when: ["override_rate ↑", "escalation_rate ↓"] }
+  context_obesity:  { when: ["プロンプトのトークン量が単調増加", "L4 の kappa ↓"] }
+  tunnel_vision:    { when: ["Opportunity の源が障害に偏る", "kpi_prediction_error 悪化"] }
+  hollowing:        { when: ["adr_reference_rate ↓", "regeneration_misses ↑", "artifact_schema_failures ↑"] }
+  silent_rot:       { when: ["throughput 正常", "golden_set_freshness ↓", "kappa が緩やかに低下"] }
+
+# ブレーカーの種類（閾値は製品側 Blueprint の health.breakers）
+breakers: [gate_fallback, learning_freeze, reconcile_halt, rule_canary]
+
+report:
+  weekly: { type: FactoryHealthReport, audience: [builder], p0_min_set: [flow, economy, trust, integrity] }
+  monthly: { type: FactoryHealthReport, audience: [operator], note: "非エンジニアが読める形（Gen2 以降）" }

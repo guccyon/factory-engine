@@ -1,0 +1,91 @@
+# 成果物の型定義
+# 用語の正本: 30_kickoff-definition.html 第 1 節。工程間は型付き成果物で疎結合にする。
+# required は型検証（Integrity: artifact_schema_failures）の対象。P0 は項目名の合意までで、JSON Schema 化は P0a 中に行う。
+# 共通属性はすべての型が持つ。
+
+schema_version: "0.1"
+status: draft
+
+common_fields:
+  id: "成果物 ID（ULID）"
+  type: "型名（このファイルのキー）"
+  correlation_id: "起点の Signal / Request / Routine から引き継ぐ相関 ID（イベント辞書と共通）"
+  produced_by: "ステージ ID（stages.yaml）"
+  created_at: "ISO 8601"
+  confidentiality: "product | client | public"
+  parents: "入力になった成果物 ID の配列"
+
+# 主要 15 型（開始定義で固定）
+types:
+  Signal:
+    stage: observe
+    required: [source, kind, observed_at, evidence]
+    note: "行動ログ・障害・KPI・Routine の異常から"
+  Request:
+    stage: [intake, clarify]
+    required: [requester, raw_text, status]          # status: raw | clarified
+    clarified_fields: [what, why, by_when, precision]
+  Opportunity:
+    stage: triage
+    required: [title, problem, expected_effect]      # expected_effect は必須（指標・方向・幅）
+    expected_effect_fields: [metric, direction, range]
+  Requirements:
+    stage: define
+    required: [acceptance_criteria, non_goals, success_definition]
+  Ticket:
+    stage: design
+    required: [title, scope, acceptance_criteria, bounded_context]
+    source_systems: ["github_issue", "jira"]
+  PR:
+    stage: implement
+    required: [repo, number, ticket_ids, change_types]   # change_types は manifest.yaml autonomy の変更種別
+  InspectionReport:
+    stage: verify
+    required: [pr, gate_results, defects]            # スコアではなく構造化欠陥リスト
+  Release:
+    stage: ship
+    required: [version, environment, prs, rollback_target]
+  Incident:
+    stage: operate
+    required: [severity, detected_at, impact, related_releases]
+  KPIReport:
+    stage: [operate, routine]
+    required: [period, metrics, diff_from_previous, explanations]   # 前回差分の説明責任
+  Lesson:
+    stage: learn
+    required: [teacher_signal, summary, eval_cases, knowledge_stage]   # eval ケース同梱必須
+    knowledge_stage_values: [episodic, rubric, crystallized]
+  Question:
+    stage: [clarify, triage, design]
+    required: [to, question, options, recommendation, blocking]
+    to_values: [requester, operator, builder]        # 要求の精緻化は requester、業務判断は operator、憲法・安全は builder
+  Approval:
+    stage: [ship, govern]
+    required: [kind, subject, requested_by, decision, decided_by]
+    kind_values: [store_submit, infra_cost, destructive_schema, payment_logic, merge]
+  Routine:
+    stage: routine
+    required: [id, schedule, line, output_type, audience]
+  FactoryHealthReport:
+    stage: govern
+    required: [period, viewpoints, patterns_detected, self_report]
+    note: "govern が learn と別の経路で計算する"
+
+# 補助の型（ステージ表に出てくるもの）
+auxiliary_types:
+  Rejection:        { stage: triage, required: [request, reason] }
+  UXSpec:           { stage: design, required: [screens, states, design_system_constraints] }
+  ADR:              { stage: design, required: [title, status, context, decision, alternatives, consequences] }
+  ContractDiff:     { stage: design, required: [contract, kind, compat_impact] }
+  SchemaDiff:       { stage: design, required: [tables, kind, destructive] }
+  StoreSubmission:  { stage: ship, required: [app, version, draft_url] }
+  DataRequestResult: { stage: operate, required: [request, interpretation, sample, answer] }
+  Digest:           { stage: govern, required: [period, results, metric_changes, escalations, pending_decisions] }
+  Defect:           { stage: verify, required: [gate, rubric_id, location, evidence, remediation_hint] }
+  EvalSpec:         { stage: govern, required: [target, cases, label_def, judge, metric, confidence, threshold, grants, on_fail] }
+
+# 保存先（実行基盤の約束: ローカル FS に置かない）
+storage:
+  metadata: "postgres（P0 は Postgres 単体）"
+  blobs: "object store（MinIO）"
+  in_repo: [Requirements, ADR, ContractDiff, SchemaDiff, Lesson]   # 製品リポジトリにファイルとしても残す型

@@ -1,0 +1,150 @@
+# ステージ定義（11 ステージ）
+# 用語の正本: 30_kickoff-definition.html 第 1 節（2026-10-25 確定）。識別子は英語を正とし、日本語は説明。
+# 工程は「どのエージェントが動くか」ではなく「どの型の成果物が次に渡るか」で定義する（憲章 03 節）。
+# 成果物の型は artifacts.yaml、ゲートは gates.yaml を参照する。
+
+schema_version: "0.1"
+status: draft            # P0 Week 1 の起案。P0a Exit で確定
+
+# ライン（4 本）と横断ケイパビリティ
+lines:
+  deliver: { ja: "変更", entry: [triage], note: "Opportunity から Release まで" }
+  answer:  { ja: "問いへの回答", entry: [triage], note: "解釈とサンプルを先に提示し、セマンティック層経由で回答" }
+  respond: { ja: "障害対応", entry: [triage], note: "Rollback を含む。hotfix は deliver を短縮経路で通す" }
+  report:  { ja: "定常レポート", entry: [routine], note: "Routine として窓口を通らずスケジューラから入る" }
+cross_cutting:
+  govern: { ja: "統治", note: "承認・監査・予算・工場の健康。learn から独立させる（学習器に自分を採点させない）" }
+  learn:  { ja: "学習", note: "Lesson → ルールのライフサイクル → gates / knowledge / evals" }
+
+# 窓口ではない入口
+entry_points:
+  routine: { ja: "定常業務", source: "scheduler", output: [KPIReport, FactoryHealthReport], note: "前回との差分が大きければ observe の Signal にする" }
+
+stages:
+  - id: observe
+    ja: "常時観測"
+    lines: [deliver, respond, report]
+    cell: insight-cell
+    inputs: ["行動ログ", "障害", "KPI", "Routine の異常"]
+    outputs: [Signal]
+    next: [triage]
+    human: null
+    p0_status: not_started
+
+  - id: intake
+    ja: "要求の受付（窓口）"
+    lines: [deliver, answer]
+    cell: insight-cell
+    inputs: ["CS・サクセス・マーケ・経営からの曖昧な要求"]
+    outputs: [Request]
+    next: [clarify]
+    human: requester
+    p0_status: not_started
+
+  - id: clarify
+    ja: "精緻化"
+    lines: [deliver, answer]
+    cell: insight-cell
+    inputs: [Request]
+    outputs: [Request, Question]          # 確定した Request（何を・何のために・いつまでに・どの精度で）
+    next: [triage]
+    human: requester                      # 往復の相手は運用者ではなく要求者本人
+    note: "高コストな工程の前に置く小さなループ"
+    p0_status: not_started
+
+  - id: triage
+    ja: "振り分け・優先順位・却下"
+    lines: [deliver, answer, respond]
+    cell: insight-cell
+    inputs: [Signal, Request]
+    outputs: [Opportunity, Rejection, Question]
+    routes:
+      deliver: Opportunity                # expected_effect 必須
+      answer: Request
+      respond: Incident
+      reject: Rejection                   # 理由付きで要求者へ
+    next: [define, operate]
+    human: operator                       # 業務判断の Question の宛先
+    note: "Question と Approval の発行量を operator の sync_capacity に収める"
+    p0_status: not_started
+
+  - id: define
+    ja: "要求を要件に定義する"
+    lines: [deliver]
+    cell: build-cell
+    inputs: [Opportunity]
+    outputs: [Requirements]               # PRD。受け入れ条件・非目標・成功の定義
+    next: [design]
+    human: null
+    p0_status: not_started
+
+  - id: design
+    ja: "設計"
+    lines: [deliver]
+    cell: build-cell
+    inputs: [Requirements]
+    outputs: [UXSpec, ADR, ContractDiff, SchemaDiff, Ticket]
+    next: [implement]
+    human: builder                        # 設計判断の要点はチャットで了承（pr-merge-criteria「確認のしかた」）
+    p0_status: manual                     # 現行は Claude が手で作業分解・契約ファーストを行っている（棚卸し 1 節）
+
+  - id: implement
+    ja: "実装（テスト作成と自己修復ループを含む）"
+    lines: [deliver, respond]
+    cell: build-cell
+    inputs: [Ticket]
+    outputs: [PR]
+    next: [verify]
+    human: null
+    p0_status: existing_asset             # 現行の Claude スキル群。P0a でヘッドレス起動にする
+
+  - id: verify
+    ja: "検査"
+    lines: [deliver, respond]
+    cell: inspector                       # 独立。別モデル・文脈分離
+    inputs: [PR]
+    outputs: [InspectionReport]           # 構造化欠陥リスト（Defect の配列）
+    gates: [L0, L1, L2, L3, L4]
+    on_fail: [patch, cleanroom, escalate]
+    next: [ship, implement, design]
+    human: null
+    p0_status: partial                    # CI の必須チェック（L1 相当）と Claude の都度レビューのみ
+
+  - id: ship
+    ja: "出荷"
+    lines: [deliver, respond]
+    cell: ship-cell
+    inputs: [PR, InspectionReport]
+    outputs: [Release, StoreSubmission]
+    next: [operate]
+    human: operator                       # Approval: store_submit / infra_cost / destructive_schema / payment_logic
+    p0_status: not_started                # P0 の権限は pr_create まで
+
+  - id: operate
+    ja: "運用"
+    lines: [respond, answer, report]
+    cell: insight-cell
+    inputs: [Release, Request, Routine]
+    outputs: [Incident, KPIReport, DataRequestResult]
+    next: [learn, observe]
+    human: operator                       # Rollback をワンクリックで押せる
+    p0_status: not_started
+
+  - id: learn
+    ja: "学習"
+    lines: [deliver, answer, respond, report]
+    cell: learn
+    inputs: [Incident, KPIReport, InspectionReport, Release]
+    outputs: [Lesson]                     # 必ず eval ケースを同梱
+    teacher_signals: [incident, revert, hotfix, churn, review_loops, kpi_error, store_rejection, human_override]
+    human: builder
+    note: "P0 では記録と shadow に留め、ルールの自動採用を動かさない"
+    p0_status: manual                     # .claude/memories/ の手運用（episodic 相当）
+
+# セル（権限境界）
+cells:
+  build-cell:   { permissions: ["repo:rw"], note: "inspector とは別の文脈" }
+  ship-cell:    { permissions: ["cloud", "store"] }
+  insight-cell: { permissions: ["prod-db:readonly(semantic-layer)"] }
+  inspector:    { permissions: ["repo:read"], note: "build-cell から独立。別モデル・文脈分離" }
+  learn:        { permissions: ["overlay:propose"], note: "overlay への書き込みはルール変更 PR として工場自身のパイプラインを通す" }

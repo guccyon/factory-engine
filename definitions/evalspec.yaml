@@ -1,0 +1,35 @@
+# 共通評価仕様（EvalSpec）
+# 正本: 憲章 05 節「校正」、開始定義 第 1 節。ゲートごとに別々の評価コードを増やさず、一つの宣言で書く。
+# {target, cases, label_def, judge, metric, confidence, threshold, grants, on_fail}
+# P0 は L4 のペア比較の初版だけを起案する（Week 4 で shadow 判定に使う）。
+
+schema_version: "0.1"
+status: draft
+
+fields:
+  target: "評価対象（ゲートまたは判定器）"
+  cases: "Golden Set の置き場所（製品側 .factory-config/evals/、汎用部分は Engine の eval-corpus/）"
+  label_def: "正解ラベルの定義"
+  judge: "判定器（モデル tier・プロンプト・合議の構成）"
+  metric: "pairwise_accuracy（N < 100 の暫定）| kappa（N >= 100）"
+  confidence: "信頼区間の出し方"
+  threshold: "合否の閾値"
+  grants: "閾値を満たしたときに解放する自動化権限（manifest.yaml autonomy の項目）"
+  on_fail: "閾値を割ったときの動作（breaker）"
+
+specs:
+  - id: l4-pairwise
+    target: L4
+    cases:
+      path: ".factory-config/evals/golden/"
+      format: "ペア（同じ Ticket に対する 2 つの PR / 設計）＋ 建設者の選好 ＋ 採点理由 1 行"
+      balance: "positive:negative ≈ 1:1。負例には意図的なアンチパターンを含める"
+      seed: "pr-merge-criteria の判断の記録 3 件（cornix-layout #68, #69/#70, #89/#90）"
+    label_def: "ペアのうち、rubric.yaml の L4 項目に照らして設計として望ましい方。引き分けは許すが集計から除く"
+    judge: { tier: judge, ensemble: 3, adversarial_reviewer: true, evidence_required: true }
+    metric: pairwise_accuracy
+    confidence: "Wilson 区間（95%）"
+    threshold: { pairwise_accuracy: 0.80, min_cases_for_release: 100 }
+    grants: []                       # P0〜P1 は何も解放しない（shadow のみ）
+    on_fail: gate_fallback
+    status: draft

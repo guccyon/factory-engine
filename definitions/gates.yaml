@@ -1,0 +1,85 @@
+# 品質ゲート定義（L0〜L4）
+# 正本: 憲章 05 節、開始定義 第 1 節。各ゲートは
+#   purpose（目的）/ inputs（入力）/ method（方法）/ output（出力スキーマ）/ trigger（発火条件）/
+#   on_fail（失敗時の扱い）/ unit（測定単位）/ limits（上限時間・費用）
+# で定義する。数値はすべて初期仮説で、P0 Exit 時に実測で改訂する。
+
+schema_version: "0.1"
+status: draft
+
+defaults:
+  output: InspectionReport          # 構造化欠陥リスト（Defect の配列）。スコアだけを返さない
+  remand:
+    modes: [patch, cleanroom, escalate]
+    retry_budget: { patch: 3, cleanroom: 1 }
+    oscillation: "同一 rubric_id × 同一 location の Defect が 2 往復したら打ち切って escalate"
+  calibration: "evalspec.yaml の EvalSpec で宣言する。精度が閾値未満のゲートは自動差し戻しを止めて人間審査へ（breaker: gate_fallback）"
+
+gates:
+  L0:
+    name: "非機能"
+    purpose: "セキュリティ・性能・a11y・i18n の退行を出荷前に止める"
+    inputs: [PR, "本番規模の合成データ"]
+    method: ["SAST", "依存脆弱性スキャン", "代表クエリの性能回帰", "a11y", "i18n"]
+    determinism: deterministic
+    trigger: "全 PR"
+    on_fail: { mode: patch, to: implement }
+    unit: "Defect 数（重大度別）"
+    limits: { minutes: 15, jpy: 0 }
+    phase: P1
+
+  L1:
+    name: "構造・境界"
+    purpose: "依存方向・契約互換・命名などの構造規約を 0 / 1 で判定する"
+    inputs: [PR]
+    method: ["コンパイラ", "Linter", "依存方向テスト（ArchUnit / Packwerk / ast-grep）", "契約互換性チェッカー"]
+    determinism: deterministic
+    trigger: "全 PR"
+    on_fail: { mode: patch, to: implement }
+    unit: "違反件数"
+    limits: { minutes: 10, jpy: 0 }
+    phase: P1
+    existing_examples:              # 棚卸し 2 節。Engine の core-gates に一般化する候補
+      - "guccyon/cornix-layout spec/architecture_spec.rb（依存方向）"
+      - "guccyon/cornix-layout spec/docs/readme_sync_spec.rb（文書の構造一致）"
+
+  L2:
+    name: "テスト実質強度"
+    purpose: "テストが振る舞いを実際に縛っているかを測る"
+    inputs: [PR]
+    method: ["差分ミューテーションテスト"]
+    determinism: quantitative
+    thresholds: { domain_layer: 0.85, ui_layer: 0.60 }
+    trigger: "全 PR（差分のみ）"
+    on_fail: { mode: patch, to: implement, note: "テスト作成者へ" }
+    unit: "ミューテーションスコア"
+    limits: { minutes: 20, jpy: 0 }
+    phase: P1
+
+  L3:
+    name: "拡張性・結合度"
+    purpose: "固定の変更シナリオに対する影響範囲を実測する"
+    inputs: [PR, "change-scenarios（人間レビュー済み 10〜30 件）"]
+    method: ["変更シナリオ集に対する影響範囲の実測（主）", "アドホック Probe（参考値）"]
+    determinism: reproducible_number
+    trigger: ["ContractDiff を含む PR", "SchemaDiff を含む PR", "新規モジュールを含む PR", "定期健診"]   # 経済性のため全 PR には走らせない
+    on_fail: { mode: cleanroom, to: design }
+    unit: "シナリオごとの変更ファイル数・コンテキスト数"
+    limits: { minutes: 30, jpy: 500 }
+    phase: P2
+
+  L4:
+    name: "モデリング品質"
+    purpose: "用語・不変条件・コンテキスト境界の設計品質を、Golden Set で校正した判定で測る"
+    inputs: [PR, "specs/glossary", "specs/context-map", "core-gates/rubric.yaml（L4 の項目）"]
+    method:
+      - "構造メトリクス（用語整合率・不変条件の所在集中度・コンテキスト間結合）"
+      - "参照実装とのペア比較ルーブリック（根拠必須、合議＋敵対的審査者）"
+    determinism: calibrated_judgement
+    trigger: "全 PR（P1 は shadow）"
+    on_fail: { mode: cleanroom, to: design }
+    unit: "Defect 数（rubric_id 別）"
+    limits: { minutes: 15, jpy: 300 }
+    calibration: { evalspec: "evalspec.yaml#l4-pairwise", interim_metric: pairwise_accuracy, interim_floor: 0.80, kappa_floor: 0.6, kappa_min_cases: 100 }
+    phase: P1
+    p0: "rubric.yaml の shadow 判定を Week 4 に試験開始（差し戻さない）"
