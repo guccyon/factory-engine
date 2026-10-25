@@ -1,14 +1,13 @@
 # レビュー観点（ルーブリック）草案 v0
 # 現行のレビューは Claude の都度判断で、観点を外部化したファイルがない（棚卸し 1 節・3 節の欠落）。
-# ここでは現行のルール群に散文で書かれている観点を ID 付きで外出しする。出典は 2026-10-25 時点の
-#   - guccyon/cornix-layout: .claude/CLAUDE.md、docs/architecture.md、.github/pull_request_template.md、spec/
-#   - アカウントスキル pr-merge-criteria
-#   - Claude Code の自動メモリ（cornix-layout: merge-policy / pr-review-workflow / worktree-upstream-trap）
+# ここでは 2026-10-25 時点で建設者の手元の運用ルール（リポジトリの開発ガイド・設計文書・PR テンプレート、
+# アカウントスキル pr-merge-criteria、Claude Code の自動メモリ）に散文で書かれていた観点を、一般化して ID 付きで外出しする。
+# 特定の既存プロダクトのリポジトリは計測対象にも出典にもしない（2026-10-25 Tetsuro）。source は由来の種類だけを書く。
 #
 # 項目の属性
 #   id               安定 ID。廃止しても再利用しない
 #   gate             L0〜L4（gates.yaml）。process はゲートではなく工程の約束
-#   scope            generic（Engine の core-gates に置く）| product-example（cornix-layout 固有。製品側 overlay の例）
+#   scope            generic（Engine の core-gates に置く）| product（製品側 overlay に置くべきもの）
 #   knowledge_stage  episodic | rubric | crystallized（AST・spec で機械判定できる）
 #   state            candidate → shadow → adopted → retired。P0 は全件 candidate（自己進化を動かさない）
 #   confidentiality  product | client | public（必須）
@@ -45,7 +44,7 @@ rules:
     confidentiality: public
     check: "テンプレートの見出し（概要・背景・問題・対応内容・影響範囲・動作確認・補足）のうち変更に必要なものが埋まり、該当しないものは削除されている"
     severity: should
-    source: "cornix-layout .claude/CLAUDE.md「Pull Request の説明」、.github/pull_request_template.md"
+    source: "リポジトリの開発ガイド"
 
   - id: PR-003
     title: "コミットの時点でテストが全部通っている"
@@ -56,7 +55,7 @@ rules:
     confidentiality: public
     check: "必須チェック（CI）が通る"
     severity: must
-    source: "cornix-layout .claude/CLAUDE.md「重要な原則」、main の ruleset「Protect main」"
+    source: "リポジトリの開発ガイド"
 
   - id: PR-004
     title: "必須チェックは無関係な PR でも成功で終える"
@@ -67,7 +66,7 @@ rules:
     confidentiality: public
     check: "パスで絞ったワークフローが skip で終わって必須チェックが保留にならない"
     severity: must
-    source: "棚卸し 1 節（rspec.yml / vscode.yml）、cornix-layout .claude/memories/vscode_extension.md"
+    source: "棚卸し 1 節（CI の必須チェック）、リポジトリの作業の知見（memories）"
 
   - id: PROC-001
     title: "並列の PR は約束と型を先にマージしてから分ける（契約ファースト）"
@@ -78,7 +77,7 @@ rules:
     confidentiality: public
     check: "同じ境界を触る PR が並ぶとき、protocol・型の PR が先行してマージ済みか"
     severity: should
-    source: "cornix-layout .claude/memories/vscode_extension_v02.md「並列の PR をぶつけない」"
+    source: "リポジトリの作業の知見（memories）"
 
   - id: PROC-002
     title: "作業の知見を記録する"
@@ -89,7 +88,7 @@ rules:
     confidentiality: public
     check: "作業完了時に Lesson（現行は .claude/memories/）が追加・更新されている"
     severity: should
-    source: "cornix-layout .claude/CLAUDE.md「重要な原則」"
+    source: "リポジトリの開発ガイド"
     note: "P3 で Lesson（eval 同梱）に置き換える"
 
   - id: PROC-003
@@ -112,9 +111,9 @@ rules:
     knowledge_stage: crystallized
     state: candidate
     confidentiality: public
-    check: "依存方向テスト（例: cornix-layout spec/architecture_spec.rb。言語非依存にするなら ast-grep）"
+    check: "依存方向テスト（ArchUnit / Packwerk / ast-grep 等。Rust はモジュール境界とクレート分割で代替）"
     severity: must
-    source: "cornix-layout docs/architecture.md「レイヤーと依存の向き」"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   - id: ARCH-002
     title: "ドメインモデルを中心に置き、外側の表現（ファイル形式・バイト列）を内側に持ち込まない"
@@ -125,7 +124,7 @@ rules:
     confidentiality: public
     check: "ドメイン層の型がファイル形式・プロトコルの文字列やバイトを直接扱っていないか"
     severity: must
-    source: "cornix-layout docs/architecture.md 方針 1"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   - id: ARCH-003
     title: "値は境界で一度だけ解析し、内側で再解析しない"
@@ -136,7 +135,7 @@ rules:
     confidentiality: public
     check: "同じ文字列表現をドメイン内の複数箇所でパースしていないか"
     severity: should
-    source: "cornix-layout docs/architecture.md 方針 2"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   - id: ARCH-004
     title: "表現の変換は決められた口だけが行う"
@@ -147,7 +146,7 @@ rules:
     confidentiality: public
     check: "変換の責務を持つモジュール以外に、同種の変換ロジックが新設されていないか"
     severity: should
-    source: "cornix-layout docs/architecture.md 方針 3"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
     note: "L4 の「不変条件の所在集中度」と同じ考え方"
 
   - id: ARCH-005
@@ -159,7 +158,7 @@ rules:
     confidentiality: public
     check: "内側の層で標準入出力・ファイル・終了処理を呼んでいないか（ast-grep で結晶化できる）"
     severity: must
-    source: "cornix-layout docs/architecture.md 方針 5・コード規約"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   - id: ARCH-006
     title: "知らない値を落とさない（往復で情報を失わない）"
@@ -170,7 +169,7 @@ rules:
     confidentiality: public
     check: "解釈できない入力を捨てずに保持し、書き戻しで再現するか。往復テストがあるか"
     severity: must
-    source: "cornix-layout docs/architecture.md 方針 6、spec/end_to_end_spec.rb"
+    source: "リポジトリの設計文書（往復テスト）"
 
   - id: ARCH-007
     title: "エラーは専用の例外階層で送出し、表示は境界で行う"
@@ -181,7 +180,7 @@ rules:
     confidentiality: public
     check: "汎用例外や文字列で失敗を返していないか。利用者向けの表示を内側で組み立てていないか"
     severity: should
-    source: "cornix-layout .claude/CLAUDE.md「Architecture」、lib/cornix/errors.rb"
+    source: "リポジトリの開発ガイド（エラーの扱い）"
 
   - id: CODE-001
     title: "値オブジェクトは生成時に検証し、不変にする"
@@ -192,7 +191,7 @@ rules:
     confidentiality: public
     check: "生成後に不正な状態を取り得ないか。配列・Hash が凍結されているか"
     severity: should
-    source: "cornix-layout docs/architecture.md コード規約"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   - id: CODE-002
     title: "ファイル名と定数名を 1 対 1 にする"
@@ -203,7 +202,7 @@ rules:
     confidentiality: public
     check: "パスと名前空間の対応を機械判定（Zeitwerk 規約相当）"
     severity: nits
-    source: "cornix-layout docs/architecture.md コード規約"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   - id: CODE-003
     title: "テストは本体と同じ層の構成に置く"
@@ -214,20 +213,20 @@ rules:
     confidentiality: public
     check: "spec / test のディレクトリ構成が本体の層に対応しているか"
     severity: nits
-    source: "cornix-layout docs/architecture.md コード規約"
+    source: "リポジトリの設計文書（アーキテクチャ方針・コード規約）"
 
   # ---- 文書 ----
   - id: DOC-001
-    title: "二言語の README を同じ構造に保つ"
+    title: "対になる文書（多言語 README など）は構造の一致を検査で担保する"
     gate: L1
-    scope: product-example
+    scope: generic
     knowledge_stage: crystallized
     state: candidate
-    confidentiality: product
-    check: "cornix-layout spec/docs/readme_sync_spec.rb（見出しの並び・コードブロック・リンク）"
+    confidentiality: public
+    check: "見出しのレベルの並び・コードブロックの数と言語・リンクの行き先が対の文書で一致することをテストで検査する"
     severity: must
-    source: "cornix-layout .claude/CLAUDE.md「README の同期」"
-    note: "「文書の正しさを検査でとる」の実例。汎用化するなら『対になる文書の構造一致』"
+    source: "リポジトリの開発ガイド"
+    note: "「文書の正しさを検査でとる」の型。三位一体（PR-001）を CI で落とせるようにする根拠"
 
   - id: DOC-002
     title: "利用者に見える変更は CHANGELOG の [Unreleased] に足す"
@@ -238,7 +237,7 @@ rules:
     confidentiality: public
     check: "利用者に見える変更を含む PR に CHANGELOG の差分があるか"
     severity: should
-    source: "cornix-layout .claude/CLAUDE.md「バージョンとリリース」"
+    source: "リポジトリの開発ガイド"
 
   # ---- 安全（autonomy と重なるもの。判定はここ、権限は manifest.yaml）----
   - id: SAFE-001
@@ -250,7 +249,7 @@ rules:
     confidentiality: public
     check: "外部への書き込みを含む手順に Approval が挟まっているか"
     severity: must
-    source: "cornix-layout .claude/CLAUDE.md「重要な原則」、自動メモリ cornix-rawhid-direct"
+    source: "リポジトリの開発ガイド（外部への書き込みの同意）、自動メモリ"
     autonomy_ref: "manifest.yaml autonomy.always_human_approve"
 
   - id: SAFE-002
@@ -262,4 +261,4 @@ rules:
     confidentiality: public
     check: "changelog の破壊的変更の確認、最新の main に重ねたローカル検証、CI 成功の 3 点"
     severity: must
-    source: "自動メモリ merge-policy（2026-10-24、cornix-layout #51・#52）"
+    source: "自動メモリ merge-policy（2026-10-24）"

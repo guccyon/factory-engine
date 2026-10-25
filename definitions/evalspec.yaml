@@ -24,7 +24,7 @@ specs:
       path: ".factory-config/evals/golden/"
       format: "ペア（同じ Ticket に対する 2 つの PR / 設計）＋ 建設者の選好 ＋ 採点理由 1 行"
       balance: "positive:negative ≈ 1:1。負例には意図的なアンチパターンを含める"
-      seed: "pr-merge-criteria の判断の記録 3 件（cornix-layout #68, #69/#70, #89/#90）"
+      seed: "pr-merge-criteria の判断の記録 3 件（2026-10-20〜21。承認要否の判断とその理由）を、PR 番号ではなく判断の型として写す"
     label_def: "ペアのうち、rubric.yaml の L4 項目に照らして設計として望ましい方。引き分けは許すが集計から除く"
     judge: { tier: judge, ensemble: 3, adversarial_reviewer: true, evidence_required: true }
     metric: pairwise_accuracy
