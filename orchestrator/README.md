@@ -25,6 +25,12 @@ docker compose logs -f dispatcher
 - 対象リポジトリに工場のラベルを作っておく: `scripts/labels.sh guccyon/rally`
 - Issue に `factory:implement` を付けると 30 秒以内にジョブになる。進み具合は Issue のラベルとコメントに出る
 
+## ワーカーのイメージ
+
+- `worker/Dockerfile`: 基本（git・gh・Claude Code・yq）
+- `worker/Dockerfile.rust`: 基本 ＋ Rust ツールチェーン（cargo / rustfmt / clippy、C ツールチェーン）。`docker build -t factory-worker:rust -f worker/Dockerfile.rust worker`
+- どのリポジトリにどのイメージを使うかは `.env` の `WORKER_IMAGES`（例: `guccyon/rally=factory-worker:rust`）
+
 ## 手動操作
 
 ```bash
