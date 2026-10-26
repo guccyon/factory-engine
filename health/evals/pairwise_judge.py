@@ -41,7 +41,7 @@ def sh(*a: str, retries: int = 3) -> str:
         last = r
         if i < retries:
             time.sleep(20 * (2 ** i))
-    raise RuntimeError(f"{a[0]} failed (rc={last.returncode}): {last.stderr[-500:]}")
+    raise RuntimeError(f"{a[0]} failed (rc={last.returncode}): stderr={last.stderr[-300:]} stdout={last.stdout[-300:]}")
 
 
 def load_yaml(path: Path) -> dict:
@@ -78,7 +78,7 @@ def judge(pair: dict, tier: str, swap: bool) -> dict:
 # B: {tb}
 {db}
 """
-    out = sh("claude", "-p", prompt, "--model", TIER_MODEL[tier], "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "1")   # --bare はキーチェーンの認証を読まないので使わない
+    out = sh("claude", "-p", prompt, "--model", TIER_MODEL[tier], "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "3")   # --bare はキーチェーンの認証を読まないので使わない
     res = json.loads(out)
     s = res.get("structured_output") or res.get("result")
     if isinstance(s, str):
@@ -106,12 +106,15 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--tier", default="tier-judge")
     ap.add_argument("--only-confirmed", action="store_true", help="scored_by: confirmed のペアだけを使う")
+    ap.add_argument("--ids", default="", help="このペア id だけ（カンマ区切り。再判定用）")
     a = ap.parse_args()
     files = sorted(Path(a.golden).glob("*.yaml"))
     rows, agree, n, cost = [], 0, 0, 0.0
     for f in files:
         g = load_yaml(f)
         if a.only_confirmed and g.get("scored_by") != "confirmed":
+            continue
+        if a.ids and str(g["id"]) not in a.ids.split(","):
             continue
         try:
             j1 = judge(g, a.tier, swap=False)

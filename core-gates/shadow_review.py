@@ -48,7 +48,7 @@ def sh(*a: str, input: str | None = None, retries: int = 3) -> str:
         last = r
         if i < retries:
             time.sleep(20 * (2 ** i))
-    raise RuntimeError(f"{a[0]} failed (rc={last.returncode}): {last.stderr[-500:]}")
+    raise RuntimeError(f"{a[0]} failed (rc={last.returncode}): stderr={last.stderr[-300:]} stdout={last.stdout[-300:]}")
 
 
 def load_rubric() -> list[dict]:
@@ -91,7 +91,7 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
 # 差分
 {diff}
 """
-    out = sh("claude", "-p", prompt, "--model", TIER_MODEL[tier], "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "1")   # --bare はキーチェーンの認証を読まないので使わない
+    out = sh("claude", "-p", prompt, "--model", TIER_MODEL[tier], "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "3")   # --bare はキーチェーンの認証を読まないので使わない
     res = json.loads(out)
     structured = res.get("structured_output") or res.get("result")
     if isinstance(structured, str):
