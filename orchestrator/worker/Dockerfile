@@ -12,4 +12,7 @@ RUN useradd -m -u 1001 worker
 USER worker
 WORKDIR /work
 COPY --chown=worker:worker entrypoint.sh /usr/local/bin/entrypoint.sh
+# clarify（intake → clarify の最小経路）とその要求者ペルソナ
+COPY --chown=worker:worker clarify.sh /usr/local/bin/clarify.sh
+COPY --chown=worker:worker personas/requesters.yaml /usr/local/share/factory/requesters.yaml
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

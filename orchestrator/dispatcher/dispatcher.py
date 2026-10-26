@@ -33,6 +33,8 @@ ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
 TRIGGER_LABEL = ENV.get("TRIGGER_LABEL", "factory:implement")
+REQUEST_LABEL = ENV.get("REQUEST_LABEL", "factory:request")   # intake: 要求者の曖昧な要求を clarify にかける（T20）
+TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify"}
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
@@ -114,38 +116,44 @@ def record_event(cur, name: str, correlation_id: str | None, job_id: int | None,
                 (name, correlation_id, job_id, Jsonb(payload), dedupe_key))
 
 
-def enqueue(repo: str, issue: int, by: str, attempt: int = 1) -> int | None:
+def enqueue(repo: str, issue: int, by: str, attempt: int = 1, kind: str = "implement") -> int | None:
     corr = f"github:{repo}#{issue}"
     with db() as conn, conn.cursor() as cur:
         try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier) values (%s,%s,%s,%s,%s,%s) returning id",
-                        (corr, repo, issue, attempt, by, MODEL_TIER))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind) values (%s,%s,%s,%s,%s,%s,%s) returning id",
+                        (corr, repo, issue, attempt, by, MODEL_TIER, kind))
         except psycopg.errors.UniqueViolation:
             return None   # すでに queued / running（二重実行の抑止 1 段目）
         job_id = cur.fetchone()["id"]
-        record_event(cur, "job.enqueued", corr, job_id, {"repo": repo, "issue": issue, "by": by, "attempt": attempt})
+        record_event(cur, "job.enqueued", corr, job_id, {"repo": repo, "issue": issue, "by": by, "attempt": attempt, "kind": kind})
+        if kind == "clarify":   # intake: 受け付けた要求を Request（raw）として残す
+            cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Request',%s,%s,'intake',%s)",
+                        (corr, job_id, Jsonb({"repo": repo, "issue": issue, "status": "raw"})))
+            record_event(cur, "request.received", corr, job_id, {"issue": issue})
     return job_id
 
 
 def poll_once():
     for repo in REPOS:
-        try:
-            issues = gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(TRIGGER_LABEL)}&per_page=50")
-        except Exception as e:  # noqa: BLE001
-            log("poll error", repo, e)
-            continue
-        for it in issues or []:
-            if "pull_request" in it:
+        for label, kind in TRIGGERS.items():
+            try:
+                issues = gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(label)}&per_page=50")
+            except Exception as e:  # noqa: BLE001
+                log("poll error", repo, e)
                 continue
-            n = it["number"]
-            job_id = enqueue(repo, n, "poll")
-            if job_id:
-                log(f"enqueued job {job_id} for {repo}#{n}")
-                swap_label(repo, n, [TRIGGER_LABEL], [LABELS["queued"]])
-                comment(repo, n, f"工場がジョブ {job_id} として受け付けました（attempt 1）。PR 作成まで自動で進めます。")
-            else:
-                # 既に active なジョブがある。ラベルだけ直す
-                swap_label(repo, n, [TRIGGER_LABEL], [])
+            for it in issues or []:
+                if "pull_request" in it:
+                    continue
+                n = it["number"]
+                job_id = enqueue(repo, n, "poll", kind=kind)
+                if job_id:
+                    log(f"enqueued {kind} job {job_id} for {repo}#{n}")
+                    swap_label(repo, n, [label], [LABELS["queued"]])
+                    what = "PR 作成まで自動で進めます" if kind == "implement" else "要求を確かめる質問をこの Issue に書きます（最大 3 往復）"
+                    comment(repo, n, f"工場がジョブ {job_id} として受け付けました（attempt 1）。{what}。")
+                else:
+                    # 既に active なジョブがある。ラベルだけ直す
+                    swap_label(repo, n, [label], [])
 
 
 def poll_loop():
@@ -182,6 +190,7 @@ def run_job(job: dict):
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
+                   *(["--entrypoint", "/usr/local/bin/clarify.sh"] if job.get("kind") == "clarify" else []),
                    image]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
@@ -220,6 +229,8 @@ def run_job(job: dict):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
+            elif proc.returncode == 0 and result and result.get("kind") == "clarify":
+                state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
             elif proc.returncode == 4 and result and result.get("pr_url"):
                 state, err = "failed", f"incomplete(claude_exit={result.get('claude_exit')})"
             else:
@@ -235,7 +246,15 @@ def run_job(job: dict):
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
             if result and result.get("usage"):
                 record_event(cur, "session.cost_recorded", corr, job_id, {"model": result.get("model"), "usage": usage, "cost_usd": result.get("cost_usd")})
-            if state == "succeeded":
+            if result and result.get("kind") == "clarify":
+                # clarify: 確定した Request を残す。往復回数と問いの回答待ちを Trust / Flow の計測に
+                cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Request',%s,%s,'clarify',%s)",
+                            (corr, job_id, Jsonb({"repo": repo, "issue": issue, "status": result.get("status"), "requester": result.get("requester"),
+                                                  "rounds": result.get("rounds"), **(result.get("request") or {})})))
+                record_event(cur, "request.clarified" if state == "succeeded" else "request.unresolved", corr, job_id,
+                             {"rounds": result.get("rounds"), "requester": result.get("requester"), "cost_usd": result.get("cost_usd")})
+                swap_label(repo, issue, [LABELS["running"]], ["factory:clarified" if state == "succeeded" else LABELS["failed"]])
+            elif state == "succeeded":
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload, blob_key) values ('PR',%s,%s,'implement',%s,%s)",
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
                                                   "change_types": result.get("change_types", ["code_change"])}), blob_key))
@@ -316,14 +335,14 @@ def recover():
     """dispatcher の再起動で取り残された running ジョブを片付ける。
     ワーカーは最初からやり直せる（冪等）ので、コンテナを止めて failed にし、attempt+1 で再投入する。"""
     with db() as conn, conn.cursor() as cur:
-        cur.execute("select id, repo, issue_number, attempt, container_id, correlation_id from jobs where state='running'")
+        cur.execute("select id, repo, issue_number, attempt, container_id, correlation_id, kind from jobs where state='running'")
         for j in cur.fetchall():
             if j["container_id"]:
                 subprocess.run(["docker", "kill", j["container_id"]], capture_output=True)
             cur.execute("update jobs set state='failed', finished_at=now(), error='orphaned_by_restart' where id=%s", (j["id"],))
             record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": "orphaned_by_restart"})
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier) values (%s,%s,%s,%s,'recover',%s) returning id",
-                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind) values (%s,%s,%s,%s,'recover',%s,%s) returning id",
+                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"]))
             new_id = cur.fetchone()["id"]
             record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"]})
             log(f"recovered job {j['id']} -> re-enqueued as {new_id}")

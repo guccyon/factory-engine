@@ -8,3 +8,6 @@ create "factory:queued"    "9aa5b4" "工場が受け付け、順番待ち"
 create "factory:running"   "e39255" "ワーカーが実行中"
 create "factory:pr-open"   "2e7d4f" "PR を作成済み。マージは人間の判断"
 create "factory:failed"    "a63a3a" "失敗。factoryctl rerun で再実行"
+create "factory:request"   "c5def5" "要求者の要求を窓口（intake / clarify）にかける"
+create "factory:clarified" "0e8a16" "要求が確定した（何を・何のために・いつまでに・どの精度で）"
+for p in cs-1 cs-2 mkt-1 mkt-2 sales-1; do create "requester:${p}" "ededed" "要求者ペルソナ ${p}（Gen1 は架空）"; done
