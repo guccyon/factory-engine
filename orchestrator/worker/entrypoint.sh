@@ -46,6 +46,7 @@ PROMPT=$(cat <<EOF
 ${BODY}
 
 # 約束
+- 先に README と specs/（あれば specs/README.md と、そこで最初に読むよう指示されたファイル）と docs/ を読み、用語・境界・不変条件をそれに合わせる。手元の推測で定義を作らない
 - リポジトリの CLAUDE.md や README の規約に従う。コード・テスト・文書は同じ変更に含める（三位一体）
 - Issue の範囲だけを変える。範囲外の改善はしない
 - 秘密情報・権限設定・破壊的スキーマ・決済ロジックには触れない（必要なら作業を止めて理由を書く）
@@ -54,11 +55,11 @@ EOF
 )
 
 set +e
-CLAUDE_OUT=$(claude -p "${PROMPT}" --model "${MODEL}" --max-turns "${MAX_TURNS}" --output-format json --dangerously-skip-permissions 2>claude.err)
+CLAUDE_OUT=$(claude -p "${PROMPT}" --model "${MODEL}" --max-turns "${MAX_TURNS}" --output-format json --dangerously-skip-permissions 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
 CLAUDE_RC=$?
 set -e
 echo "[worker] claude exit=${CLAUDE_RC}"
-sed 's/^/[claude.err] /' claude.err | tail -50 || true
+sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
 SUMMARY=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -20)
 USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
 COST=$(jq -r '.total_cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
