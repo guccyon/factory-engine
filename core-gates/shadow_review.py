@@ -37,8 +37,18 @@ SCHEMA = {
 }
 
 
-def sh(*a: str, input: str | None = None) -> str:
-    return subprocess.run(a, check=True, capture_output=True, text=True, input=input).stdout
+def sh(*a: str, input: str | None = None, retries: int = 3) -> str:
+    """claude は一時的に rc=1 で落ちることがある（レート制限とみられる）ので 20・40・80 秒待って繰り返す"""
+    import time
+    last = None
+    for i in range(retries + 1):
+        r = subprocess.run(a, capture_output=True, text=True, input=input)
+        if r.returncode == 0:
+            return r.stdout
+        last = r
+        if i < retries:
+            time.sleep(20 * (2 ** i))
+    raise RuntimeError(f"{a[0]} failed (rc={last.returncode}): {last.stderr[-500:]}")
 
 
 def load_rubric() -> list[dict]:
