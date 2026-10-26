@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code@2.1.310
+# YAML の検証用（ワーカーの環境に YAML パーサーがないと PR #4 / #11 / #12 で報告された）
+RUN ARCH=$(dpkg --print-architecture) && curl -fsSL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_${ARCH}" -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 RUN useradd -m -u 1001 worker
 USER worker
 WORKDIR /work

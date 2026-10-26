@@ -11,12 +11,12 @@ Blueprint を 1 枚渡すと、そのプロダクト専用の仮想事業部（P
 | ディレクトリ | 役割 | 状態 |
 |---|---|---|
 | `definitions/` | ステージ・成果物の型・ゲート・工場の健康・共通評価仕様・イベント辞書・指標式の宣言（`stages.yaml` `artifacts.yaml` `gates.yaml` `health.yaml` `evalspec.yaml` `events.yaml` `metrics.yaml`） | P0 起案 |
-| `core-gates/` | 汎用ルーブリック（`rubric.yaml`）・AST ルール・互換性チェッカー | P0 起案（ルーブリック v0） |
+| `core-gates/` | 汎用ルーブリック（`rubric.yaml`）と shadow 判定（`shadow_review.py`。PR の差分をルーブリックに照らして Defect を出し、events に記録。差し戻さない）・AST ルール・互換性チェッカー | P0（ルーブリック v0、shadow 判定の最小実装） |
 | `orchestrator/` | 制御プレーン。Docker Compose（Postgres のキューとロック、S3 互換ストア、dispatcher）と使い捨てワーカー。Issue ラベル → コンテナ → PR | P0 Week 3（試験運転済み） |
 | `core-skills/` | 役割別スキルのテンプレート（現行の Claude スキルが母体） | 未着手 |
-| `eval-corpus/` | 汎用の Golden Set・ルール検証の正例 / 負例 | 未着手 |
+| `eval-corpus/` | 汎用の Golden Set・ルール検証の正例 / 負例 | 未着手（製品側 rally の evals/golden に 4 件） |
 | `meta-controller/` | Blueprint → base のコンパイルと Reconcile | P6 |
-| `health/` | 工場の健康指標の計算（govern。learn から独立）。`telemetry/pr_metrics.py` が PR 単位の結果テレメトリを取得元から再構成する | P0 Week 2（最小実装） |
+| `health/` | 工場の健康指標の計算（govern。learn から独立）。`telemetry/pr_metrics.py` が PR 単位の結果テレメトリ、`evals/pairwise_judge.py` が Golden Set との一致率（EvalSpec l4-pairwise）を出す | P0（最小実装） |
 | `docs/adr/` | 設計判断の記録 | 随時 |
 
 ## 用語

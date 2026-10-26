@@ -205,6 +205,10 @@ def run_job(job: dict):
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
                                                   "change_types": result.get("change_types", ["code_change"])}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"]}, dedupe_key=f"pr.opened:{result['pr_url']}")
+                for text in (result.get("lessons") or [])[:3]:   # ワーカーの「## 知見」を episodic の Lesson として残す（P0 は記録のみ。採用はしない）
+                    cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Lesson',%s,%s,'learn',%s)",
+                                (corr, job_id, Jsonb({"knowledge_stage": "episodic", "teacher_signal": "worker_self_report", "summary": text,
+                                                      "eval_cases": [], "state": "candidate", "source_pr": result["pr_url"]})))
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["pr_open"]])
                 comment(repo, issue, f"ジョブ {job_id} が PR を作成しました: {result['pr_url']}\n消費: {total_tokens:,} tokens（予算 {TOKEN_BUDGET:,}）")
             else:

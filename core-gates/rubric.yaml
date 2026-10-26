@@ -86,10 +86,10 @@ rules:
     knowledge_stage: episodic
     state: candidate
     confidentiality: public
-    check: "作業完了時に Lesson（現行は .claude/memories/）が追加・更新されている"
+    check: "作業完了時に知見が残っている。人間の手元では .claude/memories/ の追加・更新、工場のワーカーでは PR 本文の「## 知見」（dispatcher が Lesson 成果物として記録する）"
     severity: should
     source: "リポジトリの開発ガイド"
-    note: "P3 で Lesson（eval 同梱）に置き換える"
+    note: "P3 で Lesson（eval 同梱）に置き換える。2026-10-26 の shadow 判定で全 PR に出たため、工場側の記録先を決めた"
 
   - id: PROC-003
     title: "push 先のブランチを明示する（upstream の取り違えで main に向かわない）"
