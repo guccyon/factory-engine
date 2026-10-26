@@ -54,11 +54,11 @@ EOF
 )
 
 set +e
-CLAUDE_OUT=$(claude -p "${PROMPT}" --model "${MODEL}" --max-turns "${MAX_TURNS}" --output-format json --dangerously-skip-permissions 2>claude.err)
+CLAUDE_OUT=$(claude -p "${PROMPT}" --model "${MODEL}" --max-turns "${MAX_TURNS}" --output-format json --dangerously-skip-permissions 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
 CLAUDE_RC=$?
 set -e
 echo "[worker] claude exit=${CLAUDE_RC}"
-sed 's/^/[claude.err] /' claude.err | tail -50 || true
+sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
 SUMMARY=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -20)
 USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
 COST=$(jq -r '.total_cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
