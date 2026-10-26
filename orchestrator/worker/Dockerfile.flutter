@@ -1,0 +1,14 @@
+# Flutter 付きの使い捨てワーカー（rally の student-app 用。P1 Walking Skeleton の T17 から）
+# ベースの worker と同じ entrypoint。flutter / dart が使える。iOS ビルドは P0〜P1 対象外なので Android SDK も入れない。
+# 確認は flutter analyze と flutter test（Linux 上の VM で走る単体・ウィジェットテスト）まで。
+FROM factory-worker:p0
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends unzip xz-utils zip libglu1-mesa && rm -rf /var/lib/apt/lists/*
+USER worker
+ENV FLUTTER_HOME=/home/worker/flutter PATH=/home/worker/flutter/bin:/home/worker/.pub-cache/bin:$PATH
+# stable チャンネルを浅く取得し、Web と Android の事前準備はしない（テストだけ）
+RUN git clone -q --depth 1 --branch stable https://github.com/flutter/flutter.git "${FLUTTER_HOME}" \
+ && flutter config --no-analytics --no-cli-animations --no-enable-android --no-enable-ios --no-enable-web >/dev/null \
+ && flutter precache --no-android --no-ios --no-web --no-linux --no-windows --no-macos --no-fuchsia >/dev/null \
+ && flutter --version && dart --version
+WORKDIR /work

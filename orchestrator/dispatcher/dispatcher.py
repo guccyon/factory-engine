@@ -86,6 +86,22 @@ def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
         gh("POST", f"repos/{repo}/issues/{issue}/labels", {"labels": add})
 
 
+def image_for(repo: str, issue: int) -> str:
+    """ワーカーのイメージを決める。Issue に `factory:image:<名前>` のラベルがあれば factory-worker:<名前>、
+    なければリポジトリごとの WORKER_IMAGES、それもなければ WORKER_IMAGE。名前は英小文字・数字・ハイフンだけ許す"""
+    if not ENV.get("WORKER_DRY_RUN"):
+        try:
+            for l in gh("GET", f"repos/{repo}/issues/{issue}/labels") or []:
+                name = l.get("name", "")
+                if name.startswith("factory:image:"):
+                    tag = name.split(":", 2)[2]
+                    if tag and all(c.isalnum() or c == "-" for c in tag) and tag.islower():
+                        return f"factory-worker:{tag}"
+        except Exception as e:  # noqa: BLE001
+            log("image label lookup failed", repo, issue, repr(e))
+    return WORKER_IMAGES.get(repo, WORKER_IMAGE)
+
+
 def comment(repo: str, issue: int, text: str):
     if ENV.get("WORKER_DRY_RUN"):
         return
@@ -151,7 +167,8 @@ def run_job(job: dict):
             return
         try:
             swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
-            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": WORKER_IMAGES.get(repo, WORKER_IMAGE)})
+            image = image_for(repo, issue)
+            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image})
             name = f"factory-job-{job_id}"
             job_db_url = None
             if JOB_DB_ENABLED:
@@ -165,7 +182,7 @@ def run_job(job: dict):
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
-                   WORKER_IMAGES.get(repo, WORKER_IMAGE)]
+                   image]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
             lines: list[str] = []
