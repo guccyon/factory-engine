@@ -39,6 +39,8 @@ MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TOKEN_BUDGET = int(ENV.get("TOKEN_BUDGET_PER_JOB", "2000000"))
 WORKER_IMAGE = ENV.get("WORKER_IMAGE", "factory-worker:p0")
+# リポジトリごとのワーカーイメージ（例: "guccyon/rally=factory-worker:rust,owner/other=factory-worker:p0"）。未指定は WORKER_IMAGE
+WORKER_IMAGES = dict(kv.split("=", 1) for kv in ENV.get("WORKER_IMAGES", "").split(",") if "=" in kv)
 MODEL_TIER = ENV.get("MODEL_TIER", "tier-large")
 GH_TOKEN = ENV["GH_TOKEN"]
 BUCKET = ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts")
@@ -144,14 +146,14 @@ def run_job(job: dict):
             return
         try:
             swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
-            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"]})
+            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": WORKER_IMAGES.get(repo, WORKER_IMAGE)})
             name = f"factory-job-{job_id}"
             cmd = ["docker", "run", "--rm", "--name", name,
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
-                   WORKER_IMAGE]
+                   WORKER_IMAGES.get(repo, WORKER_IMAGE)]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
             lines: list[str] = []

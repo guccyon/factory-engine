@@ -56,6 +56,7 @@ services:
       GH_TOKEN: ${GH_TOKEN:?GitHub token for the worker (.env)}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?claude setup-token の値 (.env)}
       WORKER_IMAGE: factory-worker:p0
+      WORKER_IMAGES: ${WORKER_IMAGES:-}      # リポジトリごとの上書き（例: guccyon/rally=factory-worker:rust）
       WORKER_DRY_RUN: ${WORKER_DRY_RUN:-}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       WEBHOOK_PORT: 8787

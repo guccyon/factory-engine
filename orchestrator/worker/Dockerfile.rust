@@ -1,0 +1,10 @@
+# Rust ツールチェーン付きの使い捨てワーカー（rally のバックエンド用。P1 Walking Skeleton から）
+# ベースの worker と同じ entrypoint。cargo / rustfmt / clippy が使える。toolchain は stable（rust-toolchain.toml をリポジトリに置けばそれが優先される）。
+FROM factory-worker:p0 AS base
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libpq-dev && rm -rf /var/lib/apt/lists/*
+USER worker
+ENV RUSTUP_HOME=/home/worker/.rustup CARGO_HOME=/home/worker/.cargo PATH=/home/worker/.cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt --component clippy \
+ && cargo --version && rustfmt --version && cargo clippy --version
+WORKDIR /work
