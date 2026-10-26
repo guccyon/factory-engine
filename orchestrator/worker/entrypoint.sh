@@ -64,7 +64,7 @@ CLAUDE_RC=$?
 set -e
 echo "[worker] claude exit=${CLAUDE_RC}"
 sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
-SUMMARY=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk '/^## 知見/{exit} {print}' | tail -60)
+SUMMARY=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -80)   # 「## 知見」も PR 本文に残す（人と検査官が読めるように。Lesson にも別に記録する）
 LESSONS_JSON=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk 'f{print} /^## 知見/{f=1}' | sed -nE 's/^[-*] *//p' | jq -R . | jq -sc .)
 [ -z "${LESSONS_JSON}" ] && LESSONS_JSON='[]'
 USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
