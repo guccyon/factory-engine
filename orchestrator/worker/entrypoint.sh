@@ -79,12 +79,21 @@ if [ -z "$(git status --porcelain)" ]; then
   exit 3
 fi
 
+INCOMPLETE=""
+if [ "${CLAUDE_RC}" -ne 0 ]; then
+  INCOMPLETE="1"   # max-turns などで途中終了。作業は捨てずにドラフト PR として残し、ジョブは失敗にする
+  echo "[worker] claude exited ${CLAUDE_RC}: opening a draft PR marked 未完了"
+fi
+PR_TITLE="${TITLE} (#${ISSUE_NUMBER})"
+[ -n "${INCOMPLETE}" ] && PR_TITLE="[未完了] ${PR_TITLE}"
 git add -A
-git commit -q -m "$(printf 'feat: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による実装。\n\nCloses #%s' "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${ISSUE_NUMBER}")"
+git commit -q -m "$(printf 'feat: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による実装。%s\n\n%s #%s' "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${INCOMPLETE:+ 途中終了（claude exit ${CLAUDE_RC}）のため未完了。}" "${INCOMPLETE:+Refs}${INCOMPLETE:-Closes}" "${ISSUE_NUMBER}")"
 git push -q -u origin "${BRANCH}:${BRANCH}"
 
 PR_BODY=$(cat <<EOF
-Closes #${ISSUE_NUMBER}
+${INCOMPLETE:+**未完了**: ワーカーの Claude Code が途中で終了しました（exit ${CLAUDE_RC}、turns ${TURNS}、max_turns ${MAX_TURNS}）。差分は残してありますが、Issue の範囲を満たしているかは建設者が確認してください。続きは factoryctl rerun で。
+
+}${INCOMPLETE:+Refs}${INCOMPLETE:-Closes} #${ISSUE_NUMBER}
 
 ${SUMMARY}
 
@@ -94,7 +103,7 @@ ${SUMMARY}
 - 権限: P0 は PR 作成まで。マージは人間の判断（manifest.yaml autonomy）
 EOF
 )
-PR_URL=$(gh pr create -R "${REPO}" --base "${DEFAULT_BRANCH}" --head "${BRANCH}" --title "${TITLE} (#${ISSUE_NUMBER})" --body "${PR_BODY}")
+PR_URL=$(gh pr create -R "${REPO}" --base "${DEFAULT_BRANCH}" --head "${BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}" ${INCOMPLETE:+--draft})
 PR_NUMBER=$(basename "${PR_URL}")
 echo "[worker] pr=${PR_URL}"
 
@@ -104,4 +113,7 @@ if ! git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" | grep -vqE '(\.md$|
 
 echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg n "${PR_NUMBER}" --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg ct "${CHANGE_TYPE}" --arg files "${CHANGED}" \
   --argjson lessons "${LESSONS_JSON}" \
-  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons}')"
+  --arg incomplete "${INCOMPLETE}" --arg rc "${CLAUDE_RC}" \
+  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
+# 途中終了なら、PR は残したうえでジョブとしては失敗にする（dispatcher が factory:failed にして rerun を案内する）
+[ -n "${INCOMPLETE}" ] && exit 4

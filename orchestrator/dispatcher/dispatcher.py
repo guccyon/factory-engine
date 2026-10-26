@@ -203,14 +203,18 @@ def run_job(job: dict):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
+            elif proc.returncode == 4 and result and result.get("pr_url"):
+                state, err = "failed", f"incomplete(claude_exit={result.get('claude_exit')})"
             else:
                 state, err = "failed", f"exit={proc.returncode}"
             cur.execute("update jobs set state=%s, finished_at=now(), result=%s, error=%s where id=%s",
                         (state, Jsonb(result) if result else None, err, job_id))
             usage = (result or {}).get("usage") or {}
             total_tokens = sum(int(v) for k, v in usage.items() if isinstance(v, (int, float)) and k.endswith("tokens"))
+            billable_tokens = sum(int(usage.get(k, 0) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))   # 予算はキャッシュ読みを除く
             record_event(cur, "job.finished", corr, job_id, {"state": state, "error": err, "exit": proc.returncode,
-                                                             "total_tokens": total_tokens, "over_budget": total_tokens > TOKEN_BUDGET,
+                                                             "total_tokens": total_tokens, "billable_tokens": billable_tokens, "over_budget": billable_tokens > TOKEN_BUDGET,
+                                                             "incomplete": bool((result or {}).get("incomplete")), "claude_exit": (result or {}).get("claude_exit"),
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
             if result and result.get("usage"):
                 record_event(cur, "session.cost_recorded", corr, job_id, {"model": result.get("model"), "usage": usage, "cost_usd": result.get("cost_usd")})
@@ -225,6 +229,9 @@ def run_job(job: dict):
                                                       "eval_cases": [], "state": "candidate", "source_pr": result["pr_url"]})))
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["pr_open"]])
                 comment(repo, issue, f"ジョブ {job_id} が PR を作成しました: {result['pr_url']}\n消費: {total_tokens:,} tokens（予算 {TOKEN_BUDGET:,}）")
+            elif state == "failed" and result and result.get("pr_url"):
+                swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
+                comment(repo, issue, f"ジョブ {job_id} は途中で終了しました（{err}）。差分はドラフト PR {result['pr_url']} に残してあります。範囲を満たしていれば建設者がドラフトを外してマージ、足りなければ `factoryctl rerun {job_id}`（MAX_TURNS を上げる）で続きを。")
             else:
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                 tail = "".join(lines[-15:])
