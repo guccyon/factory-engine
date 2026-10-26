@@ -116,4 +116,6 @@ echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg n "${PR_NUMBER}" --argj
   --arg incomplete "${INCOMPLETE}" --arg rc "${CLAUDE_RC}" \
   '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
 # 途中終了なら、PR は残したうえでジョブとしては失敗にする（dispatcher が factory:failed にして rerun を案内する）
-[ -n "${INCOMPLETE}" ] && exit 4
+# 最後の行を `[ … ] && exit 4` にすると、条件が偽のときスクリプトの終了コードが 1 になる（T08 job 30 で成功が失敗扱いになった）
+if [ -n "${INCOMPLETE}" ]; then exit 4; fi
+exit 0
