@@ -30,8 +30,8 @@ SCHEMA = {"type": "object", "properties": {
     "required": ["preferred", "confidence", "reason", "evidence"]}
 
 
-def sh(*a: str, retries: int = 2) -> str:
-    """claude / gh は一時的に失敗することがあるので少し待って繰り返す。最後は stderr を付けて失敗させる"""
+def sh(*a: str, retries: int = 3) -> str:
+    """claude / gh は一時的に失敗することがある（stderr なしで rc=1 のことも。レート制限とみられる）ので、20・40・80 秒待って繰り返す"""
     import time
     last = None
     for i in range(retries + 1):
@@ -39,7 +39,8 @@ def sh(*a: str, retries: int = 2) -> str:
         if r.returncode == 0:
             return r.stdout
         last = r
-        time.sleep(5 * (i + 1))
+        if i < retries:
+            time.sleep(20 * (2 ** i))
     raise RuntimeError(f"{a[0]} failed (rc={last.returncode}): {last.stderr[-500:]}")
 
 
