@@ -75,6 +75,10 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
     diff = sh("gh", "pr", "diff", str(number), "-R", repo)
     if len(diff) > max_diff_chars:
         diff = diff[:max_diff_chars] + f"\n\n[... 差分が長いので {max_diff_chars} 文字で切った]"
+    body = meta.get("body") or ""
+    # 本文は丸ごと渡す（3000 字で切っていたため、検査官が「本文が途中で途切れている」と誤検出した。T08 / T10）。
+    # 極端に長いときだけ切り、切ったことを明示する
+    body_text = body if len(body) <= 20000 else body[:20000] + "\n\n[... 本文が長いので検査器が 20000 字で切った。途切れは PR の欠陥ではない]"
     rules = load_rubric()
     rubric_text = "\n".join(f"- {r['id']} [{r['gate']}/{r['severity']}] {r['title']}: {r.get('check', '')}" for r in rules)
     prompt = f"""あなたは工場の検査官（inspector）です。build-cell とは別の文脈で、PR の差分をルーブリックに照らして検査します。
@@ -86,7 +90,7 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
 {rubric_text}
 
 # PR: {meta['title']}
-{(meta.get('body') or '')[:3000]}
+{body_text}
 
 # 差分
 {diff}
