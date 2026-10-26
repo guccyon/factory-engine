@@ -33,13 +33,13 @@ def main(argv):
         print("cancel requested" if r else "job is not active")
     elif cmd == "rerun":
         job_id = int(argv[2])
-        cur.execute("select repo, issue_number, attempt from jobs where id=%s", (job_id,))
+        cur.execute("select repo, issue_number, attempt, kind from jobs where id=%s", (job_id,))
         j = cur.fetchone()
         if not j:
             print("no such job"); return 1
         try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier) values (%s,%s,%s,%s,'rerun',%s) returning id",
-                        (f"github:{j['repo']}#{j['issue_number']}", j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large")))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind) values (%s,%s,%s,%s,'rerun',%s,%s) returning id",
+                        (f"github:{j['repo']}#{j['issue_number']}", j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"), j["kind"]))
         except psycopg.errors.UniqueViolation:
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
