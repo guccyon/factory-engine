@@ -57,6 +57,8 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?claude setup-token の値 (.env)}
       WORKER_IMAGE: factory-worker:p0
       WORKER_IMAGES: ${WORKER_IMAGES:-}      # リポジトリごとの上書き（例: guccyon/rally=factory-worker:rust）
+      JOB_DB_ENABLED: ${JOB_DB_ENABLED:-1}     # ジョブごとに job_<id> の DB を作ってワーカーに DATABASE_URL で渡す
+      JOB_DB_NETWORK: factory_default
       WORKER_DRY_RUN: ${WORKER_DRY_RUN:-}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       WEBHOOK_PORT: 8787

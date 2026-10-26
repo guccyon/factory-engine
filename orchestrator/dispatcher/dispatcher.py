@@ -44,6 +44,11 @@ WORKER_IMAGES = dict(kv.split("=", 1) for kv in ENV.get("WORKER_IMAGES", "").spl
 MODEL_TIER = ENV.get("MODEL_TIER", "tier-large")
 GH_TOKEN = ENV["GH_TOKEN"]
 BUCKET = ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts")
+# ワーカーに渡すジョブ用 DB（制御プレーンと同じ Postgres サーバーに job_<id> を作る。ワーカーは自前で Postgres を立てずに済む）
+JOB_DB_ENABLED = ENV.get("JOB_DB_ENABLED", "1") == "1"
+JOB_DB_HOST = ENV.get("JOB_DB_HOST", "postgres")          # ワーカーコンテナから見たホスト名（compose のネットワーク上）
+JOB_DB_NETWORK = ENV.get("JOB_DB_NETWORK", "factory_default")
+JOB_DB_USER, JOB_DB_PASSWORD = "factory", ENV.get("POSTGRES_PASSWORD", "factory")
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
 store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV["OBJECTSTORE_ACCESS_KEY"], secret_key=ENV["OBJECTSTORE_SECRET_KEY"], secure=False)
@@ -148,7 +153,14 @@ def run_job(job: dict):
             swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
             record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": WORKER_IMAGES.get(repo, WORKER_IMAGE)})
             name = f"factory-job-{job_id}"
+            job_db_url = None
+            if JOB_DB_ENABLED:
+                dbname = f"job_{job_id}"
+                cur.execute(f'drop database if exists "{dbname}"')
+                cur.execute(f'create database "{dbname}"')
+                job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
             cmd = ["docker", "run", "--rm", "--name", name,
+                   *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
@@ -223,6 +235,11 @@ def run_job(job: dict):
             cur.execute("update jobs set state='failed', finished_at=now(), error=%s where id=%s and state='running'", (repr(e)[:500], job_id))
             record_event(cur, "job.finished", corr, job_id, {"state": "failed", "error": repr(e)[:500]})
         finally:
+            if JOB_DB_ENABLED:
+                try:
+                    cur.execute(f'drop database if exists "job_{job_id}" with (force)')   # ワーカーの状態を残さない
+                except Exception as e:  # noqa: BLE001
+                    log("job db drop failed", job_id, repr(e))
             cur.execute("select pg_advisory_unlock(hashtext(%s))", (lock_key,))
 
 
