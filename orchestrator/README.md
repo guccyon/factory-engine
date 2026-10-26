@@ -46,6 +46,10 @@ docker compose exec dispatcher factoryctl events 12     # そのジョブのイ�
 `.env` に `WORKER_DRY_RUN=20` を入れて上げると、ポーリングとラベル操作を止め、ワーカーは 20 秒数えて偽の結果を返す。
 停止・再実行・二重実行抑止の確認に使う。本番の値では `WORKER_DRY_RUN` を空にする。
 
+## ジョブ用の DB
+
+dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<id>` を作り、ワーカーに `DATABASE_URL` で渡す（終了時に落とす）。ワーカーは自前で DB を立てずに DB のテストを動かせる。`JOB_DB_ENABLED=0` で止められる。
+
 ## 守っていること
 
 - 状態は postgres とオブジェクトストアにだけある。dispatcher を落として上げ直しても続きから動く
