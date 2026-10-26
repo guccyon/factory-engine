@@ -32,4 +32,9 @@ specs:
     threshold: { pairwise_accuracy: 0.80, min_cases_for_release: 100 }
     grants: []                       # P0〜P1 は何も解放しない（shadow のみ）
     on_fail: gate_fallback
-    status: draft
+    status: v0                       # 2026-10-26 初回計測（health/evals/pairwise_judge.py）。N=4、builder の選好との一致を見る
+    procedure:
+      judge_impl: "health/evals/pairwise_judge.py。各ペアを a/b の順序を入れ替えて 2 回聞き、両方が同じ側を選んだときだけ判定として数える（位置バイアスの打ち消し）。tie / 不一致は分母から除く"
+      golden_source: "製品側 .factory-config/evals/golden/*.yaml。scored_by が confirmed のものが正本。builder_candidate は暫定"
+      pair_generation: "同じ Issue を tier-large と tier-small で 1 回ずつ走らせる（factoryctl enqueue --tier）。負例は意図したアンチパターン（前提なしの推測など）でも作る"
+      cadence: "週次の FactoryHealthReport と同時に全ペアで再計測し、pairwise_accuracy と Wilson 95% 区間を記録する"

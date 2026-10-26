@@ -194,7 +194,34 @@ def session_token_index(repo: str) -> dict[int, list[dict]]:
     return by_pr
 
 
-def tokens_for(index: dict[int, list[dict]], number: int) -> dict:
+def control_plane_token_index(db: str | None, repo: str) -> dict[int, dict]:
+    """制御プレーン（orchestrator）の events から、工場のワーカーが作った PR の usage を引く。
+    db は "docker:<container>"（手元の Mac に psql がないとき）か psql の DSN。"""
+    if not db:
+        return {}
+    sql = ("select a.payload->>'pr_url', e.payload from artifacts a join events e on e.job_id=a.job_id and e.name='session.cost_recorded' "
+           f"where a.type='PR' and a.payload->>'repo'='{repo}'")
+    if db.startswith("docker:"):
+        out = sh("docker", "exec", "-i", db.split(":", 1)[1], "psql", "-U", "factory", "-d", "factory", "-At", "-F", "\t", "-c", sql)
+    else:
+        out = sh("psql", db, "-At", "-F", "\t", "-c", sql)
+    idx = {}
+    for line in out.splitlines():
+        url, payload = line.split("\t", 1)
+        n = int(url.rstrip("/").rsplit("/", 1)[1])
+        p = json.loads(payload)
+        u = p.get("usage") or {}
+        idx[n] = {"missing": False, "attribution": "exact", "source": "control_plane",
+                  "by_model": {p.get("model") or "unknown": {"inputTokens": u.get("input_tokens", 0), "outputTokens": u.get("output_tokens", 0),
+                                                              "cacheReadInputTokens": u.get("cache_read_input_tokens", 0), "cacheCreationInputTokens": u.get("cache_creation_input_tokens", 0),
+                                                              "costUSD": p.get("cost_usd")}},
+                  "cost_usd_estimate": p.get("cost_usd"), "sessions": ["factory-worker"]}
+    return idx
+
+
+def tokens_for(index: dict[int, list[dict]], number: int, cp: dict[int, dict] | None = None) -> dict:
+    if cp and number in cp:   # 工場が作った PR は制御プレーンの記録が正（均等割りの近似をしない）
+        return cp[number]
     parts = index.get(number)
     if not parts:
         return {"missing": True, "reason": "no_session_with_pr_link"}
@@ -221,12 +248,14 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--as-of", default=None)
     ap.add_argument("--human-override", default="", help="人間が自動判定を覆した PR 番号（カンマ区切り。P0 は承認ログがないので手入力）")
+    ap.add_argument("--events-db", default=None, help="制御プレーンの DB（docker:factory-postgres-1 か psql の DSN）。工場が作った PR の usage をここから取る")
     a = ap.parse_args()
     as_of = parse_ts(a.as_of) if a.as_of else datetime.now(timezone.utc)
     overrides = {int(x) for x in a.human_override.split(",") if x.strip()}
 
     sh("git", "fetch", "-q", "origin", a.base, cwd=a.git_dir)
     index = session_token_index(a.repo)
+    cp_index = control_plane_token_index(a.events_db, a.repo)
     rows = []
     for pr in merged_prs(a.repo, a.base, a.limit):
         n = pr["number"]
@@ -250,7 +279,7 @@ def main() -> int:
             "lead_time": {"hours": hours(start, merged_at), "start": start.isoformat(), "start_source": start_src,
                           "pr_open_hours": hours(created_at, merged_at)},
             "review_loops": review_loops(a.repo, n, pr["user"]["login"], merged_at),
-            "tokens": tokens_for(index, n),
+            "tokens": tokens_for(index, n, cp_index),
             "revert_hotfix": revert_hotfix(a.git_dir, pr, [f["filename"] for f in files], merged_at, as_of),
             "churn": churn(a.git_dir, pr, files, merged_at, as_of),
             "incident": {"missing": True, "reason": "no_monitoring_in_p0"},

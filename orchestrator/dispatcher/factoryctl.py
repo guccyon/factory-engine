@@ -4,6 +4,7 @@
   docker compose exec dispatcher factoryctl list [--all]
   docker compose exec dispatcher factoryctl stop <job_id>
   docker compose exec dispatcher factoryctl rerun <job_id>
+  docker compose exec dispatcher factoryctl enqueue <repo> <issue> [--tier tier-small]
   docker compose exec dispatcher factoryctl events <job_id>
 """
 import json
@@ -45,11 +46,12 @@ def main(argv):
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
                     (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id})))
         print(f"enqueued job {new_id} (attempt {j['attempt'] + 1})")
-    elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）
+    elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
+        tier = argv[argv.index("--tier") + 1] if "--tier" in argv else os.environ.get("MODEL_TIER", "tier-large")
         try:
             cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier) values (%s,%s,%s,'factoryctl',%s) returning id",
-                        (f"github:{repo}#{issue}", repo, issue, os.environ.get("MODEL_TIER", "tier-large")))
+                        (f"github:{repo}#{issue}", repo, issue, tier))
         except psycopg.errors.UniqueViolation:
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
