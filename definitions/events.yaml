@@ -93,6 +93,10 @@ events:
     source: control_plane
     required: [repo, issue, deps]
     note: "factory:planned の Issue を、依存（本文の「依存: #N」）がすべて閉じたので factory:implement に替えた"
+  judgment.provisional:
+    source: control_plane
+    required: [artifact_id, category, taxonomy_version, confidence, pr_url]
+    note: "ADR 0006。ワーカーの「## 仮決め」の 1 件ごと。dedupe は job と順番。中身は artifacts の Judgment"
   release.created:
     source: control_plane
     required: [release_id, repo, app_version, prs]

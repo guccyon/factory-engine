@@ -89,6 +89,9 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 
 `SUPERVISOR_DRY_RUN=1` で GitHub に書かずに判定だけ記録する。
 
+## 仮決めと判断の記録（ADR 0006 の前半）
+
+ワーカーは作業の途中で判断が要っても止まらず、最も妥当な案で仮決めして続ける。仮決めは PR 本文の「## 仮決め」に 1 件ずつ（類型 id・問い・選んだ・他の案・根拠・解釈・確信度・影響）書き、dispatcher がそれを分解して artifacts の Judgment（stage=provisional）と events の `judgment.provisional` に残し、PR に `factory:provisional` を付ける。類型と版は `definitions/judgments.yaml`。出口で裁く judge は後半（承認付きの別 PR）。
 ## 来歴とロット（ADR 0007）
 
 製造の来歴（Engine の版、ワーカーのイメージ、製品の既定ブランチの先頭、モード、モデルの tier）を `job.started` と PR の成果物の `payload.provenance` に付ける。属性はすべて optional で、取れなければ `unknown`。欠けてもラインは止めない。
