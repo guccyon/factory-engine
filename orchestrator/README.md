@@ -118,6 +118,16 @@ docker compose exec dispatcher factoryctl release create guccyon/rally 0.1.0    
 docker compose exec dispatcher factoryctl report provenance --from 2026-10-20      # 来歴の付与率と Release への紐付け率
 ```
 
+## 建設状況の日次レポート（ADR 0008）
+
+supervisor が JST の 7 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
+進捗は `definitions/roadmap.yaml` から出す。項目が済んだら manual を書き換える PR を出す。
+
+```bash
+docker compose exec supervisor python /health/daily/status_report.py --dry-run           # 書かずに中身を見る
+docker compose exec supervisor python /health/daily/status_report.py --publish --force   # 今日の分を出し直す
+```
+
 ## ジョブ用の DB
 
 dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<id>` を作り、ワーカーに `DATABASE_URL` で渡す（終了時に落とす）。ワーカーは自前で DB を立てずに DB のテストを動かせる。`JOB_DB_ENABLED=0` で止められる。
