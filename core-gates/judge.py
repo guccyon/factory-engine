@@ -79,12 +79,15 @@ def main() -> int:
     if not m:
         raise SystemExit("not a PR url")
     repo, number = m.group(1), m.group(2)
-    meta = json.loads(sh("gh", "pr", "view", number, "-R", repo, "--json", "title,body,headRefName"))
+    meta = json.loads(sh("gh", "pr", "view", number, "-R", repo, "--json", "title,body"))
     diff = sh("gh", "pr", "diff", number, "-R", repo)
     if len(diff) > MAX_DIFF:
         diff = diff[:MAX_DIFF] + f"\n[... 差分が長いので {MAX_DIFF} 文字で切った]"
     clone = Path("/work/product")
-    sh("git", "clone", "--quiet", "--depth", "1", "--branch", meta["headRefName"], f"https://github.com/{repo}.git", str(clone))
+    # PR の head は refs/pull/<n>/head で取る（マージ後に作業ブランチが消えていても読める）
+    sh("git", "init", "--quiet", str(clone))
+    sh("git", "fetch", "--quiet", "--depth", "1", f"https://github.com/{repo}.git", f"refs/pull/{number}/head", cwd=str(clone))
+    sh("git", "checkout", "--quiet", "FETCH_HEAD", cwd=str(clone))
     prov, defects = inp.get("provisional", []), inp.get("defects", [])
     files = referenced_files(clone, [p.get("evidence", "") for p in prov] + [d.get("location", "") for d in defects])
     data = {"provisional": prov, "defects": [{"index": i, **d} for i, d in enumerate(defects)],

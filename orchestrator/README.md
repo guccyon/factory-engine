@@ -107,6 +107,7 @@ docker compose exec dispatcher factoryctl judgment list --ungraded
 docker compose exec dispatcher factoryctl judgment grade 123 agree --note "SSOT どおり"
 docker compose exec dispatcher factoryctl report judgments --from 2026-10-27
 ```
+
 ## 来歴とロット（ADR 0007）
 
 製造の来歴（Engine の版、ワーカーのイメージ、製品の既定ブランチの先頭、モード、モデルの tier）を `job.started` と PR の成果物の `payload.provenance` に付ける。属性はすべて optional で、取れなければ `unknown`。欠けてもラインは止めない。
