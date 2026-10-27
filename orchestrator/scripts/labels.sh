@@ -9,6 +9,8 @@ create "factory:running"   "e39255" "ワーカーが実行中"
 create "factory:pr-open"   "2e7d4f" "PR を作成済み。マージは人間の判断"
 create "factory:failed"    "a63a3a" "失敗。factoryctl rerun で再実行"
 create "factory:request"   "c5def5" "要求者の要求を窓口（intake / clarify）にかける"
+create "factory:planned" "bfd4f2" "依存（本文の「依存: #N」）がすべて閉じたら supervisor が factory:implement に替える"
+create "factory:needs-approval" "d93f0b" "supervisor の判定でマージに人の承認が要る（manifest の表）"
 create "factory:status" "5319e7" "工場の状況（番人が操業停止を通知する Issue。ADR 0005）"
 create "factory:clarified" "0e8a16" "要求が確定した（何を・何のために・いつまでに・どの精度で）"
 for p in cs-1 cs-2 mkt-1 mkt-2 sales-1; do create "requester:${p}" "ededed" "要求者ペルソナ ${p}（Gen1 は架空）"; done

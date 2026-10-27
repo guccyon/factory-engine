@@ -1,0 +1,34 @@
+# PR の変更ファイル → manifest の変更種別（autonomy.change_types）の機械的な写像（ADR 0004）。
+# supervisor がマージの判定に使う。判定は「表を引く」だけで、意味の解釈はしない（判断は judge。ADR 0006）。
+# 製品ごとの上書きは、必要になったら製品側に置く（いまは Engine の既定だけ）。
+#
+# - rules は上から全部評価し、PR のファイルが 1 つでも当たった種別をすべて足す（最も厳しい値を使う）
+# - always:<id> は manifest の always_human_approve の id
+# - どの rules にも当たらず、全ファイルが docs_only_paths なら docs_only、そうでなければ default
+# - glob: ** は任意の深さ（0 段を含む）、* は / を含まない
+
+schema_version: "0.1"
+
+rules:
+  - type: constitution
+    paths: [".factory-config/manifest.yaml", ".factory-config/base/**"]
+  - type: factory_rule
+    paths: [".factory-config/overlay/**", ".factory-config/evals/**"]
+  - type: always:secrets_iam
+    paths: [".github/rulesets/**", "**/.env", "**/.env.*", "**/CODEOWNERS"]
+  - type: always:secrets_iam          # CI の定義は、権限・秘密情報に触れる行があるときだけ（rally #74 のジョブ追加は通常の変更）
+    paths: [".github/workflows/**"]
+    diff_pattern: "(?m)^[+-].*(\\bpermissions\\s*:|secrets\\.|GITHUB_TOKEN|id-token|pull_request_target)"
+  - type: always:identity             # 認証・権限。identity の文脈全体ではない（rally #73 の email の検証のテストは通常の変更）
+    paths: ["**/auth/**", "**/authn/**", "**/authz/**", "**/permissions/**", "**/identity/**/credential*", "**/identity/**/password*",
+            "**/identity/**/token*", "**/identity/**/role*", "**/identity/**/session*"]
+  - type: always:payment_logic
+    paths: ["**/billing/**", "**/payment/**", "**/payments/**"]
+  - type: always:destructive_schema
+    paths: ["**/migrations/**"]
+    diff_pattern: "(?i)\\bdrop\\s+(table|column|index)\\b|\\balter\\s+column\\s+\\S+\\s+(set\\s+data\\s+)?type\\b|\\brename\\s+(to|column)\\b"
+  - type: untrusted_input_path
+    paths: ["orchestrator/worker/**", "orchestrator/dispatcher/**", "core-gates/**", "health/evals/**"]   # factory-engine を工場が直すようになったとき用
+
+docs_only_paths: ["docs/**", "**/*.md", "CHANGELOG*", "README*", "**/CLAUDE.md", "LICENSE*"]
+default: code_change

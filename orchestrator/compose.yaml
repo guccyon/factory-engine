@@ -74,6 +74,26 @@ services:
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8787}:8787"
     restart: unless-stopped
 
+  # 工場長の supervisor（ADR 0004）。判断は持たず、表を見て工程を起動するだけ。dispatcher と同じイメージで別プロセス
+  supervisor:
+    image: factory-dispatcher:p0
+    command: ["python", "supervisor.py"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
+      FACTORY_REPOS: ${FACTORY_REPOS:-guccyon/rally}
+      TRIGGER_LABEL: ${TRIGGER_LABEL:-factory:implement}
+      GH_TOKEN: ${GH_TOKEN:?GitHub token (.env)}
+      SUPERVISOR_GH_TOKEN: ${SUPERVISOR_GH_TOKEN:-}   # マージ権限を分けるときの別トークン。空ならワーカーと同じ
+      SUPERVISOR_INTERVAL_SEC: ${SUPERVISOR_INTERVAL_SEC:-60}
+      SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
+      SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
+      CHANGE_TYPE_RULES: /definitions/change_type_rules.yaml
+    volumes:
+      - ../definitions:/definitions:ro
+    restart: unless-stopped
+
   # ワーカーのイメージをビルドするためだけのサービス（常駐しない。docker compose build worker）
   worker:
     build: ./worker

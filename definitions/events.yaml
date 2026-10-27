@@ -74,7 +74,18 @@ events:
   supervisor.heartbeat:
     source: control_plane
     required: []
-    note: "ADR 0004 の supervisor が定期的に出す。番人は 1 度でも来てから途絶えを見る"
+    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る"
+  supervisor.merge_decided:
+    source: control_plane
+    required: [pr_url, head_sha, change_types, table, factory_grant, execute]
+    note: "ADR 0004。table は manifest の matrix と always_human_approve を引いた値、factory_grant は phase_grants の merge。両方 auto のときだけ実行する。dedupe は PR と head ごと"
+  supervisor.merged:
+    source: control_plane
+    required: [pr_url, head_sha]
+  supervisor.enqueued:
+    source: control_plane
+    required: [repo, issue, deps]
+    note: "factory:planned の Issue を、依存（本文の「依存: #N」）がすべて閉じたので factory:implement に替えた"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
