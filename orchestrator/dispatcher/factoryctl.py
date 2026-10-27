@@ -16,6 +16,13 @@
 来歴とロット（ADR 0007）。Release は後付けで、前の Release 以降にマージされた工場の PR をまとめて含める:
   factoryctl release create <repo> <app_version> [--prs URL,URL]
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
+
+モードと判断（ADR 0006）:
+  factoryctl mode show
+  factoryctl mode set attended|unattended [--until ISO]       # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先
+  factoryctl judgment list [--ungraded] [--limit N]
+  factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
+  factoryctl report judgments [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 類型・モード別の件数、確信度、一致率、差し戻し、類型の見直しの候補
 """
 import json
 import os
@@ -26,6 +33,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import judgment
 import stoppage
 
 
@@ -111,6 +119,48 @@ def report_provenance(cur, argv):
     print("\n".join(out))
 
 
+def report_judgments(cur, argv):
+    frm, to = window(argv)
+    cur.execute("""select payload->>'category' as c, payload->>'stage' as st, payload->>'mode' as m, payload->>'verdict' as v,
+                          (payload->'score'->>'self_reported')::float as conf, payload->>'human_grade' as g
+                     from artifacts where type='Judgment' and created_at >= %s::date and created_at < %s::date""", (frm, to))
+    rows = cur.fetchall()
+    out = [f"# 判断の記録（{frm} 〜 {to}、制御プレーンから生成）", "", "生成: `factoryctl report judgments --from --to`（ADR 0006）。類型は definitions/judgments.yaml " + judgment.TAXONOMY_VERSION, ""]
+    out += ["## 類型 × 段階", "", "| 類型 | 仮決め | judge | うち差し替え・不採用 | 人へ | 確信度の平均 | 採点済み | 一致率 |", "|---|---|---|---|---|---|---|---|"]
+    cats = sorted({r["c"] for r in rows})
+    for c in cats:
+        rs = [r for r in rows if r["c"] == c]
+        prov = [r for r in rs if r["st"] == "provisional"]
+        jd = [r for r in rs if r["st"] == "judged"]
+        confs = [r["conf"] for r in jd if r["conf"] is not None]
+        cur.execute("select count(*) as n, avg(case when payload->>'grade'='agree' then 1.0 else 0.0 end) as a from events "
+                    "where name='judgment.graded' and payload->>'category'=%s and occurred_at >= %s::date and occurred_at < %s::date", (c, frm, to))
+        g = cur.fetchone()
+        avg = f"{sum(confs) / len(confs):.2f}" if confs else "—"
+        agree = f"{float(g['a']):.0%}" if g["n"] else "—"
+        changed = sum(1 for r in jd if r["v"] in ("replace", "reject"))
+        escal = sum(1 for r in jd if r["v"] == "escalate")
+        out.append(f"| {c} | {len(prov)} | {len(jd)} | {changed} | {escal} | {avg} | {g['n']} | {agree} |")
+    out += ["", "## モード別（judge）", "", "| モード | 件数 | 人へ |", "|---|---|---|"]
+    for m in sorted({r["m"] for r in rows if r["st"] == "judged"}):
+        rs = [r for r in rows if r["st"] == "judged" and r["m"] == m]
+        out.append(f"| {m} | {len(rs)} | {sum(1 for r in rs if r['v'] == 'escalate')} |")
+    cur.execute("select name, count(*) as n from events where name like 'sendback.%%' and occurred_at >= %s::date and occurred_at < %s::date group by 1", (frm, to))
+    sb = {r["name"]: r["n"] for r in cur.fetchall()}
+    cur.execute("select count(*) as n from events where name='sendback.filed'")
+    total_sb = cur.fetchone()["n"]
+    out += ["", "## 差し戻し", "", f"- 起票 {sb.get('sendback.filed', 0)} 件、上限で流さず {sb.get('sendback.skipped', 0)} 件、再検査で指摘が残った {sb.get('sendback.residual', 0)} 件",
+            f"- 累計の起票 {total_sb} 件（20 件で「1 PR 1 回」の上限を見直す）"]
+    # 類型の見直しの候補（データ量で起こす。分け直しは人）
+    cur.execute("select payload->>'category' as c, count(*) as n, min(created_at) as first from artifacts where type='Judgment' group by 1")
+    hints = []
+    for r in cur.fetchall():
+        if r["n"] > 30:
+            hints.append(f"- {r['c']}: {r['n']} 件。分割の候補")
+    out += ["", "## 類型の見直しの候補", ""] + (hints or ["- なし"])
+    print("\n".join(out))
+
+
 def main(argv):
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
@@ -182,6 +232,35 @@ def main(argv):
         report_stoppages(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "provenance":
         report_provenance(cur, argv)
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "judgments":
+        report_judgments(cur, argv)
+    elif cmd == "mode":
+        if len(argv) > 3 and argv[2] == "set" and argv[3] in judgment.MODES:
+            cur.execute("insert into events(name, payload) values ('factory.mode_set', %s)", (Jsonb({"mode": argv[3], "until": opt(argv, "--until"), "by": "factoryctl"}),))
+        mode, basis = judgment.current_mode(cur, os.environ.get("FACTORY_MODE") or "attended", os.environ.get("MODE_SCHEDULE", ""))
+        print(f"mode={mode}（決め手: {basis}）")
+    elif cmd == "judgment":
+        sub = argv[2] if len(argv) > 2 else "list"
+        if sub == "grade":
+            aid, grade = int(argv[3]), argv[4]
+            if grade not in ("agree", "disagree"):
+                print("grade は agree か disagree"); return 2
+            cur.execute("select payload from artifacts where id=%s and type='Judgment'", (aid,))
+            r = cur.fetchone()
+            if not r:
+                print("no such judgment"); return 1
+            cur.execute("update artifacts set payload = jsonb_set(payload, '{human_grade}', %s) where id=%s", (Jsonb({"grade": grade, "note": opt(argv, "--note")}), aid))
+            cur.execute("insert into events(name, payload) values ('judgment.graded', %s)",
+                        (Jsonb({"artifact_id": aid, "category": r["payload"].get("category"), "stage": r["payload"].get("stage"), "mode": r["payload"].get("mode"),
+                                "grade": grade, "note": opt(argv, "--note")}),))
+            print(f"graded {aid} {grade}")
+        else:
+            where = "and payload->'human_grade' = 'null'::jsonb" if "--ungraded" in argv else ""
+            cur.execute(f"select id, created_at, payload from artifacts where type='Judgment' {where} order by id desc limit %s", (int(opt(argv, "--limit", "30")),))
+            for r in cur.fetchall():
+                p = r["payload"]
+                conf = (p.get("score") or {}).get("self_reported")
+                print(f"{r['id']:>5} {p.get('stage', ''):<11} {p.get('category', ''):<13} {p.get('verdict') or '':<9} conf={conf} {p.get('mode', '')} {(p.get('question') or '')[:60]}")
     elif cmd == "release" and len(argv) > 4 and argv[2] == "create":
         return release_create(cur, argv)
     else:

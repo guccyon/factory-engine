@@ -91,7 +91,23 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 
 ## 仮決めと判断の記録（ADR 0006 の前半）
 
-ワーカーは作業の途中で判断が要っても止まらず、最も妥当な案で仮決めして続ける。仮決めは PR 本文の「## 仮決め」に 1 件ずつ（類型 id・問い・選んだ・他の案・根拠・解釈・確信度・影響）書き、dispatcher がそれを分解して artifacts の Judgment（stage=provisional）と events の `judgment.provisional` に残し、PR に `factory:provisional` を付ける。類型と版は `definitions/judgments.yaml`。出口で裁く judge は後半（承認付きの別 PR）。
+ワーカーは作業の途中で判断が要っても止まらず、最も妥当な案で仮決めして続ける。仮決めは PR 本文の「## 仮決め」に 1 件ずつ（類型 id・問い・選んだ・他の案・根拠・解釈・確信度・影響）書き、dispatcher がそれを分解して artifacts の Judgment（stage=provisional）と events の `judgment.provisional` に残し、PR に `factory:provisional` を付ける。類型と版は `definitions/judgments.yaml`。
+
+### judge と差し戻し（後半）
+
+- supervisor が、検査の結果が出た head ごとに judge のジョブを 1 回積む（仮決めも指摘もなければ積まない）。入力は制御プレーンの記録だけで組み立て（仮決めの Judgment、最新の gate.evaluated の指摘、類型ごとの一致率、manifest の制約、モード）、ワーカーの `judge.sh` に標準入力で渡す。judge（`core-gates/judge.py`）はツールを持たず、根拠に挙がったファイルは PR の head のクローンから読んで渡す
+- 結果は Judgment（stage=judged）と `judgment.judged` に 3 層で残す。PR に `factory:judged:<モード>`、確信度が 0.6 未満なら `factory:confidence:low`、人に回した判断があれば `factory:needs-judgment`（停止としても開く）
+- 採用された指摘（nit を含む）と差し替えた仮決めは、1 本の差し戻し Issue（`factory:sendback`、本文は引用＝データ、`依存: #元の Ticket`）に起票する。unattended は `factory:planned`（依存が閉じたら supervisor が流す）、attended は `factory:fix-proposed`（人が `factory:planned` に替える 1 タップ）
+- 上限は 1 PR 1 回・1 日 5 件（仮置き）。差し戻しの修正 PR を再検査して指摘が残ったら、2 回目は流さず人へ（`sendback.residual`）
+- モードは `factoryctl mode set` ＞ 時間帯（`MODE_SCHEDULE`）＞ 既定（`FACTORY_MODE`、なければ attended）
+
+```bash
+docker compose exec dispatcher factoryctl mode set unattended --until 2026-10-28T08:00:00+09:00
+docker compose exec dispatcher factoryctl judgment list --ungraded
+docker compose exec dispatcher factoryctl judgment grade 123 agree --note "SSOT どおり"
+docker compose exec dispatcher factoryctl report judgments --from 2026-10-27
+```
+
 ## 来歴とロット（ADR 0007）
 
 製造の来歴（Engine の版、ワーカーのイメージ、製品の既定ブランチの先頭、モード、モデルの tier）を `job.started` と PR の成果物の `payload.provenance` に付ける。属性はすべて optional で、取れなければ `unknown`。欠けてもラインは止めない。

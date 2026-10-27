@@ -69,6 +69,11 @@ services:
       # 来歴（ADR 0007）。上げ直すときに Engine の版（git rev-parse --short HEAD）を入れる。モードは judge（ADR 0006 後半）まで unknown
       ENGINE_VERSION: ${ENGINE_VERSION:-unknown}
       FACTORY_MODE: ${FACTORY_MODE:-}
+      MODE_SCHEDULE: ${MODE_SCHEDULE:-}             # 例: unattended=22:00-08:00（Asia/Tokyo）。factoryctl mode set が優先
+      # 差し戻し（ADR 0006 / D5）。上限は仮置き
+      SENDBACK_PER_PR: ${SENDBACK_PER_PR:-1}
+      SENDBACK_DAILY_MAX: ${SENDBACK_DAILY_MAX:-5}
+      LOW_CONFIDENCE: ${LOW_CONFIDENCE:-0.6}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       WEBHOOK_PORT: 8787
     volumes:
@@ -93,6 +98,9 @@ services:
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
       SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}       # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
+      SUPERVISOR_JUDGE: ${SUPERVISOR_JUDGE:-1}           # 検査のあと、仮決めと指摘を裁く judge のジョブを積む（ADR 0006）
+      FACTORY_MODE: ${FACTORY_MODE:-}                    # 既定のモード（attended）。製品の manifest に持たせるのは承認付き PR で
+      MODE_SCHEDULE: ${MODE_SCHEDULE:-}
       CHANGE_TYPE_RULES: /definitions/change_type_rules.yaml
     volumes:
       - ../definitions:/definitions:ro

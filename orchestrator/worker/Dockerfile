@@ -19,4 +19,6 @@ COPY --chown=worker:worker clarify.sh /usr/local/bin/clarify.sh
 COPY --chown=worker:worker personas/requesters.yaml /usr/local/share/factory/requesters.yaml
 # 検査ジョブ（工場の PR に L4 の shadow 判定をかける。ADR 0004）
 COPY --chown=worker:worker inspect.sh /usr/local/bin/inspect.sh
+# judge のジョブ（仮決めと検査の指摘を出口で裁く。ADR 0006）
+COPY --chown=worker:worker judge.sh /usr/local/bin/judge.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

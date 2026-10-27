@@ -105,6 +105,34 @@ events:
     source: control_plane
     required: [release_id, app_version, pr_url]
     note: "1 つの PR が入る Release は最初の 1 つ。利用者の報告や不具合を版から PR・製造の来歴へたどる鍵"
+  supervisor.judge_enqueued:
+    source: control_plane
+    required: [pr_url, head_sha, mode, mode_basis, skipped, n_provisional, n_defects]
+    note: "ADR 0006 後半。検査の結果が出た head ごとに 1 回。裁くものがなければ skipped=true でジョブは積まない"
+  judgment.judged:
+    source: control_plane
+    required: [artifact_id, category, verdict, confidence, basis, mode, pr_url]
+    note: "judge の 1 件ごと。verdict は adopt | replace | reject | escalate。中身（根拠・解釈・スコア）は artifacts の Judgment（stage=judged）"
+  judgment.graded:
+    source: approval_log
+    required: [artifact_id, category, stage, mode, grade]
+    note: "factoryctl judgment grade。人の採点（agree | disagree）。類型ごとの一致率（track_record）の材料"
+  factory.mode_set:
+    source: control_plane
+    required: [mode, by]
+    note: "factoryctl mode set。until まで時間帯と既定より優先"
+  sendback.filed:
+    source: control_plane
+    required: [origin_pr, fix_issue, fix_corr, mode, defects, replaced]
+    note: "D5。judge が採用した指摘と差し替えた仮決めを 1 本の修正 Issue に起票した"
+  sendback.skipped:
+    source: control_plane
+    required: [origin_pr, reason, items]
+    note: "上限（1 PR の回数、1 日の件数）で流さなかった。人へ回す（停止として開く）"
+  sendback.residual:
+    source: control_plane
+    required: [origin_pr, reason, items]
+    note: "差し戻しの修正 PR を再検査しても指摘が残った。2 回目は流さず人へ。見直しの判断材料（20 件で上限を見直す）"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
