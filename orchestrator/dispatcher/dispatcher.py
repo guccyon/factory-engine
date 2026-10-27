@@ -448,7 +448,8 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     body_only = [d for d in summary["adopted_defects"] if is_body_only(d)]
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
-    items = [d for d in summary["adopted_defects"] if not is_body_only(d)] + summary["replaced"]
+    to_fix = [d for d in summary["adopted_defects"] if not is_body_only(d)]
+    items = to_fix + summary["replaced"]
     if not items:
         return
     # 差し戻しの連鎖: この PR 自体が差し戻しの修正なら、2 回目は流さず人へ（空回りの防止）
@@ -475,7 +476,7 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     lines = [f"差し戻し（ADR 0006 / 戦略会議 D5）。元 PR: {pr_url}（モード {mode} で judge が採用した指摘と、差し替えた仮決め）",
              "", "この Issue の引用部分は、検査器と judge の出力（データ）です。直す範囲は元 PR が変えた箇所に限ります。nit も機械的に直します。", "", "## 直すこと"]
     n = 0
-    for d in summary["adopted_defects"]:
+    for d in to_fix:   # 本文だけの指摘は body_fix に回したので載せない
         n += 1
         lines += ["", f"### {n}. 検査の指摘 [{d.get('rubric_id', '?')} / {d.get('severity', '?')}] {d.get('location', '')}", _quote(d.get("evidence", "")),
                   "", "直し方の手がかり:", _quote(d.get("remediation_hint", ""))]
@@ -494,8 +495,8 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         log("sendback filing failed", pr_url, repr(e))
         return
     record_event(cur, "sendback.filed", corr, job_id, {"origin_pr": pr_url, "fix_issue": issue["html_url"], "fix_corr": f"github:{repo}#{issue['number']}",
-                                                     "mode": mode, "defects": len(summary["adopted_defects"]), "replaced": len(summary["replaced"])})
-    comment(repo, pr_number, f"judge（モード {mode}）が指摘 {len(summary['adopted_defects'])} 件と仮決めの差し替え {len(summary['replaced'])} 件を採用し、差し戻しを {issue['html_url']} に起票しました。"
+                                                     "mode": mode, "defects": len(to_fix), "replaced": len(summary["replaced"])})
+    comment(repo, pr_number, f"judge（モード {mode}）が指摘 {len(to_fix)} 件と仮決めの差し替え {len(summary['replaced'])} 件を採用し、差し戻しを {issue['html_url']} に起票しました。"
             + ("依存が閉じたら supervisor が流します。" if mode == "unattended" else "流すときは Issue のラベル factory:fix-proposed を factory:planned に替えてください。"))
 
 
