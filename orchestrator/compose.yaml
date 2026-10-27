@@ -102,9 +102,9 @@ services:
       FACTORY_MODE: ${FACTORY_MODE:-}                    # 既定のモード（attended）。製品の manifest に持たせるのは承認付き PR で
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}
       CHANGE_TYPE_RULES: /definitions/change_type_rules.yaml
-      # 建設状況の日次レポート（health/daily）。JST のこの時を過ぎたら 1 日 1 回。空の DAILY_REPORT_SCRIPT で止める
+      # 建設状況の日次レポート（health/daily）。JST のこの時を過ぎたら 1 日 1 回（ページは 6 時に描く）。空の DAILY_REPORT_SCRIPT で止める
       DAILY_REPORT_SCRIPT: ${DAILY_REPORT_SCRIPT-/health/daily/status_report.py}
-      DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-7}
+      DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-5}
       ROADMAP: /definitions/roadmap.yaml
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
       BUILD_WORK_DIR: /build-work

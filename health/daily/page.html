@@ -1,0 +1,308 @@
+<title>工場の建設日報</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 工程表の紙面: 上に全体と工程の帯、その下に「前日」と「累計」を並べた指標のカード、最後に Exit 条件の計器 */
+:root {
+  --paper: #f5f7f6; --sheet: #ffffff; --ink: #1c2731; --muted: #5d6b76; --rule: #d8dfe3;
+  --steel: #3c6e98; --steel-soft: #c7d8e7; --amber: #c9731d; --amber-soft: #f2dcc4;
+  --good: #2e7d4f; --warn: #b7791f; --bad: #b4413a;
+  --f-body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --f-num: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #11171c; --sheet: #182129; --ink: #e3e9ed; --muted: #94a3ae; --rule: #2a3742;
+  --steel: #7fb0db; --steel-soft: #2c4559; --amber: #e3974c; --amber-soft: #4d3622;
+  --good: #5cbf86; --warn: #e0a84a; --bad: #e27a72; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #11171c; --sheet: #182129; --ink: #e3e9ed; --muted: #94a3ae; --rule: #2a3742;
+  --steel: #7fb0db; --steel-soft: #2c4559; --amber: #e3974c; --amber-soft: #4d3622;
+  --good: #5cbf86; --warn: #e0a84a; --bad: #e27a72; color-scheme: dark }
+body { background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 48px }
+main { max-width: 1080px; margin: 0 auto; display: grid; gap: 28px }
+h1, h2 { text-wrap: balance; margin: 0 }
+h2 { font-size: 13px; letter-spacing: .12em; color: var(--muted); font-weight: 700 }
+.num { font-family: var(--f-num); font-variant-numeric: tabular-nums }
+.muted { color: var(--muted) }
+a { color: var(--steel) }
+
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; border-bottom: 2px solid var(--ink); padding-bottom: 10px }
+header.top h1 { font-size: 22px; letter-spacing: .04em }
+header.top .meta { font-size: 13px; color: var(--muted) }
+
+.overall { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 24px; align-items: end }
+@media (max-width: 640px) { .overall { grid-template-columns: minmax(0, 1fr) } }
+.big { font-family: var(--f-num); font-size: 64px; line-height: 1; font-weight: 600; letter-spacing: -.02em }
+.big small { font-size: 24px; font-weight: 400 }
+.delta { font-family: var(--f-num); font-size: 14px }
+.delta.up { color: var(--good) } .delta.flat { color: var(--muted) }
+
+.strip { display: flex; gap: 3px; min-width: 0 }
+.seg { min-width: 0; display: grid; gap: 4px }
+.seg .bar { height: 34px; background: var(--steel-soft); position: relative; overflow: hidden }
+.seg .bar i { position: absolute; inset: 0 auto 0 0; background: var(--steel) }
+.seg .bar i.done { background: var(--good) }
+.seg .lab { font-size: 11px; line-height: 1.3; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.seg .lab b { color: var(--ink); font-family: var(--f-num); font-weight: 600 }
+.strip-note { font-size: 12px; color: var(--muted); margin-top: 6px }
+@media (max-width: 640px) {
+  .strip { flex-direction: column; gap: 6px }
+  .seg { flex: none !important; grid-template-columns: 9em minmax(0, 1fr); align-items: center; gap: 10px }
+  .seg .bar { height: 14px; order: 2 } .seg .lab br { display: none } .seg .lab { order: 1 }
+}
+
+.asks { background: var(--amber-soft); padding: 14px 18px; display: grid; gap: 6px }
+.asks ul { margin: 0; padding-left: 1.2em }
+.asks h2 { color: var(--ink) }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px }
+.card { background: var(--sheet); border: 1px solid var(--rule); padding: 14px 16px 10px; display: grid; gap: 6px; min-width: 0 }
+.card .figs { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: baseline }
+.fig { display: grid }
+.fig .k { font-size: 11px; letter-spacing: .08em; color: var(--muted) }
+.fig .v { font-family: var(--f-num); font-variant-numeric: tabular-nums; font-size: 26px; font-weight: 600; line-height: 1.15 }
+.fig.sub .v { font-size: 18px; font-weight: 400 }
+.card .sub-note { font-size: 12px; color: var(--muted) }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted) }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px; background: var(--sw) }
+.legend .line::before { height: 2px; vertical-align: 3px; width: 14px }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible }
+svg.chart text { fill: var(--muted); font-family: var(--f-num); font-size: 10px }
+svg.chart .grid { stroke: var(--rule); stroke-width: 1 }
+svg.chart .cum { fill: none; stroke: var(--amber); stroke-width: 2 }
+svg.chart .cum-pt { fill: var(--amber) }
+svg.chart .s0 { fill: var(--steel) } svg.chart .s1 { fill: var(--steel-soft) } svg.chart .s2 { fill: var(--bad) }
+svg.chart .yday { fill: var(--amber); opacity: .12 }
+
+.meters { display: grid; gap: 10px }
+.meter { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 9.5em; gap: 12px; align-items: center; font-size: 14px }
+.meter .pill { justify-self: start }
+@media (max-width: 640px) { .meter { grid-template-columns: minmax(0, 1fr) 8.5em; gap: 4px 12px } .meter .track { grid-column: 1 / -1; order: 3 } }
+.track { height: 10px; background: var(--steel-soft); position: relative }
+.track i { position: absolute; inset: 0 auto 0 0; background: var(--steel) }
+.track i.done { background: var(--good) }
+.pill { font-size: 11px; padding: 1px 8px; border: 1px solid var(--rule); color: var(--muted); white-space: nowrap }
+.pill.unknown { border-color: var(--warn); color: var(--warn) }
+
+details { background: var(--sheet); border: 1px solid var(--rule); padding: 10px 16px }
+details summary { cursor: pointer; font-weight: 700 }
+details summary:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px }
+details ul { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 2px }
+.tag { font-size: 11px; padding: 0 6px; margin-right: 6px; background: var(--steel-soft); color: var(--ink) }
+.tag.builder { background: var(--rule) }
+footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 10px }
+</style>
+
+<main>
+  <header class="top">
+    <h1>工場の建設日報</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <section class="overall" aria-label="全体の進捗">
+    <div>
+      <h2>ロードマップ全体</h2>
+      <div class="big" id="overall"></div>
+      <div class="delta" id="overall-delta"></div>
+    </div>
+    <div>
+      <div class="strip" id="strip"></div>
+      <div class="strip-note">帯の幅は憲章の期間の目安（週）。色は各フェーズの済んだ割合</div>
+    </div>
+  </section>
+
+  <section class="asks" id="asks" aria-label="頼みたいこと">
+    <h2>Tetsuro に頼みたいこと</h2>
+    <ul id="asks-list"></ul>
+  </section>
+
+  <section aria-label="指標">
+    <h2 style="margin-bottom:12px">前日と累計</h2>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section aria-label="Exit 条件">
+    <h2 style="margin-bottom:12px">Exit 条件の実測（今いるフェーズ）</h2>
+    <div class="meters" id="meters"></div>
+  </section>
+
+  <details id="merged">
+    <summary id="merged-sum"></summary>
+    <ul id="merged-list"></ul>
+  </details>
+
+  <footer id="foot"></footer>
+</main>
+
+<script>
+const S = /*__SNAPSHOT__*/null;
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const pct = (x) => Math.round(x * 100);
+const md = (d) => d.slice(5).replace("-", "/");
+const NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+const fmt = (v, d = 0) => (v == null ? "—" : Number(v).toLocaleString("ja-JP", { minimumFractionDigits: d, maximumFractionDigits: d }));
+
+function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
+
+// 日ごとの積み上げ棒（左の目盛り）と累計の折れ線（右の目盛り）。前日の列は淡く塗って示す
+function combo(series, stacks, { cumulative = true } = {}) {
+  const W = 320, H = 132, L = 26, R = cumulative ? 34 : 8, T = 8, B = 20;
+  const n = series.length, iw = W - L - R, ih = H - T - B, bw = iw / Math.max(n, 1);
+  const daily = series.map((d) => stacks.reduce((a, s) => a + (d[s.key] || 0), 0));
+  const cum = []; daily.reduce((a, v, i) => (cum[i] = a + v), 0);
+  const ymax = niceMax(Math.max(...daily, 0)), cmax = niceMax(Math.max(...cum, 0));
+  const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img" });
+  for (const f of [0, 0.5, 1]) {
+    const y = T + ih * (1 - f);
+    svg.append(svgEl("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }));
+    svg.append(svgEl("text", { x: L - 4, y: y + 3, "text-anchor": "end" }, fmt(ymax * f, ymax < 5 && f === 0.5 ? 1 : 0)));
+    if (cumulative) svg.append(svgEl("text", { x: W - R + 4, y: y + 3 }, fmt(cmax * f, cmax < 5 && f === 0.5 ? 1 : 0)));
+  }
+  if (n) svg.append(svgEl("rect", { class: "yday", x: L + bw * (n - 1), y: T, width: bw, height: ih }));
+  series.forEach((d, i) => {
+    let y = T + ih;
+    stacks.forEach((s, j) => {
+      const h = ((d[s.key] || 0) / ymax) * ih;
+      if (h > 0) { y -= h; svg.append(svgEl("rect", { class: s.cls || `s${j}`, x: L + bw * i + bw * 0.18, y, width: bw * 0.64, height: h })); }
+    });
+    const step = Math.ceil(n / 7);
+    if (i % step === 0 || i === n - 1) svg.append(svgEl("text", { x: L + bw * (i + 0.5), y: H - 5, "text-anchor": "middle" }, md(d.date)));
+  });
+  if (cumulative && n) {
+    const pts = cum.map((c, i) => [L + bw * (i + 0.5), T + ih * (1 - c / cmax)]);
+    svg.append(svgEl("polyline", { class: "cum", points: pts.map((p) => p.join(",")).join(" ") }));
+    const [x, y] = pts[pts.length - 1];
+    svg.append(svgEl("circle", { class: "cum-pt", cx: x, cy: y, r: 3 }));
+  }
+  svg.setAttribute("aria-label", `日ごとの値と累計。前日 ${fmt(daily[n - 1])}、累計 ${fmt(cum[n - 1])}`);
+  return { svg, daily, cum };
+}
+
+function lineChart(points, { max = 100, suffix = "%" } = {}) {
+  const W = 320, H = 132, L = 30, R = 10, T = 8, B = 20, iw = W - L - R, ih = H - T - B;
+  const n = points.length, top = Math.min(max, Math.max(10, Math.ceil((Math.max(...points.map((p) => p.v)) + 5) / 10) * 10));
+  const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "全体の進捗の推移" });
+  for (const f of [0, 0.5, 1]) {
+    const y = T + ih * (1 - f);
+    svg.append(svgEl("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }));
+    svg.append(svgEl("text", { x: L - 4, y: y + 3, "text-anchor": "end" }, `${Math.round(top * f)}${suffix}`));
+  }
+  const x = (i) => (n === 1 ? L + iw / 2 : L + (iw * i) / (n - 1));
+  const pts = points.map((p, i) => [x(i), T + ih * (1 - p.v / top)]);
+  if (n > 1) svg.append(svgEl("polyline", { class: "cum", points: pts.map((p) => p.join(",")).join(" ") }));
+  pts.forEach(([px, py], i) => svg.append(svgEl("circle", { class: "cum-pt", cx: px, cy: py, r: i === n - 1 ? 3.5 : 2 })));
+  const step = Math.ceil(n / 7);
+  points.forEach((p, i) => { if (i % step === 0 || i === n - 1) svg.append(svgEl("text", { x: x(i), y: H - 5, "text-anchor": "middle" }, md(p.date))); });
+  return svg;
+}
+
+function card({ title, figs, chart, legend, note }) {
+  const c = el("article", "card");
+  c.append(el("h2", null, title));
+  const f = el("div", "figs");
+  figs.forEach(([k, v, sub]) => { const d = el("div", sub ? "fig sub" : "fig"); d.append(el("span", "k", k), el("span", "v", v)); f.append(d); });
+  c.append(f);
+  if (legend) { const lg = el("div", "legend"); legend.forEach(([t, color, line]) => { const s = el("span", line ? "line" : null, t); s.style.setProperty("--sw", color); lg.append(s); }); c.append(lg); }
+  c.append(chart);
+  if (note) c.append(el("div", "sub-note", note));
+  return c;
+}
+
+function render() {
+  if (!S) { $("meta").textContent = "データがまだありません"; return; }
+  const series = S.series || [];
+  const yday = series.length ? series[series.length - 1].date : "";
+  $("meta").textContent = `${yday ? md(yday) + " までの集計" : ""} · ${S.date} 朝に更新`;
+
+  // 全体
+  const hist = (S.progress_history || []).filter((h) => h.overall != null);
+  const prev = hist.length > 1 ? hist[hist.length - 2] : null;
+  $("overall").innerHTML = "";
+  $("overall").append(document.createTextNode(pct(S.progress.overall)), el("small", null, "%"));
+  if (prev) {
+    const d = Math.round((S.progress.overall - prev.overall) * 1000) / 10;
+    const de = $("overall-delta"); de.textContent = `前回 ${md(prev.date)} から ${d >= 0 ? "+" : ""}${d} pt`; de.className = `delta ${d > 0 ? "up" : "flat"}`;
+  } else $("overall-delta").textContent = "前回の記録なし（推移は明日から）";
+  S.progress.phases.forEach((p) => {
+    const seg = el("div", "seg"); seg.style.flex = `${p.weight} 1 0`;
+    const bar = el("div", "bar"); const fill = el("i", p.progress >= 1 ? "done" : null); fill.style.width = `${pct(p.progress)}%`; bar.append(fill);
+    const lab = el("div", "lab"); lab.append(el("b", null, `${p.id} ${pct(p.progress)}%`), document.createElement("br"), document.createTextNode(p.ja));
+    seg.title = `${p.id} ${p.ja}: ${pct(p.progress)}%`;
+    seg.append(bar, lab); $("strip").append(seg);
+  });
+
+  // 頼みたいこと
+  const asks = [];
+  (S.needs.approval_prs || []).forEach((p) => asks.push([`承認待ちの PR: ${p.repo}#${p.number} ${p.title}`, p.url]));
+  if ((S.needs.golden_unconfirmed || []).length) asks.push([`Golden Set の確認: ${S.needs.golden_unconfirmed.join(", ")}`]);
+  (S.activity.stoppages_open || []).forEach((s) => asks.push([`開いたままの停止（${s.category}）: ${s.what}（${s.since} から）`]));
+  if (!asks.length) $("asks").hidden = true;
+  asks.forEach(([t, u]) => { const li = el("li"); if (u) { const a = el("a", null, t); a.href = u; a.target = "_blank"; a.rel = "noopener"; li.append(a); } else li.textContent = t; $("asks-list").append(li); });
+
+  // 指標のカード
+  const cards = $("cards"), css = getComputedStyle(document.documentElement), col = (v) => css.getPropertyValue(v).trim();
+  const pr = combo(series, [{ key: "merged_factory" }, { key: "merged_builder" }]);
+  const last = series[series.length - 1] || {}, totF = series.reduce((a, d) => a + (d.merged_factory || 0), 0);
+  cards.append(card({ title: "マージした PR", chart: pr.svg,
+    figs: [["前日", fmt(pr.daily.at(-1))], ["累計", fmt(pr.cum.at(-1)), true], ["工場の割合（累計）", pr.cum.at(-1) ? `${Math.round((totF / pr.cum.at(-1)) * 100)}%` : "—", true]],
+    legend: [["工場のワーカー", col("--steel")], ["建設者", col("--steel-soft")], ["累計", col("--amber"), true]],
+    note: `前日の内訳: 工場 ${last.merged_factory || 0} / 建設者 ${last.merged_builder || 0}` }));
+
+  if (S.db) {
+    const jobs = combo(series, [{ key: "jobs_ok" }, { key: "jobs_ng", cls: "s2" }]);
+    const ok = series.reduce((a, d) => a + (d.jobs_ok || 0), 0), all = jobs.cum.at(-1) || 0;
+    cards.append(card({ title: "工場のジョブ", chart: jobs.svg,
+      figs: [["前日", fmt(jobs.daily.at(-1))], ["累計", fmt(all), true], ["成功率（累計）", all ? `${Math.round((ok / all) * 100)}%` : "—", true]],
+      legend: [["成功", col("--steel")], ["失敗・途中終了", col("--bad")], ["累計", col("--amber"), true]],
+      note: `前日の内訳: 成功 ${last.jobs_ok || 0} / 失敗 ${last.jobs_ng || 0}` }));
+
+    const cost = combo(series, [{ key: "cost_usd" }]);
+    cards.append(card({ title: "費用（USD、API 単価換算）", chart: cost.svg,
+      figs: [["前日", `$${fmt(cost.daily.at(-1), 2)}`], ["累計", `$${fmt(cost.cum.at(-1), 2)}`, true], ["PR あたり（累計）", totF ? `$${fmt(cost.cum.at(-1) / totF, 2)}` : "—", true]],
+      legend: [["日ごと", col("--steel")], ["累計", col("--amber"), true]],
+      note: "Max 契約は定額。単価換算は使い方の重さを見る参考値" }));
+
+    const stop = combo(series, [{ key: "stoppages", cls: "s2" }]);
+    const hrs = series.reduce((a, d) => a + (d.stoppage_hours || 0), 0);
+    cards.append(card({ title: "操業停止", chart: stop.svg,
+      figs: [["前日", `${fmt(stop.daily.at(-1))} 件`], ["累計", `${fmt(stop.cum.at(-1))} 件`, true], ["止まった時間（累計）", `${fmt(hrs, 1)} h`, true]],
+      legend: [["件数", col("--bad")], ["累計", col("--amber"), true]],
+      note: `前日に止まった時間: ${fmt(last.stoppage_hours || 0, 1)} h。番人が記録したものだけ（S01〜S15 の手書きの記録は含まない）` }));
+
+    const insp = combo(series, [{ key: "inspections" }]);
+    cards.append(card({ title: "L4 の shadow 検査", chart: insp.svg,
+      figs: [["前日", `${fmt(insp.daily.at(-1))} 件`], ["累計", `${fmt(insp.cum.at(-1))} 件`, true]],
+      legend: [["日ごと", col("--steel")], ["累計", col("--amber"), true]], note: "一致率を出す材料。P1 の Exit に効く" }));
+  }
+
+  cards.append(card({ title: "全体の進捗の推移", chart: lineChart(hist.map((h) => ({ date: h.date, v: h.overall * 100 }))),
+    figs: [["今朝", `${pct(S.progress.overall)}%`], ["記録した日数", `${hist.length} 日`, true]], note: "毎朝の記録から。割合は definitions/roadmap.yaml から機械的に出す" }));
+
+  // Exit 条件の計器（済んでいないフェーズのうち最初の 2 つ）
+  S.progress.phases.filter((p) => p.progress < 1).slice(0, 2).forEach((p) => {
+    $("meters").append(el("div", "muted", `${p.id} ${p.ja}（${pct(p.progress)}%）`));
+    p.items.forEach((it) => {
+      const m = el("div", "meter"); m.append(el("span", null, it.ja));
+      const tr = el("div", "track"); const f = el("i", it.progress >= 1 ? "done" : null); f.style.width = `${pct(it.progress)}%`; tr.append(f); m.append(tr);
+      m.append(el("span", it.unknown ? "pill unknown" : "pill", it.value)); $("meters").append(m);
+    });
+  });
+
+  // 前日にマージした PR
+  const merged = Object.entries(S.activity.merged || {}).flatMap(([r, ps]) => ps.map((p) => ({ ...p, repo: r })));
+  $("merged-sum").textContent = `前日にマージした PR（${merged.length} 本）`;
+  merged.forEach((p) => { const li = el("li"); li.append(el("span", p.factory ? "tag" : "tag builder", p.factory ? "工場" : "建設者")); const a = el("a", null, `${p.repo.split("/")[1]}#${p.number} ${p.title}`); a.href = p.url; a.target = "_blank"; a.rel = "noopener"; li.append(a); $("merged-list").append(li); });
+  if (!merged.length) $("merged").hidden = true;
+
+  const unknown = S.progress.phases.flatMap((p) => p.items).filter((i) => i.unknown).length;
+  $("foot").textContent = `生成: ${new Date(S.generated_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}（Mac の supervisor が集計、LLM は不使用）。` +
+    (S.db ? "" : " 制御プレーンに届かなかったため、ジョブ・費用・停止は出していません。") + (unknown ? ` 測れなかった項目 ${unknown} 件は 0 で数えています。` : "");
+  if (S.issue_url) { $("foot").append(" 元データ: "); const a = el("a", null, "GitHub の Issue"); a.href = S.issue_url; a.target = "_blank"; a.rel = "noopener"; $("foot").append(a); }
+}
+render();
+</script>

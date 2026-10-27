@@ -120,7 +120,7 @@ docker compose exec dispatcher factoryctl report provenance --from 2026-10-20   
 
 ## 建設状況の日次レポート（ADR 0008）
 
-supervisor が JST の 7 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
+supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
 進捗は `definitions/roadmap.yaml` から出す。項目が済んだら manual を書き換える PR を出す。
 
 ```bash

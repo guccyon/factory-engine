@@ -45,6 +45,9 @@ REPOS = [r.strip() for r in ENV.get("REPORT_REPOS", "guccyon/rally,guccyon/facto
 BUILD_WORK_DIR = ENV.get("BUILD_WORK_DIR", "")
 DATABASE_URL = ENV.get("DATABASE_URL", "")
 LABEL = "factory:construction"
+START_DATE = ENV.get("CONSTRUCTION_START", "2026-10-25")   # 建設の初日（日ごとの系列の起点）
+FACTORY_BRANCH_RE = re.compile(r"^factory/issue-\d+-job-\d+")
+SNAPSHOT_MARK = "factory-snapshot:v1"   # Issue の本文の末尾に埋める JSON（base64）。claude.ai のページはこれから描く
 APPROVAL_LABEL = "factory:needs-approval"
 TREND_DAYS = 14
 
@@ -189,12 +192,12 @@ def roadmap_progress(conn) -> dict:
 
 
 # ------------------------------------------------------------------ 前日の動き・頼みたいこと
-def activity(conn, since: datetime) -> dict:
-    out: dict = {"since": since.isoformat()}
-    day = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+def activity(conn, since: datetime, until: datetime) -> dict:
+    out: dict = {"since": since.isoformat(), "until": until.isoformat()}
+    lo, hi = (t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for t in (since, until))   # GitHub の merged_at は UTC
     try:
-        out["merged"] = {r: [{"number": p["number"], "title": p["title"], "url": p["html_url"]}
-                             for p in merged_prs(r, pages=1) if p["merged_at"] >= day] for r in REPOS}
+        out["merged"] = {r: [{"number": p["number"], "title": p["title"], "url": p["html_url"], "factory": is_factory_pr(p)}
+                             for p in merged_prs(r, pages=1) if lo <= p["merged_at"] < hi] for r in REPOS}
     except Exception as e:  # noqa: BLE001
         out["merged_error"] = type(e).__name__
     if conn is None:
@@ -202,17 +205,57 @@ def activity(conn, since: datetime) -> dict:
         return out
     with conn.cursor() as cur:
         cur.execute("""select coalesce(payload->>'state','?'), count(*), coalesce(sum((payload->>'cost_usd')::numeric),0)
-                         from events where name='job.finished' and occurred_at >= %s group by 1""", (since,))
+                         from events where name='job.finished' and occurred_at >= %s and occurred_at < %s group by 1""", (since, until))
         out["jobs"] = {s: {"count": n, "cost_usd": float(c)} for s, n, c in cur.fetchall()}
-        cur.execute("select count(*) from events where name='job.finished' and occurred_at >= %s and (payload->>'usage_limited')::boolean", (since,))
+        cur.execute("select count(*) from events where name='job.finished' and occurred_at >= %s and occurred_at < %s and (payload->>'usage_limited')::boolean", (since, until))
         out["usage_limited"] = cur.fetchone()[0]
-        cur.execute("select key, category, what from stoppages where started_at >= %s order by started_at", (since,))
+        cur.execute("select key, category, what from stoppages where started_at >= %s and started_at < %s order by started_at", (since, until))
         out["stoppages_opened"] = [{"key": k, "category": c, "what": w} for k, c, w in cur.fetchall()]
         cur.execute("select key, category, what, started_at from stoppages where ended_at is null order by started_at")
         out["stoppages_open"] = [{"key": k, "category": c, "what": w, "since": s.astimezone(JST).strftime("%m-%d %H:%M")} for k, c, w, s in cur.fetchall()]
-        cur.execute("select count(*) from events where name='gate.evaluated' and occurred_at >= %s", (since,))
+        cur.execute("select count(*) from events where name='gate.evaluated' and occurred_at >= %s and occurred_at < %s", (since, until))
         out["inspections"] = cur.fetchone()[0]
     return out
+
+
+def is_factory_pr(p: dict) -> bool:
+    """工場のワーカーが作った PR（ブランチ factory/issue-<n>-job-<id>）。それ以外は建設者の PR"""
+    return bool(FACTORY_BRANCH_RE.match(p.get("head", {}).get("ref", "")))
+
+
+def series(conn, start: str, until: datetime) -> list[dict]:
+    """START_DATE から until の前日までの JST の日ごとの値。毎回取得元から作り直す（状態を持たない）"""
+    days, d = [], datetime.fromisoformat(start).date()
+    last = until.astimezone(JST).date()
+    while d < last:
+        days.append(d.isoformat())
+        d += timedelta(days=1)
+    rows = {k: {"date": k, "merged_factory": 0, "merged_builder": 0} for k in days}
+    for r in REPOS:
+        for p in merged_prs(r):
+            k = parse_ts(p["merged_at"]).astimezone(JST).date().isoformat()
+            if k in rows:
+                rows[k]["merged_factory" if is_factory_pr(p) else "merged_builder"] += 1
+    if conn is not None:
+        sql = {
+            "jobs_ok": "select (occurred_at at time zone 'Asia/Tokyo')::date, count(*) from events where name='job.finished' and payload->>'state'='succeeded' group by 1",
+            "jobs_ng": "select (occurred_at at time zone 'Asia/Tokyo')::date, count(*) from events where name='job.finished' and payload->>'state'<>'succeeded' group by 1",
+            "cost_usd": "select (occurred_at at time zone 'Asia/Tokyo')::date, coalesce(sum((payload->>'cost_usd')::numeric),0) from events where name='job.finished' group by 1",
+            "inspections": "select (occurred_at at time zone 'Asia/Tokyo')::date, count(*) from events where name='gate.evaluated' group by 1",
+            "stoppages": "select (started_at at time zone 'Asia/Tokyo')::date, count(*) from stoppages group by 1",
+            "stoppage_hours": "select (started_at at time zone 'Asia/Tokyo')::date, sum(extract(epoch from coalesce(ended_at, now()) - started_at))/3600 from stoppages group by 1",
+        }
+        with conn.cursor() as cur:
+            for key, q in sql.items():
+                cur.execute(q)
+                for day, v in cur.fetchall():
+                    if day.isoformat() in rows:
+                        rows[day.isoformat()][key] = round(float(v or 0), 2)
+    return [rows[k] for k in days]
+
+
+def parse_ts(v: str) -> datetime:
+    return datetime.fromisoformat(v.replace("Z", "+00:00"))
 
 
 def needs(progress: dict) -> dict:
@@ -307,7 +350,7 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 推移", "", *fmt_trend(history), "", "## 直近 24 時間", *fmt_activity(snap["activity"]), "",
+    lines += ["## 推移", "", *fmt_trend(history), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
               "<sub>health/daily/status_report.py が生成（LLM 不使用）。日次の記録はこの Issue のコメント。</sub>"]
     return "\n".join(lines)
 
@@ -323,7 +366,7 @@ def render_daily(snap: dict, prev: dict | None) -> str:
         before = {p["id"]: p["progress"] for p in prev.get("phases", [])}
         moved = [f"{p['id']} {pct(before.get(p['id'], 0))} → {pct(p['progress'])}" for p in pr["phases"] if abs(p["progress"] - before.get(p["id"], 0)) >= 0.005]
         lines.append("- 動いたフェーズ: " + ("、".join(moved) if moved else "なし"))
-    lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**直近 24 時間**", *fmt_activity(snap["activity"])]
+    lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
     return "\n".join(lines)
 
 
@@ -354,6 +397,12 @@ def record_snapshot(conn, snap: dict, force: bool):
                     (Jsonb(summary), f"report.daily:{snap['date']}"))
 
 
+def embed(snap: dict) -> str:
+    """本文の末尾に、見えない形でスナップショットを埋める（Issue 本文の上限 65536 字に収める。系列は日数ぶんだけ）"""
+    raw = base64.b64encode(json.dumps(snap, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+    return f"\n\n<!-- {SNAPSHOT_MARK} {raw} -->\n"
+
+
 def status_issue() -> int:
     found = gh("GET", f"repos/{STATUS_REPO}/issues?state=open&labels={urllib.parse.quote(LABEL)}&per_page=1")
     if found:
@@ -372,6 +421,7 @@ def main() -> int:
     g.add_argument("--dry-run", action="store_true")
     g.add_argument("--publish", action="store_true")
     ap.add_argument("--force", action="store_true", help="今日の分が記録済みでも出し直す")
+    ap.add_argument("--json", help="スナップショットの JSON をこのパスにも書く（ページの描画の確認用）")
     args = ap.parse_args()
 
     now = datetime.now(timezone.utc)
@@ -381,21 +431,28 @@ def main() -> int:
         print(f"[status-report] {date} は記録済み")
         return 0
 
+    # 「前日」は JST の 0〜24 時で区切る（毎朝の配信で前日分を丸ごと見せる）
+    today0 = now.astimezone(JST).replace(hour=0, minute=0, second=0, microsecond=0)
     progress = roadmap_progress(conn)
     snap = {"date": date, "generated_at": now.isoformat(), "progress": progress,
-            "activity": activity(conn, now - timedelta(hours=24)), "needs": needs(progress)}
+            "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
+            "series": series(conn, START_DATE, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],
+             "phases": [{"id": p["id"], "progress": p["progress"]} for p in progress["phases"]],
              "cost_usd": sum(v["cost_usd"] for v in snap["activity"].get("jobs", {}).values())}
     trend = [h for h in history if h["date"] != date] + [today]
+    snap["progress_history"] = trend
 
     dashboard, daily = render_dashboard(snap, trend), render_daily(snap, prev)
+    if args.json:
+        Path(args.json).write_text(json.dumps(snap, ensure_ascii=False, indent=1))
     if args.dry_run:
         print(dashboard, "\n\n---\n", daily, sep="\n")
         return 0
     n = status_issue()
-    gh("PATCH", f"repos/{STATUS_REPO}/issues/{n}", {"body": dashboard})
+    gh("PATCH", f"repos/{STATUS_REPO}/issues/{n}", {"body": dashboard + embed(snap)})
     gh("POST", f"repos/{STATUS_REPO}/issues/{n}/comments", {"body": daily})
     record_snapshot(conn, snap, args.force)
     print(f"[status-report] {date} を {STATUS_REPO}#{n} に出した（全体 {pct(progress['overall'])}）")
