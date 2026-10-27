@@ -345,6 +345,11 @@ def run_job(job: dict):
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["pr_open"]])
                 comment(repo, issue, f"ジョブ {job_id} が PR を作成しました: {result['pr_url']}\n消費: {total_tokens:,} tokens（予算 {TOKEN_BUDGET:,}）")
             elif state == "failed" and result and result.get("pr_url"):
+                # 途中終了のドラフトも PR として残す。建設者が仕上げてドラフトを外すと、supervisor が判定・検査・judge に回す
+                cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload, blob_key) values ('PR',%s,%s,'implement',%s,%s)",
+                            (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
+                                                  "change_types": result.get("change_types", ["code_change"]), "provenance": prov, "incomplete": True}), blob_key))
+                record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"], "incomplete": True}, dedupe_key=f"pr.opened:{result['pr_url']}")
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                 comment(repo, issue, f"ジョブ {job_id} は途中で終了しました（{err}）。差分はドラフト PR {result['pr_url']} に残してあります。範囲を満たしていれば建設者がドラフトを外してマージ、足りなければ `factoryctl rerun {job_id}`（MAX_TURNS を上げる）で続きを。")
             else:
