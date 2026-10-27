@@ -90,14 +90,23 @@ def main() -> int:
     sh("git", "checkout", "--quiet", "FETCH_HEAD", cwd=str(clone))
     prov, defects = inp.get("provisional", []), inp.get("defects", [])
     files = referenced_files(clone, [p.get("evidence", "") for p in prov] + [d.get("location", "") for d in defects])
-    data = {"provisional": prov, "defects": [{"index": i, **d} for i, d in enumerate(defects)],
+    # 指摘に挙がった rubric の項目の本文も渡す（rally #88 で judge が「PROC-002 の本文が渡されていない」と書いた）
+    rubric = {}
+    try:
+        import yaml  # type: ignore
+        for r in yaml.safe_load((Path(__file__).resolve().parent / "rubric.yaml").read_text(encoding="utf-8"))["rules"]:
+            rubric[r["id"]] = {k: r.get(k) for k in ("title", "gate", "severity", "check")}
+    except Exception:  # noqa: BLE001  読めなくても裁きは続ける
+        pass
+    used = {d.get("rubric_id") for d in defects}
+    data = {"rubric": {k: v for k, v in rubric.items() if k in used}, "provisional": prov, "defects": [{"index": i, **d} for i, d in enumerate(defects)],
             "track_record": inp.get("track_record", {}), "mode": inp.get("mode", "attended")}
     prompt = f"""あなたは工場の判定役（judge）です。ワーカーが作業中に仮決めした判断と、検査器の指摘を、出口で裁きます。
 ツールは使えません。下に渡したもの（SSOT のファイル、PR の本文と差分、記録）だけを根拠にしてください。
 
 # 裁き方
 - 仮決め（provisional）の各件: adopt（そのままでよい）/ replace（別の案にすべき。replacement に案を書く）/ escalate（渡したものでは決められない。人に回す）
-- 検査の指摘（defects）の各件: adopt（直すべき欠陥。nit も機械的に直せるなら adopt）/ reject（偽陽性、または差分の外のことで判定できない）/ escalate
+- 検査の指摘（defects）の各件（rubric に指摘の根拠になった項目の本文がある）: adopt（直すべき欠陥。nit も機械的に直せるなら adopt）/ reject（偽陽性、または差分の外のことで判定できない）/ escalate
 - 各件に 3 層を書く: evidence（根拠: 参照したファイルのパスと見出し、差分の箇所）、interpretation（根拠をどう読んでその結論にしたか）、confidence（0〜1）
 - track_record は類型ごとの過去の一致率（人の採点との一致）。件数が 10 以上で一致率が低い類型は、確信度を下げるか escalate にする
 - mode は attended（人が並走している）か unattended（夜間など全面委任）。unattended でも、権限・秘密情報・決済・破壊的スキーマに関わるものは escalate にする
