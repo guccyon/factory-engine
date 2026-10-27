@@ -137,6 +137,10 @@ events:
     source: control_plane
     required: [date, overall, phases, cost_usd]
     note: "ADR 0008。建設状況の日次レポートのスナップショット。dedupe は report.daily:<JST の日付>。推移の折れ線はこれを読む"
+  pr.body_amended:
+    source: control_plane
+    required: [pr_url, defects, chars]
+    note: "PR 本文だけの指摘を本文の追記で直した（body_fix のジョブ）。差し戻しの回数に数えない"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]

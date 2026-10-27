@@ -98,6 +98,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 - supervisor が、検査の結果が出た head ごとに judge のジョブを 1 回積む（仮決めも指摘もなければ積まない）。入力は制御プレーンの記録だけで組み立て（仮決めの Judgment、最新の gate.evaluated の指摘、類型ごとの一致率、manifest の制約、モード）、ワーカーの `judge.sh` に標準入力で渡す。judge（`core-gates/judge.py`）はツールを持たず、根拠に挙がったファイルは PR の head のクローンから読んで渡す
 - 結果は Judgment（stage=judged）と `judgment.judged` に 3 層で残す。PR に `factory:judged:<モード>`、確信度が 0.6 未満なら `factory:confidence:low`、人に回した判断があれば `factory:needs-judgment`（停止としても開く）
 - 採用された指摘（nit を含む）と差し替えた仮決めは、1 本の差し戻し Issue（`factory:sendback`、本文は引用＝データ、`依存: #元の Ticket`）に起票する。unattended は `factory:planned`（依存が閉じたら supervisor が流す）、attended は `factory:fix-proposed`（人が `factory:planned` に替える 1 タップ）
+- 箇所が PR 本文だけの指摘（例: 「## 知見」の節がない）は Issue を切らず、kind=body_fix のジョブ（`core-gates/body_fix.py`、tier-small、ツールなし）が本文の末尾に節を足して直す（2026-10-27 Tetsuro）。差し戻しの回数には数えない。events に `pr.body_amended`
 - 上限は 1 PR 1 回・1 日 5 件（仮置き）。差し戻しの修正 PR を再検査して指摘が残ったら、2 回目は流さず人へ（`sendback.residual`）
 - モードは `factoryctl mode set` ＞ 時間帯（`MODE_SCHEDULE`）＞ 既定（`FACTORY_MODE`、なければ attended）
 

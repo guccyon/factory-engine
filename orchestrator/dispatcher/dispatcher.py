@@ -207,7 +207,7 @@ def run_job(job: dict):
             return
         kind = job.get("kind") or "implement"
         try:
-            if kind in ("inspect", "judge"):   # 検査・judge のジョブ（ADR 0004 / 0006）。issue_number は PR の番号。ラベルは結果を見て付ける
+            if kind in ("inspect", "judge", "body_fix"):   # 検査・judge・本文の追記のジョブ（ADR 0004 / 0006）。issue_number は PR の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             else:
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
@@ -217,7 +217,7 @@ def run_job(job: dict):
             record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge"):
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix"):
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
@@ -231,14 +231,15 @@ def run_job(job: dict):
                    *(["--entrypoint", "/usr/local/bin/clarify.sh"] if kind == "clarify" else []),
                    *(["--entrypoint", "/usr/local/bin/inspect.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "inspect" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/judge.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "judge" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/body_fix.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "body_fix" else []),
                    image]
             judge_inp = None
-            if kind == "judge":   # 入力は supervisor が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix"):   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if kind == "judge" else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            if kind == "judge":
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if kind in ("judge", "body_fix") else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if kind in ("judge", "body_fix"):
                 proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
                 proc.stdin.close()
             cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
@@ -304,7 +305,10 @@ def run_job(job: dict):
                         swap_label(repo, int(result["pr_number"]), [], [PROVISIONAL_LABEL])
                 except Exception as e:  # noqa: BLE001
                     log("provisional record failed", job_id, repr(e))
-            if kind == "judge":
+            if kind == "body_fix":
+                record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
+                             {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars")})
+            elif kind == "judge":
                 if state == "succeeded" and (result or {}).get("verdicts"):
                     ev_mode = judge_inp.get("mode") or "attended"
                     cur.execute("select payload->>'mode_basis' as b from events where name='job.enqueued' and job_id=%s limit 1", (job_id,))
@@ -392,6 +396,25 @@ def _quote(text: str) -> str:
     return "\n".join("> " + l for l in (text or "").strip().splitlines()[:20]) or "> （なし）"
 
 
+def is_body_only(d: dict) -> bool:
+    """指摘の箇所が PR の本文だけ（コード・文書のファイルではない）"""
+    loc = (d.get("location") or "").strip()
+    return loc.startswith("PR 本文") or loc.lower().startswith("pr body")
+
+
+def enqueue_body_fix(cur, repo: str, corr: str, pr_url: str, pr_number: int, defects: list[dict]):
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-small','body_fix') returning id",
+                    (corr, repo, pr_number))
+    except psycopg.errors.UniqueViolation:
+        log("body_fix skipped (active job)", pr_url)
+        return
+    jid = cur.fetchone()["id"]
+    record_event(cur, "job.enqueued", corr, jid, {"by": "judge", "kind": "body_fix", "pr_url": pr_url,
+                                                 "input": {"pr_url": pr_url, "defects": [{k: d.get(k) for k in ("rubric_id", "severity", "location", "evidence", "remediation_hint")} for d in defects]}})
+    log("body_fix enqueued", pr_url, "job", jid)
+
+
 def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary: dict, mode: str):
     pr_number = int(pr_url.rsplit("/", 1)[1])
     labels = [f"factory:judged:{mode}"]
@@ -405,7 +428,11 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         swap_label(repo, pr_number, [], labels)
     except Exception as e:  # noqa: BLE001
         log("judge label failed", pr_url, repr(e))
-    items = summary["adopted_defects"] + summary["replaced"]
+    # PR 本文だけの指摘は Issue を切らず、本文の追記で直す（2026-10-27 Tetsuro）。差し戻しの回数にも数えない
+    body_only = [d for d in summary["adopted_defects"] if is_body_only(d)]
+    if body_only:
+        enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
+    items = [d for d in summary["adopted_defects"] if not is_body_only(d)] + summary["replaced"]
     if not items:
         return
     # 差し戻しの連鎖: この PR 自体が差し戻しの修正なら、2 回目は流さず人へ（空回りの防止）

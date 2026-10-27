@@ -21,4 +21,6 @@ COPY --chown=worker:worker personas/requesters.yaml /usr/local/share/factory/req
 COPY --chown=worker:worker inspect.sh /usr/local/bin/inspect.sh
 # judge のジョブ（仮決めと検査の指摘を出口で裁く。ADR 0006）
 COPY --chown=worker:worker judge.sh /usr/local/bin/judge.sh
+# PR 本文だけの指摘を本文の追記で直すジョブ（2026-10-27）
+COPY --chown=worker:worker body_fix.sh /usr/local/bin/body_fix.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
