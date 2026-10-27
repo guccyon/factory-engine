@@ -12,6 +12,10 @@
   factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--quiet]   # --quiet は通知しない（過去分の取り込み）
   factoryctl stoppage list [--open]
   factoryctl report stoppages [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # Markdown。既定は直近 7 日。週次レポートの stoppages.md はこの出力
+
+来歴とロット（ADR 0007）。Release は後付けで、前の Release 以降にマージされた工場の PR をまとめて含める:
+  factoryctl release create <repo> <app_version> [--prs URL,URL]
+  factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 """
 import json
 import os
@@ -56,6 +60,54 @@ def report_stoppages(cur, argv):
         end = f"{r['ended_at']:%m-%d %H:%M}" if r["ended_at"] else "**開いたまま**"
         out.append(f"| {r['key']} | {r['started_at']:%m-%d %H:%M} | {end} | {r['category']} | {r['detected_by']} | {cell(r['what'])} | "
                    f"{cell(r['cause'])} | {cell(r['remedy'])} | {cell(r['prevention'])} |")
+    print("\n".join(out))
+
+
+def window(argv):
+    today = datetime.now(timezone.utc).date()
+    return opt(argv, "--from", (today - timedelta(days=6)).isoformat()), opt(argv, "--to", (today + timedelta(days=1)).isoformat())
+
+
+def release_create(cur, argv):
+    repo, version = argv[3], argv[4]
+    rid = f"{repo}@{version}"
+    if opt(argv, "--prs"):
+        prs = [u.strip() for u in opt(argv, "--prs").split(",") if u.strip()]
+    else:   # 前の Release 以降にマージされた、まだどの Release にも入っていない PR
+        cur.execute("select payload->>'pr_url' as u from events e where name='pr.merged' and payload->>'pr_url' like %s "
+                    "and not exists (select 1 from events r where r.name='release.included' and r.payload->>'pr_url'=e.payload->>'pr_url') "
+                    "order by payload->>'merged_at'", (f"https://github.com/{repo}/pull/%",))
+        prs = [r["u"] for r in cur.fetchall()]
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.created',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs}), f"release.created:{rid}"))
+    if cur.fetchone() is None:
+        print(f"{rid} already exists"); return 1
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Release',%s,'ship',%s)",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs})))
+    for u in prs:   # 1 つの PR が入る Release は最初の 1 つ
+        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.included',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                    (f"release:{rid}", Jsonb({"release_id": rid, "app_version": version, "pr_url": u}), f"release.included:{u}"))
+    print(f"created {rid} with {len(prs)} PRs")
+    return 0
+
+
+def report_provenance(cur, argv):
+    frm, to = window(argv)
+    cur.execute("""select a.payload->>'pr_url' as pr_url, a.payload->'provenance' as prov,
+                          (select r.payload->>'release_id' from events r where r.name='release.included' and r.payload->>'pr_url'=a.payload->>'pr_url' limit 1) as release_id,
+                          (select count(*) from artifacts j where j.type='Judgment' and j.payload->>'pr_url'=a.payload->>'pr_url') as judgments
+                     from artifacts a where a.type='PR' and a.created_at >= %s::date and a.created_at < %s::date""", (frm, to))
+    rows = cur.fetchall()
+    n = len(rows)
+
+    def rate(k):
+        return f"{k}/{n}（{k / n:.0%}）" if n else "0/0"
+    with_prov = sum(1 for r in rows if r["prov"])
+    mode_known = sum(1 for r in rows if (r["prov"] or {}).get("mode") not in (None, "unknown"))
+    released = sum(1 for r in rows if r["release_id"])
+    out = [f"# 来歴の紐付け（{frm} 〜 {to}、制御プレーンから生成）", "", "生成: `factoryctl report provenance --from --to`（ADR 0007）。属性はすべて optional なので、統計には必ずこの紐付け率を併記する", "",
+           "| 項目 | 紐付け率 |", "|---|---|", f"| 工場の PR | {n} |", f"| 製造の来歴あり | {rate(with_prov)} |", f"| モードが分かる | {rate(mode_known)} |",
+           f"| Release に入った | {rate(released)} |", f"| 仮決めを含む | {rate(sum(1 for r in rows if r['judgments']))} |"]
     print("\n".join(out))
 
 
@@ -128,6 +180,10 @@ def main(argv):
                 print(f"{r['key']:<26} {r['category']:<11} {r['started_at']:%m-%d %H:%M} → {end:<11} {r['what']}")
     elif cmd == "report" and len(argv) > 2 and argv[2] == "stoppages":
         report_stoppages(cur, argv)
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "provenance":
+        report_provenance(cur, argv)
+    elif cmd == "release" and len(argv) > 4 and argv[2] == "create":
+        return release_create(cur, argv)
     else:
         print(__doc__); return 2
     return 0

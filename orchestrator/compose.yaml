@@ -66,6 +66,9 @@ services:
       WATCH_HEARTBEAT_MIN: ${WATCH_HEARTBEAT_MIN:-30}
       NOTIFIER: ${NOTIFIER:-github-issue}
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
+      # 来歴（ADR 0007）。上げ直すときに Engine の版（git rev-parse --short HEAD）を入れる。モードは judge（ADR 0006 後半）まで unknown
+      ENGINE_VERSION: ${ENGINE_VERSION:-unknown}
+      FACTORY_MODE: ${FACTORY_MODE:-}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       WEBHOOK_PORT: 8787
     volumes:

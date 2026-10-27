@@ -89,6 +89,16 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 
 `SUPERVISOR_DRY_RUN=1` で GitHub に書かずに判定だけ記録する。
 
+## 来歴とロット（ADR 0007）
+
+製造の来歴（Engine の版、ワーカーのイメージ、製品の既定ブランチの先頭、モード、モデルの tier）を `job.started` と PR の成果物の `payload.provenance` に付ける。属性はすべて optional で、取れなければ `unknown`。欠けてもラインは止めない。
+ロット＝Release は後付けで、前の Release 以降にマージされた工場の PR をまとめて含める。利用者の報告や不具合は版から PR、製造の来歴へたどる。
+
+```bash
+docker compose exec dispatcher factoryctl release create guccyon/rally 0.1.0      # --prs URL,URL で明示もできる
+docker compose exec dispatcher factoryctl report provenance --from 2026-10-20      # 来歴の付与率と Release への紐付け率
+```
+
 ## ジョブ用の DB
 
 dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<id>` を作り、ワーカーに `DATABASE_URL` で渡す（終了時に落とす）。ワーカーは自前で DB を立てずに DB のテストを動かせる。`JOB_DB_ENABLED=0` で止められる。
