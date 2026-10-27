@@ -115,10 +115,14 @@ def decide(types: list[str], manifest: dict) -> dict:
     """表の判定（人の手元のマージ基準と同じ表）と、工場がそれを実行してよいか（phase_grants）を分けて返す"""
     au = manifest.get("autonomy", {})
     matrix = au.get("matrix", {})
+    always = {a["id"]: a for a in au.get("always_human_approve", [])}
     vals, reasons = [], []
     for t in types:
         if t.startswith("always:"):
-            v = "human_approve"   # always_human_approve（表にない id も承認に倒す）
+            # always_human_approve（表にない id も承認に倒す）。from: operation_start の項目は運用開始（autonomy.operation_started）までは効かない
+            entry = always.get(t.split(":", 1)[1], {})
+            dormant = entry.get("from") == "operation_start" and not au.get("operation_started")
+            v = "auto" if dormant else "human_approve"
         else:
             v = (matrix.get(t) or {}).get("merge", "human_approve")                   # 表にない種別は承認に倒す（unanswered_default: hold）
         vals.append(v)
