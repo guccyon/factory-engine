@@ -110,6 +110,7 @@ def main() -> int:
     a = ap.parse_args()
     files = sorted(Path(a.golden).glob("*.yaml"))
     rows, agree, n, cost = [], 0, 0, 0.0
+    ties, tie_held = 0, 0   # 建設者の選好が tie のペア。分母から除き、判定器が tie（か順序で割れる）を出せたかだけ見る
     for f in files:
         g = load_yaml(f)
         if a.only_confirmed and g.get("scored_by") != "confirmed":
@@ -126,7 +127,10 @@ def main() -> int:
         cost += (j1["cost_usd"] or 0) + (j2["cost_usd"] or 0)
         consistent = j1["preferred"] == j2["preferred"]
         verdict = j1["preferred"] if consistent else "inconsistent"
-        if verdict in ("a", "b"):
+        if g["preferred"] == "tie":
+            ties += 1
+            tie_held += int(verdict in ("tie", "inconsistent"))
+        elif verdict in ("a", "b"):
             n += 1
             agree += int(verdict == g["preferred"])
         rows.append({"id": g["id"], "ticket": g["ticket"], "golden": g["preferred"], "golden_scored_by": g.get("scored_by"),
@@ -134,13 +138,13 @@ def main() -> int:
         print(f"{g['id']}: golden={g['preferred']} judge={verdict} ({'一致' if verdict == g['preferred'] else '不一致'})", file=sys.stderr)
     lo, hi = wilson(agree, n)
     report = {"evalspec": "l4-pairwise", "metric": "pairwise_accuracy", "tier": a.tier, "model": TIER_MODEL[a.tier],
-              "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree,
+              "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree, "golden_ties": ties, "golden_ties_held": tie_held,
               "pairwise_accuracy": round(agree / n, 3) if n else None, "wilson95": [lo, hi],
               "threshold": 0.80, "min_cases_for_release": 100, "release_granted": False,
-              "note": "N < 100 の暫定指標。ブレーカーには使わない。tie / inconsistent は分母から除く",
+              "note": "N < 100 の暫定指標。ブレーカーには使わない。判定器の tie / inconsistent と、建設者の選好が tie のペアは分母から除く",
               "cost_usd": round(cost, 4), "pairs": rows}
     Path(a.out).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ("n", "agree", "pairwise_accuracy", "wilson95", "cost_usd")}, ensure_ascii=False))
+    print(json.dumps({k: report[k] for k in ("n", "agree", "pairwise_accuracy", "wilson95", "golden_ties", "golden_ties_held", "cost_usd")}, ensure_ascii=False))
     return 0
 
 
