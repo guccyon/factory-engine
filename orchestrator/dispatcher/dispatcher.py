@@ -14,6 +14,7 @@ import hmac
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -404,7 +405,8 @@ def _quote(text: str) -> str:
 def is_body_only(d: dict) -> bool:
     """指摘の箇所が PR の本文だけ（コード・文書のファイルではない）"""
     loc = (d.get("location") or "").strip()
-    return loc.startswith("PR 本文") or loc.lower().startswith("pr body")
+    # 検査は「PR 本文」「PR #97 本文」「PR body」などと書く（番号付きは 2026-10-27 の rally #97 で Issue に化けた）
+    return re.match(r"(?i)^pr\s*(#\d+\s*)?(本文|body)", loc) is not None
 
 
 def enqueue_body_fix(cur, repo: str, corr: str, pr_url: str, pr_number: int, defects: list[dict]):
