@@ -20,10 +20,12 @@ def parse_provisional(text: str) -> list[dict]:
     cur: dict | None = None
     field = None
     for line in (text or "").splitlines():
-        m = re.match(r"^###\s+([A-Za-z_]+)\s*[:：]\s*(.+)$", line.strip())
+        # 「### 類型 id: 問い」。類型 id のあとに短い名前を付ける書き方（「### design_choice window: 数える期間」）も受ける（rally #80）
+        m = re.match(r"^###\s+([A-Za-z_]+)(?:\s+([A-Za-z0-9_-]+))?\s*[:：]\s*(.+)$", line.strip())
         if m:
             cat = m.group(1).strip().lower()
-            cur = {"category": cat if cat in CATEGORIES else "unknown", "category_raw": m.group(1)[:40], "question": m.group(2).strip()[:MAX_LEN]}
+            cur = {"category": cat if cat in CATEGORIES else "unknown", "category_raw": m.group(1)[:40], "slug": (m.group(2) or "")[:40],
+                   "question": m.group(3).strip()[:MAX_LEN]}
             items.append(cur)
             field = None
             continue
