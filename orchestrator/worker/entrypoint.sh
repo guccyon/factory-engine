@@ -90,16 +90,18 @@ if [ "${CLAUDE_RC}" -ne 0 ]; then
   INCOMPLETE="1"   # max-turns などで途中終了。作業は捨てずにドラフト PR として残し、ジョブは失敗にする
   echo "[worker] claude exited ${CLAUDE_RC}: opening a draft PR marked 未完了"
 fi
+LINK_KW="Closes"
+[ -n "${INCOMPLETE}" ] && LINK_KW="Refs"   # 未完了は Issue を閉じない
 PR_TITLE="${TITLE} (#${ISSUE_NUMBER})"
 [ -n "${INCOMPLETE}" ] && PR_TITLE="[未完了] ${PR_TITLE}"
 git add -A
-git commit -q -m "$(printf 'feat: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による実装。%s\n\n%s #%s' "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${INCOMPLETE:+ 途中終了（claude exit ${CLAUDE_RC}）のため未完了。}" "${INCOMPLETE:+Refs}${INCOMPLETE:-Closes}" "${ISSUE_NUMBER}")"
+git commit -q -m "$(printf 'feat: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による実装。%s\n\n%s #%s' "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${INCOMPLETE:+ 途中終了（claude exit ${CLAUDE_RC}）のため未完了。}" "${LINK_KW}" "${ISSUE_NUMBER}")"
 git push -q -u origin "${BRANCH}:${BRANCH}"
 
 PR_BODY=$(cat <<EOF
 ${INCOMPLETE:+**未完了**: ワーカーの Claude Code が途中で終了しました（exit ${CLAUDE_RC}、turns ${TURNS}、max_turns ${MAX_TURNS}）。差分は残してありますが、Issue の範囲を満たしているかは建設者が確認してください。続きは factoryctl rerun で。
 
-}${INCOMPLETE:+Refs}${INCOMPLETE:-Closes} #${ISSUE_NUMBER}
+}${LINK_KW} #${ISSUE_NUMBER}
 
 ${SUMMARY}
 
