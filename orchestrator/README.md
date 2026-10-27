@@ -83,6 +83,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 
 - `supervisor.heartbeat` を出す（途絶えたら番人が停止を開く）
 - 工場の PR が `mergeable_state=clean`（CI 通過・衝突なし・ドラフトでない）になったら、変更ファイルを `definitions/change_type_rules.yaml` で変更種別に写し、製品の manifest を引いて `supervisor.merge_decided` を記録する。表が承認を求めれば PR に `factory:needs-approval`。表が auto で、かつ工場の権限（`phase_grants` の merge）も auto のときだけ squash でマージする。それ以外は記録だけ（shadow）
+- マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。`SUPERVISOR_INSPECT=0` で止める
 - 判定した PR が閉じたら `pr.merged`（誰がマージしたか）/ `pr.closed_unmerged` を記録する。判定と人の判断の一致率の材料
 - `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計）まで
 
@@ -109,5 +110,4 @@ dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<i
 - トンネル（Webhook を使うときに builder が cloudflared などを足す。既定はポーリング）
 - 予算の途中停止（`claude -p` は止められないので max-turns で切り、超過を記録するだけ）
 - テレメトリの統合（`health/telemetry/pr_metrics.py` の出力を `events` に流す経路は次）
-- supervisor の検証ジョブの起動（工場の PR ごとに L4 の shadow 判定を走らせる）。PR の本文と差分がエージェントのプロンプトにつながるので、承認付きの別 PR で足す
 - イメージの更新（CI でビルドしてレジストリから取る）。いまは手元で重ねて作り直している

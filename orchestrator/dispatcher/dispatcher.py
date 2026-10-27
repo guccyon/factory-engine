@@ -182,13 +182,17 @@ def run_job(job: dict):
             cur.execute("update jobs set state='failed', finished_at=now(), error='lock_held' where id=%s", (job_id,))
             record_event(cur, "job.rejected", corr, job_id, {"reason": "advisory_lock_held"})
             return
+        kind = job.get("kind") or "implement"
         try:
-            swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
-            image = image_for(repo, issue)
+            if kind == "inspect":   # 検査ジョブ（ADR 0004）。issue_number は PR の番号。shadow なので GitHub のラベルには触らない
+                image = WORKER_IMAGE
+            else:
+                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                image = image_for(repo, issue)
             record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image})
             name = f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED:
+            if JOB_DB_ENABLED and kind != "inspect":
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
@@ -199,7 +203,8 @@ def run_job(job: dict):
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
-                   *(["--entrypoint", "/usr/local/bin/clarify.sh"] if job.get("kind") == "clarify" else []),
+                   *(["--entrypoint", "/usr/local/bin/clarify.sh"] if kind == "clarify" else []),
+                   *(["--entrypoint", "/usr/local/bin/inspect.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "inspect" else []),
                    image]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
@@ -264,7 +269,17 @@ def run_job(job: dict):
                         swap_label(repo, int(result["pr_number"]), [], [PROVISIONAL_LABEL])
                 except Exception as e:  # noqa: BLE001
                     log("provisional record failed", job_id, repr(e))
-            if result and result.get("kind") == "clarify":
+            if kind == "inspect":
+                # 検査（shadow）: gate.evaluated と InspectionReport を残すだけ。差し戻し（修正 Issue の起票）は judge の後半（ADR 0006）
+                rep = ((result or {}).get("report") or {}).get("result") or {}
+                if state == "succeeded" and rep:
+                    cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('InspectionReport',%s,%s,'verify',%s)",
+                                (corr, job_id, Jsonb({"pr_url": result["pr_url"], "mode": "shadow", "gate": "rubric", "model": result.get("model"),
+                                                      "defects": rep.get("defects", []), "checked": rep.get("checked_rubric_ids", []), "summary": rep.get("summary")})))
+                    record_event(cur, "gate.evaluated", corr, job_id, {"pr_url": result["pr_url"], "mode": "shadow", "gate": "rubric", "model": result.get("model"),
+                                                                     "defects": rep.get("defects", []), "checked": rep.get("checked_rubric_ids", []),
+                                                                     "cost_usd": result.get("cost_usd")})
+            elif result and result.get("kind") == "clarify":
                 # clarify: 確定した Request を残す。往復回数と問いの回答待ちを Trust / Flow の計測に
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Request',%s,%s,'clarify',%s)",
                             (corr, job_id, Jsonb({"repo": repo, "issue": issue, "status": result.get("status"), "requester": result.get("requester"),
