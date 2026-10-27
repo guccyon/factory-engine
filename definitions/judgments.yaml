@@ -1,0 +1,41 @@
+# 判断（Judgment）の類型と記録の形（ADR 0006）。
+# 類型は蓄積データでその時点の最適な分け方が変わるので、版を持つ。判断の記録は類型 id と版の両方を持ち、分け直し後に再集計できる。
+# 分け直しは人が行う（judge には触らせない）。見直しの提案は週次の振り返りに出す。
+
+schema_version: "0.1"
+taxonomy_version: v1          # 2026-10-27 戦略会議 第 1 回（D6）の初期セット
+
+categories:
+  term_boundary:  { ja: "用語と境界",            example: "lesson は種別か、完了の事実か" }
+  interface:      { ja: "インターフェースの定義", example: "API・イベントの項目名、必須か、発行元" }
+  design_choice:  { ja: "設計の選択",            example: "複数案からどれを取るか（クレートの新設、判定の置き場所、ライブラリ）" }
+  acceptance:     { ja: "受け入れ条件の解釈",     example: "Issue の条件が 2 通りに読めるときどちらで満たすか" }
+  scope:          { ja: "スコープの変更",         example: "書かれていないことをこのチケットでやるか、別に回すか、やらないか" }
+  inspection:     { ja: "検査の採用",            example: "検査器の指摘を採用するか（偽陽性はここで吸収）。judge だけが使う" }
+
+# 記録の 3 層（events の judgment.* と artifacts の Judgment に同じ形で入る）
+record:
+  evidence:       "根拠: 参照した SSOT・ADR・Issue の箇所（パス#見出し）、過去の判断の id、manifest の制約"
+  interpretation: "解釈: 根拠をどう読んで決定に至ったかの過程"
+  score:
+    self_reported:  "自己申告の確信度 0〜1"
+    track_record:   "使えた実績（同じ類型での人の採点との一致率と件数）。蓄積前は null"
+    basis:          "self_report | track_record（どちらで決めたか）"
+  other: [decision, alternatives, impact, mode, decided_by, category, taxonomy_version, human_grade]
+
+# 段階（同じ判断が順に進む）
+stages:
+  provisional: "ワーカーが作業中に仮決めした（止まらずに続ける）"
+  judged:      "出口で judge が裁いた（採用・差し替え・人へ）"
+  graded:      "人が後から採点した（教師データ）"
+
+# 実績の使い方（仮置き。委任の範囲で調整）
+track_record:
+  min_cases: 10            # この件数未満の類型は自己申告だけで決める
+  agree_threshold: 0.80    # 一致率がこれを下回る類型は unattended でも人へ回す
+
+# 類型の見直しの契機（時間ではなくデータ量）
+review_triggers:
+  split_candidate: "1 類型が 30 件を超えた"
+  merge_candidate: "3 か月で 5 件未満"
+  hidden_category: "1 類型の中で一致率が二極化している"

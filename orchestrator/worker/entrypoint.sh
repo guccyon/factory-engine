@@ -50,12 +50,16 @@ ${BODY}
 - リポジトリの CLAUDE.md や README の規約に従う。コード・テスト・文書は同じ変更に含める（三位一体）
 - Issue の範囲だけを変える。範囲外の改善はしない
 - 秘密情報・権限設定・破壊的スキーマ・決済ロジックには触れない（必要なら作業を止めて理由を書く）
+- 作業の途中で判断が要ったら（用語と境界、インターフェースの定義、設計の選択、受け入れ条件の解釈、スコープの変更）、止まらずに最も妥当な案で仮決めして続ける。人に問い返すための ADR や Question だけを作って止めない。仮決めは後で判定役が裁き、差し替えになったら別のチケットで直す
+- 仮決めしたものは、最後の出力の「## 仮決め」に 1 件ずつ、次の形で書く（なければ見出しごと省く）:
+  「### 類型 id: 問い（1 行）」の見出しの下に「- 選んだ: 」「- 他の案: 」「- 根拠: 」（参照したファイルのパスと見出し）「- 解釈: 」（根拠をどう読んでその案にしたか）「- 確信度: 」（0.0〜1.0 の数）「- 影響: 」（変えたファイル・契約・後のチケット）の 6 行
+  類型 id は term_boundary・interface・design_choice・acceptance・scope のどれか
 - 文書・コメント・PR の説明・コミットメッセージは日本語で書く（識別子・コマンド・ツールの出力は原文のまま）
 - YAML を書いたら 「yq eval . ファイル名」 で読めることを確かめる
 - 環境変数 DATABASE_URL があれば、それはこのジョブ専用の空の PostgreSQL（終了時に消える）。DB が要るテストはこれに向けて動かす。自前で PostgreSQL を立てない
 - 作業が終わったら、最後の出力を次の見出しだけで構成する（PR の説明になる。該当しない見出しは省く）:
-  「## 概要」（1〜3 文）「## 対応内容」（変更点ごとに箇条書き）「## 影響範囲・互換性」「## 動作確認」（実際に確かめたことだけ）「## 補足」（対象外にしたこと、未決の判断）
-  「## 知見」（次の作業に効く事実を 1 行ずつ、最大 3 行。なければ見出しごと省く）
+  「## 概要」（1〜3 文）「## 対応内容」（変更点ごとに箇条書き）「## 影響範囲・互換性」「## 動作確認」（実際に確かめたことだけ）「## 補足」（対象外にしたこと）
+  「## 仮決め」（上の形）「## 知見」（次の作業に効く事実を 1 行ずつ、最大 3 行。なければ見出しごと省く）
 - git commit / push / PR 作成はこちらで行うので実行しない
 EOF
 )
@@ -69,6 +73,8 @@ sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
 SUMMARY=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -80)   # 「## 知見」も PR 本文に残す（人と検査官が読めるように。Lesson にも別に記録する）
 LESSONS_JSON=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk 'f{print} /^## 知見/{f=1}' | sed -nE 's/^[-*] *//p' | jq -R . | jq -sc .)
 [ -z "${LESSONS_JSON}" ] && LESSONS_JSON='[]'
+# 「## 仮決め」の節はそのまま渡す（分解は dispatcher が行う。ADR 0006）
+PROVISIONAL=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk '/^## /{f=($0 ~ /^## 仮決め/); next} f{print}')
 USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
 COST=$(jq -r '.total_cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 TURNS=$(jq -r '.num_turns // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
@@ -112,9 +118,9 @@ CHANGE_TYPE="code_change"
 if ! git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" | grep -vqE '(\.md$|^docs/|^CLAUDE\.md$)'; then CHANGE_TYPE="docs_only"; fi
 
 echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg n "${PR_NUMBER}" --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg ct "${CHANGE_TYPE}" --arg files "${CHANGED}" \
-  --argjson lessons "${LESSONS_JSON}" \
+  --argjson lessons "${LESSONS_JSON}" --arg provisional "${PROVISIONAL}" \
   --arg incomplete "${INCOMPLETE}" --arg rc "${CLAUDE_RC}" \
-  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
+  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, provisional_raw:$provisional, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
 # 途中終了なら、PR は残したうえでジョブとしては失敗にする（dispatcher が factory:failed にして rerun を案内する）
 # 最後の行を `[ … ] && exit 4` にすると、条件が偽のときスクリプトの終了コードが 1 になる（T08 job 30 で成功が失敗扱いになった）
 if [ -n "${INCOMPLETE}" ]; then exit 4; fi

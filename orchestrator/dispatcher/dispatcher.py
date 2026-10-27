@@ -29,6 +29,7 @@ from minio import Minio
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import judgment
 import stoppage
 
 ENV = os.environ
@@ -37,6 +38,7 @@ REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()
 TRIGGER_LABEL = ENV.get("TRIGGER_LABEL", "factory:implement")
 REQUEST_LABEL = ENV.get("REQUEST_LABEL", "factory:request")   # intake: 要求者の曖昧な要求を clarify にかける（T20）
 TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify"}
+PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
@@ -254,6 +256,14 @@ def run_job(job: dict):
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
             if result and result.get("usage"):
                 record_event(cur, "session.cost_recorded", corr, job_id, {"model": result.get("model"), "usage": usage, "cost_usd": result.get("cost_usd")})
+            if result and result.get("pr_url") and (result.get("provisional_raw") or "").strip():
+                # ワーカーの仮決め（ADR 0006）。記録の失敗でラインは止めない
+                try:
+                    items = judgment.record_provisional(cur, corr, job_id, result["pr_url"], result["provisional_raw"])
+                    if items and result.get("pr_number"):
+                        swap_label(repo, int(result["pr_number"]), [], [PROVISIONAL_LABEL])
+                except Exception as e:  # noqa: BLE001
+                    log("provisional record failed", job_id, repr(e))
             if result and result.get("kind") == "clarify":
                 # clarify: 確定した Request を残す。往復回数と問いの回答待ちを Trust / Flow の計測に
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Request',%s,%s,'clarify',%s)",

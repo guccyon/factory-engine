@@ -66,6 +66,12 @@ types:
   Routine:
     stage: routine
     required: [id, schedule, line, output_type, audience]
+  Judgment:
+    stage: [implement, verify, govern]
+    required: [stage, category, taxonomy_version, question, decision, evidence, interpretation, score, decided_by]
+    optional: [alternatives, impact, mode, pr_url, human_grade, judged_by, verdict]
+    stage_values: [provisional, judged, graded]
+    note: "判断の記録（ADR 0006）。根拠・解釈・スコアの 3 層。類型と版は definitions/judgments.yaml。Question（人に問い返して止まる）の代わりに、ワーカーは仮決めして続ける"
   Stoppage:
     stage: govern
     required: [key, category, what, started_at, detected_by]

@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker-cli ca-c
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY dispatcher.py factoryctl.py stoppage.py supervisor.py ./
+COPY dispatcher.py factoryctl.py stoppage.py supervisor.py judgment.py ./
 RUN ln -s /app/factoryctl.py /usr/local/bin/factoryctl && chmod +x /app/factoryctl.py
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "dispatcher.py"]
