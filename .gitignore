@@ -4,3 +4,5 @@
 .env.*
 !.env.example
 orchestrator/.env
+__pycache__/
+*.pyc
