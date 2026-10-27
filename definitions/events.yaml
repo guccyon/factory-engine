@@ -7,6 +7,9 @@
 schema_version: "0.1"
 status: draft
 
+# 製造の来歴（ADR 0007）。job.started と PR の成果物の payload.provenance に入る。すべて optional で、取れなければ unknown（ラインは止めない）
+provenance_fields: [engine_version, worker_image, worker_image_id, product_sha, mode, model_tier]
+
 conventions:
   naming: "<対象>.<出来事>（小文字・スネークケース）"
   correlation_id:
@@ -94,6 +97,14 @@ events:
     source: control_plane
     required: [artifact_id, category, taxonomy_version, confidence, pr_url]
     note: "ADR 0006。ワーカーの「## 仮決め」の 1 件ごと。dedupe は job と順番。中身は artifacts の Judgment"
+  release.created:
+    source: control_plane
+    required: [release_id, repo, app_version, prs]
+    note: "ADR 0007。factoryctl release create。dedupe は release_id"
+  release.included:
+    source: control_plane
+    required: [release_id, app_version, pr_url]
+    note: "1 つの PR が入る Release は最初の 1 つ。利用者の報告や不具合を版から PR・製造の来歴へたどる鍵"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]

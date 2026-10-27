@@ -113,6 +113,25 @@ def image_for(repo: str, issue: int) -> str:
     return WORKER_IMAGES.get(repo, WORKER_IMAGE)
 
 
+def provenance(repo: str, image: str) -> dict:
+    """製造の来歴（ADR 0007）。全部 optional。取れなければ unknown にして、ラインは止めない"""
+    prov = {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "worker_image": image, "worker_image_id": "unknown",
+            "product_sha": "unknown", "mode": ENV.get("FACTORY_MODE") or "unknown", "model_tier": MODEL_TIER}
+    try:
+        r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout.strip():
+            prov["worker_image_id"] = r.stdout.strip()[:19]
+    except Exception:  # noqa: BLE001
+        pass
+    if not ENV.get("WORKER_DRY_RUN"):
+        try:
+            branch = gh("GET", f"repos/{repo}")["default_branch"]
+            prov["product_sha"] = gh("GET", f"repos/{repo}/commits/{urllib.parse.quote(branch)}")["sha"][:12]   # base/overlay の版（製品の既定ブランチの先頭）
+        except Exception:  # noqa: BLE001
+            pass
+    return prov
+
+
 def comment(repo: str, issue: int, text: str):
     if ENV.get("WORKER_DRY_RUN"):
         return
@@ -189,7 +208,9 @@ def run_job(job: dict):
             else:
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = image_for(repo, issue)
-            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image})
+            prov = provenance(repo, image)
+            prov["model_tier"] = job["model_tier"] or MODEL_TIER
+            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = f"factory-job-{job_id}"
             job_db_url = None
             if JOB_DB_ENABLED and kind != "inspect":
@@ -290,7 +311,7 @@ def run_job(job: dict):
             elif state == "succeeded":
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload, blob_key) values ('PR',%s,%s,'implement',%s,%s)",
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
-                                                  "change_types": result.get("change_types", ["code_change"])}), blob_key))
+                                                  "change_types": result.get("change_types", ["code_change"]), "provenance": prov}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"]}, dedupe_key=f"pr.opened:{result['pr_url']}")
                 for text in (result.get("lessons") or [])[:3]:   # ワーカーの「## 知見」を episodic の Lesson として残す（P0 は記録のみ。採用はしない）
                     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Lesson',%s,%s,'learn',%s)",
