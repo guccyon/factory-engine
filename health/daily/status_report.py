@@ -270,7 +270,8 @@ def merge_gate(conn, until: datetime) -> dict | None:
           select prs.url, prs.opened_at, dec.payload,
                  (select min(occurred_at) from events e where e.name='supervisor.merged' and e.payload->>'pr_url'=prs.url) auto_at,
                  (select min(coalesce((e.payload->>'merged_at')::timestamptz, e.occurred_at)) from events e where e.name='pr.merged' and e.payload->>'pr_url'=prs.url) merged_at,
-                 (select min(coalesce((e.payload->>'closed_at')::timestamptz, e.occurred_at)) from events e where e.name='pr.closed_unmerged' and e.payload->>'pr_url'=prs.url) closed_at
+                 (select min(coalesce((e.payload->>'closed_at')::timestamptz, e.occurred_at)) from events e where e.name='pr.closed_unmerged' and e.payload->>'pr_url'=prs.url) closed_at,
+                 (select count(distinct e.payload->>'head_sha') from events e where e.name='supervisor.merge_decided' and e.payload->>'pr_url'=prs.url) heads
             from prs left join dec on dec.url = prs.url order by prs.opened_at""")
         rows = cur.fetchall()
     jst_day = lambda t: t.astimezone(JST).date().isoformat() if t else None
@@ -278,7 +279,7 @@ def merge_gate(conn, until: datetime) -> dict | None:
     reasons: dict = {}
     flow: dict = {}
     prs = []
-    for url, opened_at, d, auto_at, merged_at, closed_at in rows:
+    for url, opened_at, d, auto_at, merged_at, closed_at, heads in rows:
         flow.setdefault(jst_day(opened_at), {}).setdefault("opened", 0)
         flow[jst_day(opened_at)]["opened"] += 1
         if auto_at:
@@ -301,6 +302,8 @@ def merge_gate(conn, until: datetime) -> dict | None:
             keys = [r.split("=")[0] for r in d.get("reasons", []) if not r.endswith("=auto")] or ["表が承認を求めた"]
         else:
             keys = [f"工場の権限（{d.get('phase', '?')} の phase_grants が {d.get('factory_grant')}）"]
+            if heads > 1:
+                keys.append("表は auto だが、判定のあとに直した（head が変わった）")
         if outcome == "closed":
             keys = keys + ["人が閉じた（マージしなかった）"]
         out_day = jst_day(out_at)
@@ -312,7 +315,7 @@ def merge_gate(conn, until: datetime) -> dict | None:
         prs.append({"url": url, "outcome": outcome, "reasons": keys, "table": (d or {}).get("table"),
                     "change_types": (d or {}).get("change_types", []), "opened": jst_day(opened_at), "out": out_day})
     # 表が auto で人がそのままマージした件数（自動マージを解放してよい根拠。manifest の release_conditions）
-    agree = sum(1 for p in prs if p["table"] == "auto" and p["outcome"] == "human")
+    agree = sum(1 for p in prs if p["table"] == "auto" and p["outcome"] == "human" and len(p["reasons"]) == 1)
     days = sorted(k for k in flow if k and k < until.astimezone(JST).date().isoformat())
     return {"reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1]["total"])),
             "flow": [{"date": k, **flow[k]} for k in days], "prs": prs[-60:], "table_auto_human_merged": agree,
