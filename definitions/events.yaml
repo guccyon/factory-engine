@@ -133,6 +133,10 @@ events:
     source: control_plane
     required: [origin_pr, reason, items]
     note: "差し戻しの修正 PR を再検査しても指摘が残った。2 回目は流さず人へ。見直しの判断材料（20 件で上限を見直す）"
+  pr.body_amended:
+    source: control_plane
+    required: [pr_url, defects, chars]
+    note: "PR 本文だけの指摘を本文の追記で直した（body_fix のジョブ）。差し戻しの回数に数えない"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
