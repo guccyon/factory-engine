@@ -12,3 +12,4 @@ python3 health/evals/pairwise_judge.py \
 - 出力は pairwise_accuracy と Wilson 95% 区間。N < 100 の暫定指標で、ブレーカーには使わない
 - 判定器は builder の Mac の `claude` CLI（tier-judge = claude-opus-5-5）。`--bare` は認証を読まないので付けない
 - govern の経路。learn（overlay）の出力は入力にしない
+- 各ペアの `outcome` は agree / disagree / tie_held / tie_missed / abstained / error。一致率の分母は agree と disagree だけ。建設者の選好が tie のペアは `golden_ties_held`、建設者に選好があって判定器が tie か順序で割れたものは `judge_abstained` に数える（どちらも不一致には数えない）

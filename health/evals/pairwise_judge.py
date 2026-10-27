@@ -100,6 +100,21 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (round(max(0, c - h), 3), round(min(1, c + h), 3))
 
 
+OUTCOME_LABEL = {"agree": "一致", "disagree": "不一致", "tie_held": "引き分けを保った", "tie_missed": "引き分けに選好を付けた",
+                 "abstained": "判定器が保留（分母外）"}
+
+
+def classify(golden: str, verdict: str) -> str:
+    """1 ペアの採点。引き分け（建設者の tie、判定器の tie・順序で割れる）は一致・不一致のどちらにも数えない。
+    以前は行の agree を verdict == golden で作っていたので、建設者の tie に判定器が inconsistent を返すと
+    引き分けを保ったのに「不一致」と表示・記録され、日報や健康レポートでの数え直しが不一致に寄っていた"""
+    if golden == "tie":
+        return "tie_held" if verdict in ("tie", "inconsistent") else "tie_missed"
+    if verdict in ("a", "b"):
+        return "agree" if verdict == golden else "disagree"
+    return "abstained"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--golden", required=True)
@@ -111,6 +126,7 @@ def main() -> int:
     files = sorted(Path(a.golden).glob("*.yaml"))
     rows, agree, n, cost = [], 0, 0, 0.0
     ties, tie_held = 0, 0   # 建設者の選好が tie のペア。分母から除き、判定器が tie（か順序で割れる）を出せたかだけ見る
+    abstained = 0           # 建設者に選好があるのに判定器が tie / inconsistent。分母から除き、件数だけ出す
     for f in files:
         g = load_yaml(f)
         if a.only_confirmed and g.get("scored_by") != "confirmed":
@@ -122,29 +138,32 @@ def main() -> int:
             j2 = judge(g, a.tier, swap=True)
         except Exception as e:  # noqa: BLE001  判定器の失敗はそのペアを error にして続ける
             print(f"{g['id']}: judge error: {e}", file=sys.stderr)
-            rows.append({"id": g["id"], "ticket": g["ticket"], "golden": g["preferred"], "judge": "error", "error": str(e)[-300:], "agree": False})
+            rows.append({"id": g["id"], "ticket": g["ticket"], "golden": g["preferred"], "judge": "error", "error": str(e)[-300:],
+                         "outcome": "error", "agree": False})
             continue
         cost += (j1["cost_usd"] or 0) + (j2["cost_usd"] or 0)
-        consistent = j1["preferred"] == j2["preferred"]
-        verdict = j1["preferred"] if consistent else "inconsistent"
-        if g["preferred"] == "tie":
-            ties += 1
-            tie_held += int(verdict in ("tie", "inconsistent"))
-        elif verdict in ("a", "b"):
+        verdict = j1["preferred"] if j1["preferred"] == j2["preferred"] else "inconsistent"
+        outcome = classify(g["preferred"], verdict)
+        if outcome in ("agree", "disagree"):
             n += 1
-            agree += int(verdict == g["preferred"])
+            agree += int(outcome == "agree")
+        elif outcome in ("tie_held", "tie_missed"):
+            ties += 1
+            tie_held += int(outcome == "tie_held")
+        else:
+            abstained += 1
         rows.append({"id": g["id"], "ticket": g["ticket"], "golden": g["preferred"], "golden_scored_by": g.get("scored_by"),
-                     "judge": verdict, "runs": [j1, j2], "agree": verdict == g["preferred"]})
-        print(f"{g['id']}: golden={g['preferred']} judge={verdict} ({'一致' if verdict == g['preferred'] else '不一致'})", file=sys.stderr)
+                     "judge": verdict, "runs": [j1, j2], "outcome": outcome, "agree": outcome == "agree"})
+        print(f"{g['id']}: golden={g['preferred']} judge={verdict} ({OUTCOME_LABEL[outcome]})", file=sys.stderr)
     lo, hi = wilson(agree, n)
     report = {"evalspec": "l4-pairwise", "metric": "pairwise_accuracy", "tier": a.tier, "model": TIER_MODEL[a.tier],
-              "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree, "golden_ties": ties, "golden_ties_held": tie_held,
+              "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree, "golden_ties": ties, "golden_ties_held": tie_held, "judge_abstained": abstained,
               "pairwise_accuracy": round(agree / n, 3) if n else None, "wilson95": [lo, hi],
               "threshold": 0.80, "min_cases_for_release": 100, "release_granted": False,
               "note": "N < 100 の暫定指標。ブレーカーには使わない。判定器の tie / inconsistent と、建設者の選好が tie のペアは分母から除く",
               "cost_usd": round(cost, 4), "pairs": rows}
     Path(a.out).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ("n", "agree", "pairwise_accuracy", "wilson95", "golden_ties", "golden_ties_held", "cost_usd")}, ensure_ascii=False))
+    print(json.dumps({k: report[k] for k in ("n", "agree", "pairwise_accuracy", "wilson95", "golden_ties", "golden_ties_held", "judge_abstained", "cost_usd")}, ensure_ascii=False))
     return 0
 
 
