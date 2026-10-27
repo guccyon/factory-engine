@@ -30,6 +30,9 @@ import yaml
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import judgment
+import stoppage
+
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
@@ -41,6 +44,8 @@ PLANNED_LABEL, IMPLEMENT_LABEL = "factory:planned", ENV.get("TRIGGER_LABEL", "fa
 APPROVAL_LABEL = "factory:needs-approval"
 DRY_RUN = bool(ENV.get("SUPERVISOR_DRY_RUN"))   # GitHub に書かない（読むだけ）
 INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"   # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
+JUDGE_ENABLED = ENV.get("SUPERVISOR_JUDGE", "1") == "1"       # 検査が終わったら、仮決めと指摘を裁く judge のジョブを積む（ADR 0006 後半）
+MODE_DEFAULT, MODE_SCHEDULE = ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", "")
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -169,6 +174,8 @@ def merge_step(cur, rules: dict, manifests: dict):
         if pr["state"] == "closed":
             cur.execute("select payload from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (p["url"],))
             d = cur.fetchone()
+            for key in (f"judge:{p['url']}",):   # judge が人に回した停止は、PR が閉じた（人が判断した）時点で閉じる
+                stoppage.close_stoppage(cur, key, remedy="PR が閉じた（人が判断した）", closed_by="supervisor")
             if pr.get("merged_at"):
                 record(cur, "pr.merged", p["corr"], {"pr_url": p["url"], "merged_at": pr["merged_at"], "merged_by": (pr.get("merged_by") or {}).get("login"),
                                                      "merge_commit": pr.get("merge_commit_sha"), "decided": (d or {}).get("payload")}, f"pr.merged:{p['url']}")
@@ -216,6 +223,47 @@ def enqueue_inspect(cur, p: dict, sha: str):
     log("inspect enqueued", p["url"], "job", jid)
 
 
+def judge_step(cur, manifests: dict):
+    """検査を積んだ head ごとに、検査の結果が出たら judge のジョブを 1 回積む。裁くもの（仮決め・指摘）がなければ積まない"""
+    if not JUDGE_ENABLED:
+        return
+    cur.execute("""select i.correlation_id as corr, i.payload->>'pr_url' as pr_url, i.payload->>'head_sha' as sha, i.occurred_at
+                     from events i
+                    where i.name='supervisor.inspect_enqueued' and i.occurred_at > now() - interval '3 days'
+                      and not exists (select 1 from events j where j.name='supervisor.judge_enqueued'
+                                       and j.payload->>'pr_url'=i.payload->>'pr_url' and j.payload->>'head_sha'=i.payload->>'head_sha')
+                      and exists (select 1 from events g where g.name='gate.evaluated' and g.payload->>'pr_url'=i.payload->>'pr_url' and g.occurred_at > i.occurred_at)""")
+    for r in cur.fetchall():
+        m = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)$", r["pr_url"])
+        if not m:
+            continue
+        repo, number = m.group(1), int(m.group(2))
+        mode, basis = judgment.current_mode(cur, MODE_DEFAULT, MODE_SCHEDULE)
+        if repo not in manifests:
+            manifests[repo] = load_manifest(repo)
+        au = manifests[repo].get("autonomy", {})
+        constraints = "always_human_approve: " + ", ".join(f"{a['id']}（{a.get('ja', '')}）" for a in au.get("always_human_approve", []))
+        inp = judgment.judge_input(cur, r["pr_url"], mode, constraints)
+        nothing = not inp["provisional"] and not inp["defects"]
+        if not record(cur, "supervisor.judge_enqueued", r["corr"], {"pr_url": r["pr_url"], "head_sha": r["sha"], "mode": mode, "mode_basis": basis,
+                                                                  "skipped": nothing, "n_provisional": len(inp["provisional"]), "n_defects": len(inp["defects"])},
+                      f"supervisor.judge:{r['pr_url']}@{r['sha']}"):
+            continue
+        if nothing or DRY_RUN:
+            continue
+        try:
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','judge') returning id",
+                        (r["corr"], repo, number))
+        except psycopg.errors.UniqueViolation:   # 同じ PR のジョブ（検査など）がまだ動いている。次の周期で積み直せるよう記録を消す
+            cur.execute("delete from events where dedupe_key=%s", (f"supervisor.judge:{r['pr_url']}@{r['sha']}",))
+            continue
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (r["corr"], jid, Jsonb({"by": "supervisor", "kind": "judge", "pr_url": r["pr_url"], "head_sha": r["sha"],
+                                            "mode": mode, "mode_basis": basis, "input": inp})))
+        log("judge enqueued", r["pr_url"], "job", jid, "mode", mode)
+
+
 def enqueue_step(cur, open_prs: int):
     cur.execute("select count(*) as n from jobs where state in ('queued','running')")
     inflight = cur.fetchone()["n"] + open_prs
@@ -248,6 +296,7 @@ def tick():
         record(cur, "supervisor.heartbeat", None, {"repos": REPOS})
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
+        judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
 
 
