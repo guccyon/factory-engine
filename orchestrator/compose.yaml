@@ -89,6 +89,7 @@ services:
       SUPERVISOR_INTERVAL_SEC: ${SUPERVISOR_INTERVAL_SEC:-60}
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
+      SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}       # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
       CHANGE_TYPE_RULES: /definitions/change_type_rules.yaml
     volumes:
       - ../definitions:/definitions:ro
