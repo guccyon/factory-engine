@@ -1,0 +1,103 @@
+# ロードマップの進捗（建設状況の日次レポートが読む）
+# 正本: 憲章 07 節のロードマップ（P0〜P6 と Exit 条件）。このファイルはそれを「測れる項目」に分けたもの。
+# 割合は見積もりではなく、この表から機械的に出す（health/daily/status_report.py）。
+#
+# 計算:
+#   項目の進捗  = done なら 1 / todo なら 0 / 数値なら min(実測 / 目標, 1)
+#   フェーズ    = 項目の進捗の平均
+#   全体        = フェーズの進捗を weight_weeks（憲章の期間の目安。幅があるものは中央）で重み付けした平均
+#
+# measure の種類（自動で測れるものは自動に寄せる。manual は PR で書き換える）:
+#   manual: done | todo | 0.0〜1.0
+#   github_merged_prs: { repo, target, closing? }        マージ済みの PR の数。closing: true で本文に Closes #N などがあるものだけ
+#   github_files:  { repo, path, target, where? }        ディレクトリ内の YAML の数。where: { key: value } で絞る
+#   build_work_files: { glob, target }                   建設作業フォルダ（50_build-work/）のファイル数
+#   pairwise: { glob, target_n, threshold }              ペア比較の最新の結果（health/evals/pairwise_judge.py の出力）
+#   db: { sql, target }                                  制御プレーンの Postgres（1 行 1 列の数値を返す読み取りの SQL）
+#
+# 測れなかった項目（取得元に届かない、Mac のフォルダが渡されていない、など）は「不明」とし、進捗は前回の値を使わず 0 で数え、
+# レポートに不明として出す。欠損を隠さない（ADR 0002）。
+
+schema_version: "0.1"
+
+phases:
+  - id: P0a
+    ja: 基盤の成立
+    weight_weeks: 4
+    items:
+      - { id: declarative_policy, ja: "宣言的ポリシー初版", measure: { manual: done } }
+      - { id: headless_pr, ja: "イベント → ワーカー → PR の成功", measure: { manual: done } }
+      - { id: telemetry_sources, ja: "計測の取得元と欠損率", measure: { manual: done } }
+      - { id: cost_measured, ja: "コスト計測", measure: { manual: done } }
+      - { id: stop_rerun, ja: "手動停止と再実行", measure: { manual: done } }
+
+  - id: P0b
+    ja: 観測の成立
+    weight_weeks: 4
+    items:
+      - id: linked_prs
+        ja: "結果が紐付いた PR（直近 20 件）"
+        measure: { github_merged_prs: { repo: guccyon/rally, closing: true, target: 20 } }
+      - id: health_reports
+        ja: "健康レポート 4 週分"
+        measure: { build_work_files: { glob: "health-reports/*.html", target: 4 } }
+      - id: golden_set
+        ja: "Golden Set 30 件"
+        measure: { github_files: { repo: guccyon/rally, path: .factory-config/evals/golden, target: 30 } }
+
+  - id: P1
+    ja: Verify 深化
+    weight_weeks: 6
+    items:
+      - { id: walking_skeleton, ja: "Walking Skeleton（T01〜T20）と一周シナリオ", measure: { manual: done } }
+      - { id: l2_mutation_ci, ja: "L2 差分ミューテーションが全 PR で走る", measure: { manual: done } }
+      - { id: l4_shadow_all, ja: "L4 の shadow 検査が全 PR で走る", measure: { manual: done } }
+      - { id: sendback_judge, ja: "再試行予算・差し戻し制御（judge）", measure: { manual: done } }
+      - id: l4_pairwise
+        ja: "L4 のペア比較一致率 ≥ 80%"
+        measure: { pairwise: { glob: "tmp/evals/pairwise-????-??-??.json", target_n: 30, threshold: 0.8 } }
+      - { id: false_positive_rate, ja: "偽陽性率が計測されている", measure: { manual: todo } }
+      - { id: l1_compat_checker, ja: "L1 の互換性チェッカー", measure: { manual: todo } }
+
+  - id: P2
+    ja: Ship ＋ L3
+    weight_weeks: 6
+    items:
+      - { id: expand_contract, ja: "expand/contract のマイグレーション工程", measure: { manual: 0.5 } }
+      - { id: synthetic_seed, ja: "合成シード", measure: { manual: 0.5 } }
+      - { id: release_provenance, ja: "Release と来歴", measure: { manual: 0.5 } }
+      - { id: one_click_release, ja: "人間の操作が承認ボタンだけでリリースが完了した実績", measure: { manual: todo } }
+      - { id: rollback_1min, ja: "Rollback が 1 分以内に完了した実績", measure: { manual: todo } }
+      - { id: l3_reproducible, ja: "L3 が同じ PR に同じ判定を返す", measure: { manual: todo } }
+
+  - id: P3
+    ja: Learn ループ
+    weight_weeks: 6
+    items:
+      - { id: lesson_eval, ja: "Retrospective → Lesson（eval 同梱）", measure: { manual: todo } }
+      - { id: crystallize, ja: "3 段階の結晶化とルールのライフサイクル", measure: { manual: todo } }
+      - { id: rule_adopted, ja: "自動生成ルールが shadow を経て採用され、教師信号が減った", measure: { manual: todo } }
+
+  - id: P4
+    ja: 上流自動化
+    weight_weeks: 10
+    items:
+      - { id: intake_clarify, ja: "intake / clarify の窓口と要求者ペルソナ", measure: { manual: 0.5 } }
+      - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff と Ticket の生産", measure: { manual: todo } }
+      - { id: opportunity_to_ticket, ja: "Opportunity から人手なしで Ticket 群が流れる", measure: { manual: todo } }
+      - { id: clarify_3_rounds, ja: "clarify が往復 3 回以内で収束", measure: { manual: todo } }
+
+  - id: P5
+    ja: Operate
+    weight_weeks: 6
+    items:
+      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }
+      - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
+      - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
+
+  - id: P6
+    ja: メタ化
+    weight_weeks: 8
+    items:
+      - { id: second_factory, ja: "Blueprint から 2 号機が生成される", measure: { manual: todo } }
+      - { id: reconcile, ja: "Engine の改善が Reconcile で両工場に配布される", measure: { manual: todo } }

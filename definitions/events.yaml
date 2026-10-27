@@ -133,6 +133,10 @@ events:
     source: control_plane
     required: [origin_pr, reason, items]
     note: "差し戻しの修正 PR を再検査しても指摘が残った。2 回目は流さず人へ。見直しの判断材料（20 件で上限を見直す）"
+  report.daily:
+    source: control_plane
+    required: [date, overall, phases, cost_usd]
+    note: "ADR 0008。建設状況の日次レポートのスナップショット。dedupe は report.daily:<JST の日付>。推移の折れ線はこれを読む"
   pr.body_amended:
     source: control_plane
     required: [pr_url, defects, chars]

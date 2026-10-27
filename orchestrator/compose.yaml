@@ -102,8 +102,17 @@ services:
       FACTORY_MODE: ${FACTORY_MODE:-}                    # 既定のモード（attended）。製品の manifest に持たせるのは承認付き PR で
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}
       CHANGE_TYPE_RULES: /definitions/change_type_rules.yaml
+      # 建設状況の日次レポート（health/daily）。JST のこの時を過ぎたら 1 日 1 回（ページは 6 時に描く）。空の DAILY_REPORT_SCRIPT で止める
+      DAILY_REPORT_SCRIPT: ${DAILY_REPORT_SCRIPT-/health/daily/status_report.py}
+      DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-5}
+      ROADMAP: /definitions/roadmap.yaml
+      STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
+      BUILD_WORK_DIR: /build-work
     volumes:
       - ../definitions:/definitions:ro
+      - ../health:/health:ro
+      # 建設作業フォルダ（健康レポート・ペア比較の結果を数える）。.env の BUILD_WORK_DIR に Mac の 50_build-work/ を入れる
+      - ${BUILD_WORK_DIR:-./.no-build-work}:/build-work:ro
     restart: unless-stopped
 
   # ワーカーのイメージをビルドするためだけのサービス（常駐しない。docker compose build worker）

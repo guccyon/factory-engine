@@ -9,6 +9,7 @@
 - 結果: 判定を記録した PR が閉じたら、誰がマージしたか（しなかったか）を記録する（判定と人の判断の一致率の材料）
 - 検証の起動: マージを判定した head ごとに検査ジョブ（kind=inspect、L4 の shadow 判定）を積む。結果は gate.evaluated と InspectionReport
 - 依存順の投入: `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら `factory:implement` に替える（同時に流すのは上限まで）
+- 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
 """
@@ -18,12 +19,13 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import yaml
@@ -46,6 +48,8 @@ DRY_RUN = bool(ENV.get("SUPERVISOR_DRY_RUN"))   # GitHub に書かない（読�
 INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"   # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
 JUDGE_ENABLED = ENV.get("SUPERVISOR_JUDGE", "1") == "1"       # 検査が終わったら、仮決めと指摘を裁く judge のジョブを積む（ADR 0006 後半）
 MODE_DEFAULT, MODE_SCHEDULE = ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", "")
+DAILY_REPORT = ENV.get("DAILY_REPORT_SCRIPT", "/health/daily/status_report.py")   # 空にすると日次レポートを出さない
+DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai のページは 6 時にこの結果から描く。Mac が寝ていた日は起きたときに出す
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -295,6 +299,21 @@ def enqueue_step(cur, open_prs: int):
             inflight += 1
 
 
+def daily_report_step(cur):
+    """1 日 1 回、建設状況の日次レポートを出す。記録（report.daily）はスクリプトが書く。失敗しても次の周で再試行する"""
+    if not DAILY_REPORT or DRY_RUN or not os.path.exists(DAILY_REPORT):
+        return
+    now = datetime.now(timezone(timedelta(hours=9)))
+    if now.hour < DAILY_REPORT_HOUR:
+        return
+    cur.execute("select 1 from events where dedupe_key=%s", (f"report.daily:{now:%Y-%m-%d}",))
+    if cur.fetchone():
+        return
+    r = subprocess.run([sys.executable, DAILY_REPORT, "--publish"], capture_output=True, text=True, timeout=300,
+                       env={**ENV, "GH_TOKEN": GH_TOKEN})
+    log("daily report", r.returncode, (r.stdout or r.stderr).strip()[-300:])
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         record(cur, "supervisor.heartbeat", None, {"repos": REPOS})
@@ -302,6 +321,7 @@ def tick():
         open_prs = merge_step(cur, rules, manifests)
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
+        daily_report_step(cur)
 
 
 def main():
