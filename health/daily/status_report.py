@@ -258,6 +258,67 @@ def parse_ts(v: str) -> datetime:
     return datetime.fromisoformat(v.replace("Z", "+00:00"))
 
 
+def merge_gate(conn, until: datetime) -> dict | None:
+    """Gen1 限定: 工場の PR が自動マージされなかった理由を観点ごとに数え、日ごとの出入り（入: 工場が出した PR、出: 自動マージ・人のマージ・閉じた）を出す。
+    自動マージの基準づくりの材料。理由は supervisor.merge_decided の最新の判定から機械的に決める（LLM は使わない）"""
+    if conn is None:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("""
+          with prs as (select payload->>'pr_url' url, min(created_at) opened_at from artifacts where type='PR' and payload->>'pr_url' is not null group by 1),
+               dec as (select distinct on (payload->>'pr_url') payload->>'pr_url' url, payload from events where name='supervisor.merge_decided' order by payload->>'pr_url', id desc)
+          select prs.url, prs.opened_at, dec.payload,
+                 (select min(occurred_at) from events e where e.name='supervisor.merged' and e.payload->>'pr_url'=prs.url) auto_at,
+                 (select min(coalesce((e.payload->>'merged_at')::timestamptz, e.occurred_at)) from events e where e.name='pr.merged' and e.payload->>'pr_url'=prs.url) merged_at,
+                 (select min(coalesce((e.payload->>'closed_at')::timestamptz, e.occurred_at)) from events e where e.name='pr.closed_unmerged' and e.payload->>'pr_url'=prs.url) closed_at
+            from prs left join dec on dec.url = prs.url order by prs.opened_at""")
+        rows = cur.fetchall()
+    jst_day = lambda t: t.astimezone(JST).date().isoformat() if t else None
+    yday = (until.astimezone(JST).date() - timedelta(days=1)).isoformat()
+    reasons: dict = {}
+    flow: dict = {}
+    prs = []
+    for url, opened_at, d, auto_at, merged_at, closed_at in rows:
+        flow.setdefault(jst_day(opened_at), {}).setdefault("opened", 0)
+        flow[jst_day(opened_at)]["opened"] += 1
+        if auto_at:
+            outcome, out_at = "auto", auto_at
+        elif merged_at:
+            outcome, out_at = "human", merged_at
+        elif closed_at:
+            outcome, out_at = "closed", closed_at
+        else:
+            outcome, out_at = "open", None
+        if out_at:
+            flow.setdefault(jst_day(out_at), {}).setdefault(outcome, 0)
+            flow[jst_day(out_at)][outcome] += 1
+        if outcome == "auto":
+            continue
+        # 理由（観点）: 表が承認を求めた変更種別 > 表は auto だが工場の権限（phase）で止めた > 判定まで来なかった
+        if d is None:
+            keys = ["未判定（CI・衝突・途中終了で clean にならなかった）"]
+        elif d.get("table") != "auto":
+            keys = [r.split("=")[0] for r in d.get("reasons", []) if not r.endswith("=auto")] or ["表が承認を求めた"]
+        else:
+            keys = [f"工場の権限（{d.get('phase', '?')} の phase_grants が {d.get('factory_grant')}）"]
+        if outcome == "closed":
+            keys = keys + ["人が閉じた（マージしなかった）"]
+        out_day = jst_day(out_at)
+        for k in keys:
+            r = reasons.setdefault(k, {"total": 0, "yday": 0, "open": 0})
+            r["total"] += 1
+            r["yday"] += 1 if out_day == yday or (outcome == "open" and jst_day(opened_at) == yday) else 0
+            r["open"] += 1 if outcome == "open" else 0
+        prs.append({"url": url, "outcome": outcome, "reasons": keys, "table": (d or {}).get("table"),
+                    "change_types": (d or {}).get("change_types", []), "opened": jst_day(opened_at), "out": out_day})
+    # 表が auto で人がそのままマージした件数（自動マージを解放してよい根拠。manifest の release_conditions）
+    agree = sum(1 for p in prs if p["table"] == "auto" and p["outcome"] == "human")
+    days = sorted(k for k in flow if k and k < until.astimezone(JST).date().isoformat())
+    return {"reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1]["total"])),
+            "flow": [{"date": k, **flow[k]} for k in days], "prs": prs[-60:], "table_auto_human_merged": agree,
+            "total": len(rows), "auto": sum(1 for r in rows if r[3])}
+
+
 def needs(progress: dict) -> dict:
     out: dict = {}
     try:
@@ -436,7 +497,7 @@ def main() -> int:
     progress = roadmap_progress(conn)
     snap = {"date": date, "generated_at": now.isoformat(), "progress": progress,
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
-            "series": series(conn, START_DATE, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR)}
+            "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],
