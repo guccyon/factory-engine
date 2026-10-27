@@ -72,7 +72,10 @@ def report_stoppages(cur, argv):
 
 
 def window(argv):
-    today = datetime.now(timezone.utc).date()
+    # 比較は REPORT_TZ（既定 Asia/Tokyo）の日付で行うので、既定の期間も同じ時刻帯の今日から作る。
+    # UTC の今日だと、日本の朝（UTC の前日）に当日分が --to から外れていた
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo(os.environ.get("REPORT_TZ", "Asia/Tokyo"))).date()
     return opt(argv, "--from", (today - timedelta(days=6)).isoformat()), opt(argv, "--to", (today + timedelta(days=1)).isoformat())
 
 
@@ -119,10 +122,42 @@ def report_provenance(cur, argv):
     print("\n".join(out))
 
 
+def wilson(k, n, z=1.96):
+    if n == 0:
+        return (0.0, 1.0)
+    p, d = k / n, 1 + z * z / n
+    c, h = (p + z * z / (2 * n)) / d, z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+def false_positive_lines(jd):
+    """検査器の指摘 1 件ごとの judge の裁き（inspection 類型）から偽陽性率を出す（health.yaml の false_positive_rate）。
+    judge の推定: 不採用 / （採用＋不採用）。人へ回したものは分母から除く。
+    人の確認: 人が採点した指摘のうち、偽陽性だったもの（judge の不採用に人が同意、または judge の採用に人が不同意）"""
+    adopt = sum(1 for r in jd if r["v"] == "adopt")
+    reject = sum(1 for r in jd if r["v"] == "reject")
+    n = adopt + reject
+    lines = ["| 指標 | 値 | 件数 | Wilson 95% |", "|---|---|---|---|"]
+    if n:
+        lo, hi = wilson(reject, n)
+        lines.append(f"| 偽陽性率（judge の推定） | {reject / n:.0%} | {reject}/{n} | {lo:.2f}〜{hi:.2f} |")
+    else:
+        lines.append("| 偽陽性率（judge の推定） | — | 0/0 | — |")
+    graded = [r for r in jd if r["g"] in ("agree", "disagree") and r["v"] in ("adopt", "reject")]
+    fp = sum(1 for r in graded if (r["v"] == "reject") == (r["g"] == "agree"))
+    if graded:
+        lo, hi = wilson(fp, len(graded))
+        lines.append(f"| 偽陽性率（人の確認） | {fp / len(graded):.0%} | {fp}/{len(graded)} | {lo:.2f}〜{hi:.2f} |")
+    else:
+        lines.append("| 偽陽性率（人の確認） | — | 0/0（採点待ち） | — |")
+    lines += ["", f"- 人へ回した指摘 {sum(1 for r in jd if r['v'] == 'escalate')} 件は分母から除く。見逃し（miss_rate）はまだ測っていない"]
+    return lines
+
+
 def report_judgments(cur, argv):
     frm, to = window(argv)
     cur.execute("""select payload->>'category' as c, payload->>'stage' as st, payload->>'mode' as m, payload->>'verdict' as v,
-                          (payload->'score'->>'self_reported')::float as conf, payload->>'human_grade' as g
+                          (payload->'score'->>'self_reported')::float as conf, payload->'human_grade'->>'grade' as g
                      from artifacts where type='Judgment' and created_at >= %s::date and created_at < %s::date""", (frm, to))
     rows = cur.fetchall()
     out = [f"# 判断の記録（{frm} 〜 {to}、制御プレーンから生成）", "", "生成: `factoryctl report judgments --from --to`（ADR 0006）。類型は definitions/judgments.yaml " + judgment.TAXONOMY_VERSION, ""]
@@ -141,6 +176,7 @@ def report_judgments(cur, argv):
         changed = sum(1 for r in jd if r["v"] in ("replace", "reject"))
         escal = sum(1 for r in jd if r["v"] == "escalate")
         out.append(f"| {c} | {len(prov)} | {len(jd)} | {changed} | {escal} | {avg} | {g['n']} | {agree} |")
+    out += ["", "## 検査の偽陽性率", ""] + false_positive_lines([r for r in rows if r["c"] == "inspection" and r["st"] == "judged"])
     out += ["", "## モード別（judge）", "", "| モード | 件数 | 人へ |", "|---|---|---|"]
     for m in sorted({r["m"] for r in rows if r["st"] == "judged"}):
         rs = [r for r in rows if r["st"] == "judged" and r["m"] == m]

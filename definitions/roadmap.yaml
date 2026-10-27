@@ -56,7 +56,7 @@ phases:
       - id: l4_pairwise
         ja: "L4 のペア比較一致率 ≥ 80%"
         measure: { pairwise: { glob: "tmp/evals/pairwise-????-??-??.json", target_n: 30, threshold: 0.8 } }
-      - { id: false_positive_rate, ja: "偽陽性率が計測されている", measure: { manual: todo } }
+      - { id: false_positive_rate, ja: "偽陽性率が計測されている", measure: { manual: done } }   # factoryctl report judgments の「検査の偽陽性率」（judge の推定と人の確認）
       - { id: l1_compat_checker, ja: "L1 の互換性チェッカー", measure: { manual: todo } }
 
   - id: P2
