@@ -58,6 +58,25 @@ docker compose exec dispatcher factoryctl events 12     # そのジョブのイ�
 - 4 項目が埋まれば Request（clarified）を artifacts に残してラベルを `factory:clarified` に。埋まらなければ failed（unresolved）
 - events に `request.received` / `request.clarified` / `request.unresolved`（往復回数）。triage と Deliver への接続は P4
 
+## 操業停止の記録と番人（ADR 0005）
+
+工場が止まった・遅れた事例を Stoppage として `events` に記録する（`stoppage.opened` / `stoppage.closed` を key で対にし、view `stoppages` で読む）。既存の DB には `postgres/init/002_stoppages.sql` を `psql -f` で当てる。
+
+- 番人は dispatcher の中で 60 秒ごとに制御プレーンだけを見る（トークンを使わない）。開く条件（閾値は仮置き）:
+  - `idle:` 実行中 0 かつ投入可能 0 が 20 分（`WATCH_IDLE_MIN`）。ジョブが積まれたら閉じる
+  - `heartbeat:` supervisor の heartbeat が 30 分ない（`WATCH_HEARTBEAT_MIN`。heartbeat が 1 度でも来てから有効）
+  - `job:<id>` 予算・時間の超過と人の手当てを待つ失敗（使用量上限・時間切れ・ターン上限は budget、要求が確定しないは ticket、その他は factory-bug）。同じ Issue の次のジョブが始まったら閉じる
+  - `stuck:<id>` 打ち切りの時刻を過ぎても running のまま
+- 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
+- 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
+
+```bash
+docker compose exec dispatcher factoryctl stoppage open perm "gh pr merge が許可待ち" --waiting-for "Tetsuro の許可" --key S17
+docker compose exec dispatcher factoryctl stoppage close S17 --remedy "許可リストに追加" --prevention "1 Bash 1 コマンド"
+docker compose exec dispatcher factoryctl stoppage list --open
+docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --to 2026-10-27   # Markdown（既定は直近 7 日、Asia/Tokyo）
+```
+
 ## ジョブ用の DB
 
 dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<id>` を作り、ワーカーに `DATABASE_URL` で渡す（終了時に落とす）。ワーカーは自前で DB を立てずに DB のテストを動かせる。`JOB_DB_ENABLED=0` で止められる。

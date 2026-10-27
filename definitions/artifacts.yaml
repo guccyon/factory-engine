@@ -66,6 +66,13 @@ types:
   Routine:
     stage: routine
     required: [id, schedule, line, output_type, audience]
+  Stoppage:
+    stage: govern
+    required: [key, category, what, started_at, detected_by]
+    optional: [ended_at, waiting_for, cause, remedy, prevention, correlation_id, job_id]
+    category_values: [env, perm, human, factory-bug, ticket, external, budget]   # budget は契約の使用量上限・予算・時間・ターンの超過
+    detected_by_values: [watcher, supervisor, builder]
+    note: "工場が止まった・遅れた事例（ADR 0005）。表は持たず events の stoppage.opened / closed を key で対にする（view stoppages）。stoppages.md は週次レポートの生成物"
   FactoryHealthReport:
     stage: govern
     required: [period, viewpoints, patterns_detected, self_report]

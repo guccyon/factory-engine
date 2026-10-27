@@ -29,6 +29,8 @@ from minio import Minio
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import stoppage
+
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
@@ -51,6 +53,11 @@ JOB_DB_ENABLED = ENV.get("JOB_DB_ENABLED", "1") == "1"
 JOB_DB_HOST = ENV.get("JOB_DB_HOST", "postgres")          # ワーカーコンテナから見たホスト名（compose のネットワーク上）
 JOB_DB_NETWORK = ENV.get("JOB_DB_NETWORK", "factory_default")
 JOB_DB_USER, JOB_DB_PASSWORD = "factory", ENV.get("POSTGRES_PASSWORD", "factory")
+# 番人（ADR 0005）。閾値は仮置き（委任の範囲。運用で調整）
+WATCH_INTERVAL = int(ENV.get("WATCH_INTERVAL_SEC", "60"))
+IDLE_MIN = int(ENV.get("WATCH_IDLE_MIN", "20"))              # 実行中 0 かつ投入可能 0 がこの分数続いたら停止
+HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の heartbeat がこの分数ないと停止（heartbeat が 1 度でも来てから有効）
+USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
 store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV["OBJECTSTORE_ACCESS_KEY"], secret_key=ENV["OBJECTSTORE_SECRET_KEY"], secure=False)
@@ -240,7 +247,8 @@ def run_job(job: dict):
             usage = (result or {}).get("usage") or {}
             total_tokens = sum(int(v) for k, v in usage.items() if isinstance(v, (int, float)) and k.endswith("tokens"))
             billable_tokens = sum(int(usage.get(k, 0) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))   # 予算はキャッシュ読みを除く
-            record_event(cur, "job.finished", corr, job_id, {"state": state, "error": err, "exit": proc.returncode,
+            usage_limited = state == "failed" and any(m in l.lower() for l in lines[-30:] for m in USAGE_LIMIT_MARKERS)   # 契約の使用量上限（S15）
+            record_event(cur, "job.finished", corr, job_id, {"state": state, "error": err, "exit": proc.returncode, "usage_limited": usage_limited,
                                                              "total_tokens": total_tokens, "billable_tokens": billable_tokens, "over_budget": billable_tokens > TOKEN_BUDGET,
                                                              "incomplete": bool((result or {}).get("incomplete")), "claude_exit": (result or {}).get("claude_exit"),
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
@@ -311,6 +319,95 @@ def run_loop():
         threading.Thread(target=_run, daemon=True).start()
 
 
+# ------------------------------------------------------------------ 番人（ADR 0005）。トークンを使わず、制御プレーンの状態だけ見る
+def classify_failure(p: dict) -> tuple[str, str, str] | None:
+    """失敗したジョブを (分類, 何が止まったか, 待っているもの) にする。自動で回復するものは None"""
+    err = p.get("error") or ""
+    if err in ("orphaned_by_restart", "lock_held", "cancel_requested"):
+        return None
+    if p.get("usage_limited"):
+        return "budget", "契約の使用量上限でジョブが止まった", "使用量上限のリセット後の rerun"
+    if err == "timeout":
+        return "budget", f"時間の上限（{JOB_TIMEOUT // 60} 分）で打ち切られた", "チケットの分割か rerun"
+    if err.startswith("incomplete"):
+        return "budget", "ターン上限で途中終了した（ドラフト PR）", "建設者の仕上げか rerun"
+    if err == "unresolved_after_max_rounds":
+        return "ticket", "要求が質問の上限まで往復しても確定しなかった", "要求者か建設者の判断"
+    return "factory-bug", "ジョブが失敗した（未分類。人が分類を直す）", "原因の調査と rerun"
+
+
+def watch_once():
+    with db() as conn, conn.cursor() as cur:
+        # 番人が見始めた時点。これより前のジョブの失敗は遡って開かない（過去分は builder が手で記録している）
+        record_event(cur, "watcher.started", None, None, {}, dedupe_key="watcher.started:v1")
+        cur.execute("select occurred_at from events where dedupe_key='watcher.started:v1'")
+        since = cur.fetchone()["occurred_at"]
+
+        # 1) ラインが空: 実行中 0 かつ投入可能 0 が IDLE_MIN 分
+        cur.execute("select count(*) filter (where state='running') as r, count(*) filter (where state='queued') as q, "
+                    "max(greatest(enqueued_at, coalesce(started_at, enqueued_at), coalesce(finished_at, enqueued_at))) as last, "
+                    "now() - max(greatest(enqueued_at, coalesce(started_at, enqueued_at), coalesce(finished_at, enqueued_at))) > make_interval(mins => %s) as long_idle "
+                    "from jobs", (IDLE_MIN,))
+        j = cur.fetchone()
+        idle_open = stoppage.open_keys(cur, "idle:")
+        if j["r"] == 0 and j["q"] == 0:
+            if not idle_open and j["last"] and j["long_idle"]:
+                stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "human", "ラインが空（実行中・投入可能のジョブがない）",
+                                       waiting_for="次の Ticket（factory:implement / factory:request のラベル）か、承認待ちの PR の判断", started_at=j["last"])
+        else:
+            for k in idle_open:
+                stoppage.close_stoppage(cur, k, remedy="ジョブが投入された")
+
+        # 2) supervisor の heartbeat（1 度でも来てから有効）
+        cur.execute("select max(occurred_at) as last, now() - max(occurred_at) > make_interval(mins => %s) as stale "
+                    "from events where name='supervisor.heartbeat'", (HEARTBEAT_MIN,))
+        h = cur.fetchone()
+        hb_open = stoppage.open_keys(cur, "heartbeat:")
+        if h["last"] and h["stale"]:
+            if not hb_open:
+                stoppage.open_stoppage(cur, f"heartbeat:{h['last']:%Y%m%dT%H%M%S}", "env", f"supervisor の heartbeat が {HEARTBEAT_MIN} 分ない",
+                                       waiting_for="supervisor の再起動（Mac のスリープ・停止を確認）", started_at=h["last"], detected_by="watcher")
+        else:
+            for k in hb_open:
+                stoppage.close_stoppage(cur, k, remedy="heartbeat が戻った")
+
+        # 3) 予算・時間の超過と、人の手当てを待つ失敗
+        cur.execute("select job_id, correlation_id, occurred_at, payload from events "
+                    "where name='job.finished' and payload->>'state'='failed' and occurred_at >= %s order by id", (since,))
+        for e in cur.fetchall():
+            c = classify_failure(e["payload"])
+            if c:
+                stoppage.open_stoppage(cur, f"job:{e['job_id']}", c[0], c[1], waiting_for=c[2], cause=e["payload"].get("error") or "",
+                                       started_at=e["occurred_at"], correlation_id=e["correlation_id"], job_id=e["job_id"])
+        for k in stoppage.open_keys(cur, "job:"):
+            cur.execute("select j2.id from jobs j1 join jobs j2 on j2.correlation_id=j1.correlation_id and j2.id>j1.id and j2.started_at is not null "
+                        "where j1.id=%s order by j2.id limit 1", (int(k.split(":", 1)[1]),))
+            nxt = cur.fetchone()
+            if nxt:
+                stoppage.close_stoppage(cur, k, remedy=f"再実行された（job {nxt['id']}）")
+
+        # 4) 打ち切りの時刻を過ぎても running のまま（dispatcher の不具合）
+        cur.execute("select id, correlation_id, started_at from jobs where state='running' and started_at < now() - make_interval(secs => %s)",
+                    (JOB_TIMEOUT + 600,))
+        stuck = {r["id"]: r for r in cur.fetchall()}
+        for r in stuck.values():
+            stoppage.open_stoppage(cur, f"stuck:{r['id']}", "factory-bug", "打ち切りの時刻を過ぎてもジョブが running のまま",
+                                   waiting_for="dispatcher の調査（factoryctl stop / 再起動）", started_at=r["started_at"],
+                                   correlation_id=r["correlation_id"], job_id=r["id"])
+        for k in stoppage.open_keys(cur, "stuck:"):
+            if int(k.split(":", 1)[1]) not in stuck:
+                stoppage.close_stoppage(cur, k, remedy="ジョブが終了した")
+
+
+def watch_loop():
+    while True:
+        try:
+            watch_once()
+        except Exception as e:  # noqa: BLE001  番人の失敗でラインを止めない
+            log("watch error", repr(e))
+        time.sleep(WATCH_INTERVAL)
+
+
 # ------------------------------------------------------------------ Webhook（任意）
 class Hook(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
@@ -356,6 +453,8 @@ def main():
         store.make_bucket(BUCKET)
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
     threading.Thread(target=poll_loop, daemon=True).start()
+    if ENV.get("WATCH_ENABLED", "1") == "1":
+        threading.Thread(target=watch_loop, daemon=True).start()
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)
         threading.Thread(target=srv.serve_forever, daemon=True).start()

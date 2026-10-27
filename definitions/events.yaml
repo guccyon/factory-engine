@@ -63,6 +63,18 @@ events:
     source: monitoring
     required: [incident_id, detected_at, severity, related_pr_ids]
     note: "P0 では発生源がない（Gen1 はモック環境のエラー監視を P2 で）"
+  stoppage.opened:
+    source: control_plane
+    required: [key, category, what, detected_by]
+    note: "ADR 0005。番人（dispatcher）か factoryctl が出す。dedupe_key は stoppage.opened:<key>。started_at が過去なら payload に入れる"
+  stoppage.closed:
+    source: control_plane
+    required: [key, closed_by]
+    note: "remedy（その場の手当て）、prevention（再発防止）、ended_at を任意で持つ"
+  supervisor.heartbeat:
+    source: control_plane
+    required: []
+    note: "ADR 0004 の supervisor が定期的に出す。番人は 1 度でも来てから途絶えを見る"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
@@ -82,3 +94,4 @@ sources:
   approval_log: { how: "未実装。P0 は手入力", gap: true }
   monitoring:   { how: "未実装", gap: true }
   inspector:    { how: "未実装（P1）", gap: true }
+  control_plane: { how: "制御プレーンの Postgres の events（dispatcher と factoryctl が書く）" }
