@@ -197,12 +197,21 @@ def poll_loop():
 
 
 # ------------------------------------------------------------------ ワーカーの実行
+FOLLOWUP_KINDS = ("body_fix",)   # 同じ PR の別ジョブ（judge）の中から積まれる種類
+LOCK_RETRY_SEC = 10
+
 def run_job(job: dict):
     job_id, repo, issue, corr = job["id"], job["repo"], job["issue_number"], job["correlation_id"]
     lock_key = f"{repo}#{issue}"
     with db() as conn, conn.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (lock_key,))
         if not cur.fetchone()["ok"]:   # 二重実行の抑止 2 段目
+            if (job.get("kind") or "implement") in FOLLOWUP_KINDS:
+                # judge が後処理の中で積んだ本文の追記は、judge が錠を放す数秒前に拾われることがある。失敗にせず積み直す
+                time.sleep(LOCK_RETRY_SEC)
+                cur.execute("update jobs set state='queued', started_at=null where id=%s and state='running'", (job_id,))
+                record_event(cur, "job.requeued", corr, job_id, {"reason": "advisory_lock_held"})
+                return
             cur.execute("update jobs set state='failed', finished_at=now(), error='lock_held' where id=%s", (job_id,))
             record_event(cur, "job.rejected", corr, job_id, {"reason": "advisory_lock_held"})
             return
