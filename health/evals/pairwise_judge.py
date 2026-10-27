@@ -52,21 +52,26 @@ def load_yaml(path: Path) -> dict:
         return json.loads(sh("ruby", "-ryaml", "-rjson", "-e", 'puts JSON.generate(YAML.load_file(ARGV[0]))', str(path)))
 
 
-def diff_of(ref: str, max_chars: int = 40000) -> tuple[str, str]:
-    """ref は github:<owner>/<repo>#<n>（PR 番号）。閉じた PR でも差分は取れる。"""
-    m = re.match(r"github:([^#]+)#(\d+)", ref)
-    repo, n = m.group(1), m.group(2)
-    title = json.loads(sh("gh", "pr", "view", n, "-R", repo, "--json", "title"))["title"]
-    d = sh("gh", "pr", "diff", n, "-R", repo)
+def diff_of(ref: str, golden_dir: Path, derived_from: str | None = None, max_chars: int = 40000) -> tuple[str, str]:
+    """ref は github:<owner>/<repo>#<n>（PR 番号。閉じた PR でも差分は取れる）か、file:<golden からの相対パス>（負例として作った差分）。
+    file: の題は derived_from（元にした PR）の題を使い、どちらが作った負例かを題で漏らさない"""
+    if ref.startswith("file:"):
+        d = (golden_dir / ref[len("file:"):]).read_text(encoding="utf-8")
+        title = diff_of(derived_from, golden_dir)[0] if derived_from else ""
+    else:
+        m = re.match(r"github:([^#]+)#(\d+)", ref)
+        repo, n = m.group(1), m.group(2)
+        title = json.loads(sh("gh", "pr", "view", n, "-R", repo, "--json", "title"))["title"]
+        d = sh("gh", "pr", "diff", n, "-R", repo)
     return title, (d[:max_chars] + "\n[... 切り詰め]" if len(d) > max_chars else d)
 
 
-def judge(pair: dict, tier: str, swap: bool) -> dict:
-    a_ref, b_ref = pair["pair"]["a"]["ref"], pair["pair"]["b"]["ref"]
+def judge(pair: dict, tier: str, swap: bool, golden_dir: Path) -> dict:
+    a, b = pair["pair"]["a"], pair["pair"]["b"]
     if swap:   # 位置バイアスを打ち消すため a/b を入れ替えてもう 1 回聞く
-        a_ref, b_ref = b_ref, a_ref
-    ta, da = diff_of(a_ref)
-    tb, db = diff_of(b_ref)
+        a, b = b, a
+    ta, da = diff_of(a["ref"], golden_dir, a.get("derived_from"))
+    tb, db = diff_of(b["ref"], golden_dir, b.get("derived_from"))
     prompt = f"""あなたは工場の検査官です。同じ Ticket（{pair['ticket']}）に対する 2 つの成果物 A と B を比べ、
 設計として望ましい方を選んでください。観点は L4（モデリング品質）: 用語が SSOT（specs/）と整合しているか、
 不変条件や事業の制約が正しく反映されているか、境界づけられたコンテキストの割り当てが妥当か、推測で定義を作っていないか。
@@ -134,8 +139,8 @@ def main() -> int:
         if a.ids and str(g["id"]) not in a.ids.split(","):
             continue
         try:
-            j1 = judge(g, a.tier, swap=False)
-            j2 = judge(g, a.tier, swap=True)
+            j1 = judge(g, a.tier, swap=False, golden_dir=Path(a.golden))
+            j2 = judge(g, a.tier, swap=True, golden_dir=Path(a.golden))
         except Exception as e:  # noqa: BLE001  判定器の失敗はそのペアを error にして続ける
             print(f"{g['id']}: judge error: {e}", file=sys.stderr)
             rows.append({"id": g["id"], "ticket": g["ticket"], "golden": g["preferred"], "judge": "error", "error": str(e)[-300:],
@@ -153,17 +158,23 @@ def main() -> int:
         else:
             abstained += 1
         rows.append({"id": g["id"], "ticket": g["ticket"], "golden": g["preferred"], "golden_scored_by": g.get("scored_by"),
-                     "judge": verdict, "runs": [j1, j2], "outcome": outcome, "agree": outcome == "agree"})
+                     "polarity": g.get("polarity"), "judge": verdict, "runs": [j1, j2], "outcome": outcome, "agree": outcome == "agree"})
         print(f"{g['id']}: golden={g['preferred']} judge={verdict} ({OUTCOME_LABEL[outcome]})", file=sys.stderr)
     lo, hi = wilson(agree, n)
+    by_polarity = {}   # 負例として作ったペア（one_flawed）と、どちらも受け入れられるペア（both_acceptable）を分けて見る。前者だけで 80% を超えても判定器の校正としては弱い
+    for r in rows:
+        if r.get("outcome") in ("agree", "disagree"):
+            d = by_polarity.setdefault(r.get("polarity") or "unknown", {"n": 0, "agree": 0})
+            d["n"] += 1
+            d["agree"] += int(r["outcome"] == "agree")
     report = {"evalspec": "l4-pairwise", "metric": "pairwise_accuracy", "tier": a.tier, "model": TIER_MODEL[a.tier],
-              "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree, "golden_ties": ties, "golden_ties_held": tie_held, "judge_abstained": abstained,
+              "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree, "golden_ties": ties, "golden_ties_held": tie_held, "judge_abstained": abstained, "by_polarity": by_polarity,
               "pairwise_accuracy": round(agree / n, 3) if n else None, "wilson95": [lo, hi],
               "threshold": 0.80, "min_cases_for_release": 100, "release_granted": False,
               "note": "N < 100 の暫定指標。ブレーカーには使わない。判定器の tie / inconsistent と、建設者の選好が tie のペアは分母から除く",
               "cost_usd": round(cost, 4), "pairs": rows}
     Path(a.out).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ("n", "agree", "pairwise_accuracy", "wilson95", "golden_ties", "golden_ties_held", "judge_abstained", "cost_usd")}, ensure_ascii=False))
+    print(json.dumps({k: report[k] for k in ("n", "agree", "pairwise_accuracy", "wilson95", "golden_ties", "golden_ties_held", "judge_abstained", "by_polarity", "cost_usd")}, ensure_ascii=False))
     return 0
 
 
