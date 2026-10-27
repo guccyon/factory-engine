@@ -45,6 +45,7 @@ types:
   Release:
     stage: ship
     required: [version, environment, prs, rollback_target]
+    note: "ロット（ADR 0007）。release_id は <repo>@<app_version>。Gen1 は factoryctl release create で後付けし、前の Release 以降にマージされた工場の PR をまとめて含める。environment と rollback_target は出荷の経路ができてから"
   Incident:
     stage: operate
     required: [severity, detected_at, impact, related_releases]
