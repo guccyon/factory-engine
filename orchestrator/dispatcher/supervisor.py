@@ -7,6 +7,7 @@
   製品の manifest（autonomy の matrix・always_human_approve・phase_grants）を引いて判定を記録する。
   表が auto で、かつ工場の権限（phase_grants の merge）も auto のときだけ実際にマージする。それ以外は記録だけ（shadow）
 - 結果: 判定を記録した PR が閉じたら、誰がマージしたか（しなかったか）を記録する（判定と人の判断の一致率の材料）
+- 検証の起動: マージを判定した head ごとに検査ジョブ（kind=inspect、L4 の shadow 判定）を積む。結果は gate.evaluated と InspectionReport
 - 依存順の投入: `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら `factory:implement` に替える（同時に流すのは上限まで）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
@@ -39,6 +40,7 @@ RULES_PATH = ENV.get("CHANGE_TYPE_RULES", "/definitions/change_type_rules.yaml")
 PLANNED_LABEL, IMPLEMENT_LABEL = "factory:planned", ENV.get("TRIGGER_LABEL", "factory:implement")
 APPROVAL_LABEL = "factory:needs-approval"
 DRY_RUN = bool(ENV.get("SUPERVISOR_DRY_RUN"))   # GitHub に書かない（読むだけ）
+INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"   # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -187,6 +189,7 @@ def merge_step(cur, rules: dict, manifests: dict):
         log("merge decided", p["url"], d["table"], "grant", d["factory_grant"], d["change_types"])
         if DRY_RUN:
             continue
+        enqueue_inspect(cur, p, sha)
         if d["table"] == "human_approve":
             gh("POST", f"repos/{p['repo']}/issues/{p['number']}/labels", {"labels": [APPROVAL_LABEL]})
         if d["execute"]:
@@ -194,6 +197,23 @@ def merge_step(cur, rules: dict, manifests: dict):
             record(cur, "supervisor.merged", p["corr"], {"pr_url": p["url"], "head_sha": sha}, f"supervisor.merged:{p['url']}")
             open_count -= 1
     return open_count
+
+
+def enqueue_inspect(cur, p: dict, sha: str):
+    """検証の起動: CI を通った工場の PR の head ごとに 1 回、検査ジョブを積む。実行は dispatcher（worker の inspect.sh）"""
+    if not INSPECT_ENABLED:
+        return
+    if not record(cur, "supervisor.inspect_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha}, f"supervisor.inspect:{p['url']}@{sha}"):
+        return
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','inspect') returning id",
+                    (p["corr"], p["repo"], p["number"]))
+    except psycopg.errors.UniqueViolation:
+        return   # 同じ PR の検査がすでに積まれている
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (p["corr"], jid, Jsonb({"by": "supervisor", "kind": "inspect", "pr_url": p["url"], "head_sha": sha})))
+    log("inspect enqueued", p["url"], "job", jid)
 
 
 def enqueue_step(cur, open_prs: int):

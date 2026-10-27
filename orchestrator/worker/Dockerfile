@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
 RUN npm install -g @anthropic-ai/claude-code@2.1.310
 # YAML の検証用（ワーカーの環境に YAML パーサーがないと PR #4 / #11 / #12 で報告された）
 RUN ARCH=$(dpkg --print-architecture) && curl -fsSL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_${ARCH}" -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
+# 検査ジョブ（inspect.sh）が core-gates/shadow_review.py を動かすための python3 と PyYAML
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-yaml && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 worker
 USER worker
 WORKDIR /work
@@ -15,4 +17,6 @@ COPY --chown=worker:worker entrypoint.sh /usr/local/bin/entrypoint.sh
 # clarify（intake → clarify の最小経路）とその要求者ペルソナ
 COPY --chown=worker:worker clarify.sh /usr/local/bin/clarify.sh
 COPY --chown=worker:worker personas/requesters.yaml /usr/local/share/factory/requesters.yaml
+# 検査ジョブ（工場の PR に L4 の shadow 判定をかける。ADR 0004）
+COPY --chown=worker:worker inspect.sh /usr/local/bin/inspect.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

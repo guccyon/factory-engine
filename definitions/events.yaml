@@ -85,6 +85,10 @@ events:
   supervisor.merged:
     source: control_plane
     required: [pr_url, head_sha]
+  supervisor.inspect_enqueued:
+    source: control_plane
+    required: [pr_url, head_sha]
+    note: "検証の起動（ADR 0004）。head ごとに 1 回。結果は gate.evaluated（mode=shadow）"
   supervisor.enqueued:
     source: control_plane
     required: [repo, issue, deps]
@@ -104,7 +108,7 @@ events:
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
-    note: "P1 から"
+    note: "P1 から。supervisor が積む検査ジョブ（kind=inspect）が mode=shadow で出す。InspectionReport が同じ中身を持つ"
 
 tier_map:                        # モデル名 → tier（budgets.model_tiers）。末尾の [1m] などの文脈長の印は外して照合する
   claude-opus-5-5: tier-large
@@ -119,5 +123,5 @@ sources:
   claude_code_session_log: { how: "~/.claude/projects/*/*.jsonl", note: "手元の Mac のセッションだけ。クラウドのセッションは含まれない（欠損の主因）" }
   approval_log: { how: "未実装。P0 は手入力", gap: true }
   monitoring:   { how: "未実装", gap: true }
-  inspector:    { how: "未実装（P1）", gap: true }
+  inspector:    { how: "検査ジョブ（worker の inspect.sh → core-gates/shadow_review.py）の結果を dispatcher が記録" }
   control_plane: { how: "制御プレーンの Postgres の events（dispatcher と factoryctl が書く）" }
