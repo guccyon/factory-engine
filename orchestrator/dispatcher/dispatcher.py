@@ -298,7 +298,8 @@ def run_job(job: dict):
             if result and result.get("pr_url") and (result.get("provisional_raw") or "").strip():
                 # ワーカーの仮決め（ADR 0006）。記録の失敗でラインは止めない
                 try:
-                    items = judgment.record_provisional(cur, corr, job_id, result["pr_url"], result["provisional_raw"])
+                    mode, _ = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))   # 仮決めした時点のモード
+                    items = judgment.record_provisional(cur, corr, job_id, result["pr_url"], result["provisional_raw"], mode)
                     if items and result.get("pr_number"):
                         swap_label(repo, int(result["pr_number"]), [], [PROVISIONAL_LABEL])
                 except Exception as e:  # noqa: BLE001
