@@ -74,7 +74,7 @@ svg.chart text { fill: var(--muted); font-family: var(--f-num); font-size: 10px 
 svg.chart .grid { stroke: var(--rule); stroke-width: 1 }
 svg.chart .cum { fill: none; stroke: var(--amber); stroke-width: 2 }
 svg.chart .cum-pt { fill: var(--amber) }
-svg.chart .s0 { fill: var(--steel) } svg.chart .s1 { fill: var(--steel-soft) } svg.chart .s2 { fill: var(--bad) }
+svg.chart .s0 { fill: var(--steel) } svg.chart .s1 { fill: var(--steel-soft) } svg.chart .s2 { fill: var(--bad) } svg.chart .s3 { fill: var(--muted) }
 svg.chart .yday { fill: var(--amber); opacity: .12 }
 
 .meters { display: grid; gap: 10px }
@@ -87,6 +87,15 @@ svg.chart .yday { fill: var(--amber); opacity: .12 }
 .pill { font-size: 11px; padding: 1px 8px; border: 1px solid var(--rule); color: var(--muted); white-space: nowrap }
 .pill.unknown { border-color: var(--warn); color: var(--warn) }
 
+.gate { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px }
+@media (max-width: 760px) { .gate { grid-template-columns: minmax(0, 1fr) } }
+.gen1 { font-size: 11px; padding: 0 6px; margin-left: 8px; border: 1px solid var(--amber); color: var(--amber); letter-spacing: 0; vertical-align: 1px }
+.reasons { width: 100%; border-collapse: collapse; font-size: 13px }
+.reasons th, .reasons td { padding: 6px 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top }
+.reasons th { font-size: 11px; color: var(--muted); font-weight: 400; letter-spacing: .06em }
+.reasons td.n { font-family: var(--f-num); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap }
+.reasons .hbar { height: 6px; background: var(--amber); margin-top: 4px }
+.table-wrap { overflow-x: auto; min-width: 0 }
 details { background: var(--sheet); border: 1px solid var(--rule); padding: 10px 16px }
 details summary { cursor: pointer; font-weight: 700 }
 details summary:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px }
@@ -129,6 +138,18 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
     <div class="meters" id="meters"></div>
   </section>
 
+  <section aria-label="自動マージの関所" id="gate-sec" hidden>
+    <h2 style="margin-bottom:12px">自動マージできなかった PR と出入り<span class="gen1">Gen1 限定</span></h2>
+    <div class="gate">
+      <div id="gate-card"></div>
+      <div class="card table-wrap">
+        <h2>止まった観点（工場の PR、累計の多い順）</h2>
+        <table class="reasons"><thead><tr><th>観点</th><th style="text-align:right">前日</th><th style="text-align:right">累計</th><th style="text-align:right">滞留中</th></tr></thead><tbody id="reasons"></tbody></table>
+        <div class="sub-note" id="gate-note"></div>
+      </div>
+    </div>
+  </section>
+
   <details id="merged">
     <summary id="merged-sum"></summary>
     <ul id="merged-list"></ul>
@@ -150,18 +171,18 @@ const fmt = (v, d = 0) => (v == null ? "—" : Number(v).toLocaleString("ja-JP",
 function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
 
 // 日ごとの積み上げ棒（左の目盛り）と累計の折れ線（右の目盛り）。前日の列は淡く塗って示す
-function combo(series, stacks, { cumulative = true } = {}) {
+function combo(series, stacks, { cumulative = true, marker = null } = {}) {
   const W = 320, H = 132, L = 26, R = cumulative ? 34 : 8, T = 8, B = 20;
   const n = series.length, iw = W - L - R, ih = H - T - B, bw = iw / Math.max(n, 1);
   const daily = series.map((d) => stacks.reduce((a, s) => a + (d[s.key] || 0), 0));
   const cum = []; daily.reduce((a, v, i) => (cum[i] = a + v), 0);
-  const ymax = niceMax(Math.max(...daily, 0)), cmax = niceMax(Math.max(...cum, 0));
+  const ymax = niceMax(Math.max(...daily, ...(marker ? series.map((d) => d[marker] || 0) : []), 0)), cmax = niceMax(Math.max(...cum, 0));
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img" });
   for (const f of [0, 0.5, 1]) {
     const y = T + ih * (1 - f);
     svg.append(svgEl("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }));
-    svg.append(svgEl("text", { x: L - 4, y: y + 3, "text-anchor": "end" }, fmt(ymax * f, ymax < 5 && f === 0.5 ? 1 : 0)));
-    if (cumulative) svg.append(svgEl("text", { x: W - R + 4, y: y + 3 }, fmt(cmax * f, cmax < 5 && f === 0.5 ? 1 : 0)));
+    svg.append(svgEl("text", { x: L - 4, y: y + 3, "text-anchor": "end" }, fmt(ymax * f, Number.isInteger(ymax * f) ? 0 : 1)));
+    if (cumulative) svg.append(svgEl("text", { x: W - R + 4, y: y + 3 }, fmt(cmax * f, Number.isInteger(cmax * f) ? 0 : 1)));
   }
   if (n) svg.append(svgEl("rect", { class: "yday", x: L + bw * (n - 1), y: T, width: bw, height: ih }));
   series.forEach((d, i) => {
@@ -173,6 +194,11 @@ function combo(series, stacks, { cumulative = true } = {}) {
     const step = Math.ceil(n / 7);
     if (i % step === 0 || i === n - 1) svg.append(svgEl("text", { x: L + bw * (i + 0.5), y: H - 5, "text-anchor": "middle" }, md(d.date)));
   });
+  if (marker && n) {
+    const pts = series.map((d, i) => [L + bw * (i + 0.5), T + ih * (1 - (d[marker] || 0) / ymax)]);
+    svg.append(svgEl("polyline", { class: "cum", points: pts.map((p) => p.join(",")).join(" ") }));
+    pts.forEach(([x, y]) => svg.append(svgEl("circle", { class: "cum-pt", cx: x, cy: y, r: 3 })));
+  }
   if (cumulative && n) {
     const pts = cum.map((c, i) => [L + bw * (i + 0.5), T + ih * (1 - c / cmax)]);
     svg.append(svgEl("polyline", { class: "cum", points: pts.map((p) => p.join(",")).join(" ") }));
@@ -292,6 +318,29 @@ function render() {
       m.append(el("span", it.unknown ? "pill unknown" : "pill", it.value)); $("meters").append(m);
     });
   });
+
+  // 自動マージの関所（Gen1 限定）
+  const G = S.merge_gate;
+  if (G) {
+    $("gate-sec").hidden = false;
+    const byDay = Object.fromEntries((G.flow || []).map((f) => [f.date, f]));
+    const fs = series.map((d) => ({ date: d.date, ...(byDay[d.date] || {}) }));
+    const g = combo(fs, [{ key: "auto" }, { key: "human", cls: "s1" }, { key: "closed", cls: "s3" }], { cumulative: false, marker: "opened" });
+    const yd = fs[fs.length - 1] || {};
+    $("gate-card").append(card({ title: "出入り（工場の PR）", chart: g.svg,
+      figs: [["前日 入", fmt(yd.opened || 0)], ["前日 出", fmt((yd.auto || 0) + (yd.human || 0) + (yd.closed || 0))],
+             ["自動マージ（累計）", `${fmt(G.auto)} / ${fmt(G.total)}`, true]],
+      legend: [["自動マージ", col("--steel")], ["人がマージ", col("--steel-soft")], ["閉じた", col("--muted")], ["入（工場が出した）", col("--amber"), true]],
+      note: `前日の出: 自動 ${yd.auto || 0} / 人 ${yd.human || 0} / 閉じた ${yd.closed || 0}` }));
+    const entries = Object.entries(G.reasons || {}), top = Math.max(1, ...entries.map(([, r]) => r.total));
+    entries.forEach(([k, r]) => {
+      const tr = el("tr"), td = el("td", null, k), bar = el("div", "hbar"); bar.style.width = `${(r.total / top) * 100}%`; td.append(bar);
+      tr.append(td, el("td", "n", fmt(r.yday)), el("td", "n", fmt(r.total)), el("td", "n", fmt(r.open))); $("reasons").append(tr);
+    });
+    if (!entries.length) { const tr = el("tr"); const td = el("td", "muted", "まだありません"); td.colSpan = 4; tr.append(td); $("reasons").append(tr); }
+    $("gate-note").textContent = `表（manifest の autonomy）が auto で、人がそのままマージした PR: ${fmt(G.table_auto_human_merged)} 件。自動マージを解放する根拠になる。` +
+      "観点は supervisor の判定の記録から機械的に決めている（変更種別、工場の権限、判定まで来なかったもの）";
+  }
 
   // 前日にマージした PR
   const merged = Object.entries(S.activity.merged || {}).flatMap(([r, ps]) => ps.map((p) => ({ ...p, repo: r })));
