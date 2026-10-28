@@ -6,8 +6,9 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends unzip xz-utils zip libglu1-mesa && rm -rf /var/lib/apt/lists/*
 USER worker
 ENV FLUTTER_HOME=/home/worker/flutter PATH=/home/worker/flutter/bin:/home/worker/.pub-cache/bin:$PATH
-# stable チャンネルを浅く取得し、Web と Android の事前準備はしない（テストだけ）
-RUN git clone -q --depth 1 --branch stable https://github.com/flutter/flutter.git "${FLUTTER_HOME}" \
+# 版を固定して浅く取得し（ビルドし直しても同じ版になるように。上げるときはここを変える PR で）、Web と Android の事前準備はしない（テストだけ）
+ARG FLUTTER_VERSION=3.47.8
+RUN git clone -q --depth 1 --branch "${FLUTTER_VERSION}" https://github.com/flutter/flutter.git "${FLUTTER_HOME}" \
  && flutter config --no-analytics --no-cli-animations --no-enable-android --no-enable-ios --no-enable-web >/dev/null \
  && flutter precache --no-android --no-ios --no-web --no-linux --no-windows --no-macos --no-fuchsia >/dev/null \
  && flutter --version && dart --version

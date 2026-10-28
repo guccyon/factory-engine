@@ -86,7 +86,7 @@ def snapshot(cur) -> dict:
     # 工場の PR（検査・判定・マージ待ち・人の出番）
     cur.execute("select distinct on (a.payload->>'pr_url') a.payload->>'pr_url' as pr_url, a.correlation_id, "
                 "coalesce((a.payload->>'incomplete')::boolean, false) as incomplete, a.created_at "
-                "from artifacts a where a.type='PR' and a.payload->>'pr_url' is not null and a.created_at > now() - interval '14 days' "
+                "from artifacts a where a.type='PR' and a.payload->>'pr_url' like 'https://github.com/%' and a.created_at > now() - interval '14 days' "
                 "and not exists (select 1 from events e where e.name in ('pr.merged','pr.closed_unmerged') and e.payload->>'pr_url'=a.payload->>'pr_url') "
                 "order by a.payload->>'pr_url', a.id desc")
     for p in cur.fetchall():

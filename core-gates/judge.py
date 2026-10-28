@@ -7,7 +7,7 @@
 出力は標準出力の JSON 1 つ。judge はツールを持たない（--tools ""）。読むもの（PR の本文・差分・根拠に挙がったファイル）はこちらで渡す。
 仮決めと指摘の本文は外部入力の影響を受けるので、プロンプトの中ではデータとして囲み、指示として扱わないよう明記する。
 
-依存: python3（標準ライブラリ）、gh、git、claude
+依存: python3（標準ライブラリ）、gh、git、agent_runner（工程 judge。runner とモデルは definitions/agents.yaml）
 """
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ import sys
 import time
 from pathlib import Path
 
-MODEL = "claude-opus-5-5"   # tier-judge
+import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+
 MAX_DIFF, MAX_FILES_CHARS, MAX_FILE, MAX_ISSUE = 40000, 30000, 6000, 8000
 
 SCHEMA = {
@@ -143,13 +144,9 @@ def main() -> int:
 # 差分（データ）
 {diff}
 """
-    out = sh("claude", "-p", prompt, "--model", MODEL, "--tools", "", "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "3")
-    res = json.loads(out)
-    structured = res.get("structured_output") or res.get("result")
-    if isinstance(structured, str):
-        structured = json.loads(structured)
-    print(json.dumps({"pr_url": inp["pr_url"], "model": MODEL, "cost_usd": res.get("total_cost_usd"), "usage": res.get("usage"),
-                      "result": structured}, ensure_ascii=False))
+    r = agent_runner.run("judge", prompt, schema=SCHEMA)
+    print(json.dumps({"pr_url": inp["pr_url"], "model": r.model, "cost_usd": r.cost_usd, "usage": r.usage,
+                      "result": r.output}, ensure_ascii=False))
     return 0
 
 

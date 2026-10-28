@@ -5,7 +5,7 @@
 モデルには本文と差分と指摘を渡し、本文の末尾に足す Markdown の節だけを返させる（ツールなし）。既存の本文は書き換えない。
 出力は標準出力の JSON 1 つ。本文の更新は gh pr edit で行う。
 
-依存: python3（標準ライブラリ）、gh、claude
+依存: python3（標準ライブラリ）、gh、agent_runner（工程 body_fix。runner とモデルは definitions/agents.yaml）
 """
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ import subprocess
 import sys
 import time
 
-MODEL = "claude-sonnet-5-5"   # tier-small
+import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+
 MAX_DIFF, MAX_APPEND = 30000, 4000
 SCHEMA = {"type": "object", "properties": {"append_markdown": {"type": "string"}, "summary": {"type": "string"}},
           "required": ["append_markdown", "summary"]}
@@ -57,17 +58,15 @@ def main() -> int:
 # 差分（データ）
 {diff}
 """
-    out = json.loads(sh("claude", "-p", prompt, "--model", MODEL, "--tools", "", "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "3"))
-    res = out.get("structured_output") or out.get("result")
-    if isinstance(res, str):
-        res = json.loads(res)
+    r = agent_runner.run("body_fix", prompt, schema=SCHEMA)
+    res = r.output
     add = (res.get("append_markdown") or "").strip()[:MAX_APPEND]
     if not add.startswith("## "):
         raise SystemExit("append_markdown must start with a level-2 heading")
     new_body = body.rstrip() + "\n\n" + add + "\n\n（この節は検査の指摘を受けて工場が本文に追記した）\n"
     sh("gh", "pr", "edit", number, "-R", repo, "--body-file", "-", input=new_body)
-    print(json.dumps({"pr_url": inp["pr_url"], "chars": len(add), "summary": res.get("summary"), "model": MODEL,
-                      "cost_usd": out.get("total_cost_usd"), "usage": out.get("usage")}, ensure_ascii=False))
+    print(json.dumps({"pr_url": inp["pr_url"], "chars": len(add), "summary": res.get("summary"), "model": r.model,
+                      "cost_usd": r.cost_usd, "usage": r.usage}, ensure_ascii=False))
     return 0
 
 
