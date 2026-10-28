@@ -198,7 +198,7 @@ def merge_step(cur, rules: dict, manifests: dict):
         if pr["state"] == "closed":
             cur.execute("select payload from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (p["url"],))
             d = cur.fetchone()
-            for key in (f"judge:{p['url']}",):   # judge が人に回した停止は、PR が閉じた（人が判断した）時点で閉じる
+            for key in (f"judge:{p['url']}", f"sendback:{p['url']}"):   # judge が人に回した停止・流さなかった差し戻しは、PR が閉じた（人が判断した）時点で閉じる
                 stoppage.close_stoppage(cur, key, remedy="PR が閉じた（人が判断した）", closed_by="supervisor")
             if pr.get("merged_at"):
                 cur.execute("update tickets set state='closed', updated_at=now() where source='github' and source_ref=%s and state<>'closed'",
