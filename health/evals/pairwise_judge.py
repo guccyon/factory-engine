@@ -74,10 +74,14 @@ def judge(pair: dict, tier: str, swap: bool, golden_dir: Path) -> dict:
         a, b = b, a
     ta, da = diff_of(a["ref"], golden_dir, a.get("derived_from"))
     tb, db = diff_of(b["ref"], golden_dir, b.get("derived_from"))
+    severity = (Path(__file__).resolve().parents[2] / "core-gates" / "severity.md").read_text(encoding="utf-8")
     prompt = f"""あなたは工場の検査官です。同じ Ticket（{pair['ticket']}）に対する 2 つの成果物 A と B を比べ、
-設計として望ましい方を選んでください。観点は L4（モデリング品質）: 用語が SSOT（specs/）と整合しているか、
+利用者と事業にとって望ましい方を選んでください。観点は L4（モデリング品質）: 用語が SSOT（specs/）と整合しているか、
 不変条件や事業の制約が正しく反映されているか、境界づけられたコンテキストの割り当てが妥当か、推測で定義を作っていないか。
-文体や分量の多さでは選ばないこと。根拠は差分の具体的な箇所を引くこと。判断できないときだけ tie。
+ただし仕様への適合だけで選ばず、下の物差しで重さを見ること。違いがワーニングだけ、またはどちらも欠陥がないなら tie。
+文体や分量の多さでは選ばないこと。根拠は差分の具体的な箇所を引き、reason に違いの重さ（クリティカル / メジャー / マイナー / ワーニング）を書くこと。
+
+{severity}
 
 # A: {ta}
 {da}
