@@ -8,7 +8,8 @@
   表が auto で、かつ工場の権限（phase_grants の merge）も auto のときだけ実際にマージする。それ以外は記録だけ（shadow）
 - 結果: 判定を記録した PR が閉じたら、誰がマージしたか（しなかったか）を記録する（判定と人の判断の一致率の材料）
 - 検証の起動: マージを判定した head ごとに検査ジョブ（kind=inspect、L4 の shadow 判定）を積む。結果は gate.evaluated と InspectionReport
-- 依存順の投入: `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら `factory:implement` に替える（同時に流すのは上限まで）
+- 依存順の投入: `factory:planned` の Issue を工場のチケットに写し（ADR 0009）、本文の「依存: #12 #13」がすべて閉じたものを
+  優先度の高い順に `factory:implement` に替える（同時に流すのは上限まで。緊急（p0）は上限を待たない。保留中は流さない）
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
@@ -33,6 +34,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import judgment
+import ops
 import stoppage
 
 ENV = os.environ
@@ -199,6 +201,8 @@ def merge_step(cur, rules: dict, manifests: dict):
             for key in (f"judge:{p['url']}",):   # judge が人に回した停止は、PR が閉じた（人が判断した）時点で閉じる
                 stoppage.close_stoppage(cur, key, remedy="PR が閉じた（人が判断した）", closed_by="supervisor")
             if pr.get("merged_at"):
+                cur.execute("update tickets set state='closed', updated_at=now() where source='github' and source_ref=%s and state<>'closed'",
+                            (p["corr"].split(":", 1)[1],))   # チケットは済み（ADR 0009）
                 record(cur, "pr.merged", p["corr"], {"pr_url": p["url"], "merged_at": pr["merged_at"], "merged_by": (pr.get("merged_by") or {}).get("login"),
                                                      "merge_commit": pr.get("merge_commit_sha"), "decided": (d or {}).get("payload")}, f"pr.merged:{p['url']}")
             else:
@@ -289,28 +293,50 @@ def judge_step(cur, manifests: dict):
 def enqueue_step(cur, open_prs: int):
     cur.execute("select count(*) as n from jobs where state in ('queued','running')")
     inflight = cur.fetchone()["n"] + open_prs
+    state_cache: dict[str, str] = {}
+
+    def issue_state(repo: str, n: int) -> str:
+        key = f"{repo}#{n}"
+        if key not in state_cache:
+            state_cache[key] = gh("GET", f"repos/{repo}/issues/{n}")["state"]
+        return state_cache[key]
+
+    ready, seen = [], []
     for repo in REPOS:
         issues = gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(PLANNED_LABEL)}&per_page=50&sort=created&direction=asc") or []
         for it in issues:
-            if "pull_request" in it or inflight >= MAX_INFLIGHT:
+            if "pull_request" in it:
                 continue
             deps = [int(x) for m in DEP_RE.finditer(it.get("body") or "") for x in re.findall(r"#(\d+)", m.group(1))]
-            waiting = [n for n in deps if gh("GET", f"repos/{repo}/issues/{n}")["state"] != "closed"]
-            if waiting:
-                continue
-            corr = f"github:{repo}#{it['number']}"
-            if not record(cur, "supervisor.enqueued", corr, {"repo": repo, "issue": it["number"], "deps": deps},
-                          f"supervisor.enqueued:{repo}#{it['number']}"):
-                continue
-            log("enqueue", repo, it["number"], "deps", deps)
-            if not DRY_RUN:
-                try:
-                    gh("DELETE", f"repos/{repo}/issues/{it['number']}/labels/{urllib.parse.quote(PLANNED_LABEL, safe='')}")
-                except urllib.error.HTTPError as e:
-                    if e.code != 404:
-                        raise
-                gh("POST", f"repos/{repo}/issues/{it['number']}/labels", {"labels": [IMPLEMENT_LABEL]})
-            inflight += 1
+            waiting = [n for n in deps if issue_state(repo, n) != "closed"]
+            # 投入待ちのチケットも工場の台帳に写す（操業コンソールの「依存待ち・順番待ち」。ADR 0009）
+            t = ops.upsert_ticket(cur, "github", f"{repo}#{it['number']}", repo, title=it.get("title") or "", url=it.get("html_url"),
+                                  priority=ops.priority_from_labels([l.get("name", "") for l in it.get("labels") or []]), state="planned",
+                                  depends_on=[f"{repo}#{n}" for n in deps], waiting_on=[f"{repo}#{n}" for n in waiting])
+            seen.append(t["source_ref"])
+            if not waiting and not t["held"]:
+                ready.append((t, repo, it, deps))
+    # planned のラベルが外れた（実装に回った・人が外した）のに台帳で planned のままのものは、台帳から外す
+    cur.execute("update tickets set state='closed', updated_at=now() where source='github' and state='planned' and repo = any(%s) "
+                "and not (source_ref = any(%s))", (REPOS, seen))
+    ready.sort(key=lambda r: (-r[0]["priority"], r[2].get("created_at") or ""))   # 優先度の高い順、同じなら古い順
+    for t, repo, it, deps in ready:
+        if inflight >= MAX_INFLIGHT and t["priority"] < ops.PREEMPT_AT:
+            continue
+        corr = f"github:{repo}#{it['number']}"
+        if not record(cur, "supervisor.enqueued", corr, {"repo": repo, "issue": it["number"], "deps": deps, "priority": t["priority"]},
+                      f"supervisor.enqueued:{repo}#{it['number']}"):
+            continue
+        log("enqueue", repo, it["number"], "deps", deps, "priority", t["priority"])
+        if not DRY_RUN:
+            try:
+                gh("DELETE", f"repos/{repo}/issues/{it['number']}/labels/{urllib.parse.quote(PLANNED_LABEL, safe='')}")
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+            gh("POST", f"repos/{repo}/issues/{it['number']}/labels", {"labels": [IMPLEMENT_LABEL]})
+            cur.execute("update tickets set state='active', updated_at=now() where id=%s", (t["id"],))
+        inflight += 1
 
 
 def daily_report_step(cur):

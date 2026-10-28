@@ -3,7 +3,8 @@
 
 - poll:   対象リポジトリの TRIGGER_LABEL が付いた Issue を見つけてジョブに積む（30 秒ごと）
 - webhook: WEBHOOK_SECRET があれば /webhook で issues.labeled を受けて同じことをする
-- run:    キューから claim（SKIP LOCKED）→ アドバイザリロック → ワーカーコンテナを docker run --rm → 結果を記録
+- run:    キューから claim（SKIP LOCKED。優先度の高い順）→ アドバイザリロック → ワーカーコンテナを docker run --rm → 結果を記録
+- ops:    止める印の付いたジョブのコンテナを止める。緊急（p0）のジョブが枠を待っていたら、低いジョブを止めて順番待ちに戻す（ADR 0009）
 
 状態は postgres とオブジェクトストアにだけ置く。このプロセスは落ちても再起動すれば続きから動く。
 """
@@ -31,6 +32,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import judgment
+import ops
 import stoppage
 
 ENV = os.environ
@@ -65,6 +67,7 @@ USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
+OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
 store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV["OBJECTSTORE_ACCESS_KEY"], secret_key=ENV["OBJECTSTORE_SECRET_KEY"], secure=False)
@@ -149,16 +152,22 @@ def record_event(cur, name: str, correlation_id: str | None, job_id: int | None,
                 (name, correlation_id, job_id, Jsonb(payload), dedupe_key))
 
 
-def enqueue(repo: str, issue: int, by: str, attempt: int = 1, kind: str = "implement") -> int | None:
+def enqueue(repo: str, issue: int, by: str, attempt: int = 1, kind: str = "implement", issue_json: dict | None = None) -> int | None:
     corr = f"github:{repo}#{issue}"
     with db() as conn, conn.cursor() as cur:
+        # GitHub の Issue を工場のチケットに写す（ADR 0009）。優先度の最初の値は factory:priority:* のラベルから
+        it = issue_json or {}
+        ticket = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=it.get("title") or "", url=it.get("html_url"),
+                                   priority=ops.priority_from_labels([l.get("name", "") for l in it.get("labels") or []]), state="active")
         try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind) values (%s,%s,%s,%s,%s,%s,%s) returning id",
-                        (corr, repo, issue, attempt, by, MODEL_TIER, kind))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
+                        "values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id",
+                        (corr, repo, issue, attempt, by, MODEL_TIER, kind, ticket["id"], ticket["priority"]))
         except psycopg.errors.UniqueViolation:
             return None   # すでに queued / running（二重実行の抑止 1 段目）
         job_id = cur.fetchone()["id"]
-        record_event(cur, "job.enqueued", corr, job_id, {"repo": repo, "issue": issue, "by": by, "attempt": attempt, "kind": kind})
+        record_event(cur, "job.enqueued", corr, job_id, {"repo": repo, "issue": issue, "by": by, "attempt": attempt, "kind": kind,
+                                                         "ticket_id": ticket["id"], "priority": ticket["priority"]})
         if kind == "clarify":   # intake: 受け付けた要求を Request（raw）として残す
             cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Request',%s,%s,'intake',%s)",
                         (corr, job_id, Jsonb({"repo": repo, "issue": issue, "status": "raw"})))
@@ -178,7 +187,7 @@ def poll_once():
                 if "pull_request" in it:
                     continue
                 n = it["number"]
-                job_id = enqueue(repo, n, "poll", kind=kind)
+                job_id = enqueue(repo, n, "poll", kind=kind, issue_json=it)
                 if job_id:
                     log(f"enqueued {kind} job {job_id} for {repo}#{n}")
                     swap_label(repo, n, [label], [LABELS["queued"]])
@@ -270,6 +279,11 @@ def run_job(job: dict):
                     subprocess.run(["docker", "kill", name], capture_output=True)
                     proc.wait(timeout=30)
                     break
+            # 止める印はログが出ない間にも付く（ops_loop がコンテナを止める）。終わった時点でもう一度見る
+            cur.execute("select cancel_requested, preempted_for from jobs where id=%s", (job_id,))
+            cj = cur.fetchone()
+            cancelled = cancelled or cj["cancel_requested"]
+            preempted_for = cj["preempted_for"] if cancelled else None
             # ログをオブジェクトストアへ（ワーカーには何も残さない）
             blob_key = f"jobs/{job_id}/worker.log"
             data = "".join(lines).encode()
@@ -283,7 +297,7 @@ def run_job(job: dict):
                         pass
                     break
             if cancelled:
-                state, err = "cancelled", "cancel_requested"
+                state, err = "cancelled", ("preempted" if preempted_for else "cancel_requested")
             elif time.time() > deadline and proc.returncode not in (0,):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
@@ -315,7 +329,9 @@ def run_job(job: dict):
                         swap_label(repo, int(result["pr_number"]), [], [PROVISIONAL_LABEL])
                 except Exception as e:  # noqa: BLE001
                     log("provisional record failed", job_id, repr(e))
-            if kind == "body_fix":
+            if preempted_for:
+                requeue_preempted(cur, job, preempted_for, (result or {}).get("cost_usd"))
+            elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
                              {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars")})
             elif kind == "judge":
@@ -378,6 +394,45 @@ def run_job(job: dict):
                 except Exception as e:  # noqa: BLE001
                     log("job db drop failed", job_id, repr(e))
             cur.execute("select pg_advisory_unlock(hashtext(%s))", (lock_key,))
+
+
+def requeue_preempted(cur, job: dict, preempted_for: int, cost_usd):
+    """割り込みで止めたジョブを順番待ちに戻す（ADR 0009）。止めた時点までの作業は捨てる。捨てた時間は job.preempted に残す"""
+    repo, issue, corr = job["repo"], job["issue_number"], job["correlation_id"]
+    cur.execute("select extract(epoch from now() - started_at)::int as sec from jobs where id=%s", (job["id"],))
+    sec = cur.fetchone()["sec"]
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
+                "select correlation_id, repo, issue_number, attempt + 1, 'preempt', model_tier, kind, ticket_id, priority from jobs where id=%s returning id",
+                (job["id"],))
+    new_id = cur.fetchone()["id"]
+    record_event(cur, "job.preempted", corr, job["id"], {"preempted_for": preempted_for, "discarded_sec": sec, "discarded_cost_usd": cost_usd,
+                                                        "requeued_as": new_id})
+    record_event(cur, "job.enqueued", corr, new_id, {"by": "preempt", "attempt": job["attempt"] + 1, "previous": job["id"],
+                                                     "ticket_id": job.get("ticket_id"), "priority": job.get("priority")})
+    if (job.get("kind") or "implement") in ops.PREEMPTIBLE_KINDS:
+        swap_label(repo, issue, [LABELS["running"]], [LABELS["queued"]])
+        comment(repo, issue, f"緊急のジョブ {preempted_for} を先に流すため、ジョブ {job['id']} を止めて順番待ちに戻しました（ジョブ {new_id}）。止めた時点までの作業は捨てて、最初からやり直します。")
+    log(f"job {job['id']} preempted for {preempted_for}, requeued as {new_id}")
+
+
+def ops_once():
+    with db() as conn, conn.cursor() as cur:
+        for victim, urgent in ops.preempt_victims(cur, MAX_PARALLEL):
+            ops.stop_job(cur, victim["id"], "dispatcher", f"緊急のジョブ {urgent['id']} を先に流す", preempted_for=urgent["id"])
+            log(f"preempt job {victim['id']} (priority {victim['priority']}) for job {urgent['id']} (priority {urgent['priority']})")
+        # 止める印が付いた作業中のジョブのコンテナを止める（コンソール・factoryctl・割り込みの共通の出口）
+        cur.execute("select id, container_id from jobs where state='running' and cancel_requested and container_id is not null")
+        for r in cur.fetchall():
+            subprocess.run(["docker", "kill", r["container_id"]], capture_output=True)
+
+
+def ops_loop():
+    while True:
+        try:
+            ops_once()
+        except Exception as e:  # noqa: BLE001  操作の失敗でラインを止めない
+            log("ops error", repr(e))
+        time.sleep(OPS_INTERVAL)
 
 
 def run_loop():
@@ -601,7 +656,7 @@ class Hook(BaseHTTPRequestHandler):
         ev = json.loads(body or b"{}")
         if self.headers.get("X-GitHub-Event") == "issues" and ev.get("action") == "labeled" and ev.get("label", {}).get("name") == TRIGGER_LABEL:
             repo, n = ev["repository"]["full_name"], ev["issue"]["number"]
-            if repo in REPOS and enqueue(repo, n, "webhook"):
+            if repo in REPOS and enqueue(repo, n, "webhook", issue_json=ev["issue"]):
                 swap_label(repo, n, [TRIGGER_LABEL], [LABELS["queued"]])
         self.send_response(204); self.end_headers()
 
@@ -613,14 +668,15 @@ def recover():
     """dispatcher の再起動で取り残された running ジョブを片付ける。
     ワーカーは最初からやり直せる（冪等）ので、コンテナを止めて failed にし、attempt+1 で再投入する。"""
     with db() as conn, conn.cursor() as cur:
-        cur.execute("select id, repo, issue_number, attempt, container_id, correlation_id, kind from jobs where state='running'")
+        cur.execute("select id, repo, issue_number, attempt, container_id, correlation_id, kind, ticket_id, priority from jobs where state='running'")
         for j in cur.fetchall():
             if j["container_id"]:
                 subprocess.run(["docker", "kill", j["container_id"]], capture_output=True)
             cur.execute("update jobs set state='failed', finished_at=now(), error='orphaned_by_restart' where id=%s", (j["id"],))
             record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": "orphaned_by_restart"})
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind) values (%s,%s,%s,%s,'recover',%s,%s) returning id",
-                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"]))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
+                        "values (%s,%s,%s,%s,'recover',%s,%s,%s,%s) returning id",
+                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"], j["ticket_id"], j["priority"]))
             new_id = cur.fetchone()["id"]
             record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"]})
             log(f"recovered job {j['id']} -> re-enqueued as {new_id}")
@@ -634,6 +690,7 @@ def main():
         store.make_bucket(BUCKET)
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
     threading.Thread(target=poll_loop, daemon=True).start()
+    threading.Thread(target=ops_loop, daemon=True).start()
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
     if ENV.get("WEBHOOK_SECRET"):

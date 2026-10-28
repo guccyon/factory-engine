@@ -77,6 +77,30 @@ docker compose exec dispatcher factoryctl stoppage list --open
 docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --to 2026-10-27   # Markdown（既定は直近 7 日、Asia/Tokyo）
 ```
 
+## 操業コンソールと優先度（ADR 0009）
+
+工場のいまを見て、順番・保留・停止を操作する画面と API。compose の `console`（dispatcher と同じイメージ）で動き、制御プレーンだけを読み書きする。GitHub にも外部の CDN にも触らない。
+
+- 開く: http://localhost:8790 （Mac の中だけ。外から見るときは閉じた網を足し、`CONSOLE_ALLOWED_HOSTS` にそのホスト名を入れる）
+- 画面: 人の出番・作業中・順番待ち・投入待ち（同時に流す上限）・依存待ち・検査と判定とマージ待ち・今日の済み。上に工場長の生存・モード・作業中の数・今日の費用・開いている停止
+- 操作: 優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）、保留・再開、止める。すべて events に `ticket.*` / `job.cancel_requested` として残る
+- API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
+
+チケットと優先度:
+
+- GitHub の Issue は工場のチケット（表 `tickets`）に写される。優先度の最初の値は Issue の `factory:priority:p0`〜`p3` のラベル（なければ p2）。人がコンソールや factoryctl で変えた値はラベルで上書きしない
+- キューは優先度の高い順、同じなら受け付けた順に流れる。`factory:planned` も優先度の高い順に投入し、p0 は同時に流す上限を待たない
+- **割り込み**: p0 のジョブが待っていて枠が空いていなければ、dispatcher が優先度の低い作業中のジョブ（実装・要求の確認）を止めて順番待ちに戻す。止めた時点までの作業は捨てて最初からやり直す（`job.preempted` に捨てた時間を残す）
+- 止める操作は印を付けるだけで、コンテナは dispatcher が 5 秒以内に止める（`OPS_INTERVAL_SEC`）
+
+```bash
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/003_tickets.sql   # 既存の DB に表を足す（冪等）
+docker compose up -d --build console dispatcher supervisor
+docker compose exec dispatcher factoryctl tickets
+docker compose exec dispatcher factoryctl priority guccyon/rally#170 p0 --reason "予約一覧の障害"
+docker compose exec dispatcher factoryctl hold 12
+```
+
 ## 工場長の supervisor（ADR 0004）
 
 判断は持たず、状態と表を見て工程を起動するだけの常駐プロセス（compose の `supervisor`。dispatcher と同じイメージ）。60 秒ごとに:
@@ -85,7 +109,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 - 工場の PR が `mergeable_state=clean`（CI 通過・衝突なし・ドラフトでない）になったら、変更ファイルを `definitions/change_type_rules.yaml` で変更種別に写し、製品の manifest を引いて `supervisor.merge_decided` を記録する。表が承認を求めれば PR に `factory:needs-approval`。表が auto で、かつ工場の権限（`phase_grants` の merge）も auto のときだけ squash でマージする。それ以外は記録だけ（shadow）
 - マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。`SUPERVISOR_INSPECT=0` で止める
 - 判定した PR が閉じたら `pr.merged`（誰がマージしたか）/ `pr.closed_unmerged` を記録する。判定と人の判断の一致率の材料
-- `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計）まで
+- `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら、優先度の高い順に `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計）まで。p0 は上限を待たない。保留中は流さない
 
 `SUPERVISOR_DRY_RUN=1` で GitHub に書かずに判定だけ記録する。
 

@@ -20,4 +20,8 @@ create "factory:sendback" "fef2c0" "差し戻し（judge が採用した指摘�
 create "factory:fix-proposed" "d4c5f9" "差し戻しの提案。流すときは factory:planned に替える（attended の 1 タップ）"
 create "factory:status" "5319e7" "工場の状況（番人が操業停止を通知する Issue。ADR 0005）"
 create "factory:clarified" "0e8a16" "要求が確定した（何を・何のために・いつまでに・どの精度で）"
+create "factory:priority:p0" "b60205" "緊急: 作業中のものを止めてでも先に流す（障害の調査・hotfix。ADR 0009）"
+create "factory:priority:p1" "d93f0b" "急ぎ: 順番待ちの先頭に回す（ADR 0009）"
+create "factory:priority:p2" "c5def5" "通常（付けなくても同じ）"
+create "factory:priority:p3" "ededed" "後回し: ほかに流すものがないときに流す"
 for p in cs-1 cs-2 mkt-1 mkt-2 sales-1; do create "requester:${p}" "ededed" "要求者ペルソナ ${p}（Gen1 は架空）"; done
