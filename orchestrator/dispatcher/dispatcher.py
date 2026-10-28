@@ -124,7 +124,7 @@ def image_for(repo: str, issue: int) -> str:
 def provenance(repo: str, image: str) -> dict:
     """製造の来歴（ADR 0007）。全部 optional。取れなければ unknown にして、ラインは止めない"""
     prov = {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "worker_image": image, "worker_image_id": "unknown",
-            "product_sha": "unknown", "mode": ENV.get("FACTORY_MODE") or "unknown", "model_tier": MODEL_TIER}
+            "product_sha": "unknown", "mode": "unknown", "model_tier": MODEL_TIER}
     try:
         r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=20)
         if r.returncode == 0 and r.stdout.strip():
@@ -233,6 +233,7 @@ def run_job(job: dict):
                 image = image_for(repo, issue)
             prov = provenance(repo, image)
             prov["model_tier"] = job["model_tier"] or MODEL_TIER
+            prov["mode"], prov["mode_basis"] = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))   # 製造を始めた時点のモード（制御プレーンの切り替え > 時間帯 > 既定）
             record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = f"factory-job-{job_id}"
             job_db_url = None
