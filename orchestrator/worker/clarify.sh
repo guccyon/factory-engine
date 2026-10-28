@@ -9,11 +9,14 @@
 set -euo pipefail
 : "${JOB_ID:?}" "${REPO:?}" "${ISSUE_NUMBER:?}" "${GH_TOKEN:?}" "${CLAUDE_CODE_OAUTH_TOKEN:?}"
 MAX_ROUNDS="${MAX_ROUNDS:-3}"
-MODEL_JUDGE="claude-opus-5-5"
-MODEL_PERSONA="claude-sonnet-5-5"
+ENGINE_REPO="${ENGINE_REPO:-guccyon/factory-engine}"
+ENGINE_REF="${ENGINE_REF:-main}"
 PERSONAS=/usr/local/share/factory/requesters.yaml   # 正本は orchestrator/worker/personas/requesters.yaml
 
-echo "[clarify] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} max_rounds=${MAX_ROUNDS}"
+echo "[clarify] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} max_rounds=${MAX_ROUNDS} engine=${ENGINE_REPO}@${ENGINE_REF}"
+# エージェントの呼び出しは Engine の core-gates/agent_runner.py に集める（工程 clarify.asker / clarify.persona。ADR 0010）
+git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
 ISSUE_JSON=$(gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json title,body,labels)
 TITLE=$(jq -r .title <<<"${ISSUE_JSON}")
 BODY=$(jq -r '.body // ""' <<<"${ISSUE_JSON}")
@@ -27,17 +30,13 @@ TRANSCRIPT=""
 ROUNDS=0
 DONE=false
 REQUEST='{}'
-COST_FILE=/work/cost.txt; echo 0 > "${COST_FILE}"   # ask_claude は $( ) の中で動くので、合計はファイルで持つ
+COST_FILE=/work/cost.txt; echo 0 > "${COST_FILE}"   # ask_agent は $( ) の中で動くので、合計はファイルで持つ
 
-ask_claude() {   # $1=model $2=prompt [$3=json schema]
+ask_agent() {   # $1=step $2=prompt [$3=json schema]
   local out
-  if [ -n "${3:-}" ]; then
-    out=$(claude -p "$2" --model "$1" --output-format json --json-schema "$3" --max-turns 3 2>/work/claude.err) || return 1
-  else
-    out=$(claude -p "$2" --model "$1" --output-format json --max-turns 3 2>/work/claude.err) || return 1
-  fi
-  jq -n --argjson a "$(cat "${COST_FILE}")" --argjson b "$(jq -r '.total_cost_usd // 0' <<<"${out}")" '$a + $b' > "${COST_FILE}"
-  if [ -n "${3:-}" ]; then jq -c '.structured_output // (.result | fromjson)' <<<"${out}"; else jq -r '.result' <<<"${out}"; fi
+  out=$(python3 /work/engine/core-gates/agent_runner.py run "$1" ${3:+--schema "$3"} <<<"$2" 2>/work/claude.err) || return 1
+  jq -n --argjson a "$(cat "${COST_FILE}")" --argjson b "$(jq -r '.cost_usd // 0' <<<"${out}")" '$a + $b' > "${COST_FILE}"
+  if [ -n "${3:-}" ]; then jq -c '.output' <<<"${out}"; else jq -r '.output' <<<"${out}"; fi
 }
 
 while true; do   # 先頭で判定し、最後の回答のあとにも必ず 1 回判定する（3 往復目の答えを取りこぼさない）
@@ -58,7 +57,7 @@ ${TRANSCRIPT:-（まだない）}
 request には、その時点で分かっている範囲で 4 項目を書いてください（分からない項目は空文字）。
 EOF
 )
-  RESULT=$(ask_claude "${MODEL_JUDGE}" "${JUDGE_PROMPT}" "${SCHEMA}") || { echo "[clarify] judge failed"; sed 's/^/[claude.err] /' /work/claude.err | tail -20; exit 1; }
+  RESULT=$(ask_agent clarify.asker "${JUDGE_PROMPT}" "${SCHEMA}") || { echo "[clarify] judge failed"; sed 's/^/[claude.err] /' /work/claude.err | tail -20; exit 1; }
   REQUEST=$(jq -c .request <<<"${RESULT}")
   if [ "$(jq -r .done <<<"${RESULT}")" = "true" ]; then DONE=true; break; fi
   [ "${ROUNDS}" -ge "${MAX_ROUNDS}" ] && break
@@ -78,7 +77,7 @@ ${TRANSCRIPT:-（まだない）}
 ${QUESTION}
 EOF
 )
-  ANSWER=$(ask_claude "${MODEL_PERSONA}" "${PERSONA_PROMPT}") || { echo "[clarify] persona failed"; exit 1; }
+  ANSWER=$(ask_agent clarify.persona "${PERSONA_PROMPT}") || { echo "[clarify] persona failed"; exit 1; }
   ANSWERED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gh issue comment "${ISSUE_NUMBER}" -R "${REPO}" --body "**要求者（${PERSONA_ID}、架空）の回答**: ${ANSWER}" >/dev/null
   TRANSCRIPT="${TRANSCRIPT}

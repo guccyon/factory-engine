@@ -23,7 +23,7 @@ services:
 
   # S3 互換のオブジェクトストア（ワーカーのログなど）。MinIO のイメージが Docker Hub から取得できなくなっていたため versitygw を使う（ADR 0003）
   objectstore:
-    image: versity/versitygw:latest
+    image: versity/versitygw:v1.10.0   # 版を固定する（latest だと作り直すたびに中身が変わる）。上げるときはここを変える PR で
     command: ["--access", "${OBJECTSTORE_ACCESS_KEY:-factory}", "--secret", "${OBJECTSTORE_SECRET_KEY:-factory-objectstore}", "--port", ":7070", "posix", "/data"]
     volumes:
       - objectdata:/data

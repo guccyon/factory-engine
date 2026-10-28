@@ -8,7 +8,7 @@ events に gate.evaluated（mode=shadow）として記録する。差し戻し�
 使い方:
   core-gates/shadow_review.py --pr https://github.com/guccyon/rally/pull/4 --out shadow-4.json [--db docker:factory-postgres-1]
 
-依存: python3（標準ライブラリ。--db のときだけ psql コマンド）、gh、claude（builder の Mac の CLI。tier-judge = claude-opus-5-5）
+依存: python3（標準ライブラリ。--db のときだけ psql コマンド）、gh、agent_runner（工程 inspect。runner とモデルは definitions/agents.yaml、--tier で上書き）
 """
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+
 HERE = Path(__file__).resolve().parent
-TIER_MODEL = {"tier-judge": "claude-opus-5-5", "tier-large": "claude-opus-5-5", "tier-small": "claude-sonnet-5-5"}
 
 SCHEMA = {
     "type": "object",
@@ -38,7 +39,7 @@ SCHEMA = {
 
 
 def sh(*a: str, input: str | None = None, retries: int = 3) -> str:
-    """claude は一時的に rc=1 で落ちることがある（レート制限とみられる）ので 20・40・80 秒待って繰り返す"""
+    """gh は一時的に rc=1 で落ちることがある（レート制限とみられる）ので 20・40・80 秒待って繰り返す"""
     import time
     last = None
     for i in range(retries + 1):
@@ -95,16 +96,12 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
 # 差分
 {diff}
 """
-    out = sh("claude", "-p", prompt, "--model", TIER_MODEL[tier], "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "3")   # --bare はキーチェーンの認証を読まないので使わない
-    res = json.loads(out)
-    structured = res.get("structured_output") or res.get("result")
-    if isinstance(structured, str):
-        structured = json.loads(structured)
+    r = agent_runner.run("inspect", prompt, schema=SCHEMA, tier=tier)
     return {
-        "pr": pr_url, "repo": repo, "number": number, "mode": "shadow", "tier": tier, "model": TIER_MODEL[tier],
+        "pr": pr_url, "repo": repo, "number": number, "mode": "shadow", "tier": tier, "model": r.model,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
-        "usage": res.get("usage"), "cost_usd": res.get("total_cost_usd"),
-        "result": structured,
+        "usage": r.usage, "cost_usd": r.cost_usd,
+        "result": r.output,
     }
 
 

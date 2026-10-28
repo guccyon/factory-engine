@@ -29,7 +29,7 @@ Blueprint を 1 枚渡すと、そのプロダクト専用の仮想事業部（P
 - 状態（成果物ストア・キュー・ロック・テレメトリ）はローカル FS に置かず、別サービスにする
 - ワーカーは 1 タスク 1 コンテナで使い捨て（浅いクローン、終了時に何も残さない）
 - 制御プレーンとワーカーを分け、ステップは冪等にする
-- モデルは tier 名（`tier-small` / `tier-large` / `tier-judge`）で抽象化する
+- モデルは tier 名（`tier-small` / `tier-large` / `tier-judge`）で抽象化する。工程ごとのエージェント（runner）とモデルは `definitions/agents.yaml` で決め、呼び出しは `core-gates/agent_runner.py` の 1 か所に集める（ADR 0010。いまは Claude Code だけ）
 
 ## 利用について
 

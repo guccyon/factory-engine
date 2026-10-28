@@ -1,0 +1,40 @@
+# 工程ごとのエージェント（ADR 0010）
+#
+# 工程（step）は「何をするか」だけを知り、どのエージェント（runner）とモデルで動かすかはここで決める。
+# 呼び出しは core-gates/agent_runner.py の 1 か所に集める。工程のコードに claude などの CLI 名やモデル名を書かない。
+# 2026-10-28 Tetsuro「差し替えられるように分離設計しつつ、今は Claude だけで良い」。実装済みの runner は claude-code だけ。
+#
+# 解決の順: 工程の runner / model（直接書いたとき）→ 工程の tier（呼び出し側が --tier や MODEL_TIER で上書きできる）→ tiers の表
+version: 1
+
+runners:
+  claude-code:
+    status: implemented       # Claude Code CLI（claude -p）。ワーカーは CLAUDE_CODE_OAUTH_TOKEN、Mac はキーチェーンの認証
+  codex:
+    status: not_implemented   # 例: コードレビューだけ Codex に任せる。アダプターを agent_runner.py に足してから使う
+  anthropic-api:
+    status: not_implemented   # API 直（ツールなしの判定を安く回すとき）
+
+tiers:
+  tier-large: {runner: claude-code, model: claude-opus-5-5}
+  tier-judge: {runner: claude-code, model: claude-opus-5-5}
+  tier-small: {runner: claude-code, model: claude-sonnet-5-5}
+
+steps:
+  implement:                  # 実装（ツールあり、リポジトリを書き換える）。dispatcher の MODEL_TIER が tier を上書きする
+    tier: tier-large
+    mode: agentic
+  clarify.asker:              # 窓口の問い手（4 項目が埋まったかの判定と次の問い）
+    tier: tier-judge
+  clarify.persona:            # 要求者ペルソナ（架空）
+    tier: tier-small
+  inspect:                    # L4 の shadow 判定（core-gates/shadow_review.py）
+    tier: tier-judge
+  judge:                      # 出口の裁き（core-gates/judge.py）
+    tier: tier-judge
+    tools: none
+  body_fix:                   # PR 本文への追記（core-gates/body_fix.py）
+    tier: tier-small
+    tools: none
+  pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
+    tier: tier-judge

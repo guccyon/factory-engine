@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# ワーカーの手順: 浅いクローン → Claude Code → commit / push → PR → 結果を最終行に JSON で出す。
-# 環境変数: JOB_ID REPO ISSUE_NUMBER MODEL_TIER MAX_TURNS GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+# ワーカーの手順: 浅いクローン → エージェント（工程 implement）→ commit / push → PR → 結果を最終行に JSON で出す。
+# エージェントの呼び出しは Engine の core-gates/agent_runner.py に集める（runner とモデルは definitions/agents.yaml。ADR 0010）。
+# 環境変数: JOB_ID REPO ISSUE_NUMBER MODEL_TIER MAX_TURNS GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN（任意: ENGINE_REPO ENGINE_REF）
 # 権限は PR 作成まで（P0 autonomy）。マージしない。コンテナは --rm なので終了時に何も残らない。
 set -euo pipefail
 
@@ -16,18 +17,18 @@ fi
 
 : "${GH_TOKEN:?}" "${CLAUDE_CODE_OAUTH_TOKEN:?}"
 MAX_TURNS="${MAX_TURNS:-40}"
-case "${MODEL_TIER:-tier-large}" in
-  tier-small) MODEL="claude-sonnet-5-5" ;;
-  tier-judge) MODEL="claude-opus-5-5" ;;
-  *)          MODEL="claude-opus-5-5" ;;
-esac
+ENGINE_REPO="${ENGINE_REPO:-guccyon/factory-engine}"
+ENGINE_REF="${ENGINE_REF:-main}"
 BRANCH="factory/issue-${ISSUE_NUMBER}-job-${JOB_ID}"
 export GIT_TERMINAL_PROMPT=0
 
-echo "[worker] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} model=${MODEL} max_turns=${MAX_TURNS}"
 git config --global user.name "factory-worker"
 git config --global user.email "factory-worker@users.noreply.github.com"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+AGENT=(python3 /work/engine/core-gates/agent_runner.py)
+MODEL=$("${AGENT[@]}" resolve implement --tier "${MODEL_TIER:-tier-large}" | jq -r .model)
+echo "[worker] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} model=${MODEL} max_turns=${MAX_TURNS} engine=${ENGINE_REPO}@${ENGINE_REF}"
 
 DEFAULT_BRANCH=$(gh api "repos/${REPO}" --jq .default_branch)
 git clone --quiet --depth 1 --branch "${DEFAULT_BRANCH}" "https://github.com/${REPO}.git" repo
@@ -65,18 +66,18 @@ EOF
 )
 
 set +e
-CLAUDE_OUT=$(claude -p "${PROMPT}" --model "${MODEL}" --max-turns "${MAX_TURNS}" --output-format json --dangerously-skip-permissions 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
+CLAUDE_OUT=$("${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" <<<"${PROMPT}" 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
 CLAUDE_RC=$?
 set -e
 echo "[worker] claude exit=${CLAUDE_RC}"
 sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
-SUMMARY=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -80)   # 「## 知見」も PR 本文に残す（人と検査官が読めるように。Lesson にも別に記録する）
-LESSONS_JSON=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk 'f{print} /^## 知見/{f=1}' | sed -nE 's/^[-*] *//p' | jq -R . | jq -sc .)
+SUMMARY=$(jq -r '.output // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -80)   # 「## 知見」も PR 本文に残す（人と検査官が読めるように。Lesson にも別に記録する）
+LESSONS_JSON=$(jq -r '.output // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk 'f{print} /^## 知見/{f=1}' | sed -nE 's/^[-*] *//p' | jq -R . | jq -sc .)
 [ -z "${LESSONS_JSON}" ] && LESSONS_JSON='[]'
 # 「## 仮決め」の節はそのまま渡す（分解は dispatcher が行う。ADR 0006）
-PROVISIONAL=$(jq -r '.result // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk '/^## /{f=($0 ~ /^## 仮決め/); next} f{print}')
+PROVISIONAL=$(jq -r '.output // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk '/^## /{f=($0 ~ /^## 仮決め/); next} f{print}')
 USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
-COST=$(jq -r '.total_cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
+COST=$(jq -r '.cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 TURNS=$(jq -r '.num_turns // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 
 if [ -z "$(git status --porcelain)" ]; then

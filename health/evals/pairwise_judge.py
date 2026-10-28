@@ -8,7 +8,7 @@ Wilson 95% 区間を出す。N < 100 の暫定指標。ブレーカーには使�
 使い方:
   health/evals/pairwise_judge.py --golden ~/src/github.com/guccyon/rally/main/.factory-config/evals/golden --out pairwise-2026-10-26.json
 
-依存: python3、gh、claude（builder の Mac の CLI）、ruby（YAML を読むため。PyYAML があればそれを使う）
+依存: python3、gh、agent_runner（工程 pairwise。runner とモデルは definitions/agents.yaml、--tier で上書き）、ruby（YAML を読むため。PyYAML があればそれを使う）
 """
 from __future__ import annotations
 
@@ -21,7 +21,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-TIER_MODEL = {"tier-judge": "claude-opus-5-5", "tier-small": "claude-sonnet-5-5"}
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core-gates"))
+import agent_runner  # noqa: E402  工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+
 SCHEMA = {"type": "object", "properties": {
     "preferred": {"type": "string", "enum": ["a", "b", "tie"]},
     "confidence": {"type": "number"},
@@ -83,16 +85,13 @@ def judge(pair: dict, tier: str, swap: bool, golden_dir: Path) -> dict:
 # B: {tb}
 {db}
 """
-    out = sh("claude", "-p", prompt, "--model", TIER_MODEL[tier], "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--max-turns", "3")   # --bare はキーチェーンの認証を読まないので使わない
-    res = json.loads(out)
-    s = res.get("structured_output") or res.get("result")
-    if isinstance(s, str):
-        s = json.loads(s)
+    r = agent_runner.run("pairwise", prompt, schema=SCHEMA, tier=tier)
+    s = r.output
     pref = s["preferred"]
     if swap and pref in ("a", "b"):
         pref = "b" if pref == "a" else "a"
     return {"preferred": pref, "confidence": s.get("confidence"), "reason": s["reason"], "evidence": s.get("evidence", []),
-            "swapped": swap, "cost_usd": res.get("total_cost_usd")}
+            "swapped": swap, "cost_usd": r.cost_usd}
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -167,7 +166,7 @@ def main() -> int:
             d = by_polarity.setdefault(r.get("polarity") or "unknown", {"n": 0, "agree": 0})
             d["n"] += 1
             d["agree"] += int(r["outcome"] == "agree")
-    report = {"evalspec": "l4-pairwise", "metric": "pairwise_accuracy", "tier": a.tier, "model": TIER_MODEL[a.tier],
+    report = {"evalspec": "l4-pairwise", "metric": "pairwise_accuracy", "tier": a.tier, "model": agent_runner.resolve("pairwise", a.tier).model,
               "evaluated_at": datetime.now(timezone.utc).isoformat(), "n": n, "agree": agree, "golden_ties": ties, "golden_ties_held": tie_held, "judge_abstained": abstained, "by_polarity": by_polarity,
               "pairwise_accuracy": round(agree / n, 3) if n else None, "wilson95": [lo, hi],
               "threshold": 0.80, "min_cases_for_release": 100, "release_granted": False,
