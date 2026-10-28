@@ -7,6 +7,12 @@
   docker compose exec dispatcher factoryctl enqueue <repo> <issue> [--tier tier-small]
   docker compose exec dispatcher factoryctl events <job_id>
 
+チケットの順番（ADR 0009）。操業コンソールと同じ操作。<ticket> はチケットの id か owner/repo#123:
+  factoryctl tickets [--all]                      # 投入待ち・作業中のチケット（優先度の高い順）
+  factoryctl priority <ticket> p0|p1|p2|p3|<0-100> [--reason ..]   # p0 は作業中のものを止めてでも先に流す
+  factoryctl hold <ticket> [--reason ..]          # 順番待ちから一時的に外す
+  factoryctl resume <ticket>
+
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
   factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--quiet]   # --quiet は通知しない（過去分の取り込み）
@@ -34,6 +40,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import judgment
+import ops
 import stoppage
 
 
@@ -197,6 +204,14 @@ def report_judgments(cur, argv):
     print("\n".join(out))
 
 
+def find_ticket(cur, ref: str):
+    if ref.isdigit():
+        cur.execute("select * from tickets where id=%s", (int(ref),))
+    else:
+        cur.execute("select * from tickets where source_ref=%s order by id limit 1", (ref,))
+    return cur.fetchone()
+
+
 def main(argv):
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
@@ -208,20 +223,18 @@ def main(argv):
         for r in cur.fetchall():
             print(f"{r['id']:>4} {r['state']:<9} {r['repo']}#{r['issue_number']} a{r['attempt']} {r['enqueued_at']:%m-%d %H:%M} {r['error'] or ''} {r['pr_url'] or ''}")
     elif cmd == "stop":
-        job_id = int(argv[2])
-        cur.execute("update jobs set cancel_requested=true, state=case when state='queued' then 'cancelled' else state end, finished_at=case when state='queued' then now() else finished_at end where id=%s and state in ('queued','running') returning state", (job_id,))
-        r = cur.fetchone()
-        cur.execute("insert into events(name, job_id, payload) values ('job.cancel_requested', %s, %s)", (job_id, Jsonb({"by": "factoryctl"})))
-        print("cancel requested" if r else "job is not active")
+        print("cancel requested" if ops.stop_job(cur, int(argv[2]), "factoryctl", opt(argv, "--reason", "")) else "job is not active")
     elif cmd == "rerun":
         job_id = int(argv[2])
-        cur.execute("select repo, issue_number, attempt, kind from jobs where id=%s", (job_id,))
+        cur.execute("select repo, issue_number, attempt, kind, ticket_id, priority from jobs where id=%s", (job_id,))
         j = cur.fetchone()
         if not j:
             print("no such job"); return 1
         try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind) values (%s,%s,%s,%s,'rerun',%s,%s) returning id",
-                        (f"github:{j['repo']}#{j['issue_number']}", j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"), j["kind"]))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
+                        "values (%s,%s,%s,%s,'rerun',%s,%s,%s,%s) returning id",
+                        (f"github:{j['repo']}#{j['issue_number']}", j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"),
+                         j["kind"], j["ticket_id"], j["priority"]))
         except psycopg.errors.UniqueViolation:
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
@@ -231,15 +244,36 @@ def main(argv):
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
         tier = argv[argv.index("--tier") + 1] if "--tier" in argv else os.environ.get("MODEL_TIER", "tier-large")
+        t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, state="active")
         try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier) values (%s,%s,%s,'factoryctl',%s) returning id",
-                        (f"github:{repo}#{issue}", repo, issue, tier))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, ticket_id, priority) values (%s,%s,%s,'factoryctl',%s,%s,%s) returning id",
+                        (f"github:{repo}#{issue}", repo, issue, tier, t["id"], t["priority"]))
         except psycopg.errors.UniqueViolation:
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
                     (f"github:{repo}#{issue}", new_id, Jsonb({"by": "factoryctl"})))
         print(f"enqueued job {new_id}")
+    elif cmd == "tickets":
+        where = "" if "--all" in argv else "where state <> 'closed'"
+        cur.execute(f"select t.*, (select string_agg(j.id || ':' || j.state, ' ') from jobs j where j.ticket_id=t.id and j.state in ('queued','running')) as jobs "
+                    f"from tickets t {where} order by priority desc, created_at limit 100")
+        for t in cur.fetchall():
+            hold = " 保留" if t["held"] else ""
+            wait = f" 依存待ち {' '.join(t['waiting_on'])}" if t["waiting_on"] else ""
+            print(f"{t['id']:>4} {ops.level_of(t['priority'])}({t['priority']}) {t['state']:<7} {t['source_ref']} {t['title'][:40]}{hold}{wait} {t['jobs'] or ''}")
+    elif cmd in ("priority", "hold", "resume"):
+        t = find_ticket(cur, argv[2]) if len(argv) > 2 else None
+        if not t:
+            print("no such ticket"); return 1
+        if cmd == "priority":
+            v = argv[3]
+            value = ops.LEVELS[v][0] if v in ops.LEVELS else int(v)
+            t = ops.set_priority(cur, t["id"], value, "factoryctl", opt(argv, "--reason", ""))
+            print(f"ticket {t['id']} priority {ops.level_of(t['priority'])}({t['priority']})")
+        else:
+            t = ops.set_held(cur, t["id"], cmd == "hold", "factoryctl", opt(argv, "--reason", ""))
+            print(f"ticket {t['id']} {'held' if t['held'] else 'resumed'}")
     elif cmd == "events":
         job_id = int(argv[2])
         cur.execute("select name, occurred_at, payload from events where job_id=%s order by id", (job_id,))

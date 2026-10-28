@@ -93,6 +93,25 @@ events:
     source: control_plane
     required: [repo, issue, deps]
     note: "factory:planned の Issue を、依存（本文の「依存: #N」）がすべて閉じたので factory:implement に替えた"
+  ticket.received:
+    source: control_plane
+    required: [ticket_id, source, source_ref, priority]
+    note: "ADR 0009。入口のサービス（github など）のチケットを工場の tickets に初めて写した。correlation_id は <source>:<source_ref>"
+  ticket.priority_set:
+    source: control_plane
+    required: [ticket_id, from, to, by]
+    note: "優先度を変えた。by は source（入口のラベル）| console:<名前> | factoryctl。人が変えた値は入口のラベルで上書きしない"
+  ticket.held:
+    source: control_plane
+    required: [ticket_id, by]
+    note: "保留（順番待ちから一時的に外す）。reason は任意。介入件数に数える"
+  ticket.resumed:
+    source: control_plane
+    required: [ticket_id, by]
+  job.preempted:
+    source: control_plane
+    required: [preempted_for, discarded_sec, requeued_as]
+    note: "緊急（p0）のジョブを先に流すため、作業中のジョブを止めて順番待ちに戻した。discarded_cost_usd は取れたときだけ。割り込みが本当に要る頻度と捨てた費用を測る"
   judgment.provisional:
     source: control_plane
     required: [artifact_id, category, taxonomy_version, confidence, pr_url]

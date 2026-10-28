@@ -115,6 +115,26 @@ services:
       - ${BUILD_WORK_DIR:-./.no-build-work}:/build-work:ro
     restart: unless-stopped
 
+  # 操業コンソール（ADR 0009）。工場のいまを見て、順番・保留・停止を操作する。制御プレーンだけを読み書きし、GitHub にも外部の CDN にも触らない
+  # 既定は Mac の中だけで開く（http://localhost:8790）。外から見るときは閉じた網（Tailscale など）を足し、CONSOLE_ALLOWED_HOSTS にそのホスト名を入れる
+  console:
+    image: factory-dispatcher:p0
+    command: ["python", "console.py"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
+      CONSOLE_PORT: 8790
+      CONSOLE_ALLOWED_HOSTS: ${CONSOLE_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CONSOLE_OPERATOR: ${CONSOLE_OPERATOR:-builder}     # 操作の記録に残す名前（Gen1 はログインなし）
+      MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
+      FACTORY_MODE: ${FACTORY_MODE:-}
+      MODE_SCHEDULE: ${MODE_SCHEDULE:-}
+    ports:
+      - "127.0.0.1:${CONSOLE_HOST_PORT:-8790}:8790"
+    restart: unless-stopped
+
   # ワーカーのイメージをビルドするためだけのサービス（常駐しない。docker compose build worker）
   worker:
     build: ./worker
