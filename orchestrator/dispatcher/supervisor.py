@@ -143,6 +143,20 @@ def load_rules() -> dict:
         return yaml.safe_load(f)
 
 
+def judge_constraints(au: dict) -> str:
+    """judge に渡す manifest の制約。from: operation_start の常時承認は、運用開始（autonomy.operation_started）までは
+    マージの判定（上の always_human_approve の扱い）と同じく効かせないので、judge にも「今は人に回さない」と分けて渡す。
+    以前は全項目を効いているものとして渡し、開発中の identity の変更を judge が人に回していた（rally #130）"""
+    started = bool(au.get("operation_started"))
+    active, dormant = [], []
+    for a in au.get("always_human_approve", []):
+        (dormant if a.get("from") == "operation_start" and not started else active).append(f"{a['id']}（{a.get('ja', '')}）")
+    lines = ["always_human_approve（いま効いている。該当する判断は escalate）: " + (", ".join(active) or "なし")]
+    if dormant:
+        lines.append("運用開始から効く常時承認（運用開始前なので、これを理由に escalate しない。中身の妥当性だけで裁く）: " + ", ".join(dormant))
+    return "\n".join(lines)
+
+
 def load_manifest(repo: str) -> dict:
     c = gh("GET", f"repos/{repo}/contents/.factory-config/manifest.yaml")
     return yaml.safe_load(base64.b64decode(c["content"]))
@@ -250,7 +264,7 @@ def judge_step(cur, manifests: dict):
         if repo not in manifests:
             manifests[repo] = load_manifest(repo)
         au = manifests[repo].get("autonomy", {})
-        constraints = "always_human_approve: " + ", ".join(f"{a['id']}（{a.get('ja', '')}）" for a in au.get("always_human_approve", []))
+        constraints = judge_constraints(au)
         inp = judgment.judge_input(cur, r["pr_url"], mode, constraints)
         nothing = not inp["provisional"] and not inp["defects"]
         if not record(cur, "supervisor.judge_enqueued", r["corr"], {"pr_url": r["pr_url"], "head_sha": r["sha"], "mode": mode, "mode_basis": basis,

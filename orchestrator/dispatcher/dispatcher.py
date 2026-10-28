@@ -533,7 +533,7 @@ def watch_once():
         idle_open = stoppage.open_keys(cur, "idle:")
         if j["r"] == 0 and j["q"] == 0:
             if not idle_open and j["last"] and j["long_idle"]:
-                stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "human", "ラインが空（実行中・投入可能のジョブがない）",
+                stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "idle", "ラインが空（実行中・投入可能のジョブがない）",
                                        waiting_for="次の Ticket（factory:implement / factory:request のラベル）か、承認待ちの PR の判断", started_at=j["last"])
         else:
             for k in idle_open:

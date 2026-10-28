@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from psycopg.types.json import Jsonb
 
 ENV = os.environ
-CATEGORIES = ("env", "perm", "human", "factory-bug", "ticket", "external", "budget")
+CATEGORIES = ("env", "perm", "human", "idle", "factory-bug", "ticket", "external", "budget")   # idle: ラインが空（積まれたチケットがない）。人の承認待ち（human）と分ける（2026-10-28）
 NOTIFIER = ENV.get("NOTIFIER", "github-issue")
 STATUS_REPO = ENV.get("STATUS_REPO") or next((r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()), "")
 STATUS_LABEL = "factory:status"
