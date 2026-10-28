@@ -19,6 +19,7 @@ P1 入口では T14 が設計判断を ADR の Question として建設者に返
 2. **仮決めは PR 本文の「## 仮決め」に構造化して書く**（類型 id・問い・選んだ・他の案・根拠・解釈・確信度・影響）。dispatcher が分解して artifacts の `Judgment`（stage=provisional）と events の `judgment.provisional` に残し、PR に `factory:provisional` を付ける。分解は文字列の処理だけで、シェルにもプロンプトにも渡さない
 3. **記録は 3 層**: 根拠（参照した SSOT・ADR・Issue の箇所、過去の判断の id、manifest の制約）／解釈（根拠をどう読んで決定に至ったか）／スコア（自己申告の確信度 0〜1 と、使えた実績＝同じ類型での人の採点との一致率と件数、どちらで決めたか）。加えて決定・他の案・影響・モード・決めた者・後の人の採点
 4. **類型は 6 つ**（`definitions/judgments.yaml` v1）: 用語と境界、インターフェースの定義、設計の選択、受け入れ条件の解釈、スコープの変更、検査の採用（judge だけが使う）。記録は類型 id と版の両方を持つ。見直しは時間ではなくデータ量で起こし（1 類型が 30 件超で分割候補、3 か月で 5 件未満で統合候補、一致率の二極化）、提案は週次の振り返りに出し、分け直しは人が行う
+   - 追記（2026-10-28、v2。Tetsuro 了承）: v1 は対象・理由・雑多な残りが混ざり、設計の選択に半分近くが集まった。全件 115 件を「何について決めたか」の 1 軸で振り直し、7 つにした: ユーザーインターフェース（ui）、システムインターフェース（system_interface）、内部実装（implementation）、エラー処理（error_handling）、データ（data）、スコープ（scope）、検査結果（inspection）。受け入れ条件の解釈は理由なので類型から外し、印 ticket_interpretation にした。見直しは 1 類型を割らず全件を振り直し、総数を増やしすぎない。振り直しは definitions/judgment-remap-v1-v2.yaml と factoryctl judgment recategorize
 
 ### 後半（承認付きの別 PR。実装は orchestrator/README の「judge と差し戻し」）
 

@@ -1,0 +1,121 @@
+# 判断の類型 v1 → v2 の振り直し（2026-10-28 Tetsuro 了承）。仮決め（stage=provisional）の artifact id ごとの v2 の類型。
+# judge の記録（stage=judged）は source_artifact_id の振り直しに従う。検査の指摘（inspection）はそのまま。
+# acceptance（受け入れ条件の解釈）は類型から外し、ticket_interpretation: true の印にする。factoryctl judgment recategorize で当てる（冪等）
+taxonomy_from: v1
+taxonomy_to: v2
+provisional:
+  93: { to: ui, from: design_choice }
+  94: { to: error_handling, from: acceptance, ticket_interpretation: true }
+  95: { to: scope, from: scope }
+  104: { to: scope, from: scope }
+  115: { to: error_handling, from: design_choice }
+  116: { to: implementation, from: interface }
+  117: { to: implementation, from: acceptance, ticket_interpretation: true }
+  125: { to: implementation, from: acceptance, ticket_interpretation: true }
+  126: { to: ui, from: design_choice }
+  127: { to: ui, from: design_choice }
+  128: { to: ui, from: interface }
+  138: { to: data, from: design_choice }
+  139: { to: ui, from: design_choice }
+  149: { to: system_interface, from: interface }
+  150: { to: ui, from: design_choice }
+  151: { to: ui, from: design_choice }
+  160: { to: system_interface, from: interface }
+  161: { to: system_interface, from: interface }
+  162: { to: implementation, from: design_choice }
+  171: { to: error_handling, from: design_choice }
+  172: { to: error_handling, from: design_choice }
+  182: { to: implementation, from: design_choice }
+  188: { to: system_interface, from: interface }
+  189: { to: system_interface, from: interface }
+  190: { to: implementation, from: design_choice }
+  198: { to: ui, from: design_choice }
+  199: { to: error_handling, from: acceptance, ticket_interpretation: true }
+  206: { to: system_interface, from: interface }
+  207: { to: ui, from: design_choice }
+  208: { to: implementation, from: design_choice }
+  218: { to: system_interface, from: interface }
+  219: { to: error_handling, from: design_choice }
+  226: { to: ui, from: design_choice }
+  227: { to: ui, from: design_choice }
+  234: { to: error_handling, from: interface }
+  235: { to: system_interface, from: interface }
+  236: { to: system_interface, from: interface }
+  237: { to: implementation, from: design_choice }
+  248: { to: error_handling, from: design_choice }
+  249: { to: implementation, from: design_choice }
+  257: { to: ui, from: design_choice }
+  258: { to: implementation, from: design_choice }
+  259: { to: ui, from: acceptance, ticket_interpretation: true }
+  267: { to: ui, from: design_choice }
+  268: { to: ui, from: acceptance, ticket_interpretation: true }
+  275: { to: system_interface, from: term_boundary }
+  276: { to: system_interface, from: interface }
+  277: { to: data, from: design_choice }
+  278: { to: system_interface, from: term_boundary }
+  289: { to: ui, from: design_choice }
+  290: { to: error_handling, from: design_choice }
+  291: { to: implementation, from: interface }
+  292: { to: ui, from: acceptance, ticket_interpretation: true }
+  301: { to: data, from: design_choice }
+  302: { to: system_interface, from: interface }
+  303: { to: system_interface, from: interface }
+  304: { to: system_interface, from: acceptance, ticket_interpretation: true }
+  305: { to: error_handling, from: interface }
+  316: { to: error_handling, from: design_choice }
+  317: { to: ui, from: design_choice }
+  325: { to: system_interface, from: interface }
+  326: { to: error_handling, from: interface }
+  327: { to: error_handling, from: design_choice }
+  337: { to: ui, from: design_choice }
+  338: { to: ui, from: design_choice }
+  345: { to: ui, from: design_choice }
+  346: { to: ui, from: design_choice }
+  353: { to: system_interface, from: interface }
+  354: { to: implementation, from: design_choice }
+  355: { to: scope, from: scope }
+  364: { to: ui, from: acceptance, ticket_interpretation: true }
+  365: { to: error_handling, from: design_choice }
+  373: { to: system_interface, from: interface }
+  374: { to: implementation, from: design_choice }
+  375: { to: ui, from: acceptance, ticket_interpretation: true }
+  376: { to: system_interface, from: term_boundary }
+  386: { to: ui, from: design_choice }
+  387: { to: ui, from: design_choice }
+  395: { to: system_interface, from: interface }
+  396: { to: system_interface, from: interface }
+  397: { to: implementation, from: design_choice }
+  398: { to: ui, from: acceptance, ticket_interpretation: true }
+  408: { to: ui, from: design_choice }
+  409: { to: ui, from: acceptance, ticket_interpretation: true }
+  416: { to: system_interface, from: interface }
+  417: { to: implementation, from: design_choice }
+  418: { to: scope, from: scope }
+  427: { to: ui, from: design_choice }
+  428: { to: ui, from: design_choice }
+  429: { to: ui, from: acceptance, ticket_interpretation: true }
+  437: { to: data, from: design_choice }
+  438: { to: scope, from: scope }
+  439: { to: data, from: term_boundary }
+  450: { to: scope, from: acceptance, ticket_interpretation: true }
+  459: { to: system_interface, from: interface }
+  460: { to: scope, from: scope }
+  461: { to: error_handling, from: design_choice }
+  462: { to: system_interface, from: term_boundary }
+  463: { to: implementation, from: interface }
+  476: { to: ui, from: acceptance, ticket_interpretation: true }
+  477: { to: ui, from: design_choice }
+  478: { to: implementation, from: acceptance, ticket_interpretation: true }
+  486: { to: ui, from: acceptance, ticket_interpretation: true }
+  487: { to: ui, from: design_choice }
+  494: { to: implementation, from: design_choice }
+  495: { to: data, from: design_choice }
+  496: { to: system_interface, from: interface }
+  497: { to: system_interface, from: term_boundary }
+  498: { to: scope, from: scope }
+  509: { to: implementation, from: design_choice }
+  510: { to: implementation, from: design_choice }
+  511: { to: system_interface, from: acceptance, ticket_interpretation: true }
+  519: { to: implementation, from: design_choice }
+  520: { to: error_handling, from: interface }
+  521: { to: implementation, from: design_choice }
