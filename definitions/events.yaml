@@ -8,7 +8,7 @@ schema_version: "0.1"
 status: draft
 
 # 製造の来歴（ADR 0007）。job.started と PR の成果物の payload.provenance に入る。すべて optional で、取れなければ unknown（ラインは止めない）
-provenance_fields: [engine_version, worker_image, worker_image_id, product_sha, mode, model_tier]
+provenance_fields: [engine_version, worker_image, worker_image_id, product_sha, mode, mode_basis, model_tier]
 
 conventions:
   naming: "<対象>.<出来事>（小文字・スネークケース）"
