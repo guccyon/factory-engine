@@ -9,9 +9,12 @@ import re
 
 from psycopg.types.json import Jsonb
 
-TAXONOMY_VERSION = "v1"   # definitions/judgments.yaml の taxonomy_version
-CATEGORIES = {"term_boundary", "interface", "design_choice", "acceptance", "scope", "inspection"}
-FIELDS = {"選んだ": "decision", "他の案": "alternatives", "根拠": "evidence", "解釈": "interpretation", "確信度": "confidence", "影響": "impact"}
+TAXONOMY_VERSION = "v2"   # definitions/judgments.yaml の taxonomy_version
+CATEGORIES = {"ui", "system_interface", "implementation", "error_handling", "data", "scope", "inspection"}
+# v1 の類型 id で書かれたとき（古い指示のワーカー）の読み替え。読み替えたことは category_raw に残る
+V1_ALIASES = {"term_boundary": "system_interface", "interface": "system_interface", "design_choice": "implementation", "acceptance": "ui"}
+FIELDS = {"選んだ": "decision", "他の案": "alternatives", "根拠": "evidence", "解釈": "interpretation", "確信度": "confidence", "影響": "impact",
+          "チケットの解釈": "ticket_interpretation"}
 MAX_ITEMS, MAX_LEN = 10, 1500
 
 
@@ -24,6 +27,7 @@ def parse_provisional(text: str) -> list[dict]:
         m = re.match(r"^###\s+([A-Za-z_]+)(?:\s+([A-Za-z0-9_-]+))?\s*[:：]\s*(.+)$", line.strip())
         if m:
             cat = m.group(1).strip().lower()
+            cat = V1_ALIASES.get(cat, cat)
             cur = {"category": cat if cat in CATEGORIES else "unknown", "category_raw": m.group(1)[:40], "slug": (m.group(2) or "")[:40],
                    "question": m.group(3).strip()[:MAX_LEN]}
             items.append(cur)
@@ -46,6 +50,9 @@ def parse_provisional(text: str) -> list[dict]:
             conf = max(0.0, min(1.0, v / 100 if v > 1 else v))
         it["score"] = {"self_reported": conf, "track_record": None, "basis": "self_report"}
         it.pop("confidence", None)
+        # 「- チケットの解釈: はい」（受け入れ条件が 2 通りに読めてその解釈で決めた）を印に。v1 の acceptance で書かれたものも同じ印
+        ti = (it.pop("ticket_interpretation", "") or "").strip()
+        it["ticket_interpretation"] = it.get("category_raw", "").lower() == "acceptance" or ti.startswith(("はい", "yes", "true"))
         out.append(it)
     return out
 
@@ -94,9 +101,9 @@ def current_mode(cur, default: str = "attended", schedule: str = "", tz: str = "
 
 # ------------------------------------------------------------------ judge の入力（制御プレーンの記録だけから組み立てる）
 def track_record(cur) -> dict:
-    """類型ごとの人の採点との一致率（judgment.graded）"""
-    cur.execute("select payload->>'category' as c, count(*) as n, avg(case when payload->>'grade'='agree' then 1.0 else 0.0 end) as rate "
-                "from events where name='judgment.graded' group by 1")
+    """類型ごとの人の採点との一致率（judgment.graded）。類型は採点した記録の今の類型（振り直し後）で数える"""
+    cur.execute("select a.payload->>'category' as c, count(*) as n, avg(case when e.payload->>'grade'='agree' then 1.0 else 0.0 end) as rate "
+                "from events e join artifacts a on a.id = (e.payload->>'artifact_id')::bigint where e.name='judgment.graded' group by 1")
     return {r["c"]: {"n": r["n"], "agree_rate": float(r["rate"])} for r in cur.fetchall()}
 
 
@@ -153,3 +160,29 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
                              "interpretation": payload["interpretation"]})
     return {"adopted_defects": adopted_defects, "replaced": replaced, "escalated": escalated,
             "min_confidence": min(confidences) if confidences else None, "count": len(rows)}
+
+
+# ------------------------------------------------------------------ 類型の振り直し（definitions/judgment-remap-*.yaml。分け直しは人が決める）
+def recategorize(cur, remap: dict) -> dict:
+    """仮決めを artifact id ごとに新しい類型へ、judge の記録はその元の仮決めに合わせて振り直す。元の類型は category_v1 に残す。冪等"""
+    to_ver, mapping = remap["taxonomy_to"], {int(k): v for k, v in (remap.get("provisional") or {}).items()}
+    done = {"provisional": 0, "judged": 0, "skipped": 0}
+    cur.execute("select id, payload from artifacts where type='Judgment' and coalesce(payload->>'taxonomy_version','v1') <> %s order by id", (to_ver,))
+    for r in cur.fetchall():
+        p = r["payload"]
+        src = r["id"] if p.get("stage") == "provisional" else p.get("source_artifact_id")
+        if p.get("category") == "inspection":
+            new = {"to": "inspection"}
+        elif src in mapping:
+            new = mapping[src]
+        else:
+            done["skipped"] += 1
+            continue
+        patch = {"category": new["to"], "category_v1": p.get("category"), "taxonomy_version": to_ver,
+                 "ticket_interpretation": bool(new.get("ticket_interpretation") or p.get("ticket_interpretation"))}
+        cur.execute("update artifacts set payload = payload || %s where id=%s", (Jsonb(patch), r["id"]))
+        cur.execute("insert into events(name, payload, dedupe_key) values ('judgment.recategorized', %s, %s) on conflict (dedupe_key) do nothing",
+                    (Jsonb({"artifact_id": r["id"], "from": p.get("category"), "to": new["to"], "taxonomy_version": to_ver}),
+                     f"judgment.recategorized:{r['id']}:{to_ver}"))
+        done["provisional" if p.get("stage") == "provisional" else "judged"] += 1
+    return done

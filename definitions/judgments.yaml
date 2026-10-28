@@ -3,15 +3,24 @@
 # 分け直しは人が行う（judge には触らせない）。見直しの提案は週次の振り返りに出す。
 
 schema_version: "0.1"
-taxonomy_version: v1          # 2026-10-27 戦略会議 第 1 回（D6）の初期セット
+taxonomy_version: v2          # 2026-10-28 Tetsuro 了承。v1（2026-10-27 戦略会議 D6 の初期セット）の全件を「何について決めたか」の 1 軸で振り直した
 
+# 類型は同じ抽象度に揃え、総数を増やしすぎない（分け直しは 1 類型を割るのではなく、全件を振り直す）
 categories:
-  term_boundary:  { ja: "用語と境界",            example: "lesson は種別か、完了の事実か" }
-  interface:      { ja: "インターフェースの定義", example: "API・イベントの項目名、必須か、発行元" }
-  design_choice:  { ja: "設計の選択",            example: "複数案からどれを取るか（クレートの新設、判定の置き場所、ライブラリ）" }
-  acceptance:     { ja: "受け入れ条件の解釈",     example: "Issue の条件が 2 通りに読めるときどちらで満たすか" }
-  scope:          { ja: "スコープの変更",         example: "書かれていないことをこのチケットでやるか、別に回すか、やらないか" }
-  inspection:     { ja: "検査の採用",            example: "検査器の指摘を採用するか（偽陽性はここで吸収）。judge だけが使う" }
+  ui:               { ja: "ユーザーインターフェース", example: "画面の並び・文言・置き場所・操作の流れ" }
+  system_interface: { ja: "システムインターフェース", example: "API・イベントの形と項目名、用語の id と定義" }
+  implementation:   { ja: "内部実装",               example: "部品・ポート・型の置き場所、層の分け方、テストの組み方" }
+  error_handling:   { ja: "エラー処理",             example: "失敗・重複・上限・境界のときの振る舞い（画面でも API でも）" }
+  data:             { ja: "データ",                 example: "保存の形、スキーマ、マイグレーション（expand / contract）、seed" }
+  scope:            { ja: "スコープ",               example: "書かれていないことをこのチケットでやるか、別に回すか、やらないか" }
+  inspection:       { ja: "検査結果",               example: "検査器の指摘を採用するか（偽陽性はここで吸収）。judge だけが使う" }
+
+# 類型ではなく記録の印（理由）。v1 の acceptance はここに移した
+flags:
+  ticket_interpretation: "チケットの受け入れ条件が 2 通りに読めて、その解釈で決めた"
+
+# v1 → v2 の振り直しは definitions/judgment-remap-v1-v2.yaml（factoryctl judgment recategorize で当てる。元の類型は category_v1 に残す）
+# v1: term_boundary / interface / design_choice / acceptance / scope / inspection
 
 # 記録の 3 層（events の judgment.* と artifacts の Judgment に同じ形で入る）
 record:
@@ -21,7 +30,7 @@ record:
     self_reported:  "自己申告の確信度 0〜1"
     track_record:   "使えた実績（同じ類型での人の採点との一致率と件数）。蓄積前は null"
     basis:          "self_report | track_record（どちらで決めたか）"
-  other: [decision, alternatives, impact, mode, decided_by, category, taxonomy_version, human_grade]
+  other: [decision, alternatives, impact, mode, decided_by, category, taxonomy_version, human_grade, ticket_interpretation, category_v1]
 
 # 段階（同じ判断が順に進む）
 stages:
@@ -36,6 +45,6 @@ track_record:
 
 # 類型の見直しの契機（時間ではなくデータ量）
 review_triggers:
-  split_candidate: "1 類型が 30 件を超えた"
+  split_candidate: "1 類型が仮決め全体の 40% を超えた（件数が増えても比率で見る。v1 は 30 件）"
   merge_candidate: "3 か月で 5 件未満"
   hidden_category: "1 類型の中で一致率が二極化している"

@@ -27,6 +27,7 @@
   factoryctl mode show
   factoryctl mode set attended|unattended [--until ISO]       # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先
   factoryctl judgment list [--ungraded] [--limit N]
+  factoryctl judgment recategorize <remap.yaml>                 # 類型の振り直し（definitions/judgment-remap-*.yaml。元の類型は category_v1 に残す）
   factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
   factoryctl report judgments [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 類型・モード別の件数、確信度、一致率、差し戻し、類型の見直しの候補
 """
@@ -175,14 +176,18 @@ def report_judgments(cur, argv):
         prov = [r for r in rs if r["st"] == "provisional"]
         jd = [r for r in rs if r["st"] == "judged"]
         confs = [r["conf"] for r in jd if r["conf"] is not None]
-        cur.execute("select count(*) as n, avg(case when payload->>'grade'='agree' then 1.0 else 0.0 end) as a from events "
-                    "where name='judgment.graded' and payload->>'category'=%s and occurred_at >= %s::date and occurred_at < %s::date", (c, frm, to))
+        cur.execute("select count(*) as n, avg(case when e.payload->>'grade'='agree' then 1.0 else 0.0 end) as a from events e "
+                    "join artifacts a on a.id = (e.payload->>'artifact_id')::bigint "
+                    "where e.name='judgment.graded' and a.payload->>'category'=%s and e.occurred_at >= %s::date and e.occurred_at < %s::date", (c, frm, to))
         g = cur.fetchone()
         avg = f"{sum(confs) / len(confs):.2f}" if confs else "—"
         agree = f"{float(g['a']):.0%}" if g["n"] else "—"
         changed = sum(1 for r in jd if r["v"] in ("replace", "reject"))
         escal = sum(1 for r in jd if r["v"] == "escalate")
         out.append(f"| {c} | {len(prov)} | {len(jd)} | {changed} | {escal} | {avg} | {g['n']} | {agree} |")
+    cur.execute("select count(*) as n from artifacts where type='Judgment' and payload->>'stage'='provisional' and (payload->>'ticket_interpretation')::boolean "
+                "and created_at >= %s::date and created_at < %s::date", (frm, to))
+    out += ["", f"- うちチケットの受け入れ条件の解釈で決めた仮決め（印 ticket_interpretation）: {cur.fetchone()['n']} 件。多ければチケットの書き方を直す"]
     out += ["", "## 検査の偽陽性率", ""] + false_positive_lines([r for r in rows if r["c"] == "inspection" and r["st"] == "judged"])
     out += ["", "## モード別（judge）", "", "| モード | 件数 | 人へ |", "|---|---|---|"]
     for m in sorted({r["m"] for r in rows if r["st"] == "judged"}):
@@ -195,11 +200,11 @@ def report_judgments(cur, argv):
     out += ["", "## 差し戻し", "", f"- 起票 {sb.get('sendback.filed', 0)} 件、上限で流さず {sb.get('sendback.skipped', 0)} 件、再検査で指摘が残った {sb.get('sendback.residual', 0)} 件",
             f"- 累計の起票 {total_sb} 件（20 件で「1 PR 1 回」の上限を見直す）"]
     # 類型の見直しの候補（データ量で起こす。分け直しは人）
-    cur.execute("select payload->>'category' as c, count(*) as n, min(created_at) as first from artifacts where type='Judgment' group by 1")
-    hints = []
-    for r in cur.fetchall():
-        if r["n"] > 30:
-            hints.append(f"- {r['c']}: {r['n']} 件。分割の候補")
+    # 仮決め全体に占める割合で見る（definitions/judgments.yaml の split_candidate。分け直しは全件の振り直しで、人が決める）
+    cur.execute("select payload->>'category' as c, count(*) as n from artifacts where type='Judgment' and payload->>'stage'='provisional' group by 1")
+    counts = {r["c"]: r["n"] for r in cur.fetchall()}
+    total = sum(counts.values())
+    hints = [f"- {c}: {n} 件（仮決めの {n / total:.0%}）。全件の振り直しの候補" for c, n in sorted(counts.items()) if total and n / total > 0.4]
     out += ["", "## 類型の見直しの候補", ""] + (hints or ["- なし"])
     print("\n".join(out))
 
@@ -311,7 +316,11 @@ def main(argv):
         print(f"mode={mode}（決め手: {basis}）")
     elif cmd == "judgment":
         sub = argv[2] if len(argv) > 2 else "list"
-        if sub == "grade":
+        if sub == "recategorize":   # 類型の振り直し（人が決めた分け直しを当てる。冪等）
+            import yaml
+            with open(argv[3]) as f:
+                print(judgment.recategorize(cur, yaml.safe_load(f)))
+        elif sub == "grade":
             aid, grade = int(argv[3]), argv[4]
             if grade not in ("agree", "disagree"):
                 print("grade は agree か disagree"); return 2
