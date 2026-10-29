@@ -75,6 +75,9 @@ svg.chart .grid { stroke: var(--rule); stroke-width: 1 }
 svg.chart .cum { fill: none; stroke: var(--amber); stroke-width: 2 }
 svg.chart .cum-pt { fill: var(--amber) }
 svg.chart .s0 { fill: var(--steel) } svg.chart .s1 { fill: var(--steel-soft) } svg.chart .s2 { fill: var(--bad) } svg.chart .s3 { fill: var(--muted) }
+svg.chart .ref { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3 }
+.over { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; color: var(--sheet); background: var(--warn) }
+.over.big { background: var(--bad) }
 svg.chart .yday { fill: var(--amber); opacity: .12 }
 
 .meters { display: grid; gap: 10px }
@@ -171,18 +174,22 @@ const fmt = (v, d = 0) => (v == null ? "—" : Number(v).toLocaleString("ja-JP",
 function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
 
 // 日ごとの積み上げ棒（左の目盛り）と累計の折れ線（右の目盛り）。前日の列は淡く塗って示す
-function combo(series, stacks, { cumulative = true, marker = null } = {}) {
+function combo(series, stacks, { cumulative = true, marker = null, ref = null } = {}) {
   const W = 320, H = 132, L = 26, R = cumulative ? 34 : 8, T = 8, B = 20;
   const n = series.length, iw = W - L - R, ih = H - T - B, bw = iw / Math.max(n, 1);
   const daily = series.map((d) => stacks.reduce((a, s) => a + (d[s.key] || 0), 0));
   const cum = []; daily.reduce((a, v, i) => (cum[i] = a + v), 0);
-  const ymax = niceMax(Math.max(...daily, ...(marker ? series.map((d) => d[marker] || 0) : []), 0)), cmax = niceMax(Math.max(...cum, 0));
+  const ymax = niceMax(Math.max(...daily, ...(marker ? series.map((d) => d[marker] || 0) : []), ref || 0, 0)), cmax = niceMax(Math.max(...cum, 0));
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img" });
   for (const f of [0, 0.5, 1]) {
     const y = T + ih * (1 - f);
     svg.append(svgEl("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }));
     svg.append(svgEl("text", { x: L - 4, y: y + 3, "text-anchor": "end" }, fmt(ymax * f, Number.isInteger(ymax * f) ? 0 : 1)));
     if (cumulative) svg.append(svgEl("text", { x: W - R + 4, y: y + 3 }, fmt(cmax * f, Number.isInteger(cmax * f) ? 0 : 1)));
+  }
+  if (ref) {
+    const y = T + ih * (1 - ref / ymax);
+    svg.append(svgEl("line", { class: "ref", x1: L, x2: W - R, y1: y, y2: y }));
   }
   if (n) svg.append(svgEl("rect", { class: "yday", x: L + bw * (n - 1), y: T, width: bw, height: ih }));
   series.forEach((d, i) => {
@@ -287,11 +294,20 @@ function render() {
       legend: [["成功", col("--steel")], ["失敗・途中終了", col("--bad")], ["累計", col("--amber"), true]],
       note: `前日の内訳: 成功 ${last.jobs_ok || 0} / 失敗 ${last.jobs_ng || 0}` }));
 
-    const cost = combo(series, [{ key: "cost_usd" }]);
-    cards.append(card({ title: "費用（USD、API 単価換算）", chart: cost.svg,
+    const BUDGET = S.cost_budget_usd || 100;
+    const cost = combo(series, [{ key: "cost_usd" }], { ref: BUDGET });
+    const ydCost = cost.daily.at(-1) || 0, overDays = cost.daily.filter((v) => v > BUDGET).length;
+    const costCard = card({ title: "費用（USD、API 単価換算）", chart: cost.svg,
       figs: [["前日", `$${fmt(cost.daily.at(-1), 2)}`], ["累計", `$${fmt(cost.cum.at(-1), 2)}`, true], ["PR あたり（累計）", totF ? `$${fmt(cost.cum.at(-1) / totF, 2)}` : "—", true]],
-      legend: [["日ごと", col("--steel")], ["累計", col("--amber"), true]],
-      note: "Max 契約は定額。単価換算は使い方の重さを見る参考値" }));
+      legend: [["日ごと", col("--steel")], ["累計", col("--amber"), true], [`目安 $${fmt(BUDGET)}/日`, col("--bad"), true]],
+      note: `目安（Max 5x の範囲に収まるペース）を超えた日: ${overDays} 日。Max 契約は定額で、単価換算は使い方の重さを見る参考値` });
+    if (ydCost > BUDGET) {
+      const big = ydCost > BUDGET * 1.5;
+      costCard.insertBefore(el("div", null, ""), costCard.children[1]).append(el("span", big ? "over big" : "over", `前日は目安の ${Math.round((ydCost / BUDGET) * 100)}%${big ? "（大きく超過）" : ""}`));
+      if (big) $("asks").hidden = false;
+      if (big) $("asks-list").prepend(Object.assign(el("li"), { textContent: `前日の費用 $${fmt(ydCost, 2)} が目安 $${fmt(BUDGET)}/日 を大きく超えた（${Math.round((ydCost / BUDGET) * 100)}%）` }));
+    }
+    cards.append(costCard);
 
     const stop = combo(series, [{ key: "stoppages", cls: "s2" }]);
     const hrs = series.reduce((a, d) => a + (d.stoppage_hours || 0), 0);
