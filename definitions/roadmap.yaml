@@ -68,7 +68,7 @@ phases:
       - { id: release_provenance, ja: "Release と来歴", measure: { manual: 0.5 } }
       - { id: one_click_release, ja: "人間の操作が承認ボタンだけでリリースが完了した実績", measure: { manual: todo } }
       - { id: rollback_1min, ja: "Rollback が 1 分以内に完了した実績", measure: { manual: todo } }
-      - { id: l3_reproducible, ja: "L3 が同じ PR に同じ判定を返す", measure: { manual: 0.5 } }   # core-gates/l3_impact.py。変更シナリオの PR 13 本に 2 回ずつかけて digest が一致。製品の CI で同じ結果を出したら done
+      - { id: l3_reproducible, ja: "L3 が同じ PR に同じ判定を返す", measure: { manual: done } }   # core-gates/l3_impact.py（#56）。変更シナリオの PR 13 本に手元で 2 回ずつ、うち 4 本を製品の CI（rally の l3-impact）でも測り、digest が全件一致（2026-10-30）
 
   - id: P3
     ja: Learn ループ
