@@ -81,7 +81,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 
 工場のいまを見て、順番・保留・停止を操作する画面と API。compose の `console`（dispatcher と同じイメージ）で動き、制御プレーンだけを読み書きする。GitHub にも外部の CDN にも触らない。
 
-- 開く: http://localhost:8790 （Mac の中だけ。外から見るときは閉じた網を足し、`CONSOLE_ALLOWED_HOSTS` にそのホスト名を入れる）
+- 開く: http://localhost:8790 （既定は Mac の中だけ。同じ LAN の端末から見るときは .env に `CONSOLE_BIND=0.0.0.0` と、`CONSOLE_ALLOWED_HOSTS` にそのホスト名（例 `localhost,127.0.0.1,mac-mini.local`）を入れて console を上げ直す。ログインがないので、LAN の中の誰でも優先度・保留・停止を操作できる。インターネットには出さない）
 - 画面: 人の出番・作業中・順番待ち・投入待ち（同時に流す上限）・依存待ち・検査と判定とマージ待ち・今日の済み。上に工場長の生存・モード・作業中の数・今日の費用・開いている停止
 - 操作: 優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）、保留・再開、止める。すべて events に `ticket.*` / `job.cancel_requested` として残る
 - API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
