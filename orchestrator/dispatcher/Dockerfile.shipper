@@ -1,0 +1,7 @@
+# 出荷の shipper（ADR 0012）。dispatcher のイメージに、製品のソースを取る git と、環境を起動する docker compose を足す。
+# dispatcher を作り直さずに足せるよう、作ってある factory-dispatcher:p0 に重ねる（ベースのイメージを取りに行かない）。
+# 次に dispatcher を作り直すときは Dockerfile にも同じものが入っているので、shipper も同じイメージにしてよい
+FROM factory-dispatcher:p0
+RUN apt-get update && apt-get install -y --no-install-recommends git docker-compose && rm -rf /var/lib/apt/lists/*
+COPY *.py /app/
+CMD ["python", "ship.py"]

@@ -135,6 +135,25 @@ services:
       - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_HOST_PORT:-8790}:8790"   # 同じ LAN の端末から見るときは CONSOLE_BIND=0.0.0.0 と CONSOLE_ALLOWED_HOSTS にホスト名（例 host.example.local）
     restart: unless-stopped
 
+  # 出荷の shipper（ADR 0012）。Release のイメージを作り、製品の環境（staging・prod）を docker compose で起動し、Rollback する。
+  # 依頼は events（factoryctl release ship / approve / rollback、操業コンソール）から受ける。判断は持たない
+  shipper:
+    build: { context: ./dispatcher, dockerfile: Dockerfile.shipper }
+    image: factory-shipper:p2
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
+      GH_TOKEN: ${GH_TOKEN:?GitHub token (.env)}          # 製品のソースを取る（読むだけ）
+      SHIP_POLL_SEC: ${SHIP_POLL_SEC:-2}                   # Rollback の秒数に効くので短く
+      SHIP_WORKDIR: /ship
+      STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}   # 出荷の失敗を停止として知らせる先
+      NOTIFIER: ${NOTIFIER:-github-issue}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - shipwork:/ship
+    restart: unless-stopped
+
   # ワーカーのイメージをビルドするためだけのサービス（常駐しない。docker compose build worker）
   worker:
     build: ./worker
@@ -144,4 +163,5 @@ services:
 
 volumes:
   pgdata:
+  shipwork:
   objectdata:

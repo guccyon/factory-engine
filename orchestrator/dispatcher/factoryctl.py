@@ -21,6 +21,12 @@
 
 来歴とロット（ADR 0007）。Release は後付けで、前の Release 以降にマージされた工場の PR をまとめて含める:
   factoryctl release create <repo> <app_version> [--prs URL,URL]
+
+出荷と Rollback（ADR 0012）。依頼を events に書くだけで、手を動かすのは常駐の shipper:
+  factoryctl release ship <release_id> [--by ..]            # イメージを作って staging に出す（staging は自動）
+  factoryctl release approve <release_id> [--by ..]         # 承認ボタンと同じ。staging で確かめた版を prod に出す
+  factoryctl release rollback <repo> [--env prod] [--by ..] # その環境を 1 つ前の版に戻す（DB は戻さない）
+  factoryctl release status <repo>                          # 環境ごとのいまの版と前の版、出荷の記録
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
 モードと判断（ADR 0006）:
@@ -42,6 +48,7 @@ from psycopg.types.json import Jsonb
 
 import judgment
 import ops
+import ship
 import stoppage
 
 
@@ -114,6 +121,19 @@ def release_create(cur, argv):
         cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.included',%s,%s,%s) on conflict (dedupe_key) do nothing",
                     (f"release:{rid}", Jsonb({"release_id": rid, "app_version": version, "pr_url": u}), f"release.included:{u}"))
     print(f"created {rid} with {len(prs)} PRs")
+    return 0
+
+
+def release_status(cur, repo):
+    st = ship.status(cur, repo)
+    for env, v in sorted(st["environments"].items()):
+        print(f"{env:<8} いま {v['release_id']}  前 {v['previous'] or '-'}")
+    cur.execute("select id, occurred_at, name, payload from events where name like 'release.%%' and correlation_id like %s "
+                "and name not in ('release.included') order by id desc limit 20", (f"release:{repo}@%",))
+    for r in reversed(cur.fetchall()):
+        p = r["payload"]
+        extra = " ".join(f"{k}={p[k]}" for k in ("env", "seconds", "ok", "from", "by", "via", "error") if k in p)
+        print(f"{r['id']:>6} {r['occurred_at']:%m-%d %H:%M:%S} {r['name']:<28} {p.get('release_id', '')} {extra[:160]}")
     return 0
 
 
@@ -349,6 +369,18 @@ def main(argv):
                 print(f"{r['id']:>5} {p.get('stage', ''):<11} {p.get('category', ''):<13} {p.get('verdict') or '':<9} conf={conf} {p.get('mode', '')} {(p.get('question') or '')[:60]}")
     elif cmd == "release" and len(argv) > 4 and argv[2] == "create":
         return release_create(cur, argv)
+    elif cmd == "release" and len(argv) > 3 and argv[2] in ("ship", "approve", "rollback"):
+        by = opt(argv, "--by", "builder")
+        if argv[2] == "ship":
+            ok, msg = ship.request_ship(cur, argv[3], by, "factoryctl")
+        elif argv[2] == "approve":
+            ok, msg = ship.request_approve(cur, argv[3], by, "factoryctl")
+        else:
+            ok, msg = ship.request_rollback(cur, argv[3], opt(argv, "--env", "prod"), by, "factoryctl")
+        print(msg)
+        return 0 if ok else 1
+    elif cmd == "release" and len(argv) > 3 and argv[2] == "status":
+        return release_status(cur, argv[3])
     else:
         print(__doc__); return 2
     return 0
