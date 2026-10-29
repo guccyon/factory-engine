@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """建設状況の日次レポート（govern の経路。LLM は使わない）。
 
-definitions/roadmap.yaml の項目を取得元から測ってロードマップの進捗を出し、前日の動きと Tetsuro に頼みたいことを並べる。
+definitions/roadmap.yaml の項目を取得元から測ってロードマップの進捗を出し、前日の動きと オーナー に頼みたいことを並べる。
 - ダッシュボード: 工場状況とは別の固定 Issue（ラベル `factory:construction`）の本文を毎回書き換える
 - 日次レポート: 同じ Issue に 1 日 1 回コメントを足す
 - 推移: 毎回のスナップショットを events の `report.daily`（JST の日付で 1 件）に残し、そこから折れ線を描く
@@ -45,7 +45,7 @@ REPOS = [r.strip() for r in ENV.get("REPORT_REPOS", "guccyon/rally,guccyon/facto
 BUILD_WORK_DIR = ENV.get("BUILD_WORK_DIR", "")
 DATABASE_URL = ENV.get("DATABASE_URL", "")
 LABEL = "factory:construction"
-COST_BUDGET_USD = float(ENV.get("DAILY_COST_BUDGET_USD", "100"))   # 1 日の費用の目安（API 単価換算）。Max 5x の範囲に収まるペース（2026-10-29 Tetsuro）
+COST_BUDGET_USD = float(ENV.get("DAILY_COST_BUDGET_USD", "100"))   # 1 日の費用の目安（API 単価換算）。Max 5x の範囲に収まるペース（2026-10-29 オーナー）
 START_DATE = ENV.get("CONSTRUCTION_START", "2026-10-25")   # 建設の初日（日ごとの系列の起点）
 FACTORY_BRANCH_RE = re.compile(r"^factory/issue-\d+-job-\d+")
 SNAPSHOT_MARK = "factory-snapshot:v1"   # Issue の本文の末尾に埋める JSON（base64）。claude.ai のページはこれから描く
@@ -402,7 +402,7 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
     lines = [f"# 建設状況（{snap['date']} 時点・毎朝更新）", "",
              f"**全体 {pct(pr['overall'])}** `{bar(pr['overall'], 20)}`", "",
              "割合は `definitions/roadmap.yaml` から機械的に出しています（フェーズは期間の目安で重み付け）。不明の項目は 0 で数えます。", "",
-             "## Tetsuro に頼みたいこと", *fmt_needs(snap["needs"]), "",
+             "## オーナー に頼みたいこと", *fmt_needs(snap["needs"]), "",
              "## フェーズ", "", "| フェーズ | 進捗 | |", "|---|---|---|"]
     for ph in pr["phases"]:
         lines.append(f"| {ph['id']} {ph['ja']} | {pct(ph['progress'])} | `{bar(ph['progress'])}` |")

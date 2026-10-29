@@ -1,4 +1,4 @@
-# 判断の類型 v1 → v2 の振り直し（2026-10-28 Tetsuro 了承）。仮決め（stage=provisional）の artifact id ごとの v2 の類型。
+# 判断の類型 v1 → v2 の振り直し（2026-10-28 オーナー 了承）。仮決め（stage=provisional）の artifact id ごとの v2 の類型。
 # judge の記録（stage=judged）は source_artifact_id の振り直しに従う。検査の指摘（inspection）はそのまま。
 # acceptance（受け入れ条件の解釈）は類型から外し、ticket_interpretation: true の印にする。factoryctl judgment recategorize で当てる（冪等）
 taxonomy_from: v1

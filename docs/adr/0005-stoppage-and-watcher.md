@@ -13,7 +13,7 @@ P1 入口までに止まった・遅れた事例は 16 件あった（権限 4�
 ## 決定
 
 1. **Stoppage を成果物の型にし、制御プレーンの `events` に記録する**。`stoppage.opened` と `stoppage.closed` を `payload.key` で対にし、表は作らず view `stoppages` で読む。状態は events にだけあるので、記録の正本は 1 つ
-2. **属性**は 開始・終了・何が止まったか・何を待ったか・分類・検知者・原因・その場の手当て・再発を防ぐ仕組み。分類は `env` / `perm` / `human` / `factory-bug` / `ticket` / `external` に `budget`（契約の使用量上限・予算・時間・ターンの超過）を加えた 7 つ。2026-10-28 に `idle`（ラインが空。積まれたチケットがない）を `human` から分けて 8 つ（Tetsuro の確認）。検知者は `watcher` / `supervisor` / `builder`
+2. **属性**は 開始・終了・何が止まったか・何を待ったか・分類・検知者・原因・その場の手当て・再発を防ぐ仕組み。分類は `env` / `perm` / `human` / `factory-bug` / `ticket` / `external` に `budget`（契約の使用量上限・予算・時間・ターンの超過）を加えた 7 つ。2026-10-28 に `idle`（ラインが空。積まれたチケットがない）を `human` から分けて 8 つ（オーナー の確認）。検知者は `watcher` / `supervisor` / `builder`
 3. **番人は dispatcher の中に置く**（60 秒ごと、トークンを使わない）。開く条件:
    - 実行中 0 かつ投入可能 0 が 20 分（ラインが空）
    - supervisor の heartbeat が 30 分ない（heartbeat が 1 度でも来てから有効にする。ADR 0004 の前でも番人を動かせる）

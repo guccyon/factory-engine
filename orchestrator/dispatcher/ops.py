@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
-# 優先度の段（内部は 0〜100 の数。ラベルは 4 段から始める。2026-10-28 Tetsuro）
+# 優先度の段（内部は 0〜100 の数。ラベルは 4 段から始める。2026-10-28 オーナー）
 LEVELS = {
     "p0": (100, "緊急", "作業中のものを止めてでも先に流す（障害の調査・hotfix）"),
     "p1": (75, "急ぎ", "順番待ちの先頭に回す"),

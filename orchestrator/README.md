@@ -71,7 +71,7 @@ docker compose exec dispatcher factoryctl events 12     # そのジョブのイ�
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
 
 ```bash
-docker compose exec dispatcher factoryctl stoppage open perm "gh pr merge が許可待ち" --waiting-for "Tetsuro の許可" --key S17
+docker compose exec dispatcher factoryctl stoppage open perm "gh pr merge が許可待ち" --waiting-for "オーナー の許可" --key S17
 docker compose exec dispatcher factoryctl stoppage close S17 --remedy "許可リストに追加" --prevention "1 Bash 1 コマンド"
 docker compose exec dispatcher factoryctl stoppage list --open
 docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --to 2026-10-27   # Markdown（既定は直近 7 日、Asia/Tokyo）
@@ -81,7 +81,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 
 工場のいまを見て、順番・保留・停止を操作する画面と API。compose の `console`（dispatcher と同じイメージ）で動き、制御プレーンだけを読み書きする。GitHub にも外部の CDN にも触らない。
 
-- 開く: http://localhost:8790 （Mac の中だけ。外から見るときは閉じた網を足し、`CONSOLE_ALLOWED_HOSTS` にそのホスト名を入れる）
+- 開く: http://localhost:8790 （既定は Mac の中だけ。同じ LAN の端末から見るときは .env に `CONSOLE_BIND=0.0.0.0` と、`CONSOLE_ALLOWED_HOSTS` にそのホスト名（例 `localhost,127.0.0.1,host.example.local`）を入れて console を上げ直す。ログインがないので、LAN の中の誰でも優先度・保留・停止を操作できる。インターネットには出さない）
 - 画面: 人の出番・作業中・順番待ち・投入待ち（同時に流す上限）・依存待ち・検査と判定とマージ待ち・今日の済み。上に工場長の生存・モード・作業中の数・今日の費用・開いている停止
 - 操作: 優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）、保留・再開、止める。すべて events に `ticket.*` / `job.cancel_requested` として残る
 - API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
@@ -110,7 +110,7 @@ docker compose exec dispatcher factoryctl hold 12
 - マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。`SUPERVISOR_INSPECT=0` で止める
 - 判定した PR が閉じたら `pr.merged`（誰がマージしたか）/ `pr.closed_unmerged` を記録する。判定と人の判断の一致率の材料
 - `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら、優先度の高い順に `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計）まで。p0 は上限を待たない。保留中は流さない
-- 使用量の枠ごとの予算（2026-10-29 Tetsuro）: Max の使用量は毎朝 7:00 から 5 時間ごとにリセットされるので、JST の枠（7・12・17・22・3 時）ごとに予算を置き、その枠の `job.finished` の費用（API 換算）の合計が予算に達したら、次の枠まで新しい実装を投入しない（作業中のもの・検査・judge・p0 は止めない）。既定は平日 $10・$15・$35・$25・$15、週末は各 $20（1 日 約 $100、平日は夕方以降に寄せる）。`BUDGET_WINDOWS_WEEKDAY` / `BUDGET_WINDOWS_WEEKEND`（「開始時:ドル」の並び。空で無効）。止めたことは `supervisor.budget_paused`
+- 使用量の枠ごとの予算（2026-10-29 オーナー）: Max の使用量は毎朝 7:00 から 5 時間ごとにリセットされるので、JST の枠（7・12・17・22・3 時）ごとに予算を置き、その枠の `job.finished` の費用（API 換算）の合計が予算に達したら、次の枠まで新しい実装を投入しない（作業中のもの・検査・judge・p0 は止めない）。既定は平日 $10・$15・$35・$25・$15、週末は各 $20（1 日 約 $100、平日は夕方以降に寄せる）。`BUDGET_WINDOWS_WEEKDAY` / `BUDGET_WINDOWS_WEEKEND`（「開始時:ドル」の並び。空で無効）。止めたことは `supervisor.budget_paused`
 
 `SUPERVISOR_DRY_RUN=1` で GitHub に書かずに判定だけ記録する。
 
@@ -123,7 +123,7 @@ docker compose exec dispatcher factoryctl hold 12
 - supervisor が、検査の結果が出た head ごとに judge のジョブを 1 回積む（仮決めも指摘もなければ積まない）。入力は制御プレーンの記録だけで組み立て（仮決めの Judgment、最新の gate.evaluated の指摘、類型ごとの一致率、manifest の制約、モード）、ワーカーの `judge.sh` に標準入力で渡す。judge（`core-gates/judge.py`）はツールを持たず、根拠に挙がったファイルは PR の head のクローンから読んで渡す
 - 結果は Judgment（stage=judged）と `judgment.judged` に 3 層で残す。PR に `factory:judged:<モード>`、確信度が 0.6 未満なら `factory:confidence:low`、人に回した判断があれば `factory:needs-judgment`（停止としても開く）
 - 採用された指摘（nit を含む）と差し替えた仮決めは、1 本の差し戻し Issue（`factory:sendback`、本文は引用＝データ、`依存: #元の Ticket`）に起票する。unattended は `factory:planned`（依存が閉じたら supervisor が流す）、attended は `factory:fix-proposed`（人が `factory:planned` に替える 1 タップ）
-- 箇所が PR 本文だけの指摘（例: 「## 知見」の節がない）は Issue を切らず、kind=body_fix のジョブ（`core-gates/body_fix.py`、tier-small、ツールなし）が本文の末尾に節を足して直す（2026-10-27 Tetsuro）。差し戻しの回数には数えない。events に `pr.body_amended`
+- 箇所が PR 本文だけの指摘（例: 「## 知見」の節がない）は Issue を切らず、kind=body_fix のジョブ（`core-gates/body_fix.py`、tier-small、ツールなし）が本文の末尾に節を足して直す（2026-10-27 オーナー）。差し戻しの回数には数えない。events に `pr.body_amended`
 - 上限は 1 PR 1 回・1 日 5 件（仮置き）。差し戻しの修正 PR を再検査して指摘が残ったら、2 回目は流さず人へ（`sendback.residual`）
 - モードは `factoryctl mode set` ＞ 時間帯（`MODE_SCHEDULE`）＞ 既定（`FACTORY_MODE`、なければ attended）
 
