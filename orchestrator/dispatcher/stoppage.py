@@ -21,6 +21,9 @@ NOTIFIER = ENV.get("NOTIFIER", "github-issue")
 STATUS_REPO = ENV.get("STATUS_REPO") or next((r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()), "")
 STATUS_LABEL = "factory:status"
 STATUS_TITLE = "工場の状況（番人の通知）"
+# 通知先の番号（Issue でも PR でもよい。PR の会話にコメントする）。空なら factory:status の Issue を探す・作る（ADR 0005、D8）
+STATUS_NUMBER = ENV.get("STATUS_NUMBER", "")
+WOKEN_BY = ("pr_event", "watcher", "schedule", "human")   # 停止に気づいて builder を起こしたもの（D8）。人が起こした割合を健康レポートに
 
 
 def _log(*a):
@@ -48,11 +51,13 @@ def open_stoppage(cur, key: str, category: str, what: str, *, waiting_for: str =
     return opened
 
 
-def close_stoppage(cur, key: str, *, remedy: str = "", prevention: str = "", ended_at=None, closed_by: str = "watcher", quiet: bool = False) -> bool:
+def close_stoppage(cur, key: str, *, remedy: str = "", prevention: str = "", ended_at=None, closed_by: str = "watcher", quiet: bool = False,
+                   woken_by: str | None = None) -> bool:
     cur.execute("select 1 from stoppages where key=%s and ended_at is null", (key,))
     if cur.fetchone() is None:
         return False
-    payload = {"key": key, "remedy": remedy, "prevention": prevention or None, "ended_at": _iso(ended_at), "closed_by": closed_by}
+    payload = {"key": key, "remedy": remedy, "prevention": prevention or None, "ended_at": _iso(ended_at), "closed_by": closed_by,
+               "woken_by": woken_by if woken_by in WOKEN_BY else None}
     cur.execute("insert into events(name, payload, dedupe_key) values ('stoppage.closed',%s,%s) on conflict (dedupe_key) do nothing returning id",
                 (Jsonb({k: v for k, v in payload.items() if v is not None}), f"stoppage.closed:{key}"))
     closed = cur.fetchone() is not None
@@ -79,6 +84,8 @@ def _gh(method: str, path: str, body: dict | None = None):
 
 
 def _status_issue() -> int:
+    if STATUS_NUMBER.isdigit():
+        return int(STATUS_NUMBER)
     found = _gh("GET", f"repos/{STATUS_REPO}/issues?state=open&labels={urllib.parse.quote(STATUS_LABEL)}&per_page=1") or []
     if found:
         return found[0]["number"]
