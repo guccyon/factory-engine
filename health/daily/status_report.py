@@ -45,6 +45,7 @@ REPOS = [r.strip() for r in ENV.get("REPORT_REPOS", "guccyon/rally,guccyon/facto
 BUILD_WORK_DIR = ENV.get("BUILD_WORK_DIR", "")
 DATABASE_URL = ENV.get("DATABASE_URL", "")
 LABEL = "factory:construction"
+COST_BUDGET_USD = float(ENV.get("DAILY_COST_BUDGET_USD", "100"))   # 1 日の費用の目安（API 単価換算）。Max 5x の範囲に収まるペース（2026-10-29 Tetsuro）
 START_DATE = ENV.get("CONSTRUCTION_START", "2026-10-25")   # 建設の初日（日ごとの系列の起点）
 FACTORY_BRANCH_RE = re.compile(r"^factory/issue-\d+-job-\d+")
 SNAPSHOT_MARK = "factory-snapshot:v1"   # Issue の本文の末尾に埋める JSON（base64）。claude.ai のページはこれから描く
@@ -500,7 +501,8 @@ def main() -> int:
     progress = roadmap_progress(conn)
     snap = {"date": date, "generated_at": now.isoformat(), "progress": progress,
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
-            "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR)}
+            "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
+            "cost_budget_usd": COST_BUDGET_USD}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],
