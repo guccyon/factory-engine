@@ -52,6 +52,10 @@ JUDGE_ENABLED = ENV.get("SUPERVISOR_JUDGE", "1") == "1"       # 検査が終わ�
 MODE_DEFAULT, MODE_SCHEDULE = ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", "")
 DAILY_REPORT = ENV.get("DAILY_REPORT_SCRIPT", "/health/daily/status_report.py")   # 空にすると日次レポートを出さない
 DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai のページは 6 時にこの結果から描く。Mac が寝ていた日は起きたときに出す
+# 使用量の枠ごとの予算（2026-10-29 Tetsuro: Max の使用量は毎朝 7:00 から 5 時間ごとにリセット。1 日 約 $100 を枠ごとに均し、
+# 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
+BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22:25,03:15")
+BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -290,6 +294,36 @@ def judge_step(cur, manifests: dict):
         log("judge enqueued", r["pr_url"], "job", jid, "mode", mode)
 
 
+def budget_window(now: datetime) -> tuple[datetime, float] | None:
+    """今（JST）の使用量の枠の開始時刻と予算。枠は前日からまたぐ（22 時の枠は翌 3 時まで）。週末は開始した日で決める"""
+    def parse(spec):
+        out = []
+        for part in spec.split(","):
+            hm, _, usd = part.strip().partition(":")
+            if hm and usd:
+                out.append((int(hm), float(usd)))
+        return sorted(out)
+    for back in (0, 1):
+        day = now - timedelta(days=back)
+        spec = BUDGET_WINDOWS_WEEKEND if day.weekday() >= 5 else BUDGET_WINDOWS_WEEKDAY
+        for h, usd in reversed(parse(spec)):
+            start = day.replace(hour=h, minute=0, second=0, microsecond=0)
+            if start <= now:
+                return start, usd
+    return None
+
+
+def over_budget(cur) -> dict | None:
+    """今の枠の予算を使い切っていれば、その様子を返す（新しい実装を投入しない。作業中のもの・検査・judge は止めない）"""
+    w = budget_window(datetime.now(timezone(timedelta(hours=9))))
+    if w is None:
+        return None
+    start, usd = w
+    cur.execute("select coalesce(sum((payload->>'cost_usd')::numeric), 0) as spent from events where name='job.finished' and occurred_at >= %s", (start,))
+    spent = float(cur.fetchone()["spent"])
+    return {"window_start": start.isoformat(), "budget_usd": usd, "spent_usd": round(spent, 2)} if spent >= usd else None
+
+
 def enqueue_step(cur, open_prs: int):
     cur.execute("select count(*) as n from jobs where state in ('queued','running')")
     inflight = cur.fetchone()["n"] + open_prs
@@ -320,8 +354,13 @@ def enqueue_step(cur, open_prs: int):
     cur.execute("update tickets set state='closed', updated_at=now() where source='github' and state='planned' and repo = any(%s) "
                 "and not (source_ref = any(%s))", (REPOS, seen))
     ready.sort(key=lambda r: (-r[0]["priority"], r[2].get("created_at") or ""))   # 優先度の高い順、同じなら古い順
+    paused = over_budget(cur) if ready else None
+    if paused and record(cur, "supervisor.budget_paused", None, paused, f"supervisor.budget_paused:{paused['window_start']}"):
+        log("budget paused", paused)
     for t, repo, it, deps in ready:
         if inflight >= MAX_INFLIGHT and t["priority"] < ops.PREEMPT_AT:
+            continue
+        if paused and t["priority"] < ops.PREEMPT_AT:   # 枠の予算を使い切ったら次の枠まで投入しない（p0 は止めない）
             continue
         corr = f"github:{repo}#{it['number']}"
         if not record(cur, "supervisor.enqueued", corr, {"repo": repo, "issue": it["number"], "deps": deps, "priority": t["priority"]},
