@@ -70,6 +70,9 @@ gates:
     unit: "シナリオごとの変更ファイル数・コンテキスト数"
     limits: { minutes: 30, jpy: 500 }
     phase: P2
+    implementations:
+      change_impact: { script: core-gates/l3_impact.py, status: shadow, since: "2026-10-30",
+                       note: "差分のファイルをコンテキストに割り当てて数える（語彙は製品の context-map・glossary・.factory-config/l3.yaml）。LLM を使わないので同じ差分に同じ判定と digest を返す。アドホック Probe はまだない。製品の CI で shadow" }
 
   L4:
     name: "モデリング品質"
