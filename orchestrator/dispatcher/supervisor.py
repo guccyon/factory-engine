@@ -192,6 +192,19 @@ def factory_prs(cur) -> list[dict]:
     return out
 
 
+def ci_failure_step(cur, p: dict, sha: str):
+    """工場の PR の CI が落ちたら停止として開く（検査・judge は CI が通るまで積まないので、黙って止まらないように）。
+    次の head で CI が通れば閉じる。PR が閉じても閉じる"""
+    runs = (gh("GET", f"repos/{p['repo']}/commits/{sha}/check-runs?per_page=50") or {}).get("check_runs", [])
+    failed = sorted({r["name"] for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled")})
+    key = f"ci:{p['url']}"
+    if failed:
+        stoppage.open_stoppage(cur, key, "ticket", f"工場の PR の CI が落ちた（{', '.join(failed)}）。検査と judge に進めない",
+                               waiting_for="builder が直すか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
+    elif runs and all(r.get("status") == "completed" for r in runs):
+        stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った", closed_by="supervisor")
+
+
 def merge_step(cur, rules: dict, manifests: dict):
     open_count = 0
     for p in factory_prs(cur):
@@ -202,7 +215,7 @@ def merge_step(cur, rules: dict, manifests: dict):
         if pr["state"] == "closed":
             cur.execute("select payload from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (p["url"],))
             d = cur.fetchone()
-            for key in (f"judge:{p['url']}", f"sendback:{p['url']}"):   # judge が人に回した停止・流さなかった差し戻しは、PR が閉じた（人が判断した）時点で閉じる
+            for key in (f"judge:{p['url']}", f"sendback:{p['url']}", f"ci:{p['url']}"):   # judge が人に回した停止・流さなかった差し戻し・CI の失敗は、PR が閉じた（人が判断した）時点で閉じる
                 stoppage.close_stoppage(cur, key, remedy="PR が閉じた（人が判断した）", closed_by="supervisor")
             if pr.get("merged_at"):
                 cur.execute("update tickets set state='closed', updated_at=now() where source='github' and source_ref=%s and state<>'closed'",
@@ -214,6 +227,8 @@ def merge_step(cur, rules: dict, manifests: dict):
                        f"pr.closed_unmerged:{p['url']}")
             continue
         open_count += 1
+        if not pr.get("draft"):
+            ci_failure_step(cur, p, pr["head"]["sha"])
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
             continue   # CI 待ち・衝突・ドラフト（途中終了）は表を引くまでもない
         sha = pr["head"]["sha"]
