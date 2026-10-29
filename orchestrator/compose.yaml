@@ -132,7 +132,7 @@ services:
       FACTORY_MODE: ${FACTORY_MODE:-}
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}
     ports:
-      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_HOST_PORT:-8790}:8790"   # 同じ LAN の端末から見るときは CONSOLE_BIND=0.0.0.0 と CONSOLE_ALLOWED_HOSTS にホスト名（mac-mini.local など）
+      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_HOST_PORT:-8790}:8790"   # 同じ LAN の端末から見るときは CONSOLE_BIND=0.0.0.0 と CONSOLE_ALLOWED_HOSTS にホスト名（例 host.example.local）
     restart: unless-stopped
 
   # ワーカーのイメージをビルドするためだけのサービス（常駐しない。docker compose build worker）

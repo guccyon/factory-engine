@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR 本文だけの指摘を、本文の追記で直す（2026-10-27 Tetsuro の判断。ADR 0006 の差し戻しの軽い経路）。
+"""PR 本文だけの指摘を、本文の追記で直す（2026-10-27 オーナー の判断。ADR 0006 の差し戻しの軽い経路）。
 
 入力は標準入力の JSON（judge が採用した指摘のうち、箇所が PR 本文のもの）: {pr_url, defects: [{rubric_id, severity, location, evidence, remediation_hint}]}
 モデルには本文と差分と指摘を渡し、本文の末尾に足す Markdown の節だけを返させる（ツールなし）。既存の本文は書き換えない。

@@ -500,7 +500,7 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         swap_label(repo, pr_number, [], labels)
     except Exception as e:  # noqa: BLE001
         log("judge label failed", pr_url, repr(e))
-    # PR 本文だけの指摘は Issue を切らず、本文の追記で直す（2026-10-27 Tetsuro）。差し戻しの回数にも数えない
+    # PR 本文だけの指摘は Issue を切らず、本文の追記で直す（2026-10-27 オーナー）。差し戻しの回数にも数えない
     body_only = [d for d in summary["adopted_defects"] if is_body_only(d)]
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
