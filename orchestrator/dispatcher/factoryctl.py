@@ -15,7 +15,7 @@
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
-  factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--quiet]   # --quiet は通知しない（過去分の取り込み）
+  factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--woken-by pr_event|watcher|schedule|human] [--quiet]   # --quiet は通知しない（過去分の取り込み）。--woken-by は builder を起こしたもの（D8）
   factoryctl stoppage list [--open]
   factoryctl report stoppages [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # Markdown。既定は直近 7 日。週次レポートの stoppages.md はこの出力
 
@@ -68,6 +68,13 @@ def report_stoppages(cur, argv):
         if rs:
             mins = sum(int(r["dur"].total_seconds() // 60) for r in rs)
             out.append(f"| {cat} | {len(rs)} | {mins // 60} 時間 {mins % 60} 分 | {sum(1 for r in rs if r['ended_at'] is None)} |")
+    # builder を起こしたもの（D8）。builder が閉じた停止のうち、人が起こした割合を自律の度合いとして見る
+    cur.execute("select coalesce(payload->>'woken_by', '未記録') as w, count(*) as n from events where name='stoppage.closed' "
+                "and payload->>'closed_by'='builder' and occurred_at >= %s::date and occurred_at < %s::date group by 1", (frm, to))
+    woke = {r["w"]: r["n"] for r in cur.fetchall()}
+    known = sum(n for w, n in woke.items() if w != "未記録")
+    out += ["", "## builder を起こしたもの（D8）", "", "| 起こしたもの | 件数 |", "|---|---|"] + [f"| {w} | {n} |" for w, n in sorted(woke.items())]
+    out += ["", f"- 人が起こした割合: {woke.get('human', 0)}/{known}" + (f"（{woke.get('human', 0) / known:.0%}）" if known else "（記録なし）")]
     out += ["", "## 一覧", "", "| key | 開始 | 終了 | 分類 | 検知 | 何が止まったか | 原因 | 手当て | 再発を防ぐ仕組み |", "|---|---|---|---|---|---|---|---|---|"]
 
     def cell(v):
@@ -295,7 +302,7 @@ def main(argv):
         elif sub == "close":
             key = argv[3]
             ok = stoppage.close_stoppage(cur, key, remedy=opt(argv, "--remedy", ""), prevention=opt(argv, "--prevention", ""),
-                                         ended_at=opt(argv, "--at"), closed_by="builder", quiet="--quiet" in argv)
+                                         ended_at=opt(argv, "--at"), closed_by="builder", quiet="--quiet" in argv, woken_by=opt(argv, "--woken-by"))
             print(f"closed {key}" if ok else f"{key} is not open")
         else:
             where = "where ended_at is null" if "--open" in argv else ""
