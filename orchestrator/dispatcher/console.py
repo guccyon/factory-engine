@@ -8,6 +8,8 @@
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
+  POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
+  GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
 - 出荷の操作は events に依頼を書くだけで、docker を動かすのは shipper（このサービスに docker のソケットは渡さない）
 - 操作は ops.py を通り、dispatcher・supervisor・factoryctl と同じ振る舞いになる。誰が操作したかは events に残す
 - 外部のサービス・CDN に依存しない（閉じた網・オンプレミスで動かせるように）。GitHub にも触らない（制御プレーンだけを読む）
@@ -22,6 +24,7 @@ import secrets
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -39,6 +42,8 @@ MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
 TOKEN = secrets.token_urlsafe(24)   # 起動ごとに変わる。画面を開き直せば新しいものが入る
+HOST_AGENT_FRESH_SEC = 600   # これより長く keep-awake.sh から連絡がなければ、ホストの見張りは居ないとみなす（トグルを出さない）
+host_agent: dict = {}         # keep-awake.sh の最後の連絡（プロセスの中だけ。再起動しても次の問い合わせで戻る）
 PR_STAGE_EVENTS = ("supervisor.merge_decided", "gate.evaluated", "supervisor.judge_enqueued", "judgment.judged")
 
 
@@ -131,10 +136,23 @@ def snapshot(cur) -> dict:
         "releases": releases(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": MAX_PARALLEL,
-                    "cost_today_usd": round(cost, 2), "open_stoppages": stoppages},
+                    "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur)},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
         "items": items,
     }
+
+
+def host_view(cur) -> dict | None:
+    """ホストの見張り（keep-awake.sh）が居るときだけ返す。居なければ（EC2 や Mac 以外）トグルを出さない"""
+    seen = host_agent.get("seen")
+    if not seen:
+        return None
+    age = int((datetime.now(timezone.utc) - seen).total_seconds())
+    if age > HOST_AGENT_FRESH_SEC:
+        return None
+    prevent = ops.keep_awake(cur)
+    return {"agent_age_sec": age, "prevent_sleep": prevent, "factory_running": host_agent["factory_running"],
+            "sleep_prevented": prevent and host_agent["factory_running"]}
 
 
 def releases(cur) -> list[dict]:
@@ -183,6 +201,10 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             return 400, {"error": "env は staging か prod"}
         ok, msg = ship.request_rollback(cur, repo, env, by, "console")
         return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/host/keep-awake":
+        if not isinstance(body.get("prevent_sleep"), bool):
+            return 400, {"error": "prevent_sleep（true か false）が要る"}
+        return 200, {"prevent_sleep": ops.set_keep_awake(cur, body["prevent_sleep"], by, reason)}
     m = re.fullmatch(r"/api/jobs/(\d+)/stop", path)
     if m:
         before = ops.stop_job(cur, int(m.group(1)), by, reason)
@@ -216,6 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, snapshot(cur))
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
+        url = urlsplit(self.path)
+        if url.path == "/api/host/keep-awake":   # ホストの keep-awake.sh から。読むだけで工場の状態は変えない（合言葉は要らない）
+            q = parse_qs(url.query)
+            host_agent.update(seen=datetime.now(timezone.utc), factory_running=q.get("factory", [""])[0] == "running")
+            with db() as conn, conn.cursor() as cur:
+                return self._json(200, {"prevent_sleep": ops.keep_awake(cur)})
         if self.path == "/healthz":
             return self._json(200, {"ok": True})
         self._json(404, {"error": "not found"})
@@ -248,7 +276,7 @@ PAGE = r"""<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
 header{padding:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;border-bottom:1px solid var(--line);background:var(--card)}
 h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--sub)}.stat b{color:var(--ink)}
-.bad b{color:var(--p0)}main{padding:16px;display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.bad b{color:var(--p0)}.sw{cursor:pointer;display:inline-flex;gap:6px;align-items:center}main{padding:16px;display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
 .lane{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:80px}
 .lane h2{font-size:13px;margin:0 0 8px;color:var(--sub);display:flex;justify-content:space-between}
 .it{border:1px solid var(--line);border-left:4px solid var(--p2);border-radius:8px;padding:8px;margin:0 0 8px}
@@ -305,12 +333,13 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   `<span class="stat ${hb==null||hb>180?"bad":""}">工場長 <b>${hb==null?"未起動":hb>180?dur(hb)+"前に停止":"動いている"}</b></span>`,
   `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
   `<span class="stat">作業中 <b>${f.running} / ${f.max_parallel}</b></span>`,
-  `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`].join(" ");
+  `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
+  f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡"><input type="checkbox" id="keepawake" ${f.host.prevent_sleep?"checked":""}> 稼働中は Mac をスリープさせない <b>${f.host.sleep_prevented?"止めている":"眠れる"}</b></label>`:""].join(" ");
  document.getElementById("ship").innerHTML=shipView(s.releases||[]);
  document.getElementById("stops").innerHTML=f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("");
  document.getElementById("lanes").innerHTML=LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
   return `<section class="lane"><h2><span>${n}</span><span>${xs.length}</span></h2>${xs.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")}
-document.addEventListener("change",e=>{const t=e.target;if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
+document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
