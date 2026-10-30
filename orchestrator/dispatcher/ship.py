@@ -9,6 +9,7 @@
   release.rollback_requested  {repo, env, by, via}    その環境を、いま出ている版の 1 つ前の版に戻す
 結果（同じ release の correlation_id で）:
   release.built / release.deployed / release.rolled_back / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
+  release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ）
 
 製品の出荷の形は製品の .factory-config/ship.yaml（compose のファイル、部品ごとのイメージの作り方、環境ごとの値、確かめ方）。
 """
@@ -244,6 +245,20 @@ def added_contracts(cur, path: str, repo: str, commit: str) -> list[str]:
     return sorted(f for f in out.splitlines() if "/migrations/" in f and "_contract_" in f.rsplit("/", 1)[-1] and f.endswith(".sql"))
 
 
+def seed_once(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
+    """ship.yaml の seed の環境なら、その環境に合成シードを 1 回だけ書く（DB は環境ごとのボリュームに残る）"""
+    sd = cfg.get("seed") or {}
+    if env not in (sd.get("environments") or []):
+        return
+    cur.execute("select 1 from events where name='release.seeded' and payload->>'repo'=%s and payload->>'env'=%s limit 1", (repo, env))
+    if cur.fetchone():
+        return
+    t0 = time.monotonic()
+    sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", sd["service"], *sd["command"]], timeout=900)
+    record(cur, "release.seeded", rel["release_id"], {**common, "env": env, "seconds": round(time.monotonic() - t0, 1),
+                                                      "command": sd["command"]})
+
+
 def handle(cur, ev: dict):
     p, name = ev["payload"], ev["name"]
     rid = p["release_id"]
@@ -264,6 +279,7 @@ def handle(cur, ev: dict):
                                                "images": [image(repo, part, rel["app_version"]) for part in cfg["images"]]})
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})
+            seed_once(cur, cfg, repo, "staging", rel, common)
         elif name == "release.approved":
             path, _ = source(repo, rel["app_version"])
             secs = deploy(ship_config(path), path, repo, "prod", rel)
