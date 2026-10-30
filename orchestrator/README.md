@@ -145,6 +145,19 @@ docker compose exec dispatcher factoryctl release create guccyon/rally 0.1.0    
 docker compose exec dispatcher factoryctl report provenance --from 2026-10-20      # 来歴の付与率と Release への紐付け率
 ```
 
+## 出荷と Rollback（ADR 0012）
+
+Release ごとに製品のイメージを作り、建設者の端末の Docker に staging（自動）と prod（承認ボタン）の環境を立てる。compose の `shipper` が events の依頼を受けて手を動かす（入口は依頼を書くだけ）。製品の出荷の形は製品の `.factory-config/ship.yaml`。
+Rollback は前の版のイメージに戻すだけで、DB は戻さない（製品の expand/contract が支える）。押してから確かめ終わるまでの秒数を `release.rolled_back` に残す（目標 60 秒）。
+
+```bash
+docker compose up -d --build shipper                                                  # 初回（factory-dispatcher:p0 に git と docker compose を重ねる）
+docker compose exec shipper factoryctl release ship guccyon/rally@0.2.0             # イメージを作って staging へ
+docker compose exec shipper factoryctl release approve guccyon/rally@0.2.0          # 承認ボタンと同じ。prod へ
+docker compose exec shipper factoryctl release rollback guccyon/rally --env prod    # 1 つ前の版へ
+docker compose exec shipper factoryctl release status guccyon/rally
+```
+
 ## 建設状況の日次レポート（ADR 0008）
 
 supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
