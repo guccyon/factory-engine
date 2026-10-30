@@ -118,7 +118,7 @@ services:
   # 操業コンソール（ADR 0009）。工場のいまを見て、順番・保留・停止を操作する。制御プレーンだけを読み書きし、GitHub にも外部の CDN にも触らない
   # 既定は Mac の中だけで開く（http://localhost:8790）。外から見るときは閉じた網（Tailscale など）を足し、CONSOLE_ALLOWED_HOSTS にそのホスト名を入れる
   console:
-    image: factory-dispatcher:p0
+    image: factory-shipper:p2          # 出荷のボタン（ADR 0012）に ship.py を使うので shipper と同じイメージ。docker のソケットは渡さない
     command: ["python", "console.py"]
     depends_on:
       postgres: { condition: service_healthy }

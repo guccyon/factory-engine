@@ -158,6 +158,8 @@ docker compose exec shipper factoryctl release rollback guccyon/rally --env prod
 docker compose exec shipper factoryctl release status guccyon/rally
 ```
 
+操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
+
 ## 建設状況の日次レポート（ADR 0008）
 
 supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
