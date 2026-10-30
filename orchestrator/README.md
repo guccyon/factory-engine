@@ -168,7 +168,8 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
 教師信号は今のところ judge が採用した検査の指摘、judge が差し替えた仮決め、人が judge に同意しなかった採点の 3 つ。束ごとに eval ケースの元（元 PR と差し戻しの修正 PR の組）と、Stage 2（rubric）の候補か（3 件以上・2 チケット以上）を出す。
-束から Lesson とルールを書く learn ジョブ、overlay のルールの発火、採用の判定はこの後に足す（形と閾値は `definitions/learning.yaml`）。
+束ねた日に、Stage 2 の候補で負例の元がある束を 1 つ選び、製品に「ルール化」の Issue（`factory:planned`・`factory:learn`）を起票する（1 日 1 本まで、`LEARN_RULE_ISSUES=0` で止める）。通常の implement ジョブがルール変更 PR を書き、CI の rule-eval が緑なら factory_rule として自動でマージされる。
+検査は製品の overlay の shadow・adopted のルールもルーブリックに足し、shadow のルールの指摘は judge が裁くだけで差し戻さない。成績（発火・的中率）は report learning に出る。adopted への昇格の自動化はこの後に足す（形と閾値は `definitions/learning.yaml`）。
 
 ```bash
 docker compose exec dispatcher factoryctl report learning --days 30

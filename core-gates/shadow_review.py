@@ -63,6 +63,38 @@ def load_rubric() -> list[dict]:
         return json.loads(out)
 
 
+def parse_yaml(text: str):
+    try:
+        import yaml  # type: ignore
+        return yaml.safe_load(text)
+    except ImportError:
+        return json.loads(sh("ruby", "-ryaml", "-rjson", "-e", "puts JSON.generate(YAML.load($stdin.read))", input=text))
+
+
+def load_overlay(repo: str) -> list[dict]:
+    """製品の overlay のルールのうち、検査官が判定するもの（ADR 0013）。shadow と adopted の rubric・episodic の段だけ。
+    crystallized（正規表現）は製品の CI の rule-eval が当てる。読めなければ空（overlay がなくても検査は続ける）"""
+    import base64
+    try:
+        files = json.loads(sh("gh", "api", f"repos/{repo}/contents/.factory-config/overlay/rules", retries=1))
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for f in files if isinstance(files, list) else []:
+        if not f.get("name", "").endswith(".yaml"):
+            continue
+        try:
+            body = json.loads(sh("gh", "api", f"repos/{repo}/contents/{f['path']}", retries=1))
+            r = parse_yaml(base64.b64decode(body["content"]).decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        check = (r or {}).get("check") or {}
+        if r.get("state") in ("shadow", "adopted") and r.get("knowledge_stage") in ("rubric", "episodic") and check.get("text"):
+            out.append({"id": r["id"], "gate": r.get("gate", "L4"), "severity": r.get("severity", "should"), "title": r.get("title", ""),
+                        "check": check["text"], "state": r["state"]})
+    return out
+
+
 def pr_parts(url: str) -> tuple[str, int]:
     m = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
     if not m:
@@ -82,6 +114,11 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
     body_text = body if len(body) <= 20000 else body[:20000] + "\n\n[... 本文が長いので検査器が 20000 字で切った。途切れは PR の欠陥ではない]"
     rules = load_rubric()
     rubric_text = "\n".join(f"- {r['id']} [{r['gate']}/{r['severity']}] {r['title']}: {r.get('check', '')}" for r in rules)
+    # 製品の overlay のルール（工場が学習で書いたもの。ADR 0013）。shadow のものは判定するが差し戻さない（dispatcher が shadow の印で外す）
+    overlay = load_overlay(repo)
+    shadow_ids = {r["id"] for r in overlay if r["state"] == "shadow"}
+    if overlay:
+        rubric_text += "\n" + "\n".join(f"- {r['id']} [{r['gate']}/{r['severity']}] {r['title']}: {r['check']}" for r in overlay)
     prompt = f"""あなたは工場の検査官（inspector）です。build-cell とは別の文脈で、PR の差分をルーブリックに照らして検査します。
 ルーブリックの各項目について、この差分に該当する欠陥があれば Defect として挙げてください。該当しない項目は挙げません。
 根拠（evidence）は差分の中の具体的な行や箇所を引いてください。推測で欠陥を作らないこと。差分の外のファイルを見ることはできないので、
@@ -97,11 +134,14 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
 {diff}
 """
     r = agent_runner.run("inspect", prompt, schema=SCHEMA, tier=tier)
+    for d in (r.output or {}).get("defects", []):
+        if d.get("rubric_id") in shadow_ids:
+            d["shadow"] = True
     return {
         "pr": pr_url, "repo": repo, "number": number, "mode": "shadow", "tier": tier, "model": r.model,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
         "usage": r.usage, "cost_usd": r.cost_usd,
-        "result": r.output,
+        "result": r.output, "overlay_rules": sorted(r_["id"] for r_ in overlay),
     }
 
 

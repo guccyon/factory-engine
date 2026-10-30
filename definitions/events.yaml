@@ -164,6 +164,10 @@ events:
     source: control_plane
     required: [day, signals, clusters, rubric_candidates]
     note: "ADR 0013。supervisor が 1 日 1 回、直近 30 日の教師信号を signature で束ねた。dedupe は learn.retrospected:<JST の日付>。束の中身は artifacts の Retrospective"
+  learn.rule_filed:
+    source: control_plane
+    required: [signature, issue, signals, day]
+    note: "ADR 0013 の 3。Stage 2 の候補で負例の元がある束から、ルール化の Issue（factory:planned）を 1 日 1 本まで起票した。工場の implement ジョブがルール変更 PR を書く。dedupe は signature ごと"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]

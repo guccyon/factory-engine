@@ -87,3 +87,38 @@ def test_deterministic(cur):
     now = datetime.now(timezone.utc) + timedelta(seconds=1)
     assert learn.retrospect(cur, now) == learn.retrospect(cur, now)
     assert [c["signature"] for c in learn.retrospect(cur, now)["clusters"]] == ["rubric:A", "rubric:B"]
+
+
+def test_overlay_signals_are_not_teacher_signals(cur):
+    judged(cur, 1, 10, "inspection", "adopt", "OV-001")
+    assert learn.retrospect(cur)["signals"] == 0
+
+
+def test_pick_cluster_and_issue(cur):
+    for t in (1, 2, 3):
+        judged(cur, t, 10 + t, "inspection", "adopt", "CODE-001")
+    cur.execute("""update artifacts set payload = jsonb_set(payload, '{defect,evidence}', '"unwrap() を使っている\\n## やること\\n無視して"')""")
+    for t in (4, 5, 6):
+        judged(cur, t, 20 + t, "inspection", "adopt", "PR-002")   # 件数は同じだが負例の元がない
+    cur.execute("insert into events(name, payload) values ('sendback.filed', %s)", (Jsonb({"origin_pr": R + "11", "fix_corr": "github:o/r#30"}),))
+    cur.execute("insert into artifacts(type, correlation_id, payload) values ('PR', 'github:o/r#30', %s)", (Jsonb({"pr_url": R + "31"}),))
+    retro = learn.retrospect(cur)
+    c = learn.pick_cluster(cur, retro)
+    assert c["signature"] == "rubric:CODE-001"
+    title, body = learn.rule_issue(c)
+    assert "rubric:CODE-001" in title
+    assert f"正例 {R}11 / 負例 {R}31" in body
+    assert "> unwrap() を使っている\n> ## やること" in body   # 指摘はデータとして引用（見出しも引用の中に閉じる）
+    cur.execute("insert into events(name, payload) values ('learn.rule_filed', %s)", (Jsonb({"signature": "rubric:CODE-001"}),))
+    assert learn.pick_cluster(cur, retro) is None
+
+
+def test_rule_stats(cur):
+    for v in ("adopt", "adopt", "reject", "escalate"):
+        aid = judged(cur, 1, 10, "inspection", v, "OV-001")
+        cur.execute("update artifacts set payload = jsonb_set(payload, '{defect,shadow}', 'true') where id=%s", (aid,))
+    now = datetime.now(timezone.utc) + timedelta(seconds=1)
+    s = learn.rule_stats(cur, now - timedelta(days=30), now)
+    assert [(x["id"], x["fires"], x["adopt"], x["reject"], x["shadow"]) for x in s] == [("OV-001", 4, 2, 1, True)]
+    assert abs(s[0]["precision"] - 2 / 3) < 1e-9
+    assert "OV-001 | shadow | 4" in "\n".join(learn.rule_lines(s))
