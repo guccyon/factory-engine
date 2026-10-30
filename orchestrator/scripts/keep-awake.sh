@@ -1,6 +1,7 @@
 #!/bin/sh
 # 工場（Compose の project "factory"）のコンテナが動いている間だけ、ホスト（macOS）のスリープを止める（ADR 0011 の 7）。
 # 工場が止まっていれば何もしないので、普段どおり眠れる。pmset などシステムの設定は変えない。
+# 操業コンソールのトグル（稼働中は Mac をスリープさせない）で切ったときも眠れる。コンソールに問い合わせられなければ止める側に倒す
 # 使い方:
 #   scripts/keep-awake.sh install     ログインのたびに launchd が常駐させる（落ちても起こし直す）
 #   scripts/keep-awake.sh uninstall   元に戻す（LaunchAgent を外して消す）
@@ -13,6 +14,7 @@ label="local.factory.keepawake"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 project="${FACTORY_COMPOSE_PROJECT:-factory}"
 interval="${KEEP_AWAKE_INTERVAL:-120}"
+console="${CONSOLE_URL:-http://127.0.0.1:${CONSOLE_HOST_PORT:-8790}}"
 PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
 
 factory_running() {
@@ -51,9 +53,12 @@ EOF
     if pgrep -f "caffeinate -ims -t" >/dev/null 2>&1; then echo "sleep: prevented"; else echo "sleep: allowed"; fi
     ;;
   run)
-    # 工場が動いていれば interval 秒だけスリープを止め、また確かめる。止まっていれば待つだけ
+    # 工場が動いていて、コンソールのトグルが切られていなければ interval 秒だけスリープを止め、また確かめる。それ以外は待つだけ
+    # 問い合わせは居ることの知らせを兼ねる（コンソールは連絡があるときだけトグルを出す）
     while :; do
-      if factory_running; then
+      if factory_running; then state=running; else state=stopped; fi
+      setting=$(curl -fsS -m 5 "$console/api/host/keep-awake?factory=$state" 2>/dev/null)
+      if [ "$state" = running ] && ! printf '%s' "$setting" | grep -q '"prevent_sleep": *false'; then
         caffeinate -ims -t "$interval"
       else
         sleep "$interval"

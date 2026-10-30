@@ -110,7 +110,7 @@ docker compose exec dispatcher factoryctl hold 12
 - マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。`SUPERVISOR_INSPECT=0` で止める
 - 判定した PR が閉じたら `pr.merged`（誰がマージしたか）/ `pr.closed_unmerged` を記録する。判定と人の判断の一致率の材料
 - `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら、優先度の高い順に `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計）まで。p0 は上限を待たない。保留中は流さない
-- 自律的な再開（ADR 0011）: 停止を閉じるときは `factoryctl stoppage close <key> --woken-by pr_event|watcher|schedule|human` で、builder を起こしたものを残す（人が起こした割合が `report stoppages` に出る）。番人の通知先は `STATUS_NUMBER`（Issue でも PR でもよい。空なら factory:status の Issue）。ホストのスリープは `scripts/keep-awake.sh install` で防ぐ（launchd が常駐させ、工場のコンテナが動いている間だけ `caffeinate` でスリープを止める。止まっていれば普段どおり眠る。`uninstall` で元に戻る、`status` で確認）
+- 自律的な再開（ADR 0011）: 停止を閉じるときは `factoryctl stoppage close <key> --woken-by pr_event|watcher|schedule|human` で、builder を起こしたものを残す（人が起こした割合が `report stoppages` に出る）。番人の通知先は `STATUS_NUMBER`（Issue でも PR でもよい。空なら factory:status の Issue）。ホストのスリープは `scripts/keep-awake.sh install` で防ぐ（launchd が常駐させ、工場のコンテナが動いている間だけ `caffeinate` でスリープを止める。止まっていれば普段どおり眠る。`uninstall` で元に戻る、`status` で確認。操業コンソールのトグル「稼働中は Mac をスリープさせない」で切り替えられる。トグルは見張りから連絡があるときだけ出る）
 - 使用量の枠ごとの予算（2026-10-29 オーナー）: Max の使用量は毎朝 7:00 から 5 時間ごとにリセットされるので、JST の枠（7・12・17・22・3 時）ごとに予算を置き、その枠の `job.finished` の費用（API 換算）の合計が予算に達したら、次の枠まで新しい実装を投入しない（作業中のもの・検査・judge・p0 は止めない）。既定は平日 $10・$15・$35・$25・$15、週末は各 $20（1 日 約 $100、平日は夕方以降に寄せる）。`BUDGET_WINDOWS_WEEKDAY` / `BUDGET_WINDOWS_WEEKEND`（「開始時:ドル」の並び。空で無効）。止めたことは `supervisor.budget_paused`
 
 `SUPERVISOR_DRY_RUN=1` で GitHub に書かずに判定だけ記録する。

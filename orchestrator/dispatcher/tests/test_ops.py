@@ -85,3 +85,11 @@ def test_stop_queued_cancels_now(cur):
     cur.execute("select state from jobs where id=%s", (j,))
     assert cur.fetchone()["state"] == "cancelled"
     assert ops.stop_job(cur, j, "test") is None
+
+
+def test_keep_awake_defaults_to_prevent_and_follows_last_set(cur):
+    assert ops.keep_awake(cur) is True
+    ops.set_keep_awake(cur, False, "console:builder")
+    assert ops.keep_awake(cur) is False
+    ops.set_keep_awake(cur, True, "console:builder")
+    assert ops.keep_awake(cur) is True

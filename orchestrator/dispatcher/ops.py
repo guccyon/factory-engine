@@ -80,6 +80,18 @@ def record(cur, name: str, ticket: dict | None, payload: dict, job_id: int | Non
                 (name, corr, job_id, Jsonb({**payload, **({"ticket_id": ticket["id"]} if ticket else {})})))
 
 
+def keep_awake(cur) -> bool:
+    """工場の稼働中にホストのスリープを止めるか（keep-awake.sh が問い合わせる。既定は止める）。最後の host.keep_awake_set が正"""
+    cur.execute("select payload from events where name='host.keep_awake_set' order by id desc limit 1")
+    r = cur.fetchone()
+    return bool(r["payload"].get("prevent_sleep", True)) if r else True
+
+
+def set_keep_awake(cur, prevent_sleep: bool, by: str, reason: str = "") -> bool:
+    record(cur, "host.keep_awake_set", None, {"prevent_sleep": prevent_sleep, "by": by, "reason": reason})
+    return prevent_sleep
+
+
 def get_ticket(cur, ticket_id: int) -> dict | None:
     cur.execute("select * from tickets where id=%s", (ticket_id,))
     return cur.fetchone()
