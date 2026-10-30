@@ -6,6 +6,9 @@
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
+  POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
+  POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
+- 出荷の操作は events に依頼を書くだけで、docker を動かすのは shipper（このサービスに docker のソケットは渡さない）
 - 操作は ops.py を通り、dispatcher・supervisor・factoryctl と同じ振る舞いになる。誰が操作したかは events に残す
 - 外部のサービス・CDN に依存しない（閉じた網・オンプレミスで動かせるように）。GitHub にも触らない（制御プレーンだけを読む）
 - 守り: 開いてよいホスト名だけを受ける（DNS rebinding）。操作は画面に埋めた合言葉のヘッダーがあるときだけ受ける（他サイトからの CSRF）
@@ -25,6 +28,7 @@ from psycopg.rows import dict_row
 
 import judgment
 import ops
+import ship
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -124,12 +128,32 @@ def snapshot(cur) -> dict:
                           at=iso(r["occurred_at"]), note=f"失敗（{r['error']}）", failed=True))
     running = sum(1 for i in items if i["stage"] == "running")
     return {
+        "releases": releases(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": MAX_PARALLEL,
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
         "items": items,
     }
+
+
+def releases(cur) -> list[dict]:
+    """製品ごとの出荷の状態（ADR 0012）: 環境ごとのいまの版と前の版、処理中の依頼、最後の結果"""
+    cur.execute("select distinct payload->>'repo' as repo from events where name='release.created' order by 1")
+    out = []
+    for repo in [r["repo"] for r in cur.fetchall()]:
+        st = ship.status(cur, repo)
+        cur.execute("select name, payload->>'release_id' as rid, payload->>'env' as env from events e where name = any(%s) "
+                    "and payload->>'release_id' like %s and not exists (select 1 from events r where r.name = any(%s) "
+                    "and (r.payload->>'request_id')::bigint = e.id) order by id", (list(ship.REQUESTS), f"{repo}@%", list(ship.RESULTS)))
+        pending = [{"request": r["name"].split(".", 1)[1], "release_id": r["rid"], "env": r["env"]} for r in cur.fetchall()]
+        cur.execute("select id, occurred_at, name, payload from events where name = any(%s) and payload->>'repo'=%s order by id desc limit 1",
+                    (list(ship.RESULTS), repo))
+        last = cur.fetchone()
+        out.append({"repo": repo, "environments": st["environments"], "pending": pending,
+                    "last": {"name": last["name"], "at": iso(last["occurred_at"]), **{k: last["payload"].get(k) for k in
+                             ("release_id", "env", "seconds", "from", "error")}} if last else None})
+    return out
 
 
 # ------------------------------------------------------------------ 操作（ops を通す）
@@ -150,6 +174,15 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         else:
             t = ops.set_held(cur, tid, what == "hold", by, reason)
         return (200, {"ticket": {"id": t["id"], "priority": t["priority"], "held": t["held"]}}) if t else (404, {"error": "no such ticket"})
+    if path == "/api/releases/approve":
+        ok, msg = ship.request_approve(cur, str(body.get("release_id") or ""), by, "console")
+        return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/releases/rollback":
+        repo, env = str(body.get("repo") or ""), str(body.get("env") or "prod")
+        if env not in ("staging", "prod"):
+            return 400, {"error": "env は staging か prod"}
+        ok, msg = ship.request_rollback(cur, repo, env, by, "console")
+        return (200, {"message": msg}) if ok else (409, {"error": msg})
     m = re.fullmatch(r"/api/jobs/(\d+)/stop", path)
     if m:
         before = ops.stop_job(cur, int(m.group(1)), by, reason)
@@ -225,10 +258,13 @@ h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;bo
 .badge.p0{background:var(--p0)}.badge.p1{background:var(--p1)}.badge.p3{background:var(--p3)}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}button,select{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
 button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stops{padding:0 16px}#stops div{margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
+#ship{padding:0 16px}.rel{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.rel .env b{font-size:15px}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 </style></head><body>
 <header><h1>工場の操業コンソール</h1><span id="hdr"></span></header>
 <section id="stops"></section>
+<section id="ship"></section>
 <main id="lanes"></main><div id="msg"></div>
 <script>
 const TOKEN="__TOKEN__";
@@ -247,6 +283,14 @@ function acts(i){let h="";
   if(i.stage!=="running")h+=i.held?`<button data-a="resume" data-t="${i.ticket_id}">再開</button>`:`<button data-a="hold" data-t="${i.ticket_id}">保留</button>`}
  if(i.job_id&&["queued","running"].includes(i.stage)&&!i.stopping)h+=`<button class="danger" data-a="stop" data-j="${i.job_id}">止める</button>`;
  return h?`<div class="acts">${h}</div>`:""}
+const VER=r=>r?esc(r.split("@").pop()):"なし";
+function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す"}[p.request]||p.request)).join("・")}</span>`:"";
+ let b="";if(!r.pending.length){
+  if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
+  if(pr.previous)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前の版に戻す（${VER(pr.previous)} へ）</button>`}
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
 function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||"")];
  if(i.job_id)meta.push(`ジョブ ${i.job_id}${i.kind&&i.kind!=="implement"?"（"+esc(i.kind)+"）":""}${i.attempt>1?" 試行"+i.attempt:""}`);
  if(i.rank)meta.push(`${i.rank} 番目`);if(i.held)meta.push("保留中");
@@ -261,10 +305,14 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
   `<span class="stat">作業中 <b>${f.running} / ${f.max_parallel}</b></span>`,
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`].join(" ");
+ document.getElementById("ship").innerHTML=shipView(s.releases||[]);
  document.getElementById("stops").innerHTML=f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("");
  document.getElementById("lanes").innerHTML=LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
   return `<section class="lane"><h2><span>${n}</span><span>${xs.length}</span></h2>${xs.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")}
 document.addEventListener("change",e=>{const t=e.target;if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
+document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
+ if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
+ if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b)return;
  if(b.dataset.a==="stop"){if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと止める";setTimeout(()=>{b.classList.remove("armed");b.textContent="止める"},4000);return}
   return post(`/api/jobs/${b.dataset.j}/stop`,{})}
