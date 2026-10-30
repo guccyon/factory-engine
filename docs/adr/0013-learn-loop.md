@@ -46,3 +46,11 @@ P2 の Exit のうち 2 つ（承認ボタンだけのリリース、1 分以内
 - overlay のルールは状態と根拠と eval ケースを必ず持ち、増える一方にならない（廃止の条件と、Learning の指標 rule_inflow / rule_outflow / dead_rule_ratio）
 - 段取り: (1) 本 ADR・定義・`rule_eval.py`（この PR）→ (2) 製品の CI に rule_eval を足す → (3) supervisor の Retrospective と learn ジョブ、`factoryctl report learning` → (4) 検査（inspect）が overlay のルールを shadow で当てる → (5) オーナーの選択に沿って manifest の factory_rule を変え、最初のルール変更 PR を流す
 - Stage 1 のエピソードと adopted のルールをワーカーに渡す変更は、外部入力（工場が書いたルール）がエージェントのプロンプトにつながる経路なので、その PR はオーナーの承認を得てからマージする
+
+## 追記（2026-10-30）: learn ジョブは implement の経路を使う
+
+- 束から Lesson とルールを書く専用のジョブ（kind=learn）とワーカーのイメージは作らず、supervisor が製品のリポジトリに「ルール化」の Issue（`factory:planned` と `factory:learn`）を 1 日 1 本まで起票し、通常の implement ジョブがルール変更 PR を書く。起票の材料（指摘の本文・元 PR と差し戻しの修正 PR）は制御プレーンの記録だけで組み立て、指摘の本文は引用（データ）として渡す（差し戻しの Issue と同じ形）。Mac でワーカーのイメージを作り直せない制約にも合う
+- Issue を起こす束は、Stage 2 の候補（3 件以上・2 チケット以上）で、負例の元（差し戻しの修正 PR）があり、まだ起票していない signature。overlay のルール自身の発火（`rubric:OV-*`）は教師信号にしない
+- 検査（`core-gates/shadow_review.py`）は製品の既定ブランチの overlay から shadow と adopted の rubric・episodic の段のルールを読み、ルーブリックに足す。shadow のルールの指摘には `shadow: true` を付け、judge は裁く（的中率の材料）が dispatcher は差し戻さない
+- ルールの成績（発火・採用・不採用・的中率）は `factoryctl report learning` に出す。adopted への昇格とカナリアの自動化は、成績が溜まってから足す
+- 指摘の本文が Issue を経てワーカーのプロンプトに、工場が書いたルールが検査官のプロンプトに入るので、この変更はオーナーの承認を得てからマージする

@@ -500,11 +500,13 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         swap_label(repo, pr_number, [], labels)
     except Exception as e:  # noqa: BLE001
         log("judge label failed", pr_url, repr(e))
+    # overlay の shadow のルールの指摘は、judge が裁いた記録（的中率の材料）だけ残し、差し戻さない（ADR 0013）
+    live = [d for d in summary["adopted_defects"] if not d.get("shadow")]
     # PR 本文だけの指摘は Issue を切らず、本文の追記で直す（2026-10-27 オーナー）。差し戻しの回数にも数えない
-    body_only = [d for d in summary["adopted_defects"] if is_body_only(d)]
+    body_only = [d for d in live if is_body_only(d)]
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
-    to_fix = [d for d in summary["adopted_defects"] if not is_body_only(d)]
+    to_fix = [d for d in live if not is_body_only(d)]
     items = to_fix + summary["replaced"]
     if not items:
         return

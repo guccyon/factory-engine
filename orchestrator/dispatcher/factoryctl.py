@@ -344,7 +344,8 @@ def main(argv):
     elif cmd == "report" and len(argv) > 2 and argv[2] == "learning":
         retro = learn.retrospect(cur, window_days=int(opt(argv, "--days", str(learn.WINDOW_DAYS))))
         print("\n".join([f"# Learn ループ（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",
-                         "生成: `factoryctl report learning`（ADR 0013）", ""] + learn.report_lines(retro)))
+                         "生成: `factoryctl report learning`（ADR 0013）", ""] + learn.report_lines(retro) + [""]
+                        + learn.rule_lines(learn.rule_stats(cur, datetime.fromisoformat(retro["from"]), datetime.fromisoformat(retro["to"])))))
     elif cmd == "mode":
         if len(argv) > 3 and argv[2] == "set" and argv[3] in judgment.MODES:
             cur.execute("insert into events(name, payload) values ('factory.mode_set', %s)", (Jsonb({"mode": argv[3], "until": opt(argv, "--until"), "by": "factoryctl"}),))

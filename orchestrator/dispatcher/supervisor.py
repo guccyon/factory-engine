@@ -63,6 +63,7 @@ DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai �
 # 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
 BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22:25,03:15")
 BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
+LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -445,8 +446,24 @@ def learn_step(cur):
     if cur.fetchone():
         return
     retro = learn.retrospect(cur)
-    if learn.record_retrospective(cur, retro, day):
-        log("retrospective", day, "signals", retro["signals"], "clusters", len(retro["clusters"]))
+    if not learn.record_retrospective(cur, retro, day):
+        return
+    log("retrospective", day, "signals", retro["signals"], "clusters", len(retro["clusters"]))
+    c = learn.pick_cluster(cur, retro) if LEARN_RULE_ISSUES else None
+    if not c:
+        return
+    m = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/\d+", c["eval_sources"][0]["positive"] or "")
+    if not m or m.group(1) not in REPOS:
+        return
+    title, body = learn.rule_issue(c)
+    try:
+        issue = gh("POST", f"repos/{m.group(1)}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})
+    except Exception as e:  # noqa: BLE001  起票に失敗しても翌日の束でやり直す
+        log("rule issue failed", c["signature"], repr(e))
+        return
+    record(cur, "learn.rule_filed", f"github:{m.group(1)}#{issue['number']}", {"signature": c["signature"], "issue": issue["html_url"],
+                                                                              "signals": c["signals"], "day": day}, f"learn.rule_filed:{c['signature']}")
+    log("rule issue filed", c["signature"], issue["html_url"])
 
 
 def tick():
