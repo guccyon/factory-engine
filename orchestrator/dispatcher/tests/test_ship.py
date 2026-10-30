@@ -65,10 +65,11 @@ def test_status_and_rollback_history(cur):
         deployed(cur, r, "prod")
     deployed(cur, c, "staging", ok=False)        # 失敗は数えない
     st = ship.status(cur, REPO)["environments"]
-    assert st["prod"] == {"release_id": c, "previous": b}
+    assert (st["prod"]["release_id"], st["prod"]["previous"]) == (c, b)
     assert "staging" not in st
     ship.record(cur, "release.rolled_back", b, {"repo": REPO, "env": "prod", "ok": True, "from": c, "request_id": 0})
-    assert ship.status(cur, REPO)["environments"]["prod"] == {"release_id": b, "previous": a}   # もう一度戻すと、さらに前へ
+    p0 = ship.status(cur, REPO)["environments"]["prod"]
+    assert (p0["release_id"], p0["previous"]) == (b, a)   # もう一度戻すと、さらに前へ
     assert ship.request_rollback(cur, REPO, "prod", "t", "test")[0] is True
     assert ship.request_rollback(cur, REPO, "staging", "t", "test")[0] is False   # 戻す先がない
 
@@ -105,3 +106,22 @@ def test_release_train_helpers(cur):
     assert ship.busy(cur, REPO) is True                             # 承認待ち（staging と prod が違う）
     deployed(cur, rid, "prod")
     assert ship.busy(cur, REPO) is False
+
+
+def built(cur, rid, contracts):
+    ship.record(cur, "release.built", rid, {"repo": REPO, "request_id": 0, "commit": "x", "contract_migrations": contracts})
+
+
+def test_contract_sets_rollback_floor(cur):
+    a, b, c, d = (release(cur, v) for v in ("1.0.0", "1.1.0", "1.2.0", "1.3.0"))
+    for r in (a, b, c, d):
+        built(cur, r, ["m/1_contract_drop_old.sql"] if r == c else [])
+        deployed(cur, r, "prod")
+    st = ship.status(cur, REPO)["environments"]["prod"]
+    assert st["rollback_floor"] == b and "rollback_blocked" not in st     # d → c は戻せる
+    ship.record(cur, "release.rolled_back", c, {"repo": REPO, "env": "prod", "ok": True, "from": d, "request_id": 0})
+    assert "rollback_blocked" not in ship.status(cur, REPO)["environments"]["prod"]   # c → b も戻せる（b は列を使わない版）
+    ship.record(cur, "release.rolled_back", b, {"repo": REPO, "env": "prod", "ok": True, "from": c, "request_id": 0})
+    st = ship.status(cur, REPO)["environments"]["prod"]
+    assert st["previous"] == a and "contract" in st["rollback_blocked"]   # b → a は戻せない（DB に contract が残る）
+    assert ship.request_rollback(cur, REPO, "prod", "t", "test")[0] is False
