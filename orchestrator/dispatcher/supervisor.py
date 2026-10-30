@@ -244,8 +244,9 @@ def merge_step(cur, rules: dict, manifests: dict):
             manifests[p["repo"]] = load_manifest(p["repo"])
         d = decide(classify(pr_files(p["repo"], p["number"]), rules), manifests[p["repo"]])
         d.update({"pr_url": p["url"], "head_sha": sha, "executed": False})
-        if not record(cur, "supervisor.merge_decided", p["corr"], d, f"merge.decided:{p['url']}@{sha}"):
-            continue   # この head ではもう判定した
+        # 判定は head と結論（表・権限）ごとに 1 回。manifest が変わって結論が変われば、同じ head でも記録し直して従う（2026-10-31）
+        if not record(cur, "supervisor.merge_decided", p["corr"], d, f"merge.decided:{p['url']}@{sha}:{d['table']}/{d['factory_grant']}"):
+            continue   # この head ではもう同じ結論で判定した
         log("merge decided", p["url"], d["table"], "grant", d["factory_grant"], d["change_types"])
         if DRY_RUN:
             continue
