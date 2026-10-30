@@ -103,23 +103,10 @@ def window(argv):
 
 def release_create(cur, argv):
     repo, version = argv[3], argv[4]
-    rid = f"{repo}@{version}"
-    if opt(argv, "--prs"):
-        prs = [u.strip() for u in opt(argv, "--prs").split(",") if u.strip()]
-    else:   # 前の Release 以降にマージされた、まだどの Release にも入っていない PR
-        cur.execute("select payload->>'pr_url' as u from events e where name='pr.merged' and payload->>'pr_url' like %s "
-                    "and not exists (select 1 from events r where r.name='release.included' and r.payload->>'pr_url'=e.payload->>'pr_url') "
-                    "order by payload->>'merged_at'", (f"https://github.com/{repo}/pull/%",))
-        prs = [r["u"] for r in cur.fetchall()]
-    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.created',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
-                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs}), f"release.created:{rid}"))
-    if cur.fetchone() is None:
-        print(f"{rid} already exists"); return 1
-    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Release',%s,'ship',%s)",
-                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs})))
-    for u in prs:   # 1 つの PR が入る Release は最初の 1 つ
-        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.included',%s,%s,%s) on conflict (dedupe_key) do nothing",
-                    (f"release:{rid}", Jsonb({"release_id": rid, "app_version": version, "pr_url": u}), f"release.included:{u}"))
+    prs = [u.strip() for u in opt(argv, "--prs").split(",") if u.strip()] if opt(argv, "--prs") else None
+    rid, prs = ship.create_release(cur, repo, version, prs)
+    if rid is None:
+        print(f"{repo}@{version} already exists"); return 1
     print(f"created {rid} with {len(prs)} PRs")
     return 0
 

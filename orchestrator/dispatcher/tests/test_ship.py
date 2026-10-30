@@ -80,3 +80,28 @@ def test_pending_skips_handled_requests(cur):
     assert [r["name"] for r in reqs] == ["release.ship_requested"]
     ship.record(cur, "release.ship_failed", rid, {"repo": REPO, "request_id": reqs[0]["id"], "error": "x"})
     assert ship.pending(cur) == []
+
+
+def merged(cur, n):
+    url = f"https://github.com/{REPO}/pull/{n}"
+    cur.execute("insert into events(name, payload, dedupe_key) values ('pr.merged', %s, %s)",
+                (Jsonb({"pr_url": url, "merged_at": f"2026-10-30T00:00:{n:02d}Z"}), f"pr.merged:{url}"))
+
+
+def test_release_train_helpers(cur):
+    assert ship.next_version(cur, REPO) == "0.1.0"
+    merged(cur, 1)
+    merged(cur, 2)
+    assert ship.unreleased(cur, REPO) == 2
+    rid, prs = ship.create_release(cur, REPO, ship.next_version(cur, REPO))
+    assert rid == f"{REPO}@0.1.0" and len(prs) == 2
+    assert ship.create_release(cur, REPO, "0.1.0") == (None, [])   # 同じ版は作らない
+    assert ship.unreleased(cur, REPO) == 0
+    assert ship.next_version(cur, REPO) == "0.2.0"
+    assert ship.busy(cur, REPO) is False
+    ship.request_ship(cur, rid, "t", "test")
+    assert ship.busy(cur, REPO) is True                             # 処理待ち
+    ship.record(cur, "release.deployed", rid, {"repo": REPO, "env": "staging", "ok": True, "request_id": ship.pending(cur)[0]["id"]})
+    assert ship.busy(cur, REPO) is True                             # 承認待ち（staging と prod が違う）
+    deployed(cur, rid, "prod")
+    assert ship.busy(cur, REPO) is False

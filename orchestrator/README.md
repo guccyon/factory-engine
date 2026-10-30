@@ -158,6 +158,9 @@ docker compose exec shipper factoryctl release rollback guccyon/rally --env prod
 docker compose exec shipper factoryctl release status guccyon/rally
 ```
 
+出荷の列車: supervisor が 1 日 1 回、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出す。prod は承認ボタンを待つ。
+
+
 ## 建設状況の日次レポート（ADR 0008）
 
 supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
