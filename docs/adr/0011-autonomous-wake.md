@@ -15,7 +15,7 @@ builder（手元の Claude）は、工場の PR の結果を背景の待ちで�
 4. **停止を閉じるときに、builder を起こしたもの（`woken_by`: pr_event / watcher / schedule / human）を残す**。`factoryctl report stoppages` に人が起こした割合を出し、健康レポートで自律の度合いとして見る
 5. **CI が落ちた工場の PR は停止として開く**（factory-engine #54）。検査と judge は CI が通るまで積まないので、黙って止まらないように
 6. **番人の通知先は設定で差し替えられる**（`STATUS_NUMBER`: Issue でも PR でもよい）
-7. **ホストのスリープを防ぐ**: `orchestrator/scripts/keep-awake.sh` が Docker Desktop の動いている間だけ `caffeinate` を保つ（システムの設定は変えない）
+7. **ホストのスリープを防ぐ**: `orchestrator/scripts/keep-awake.sh` を launchd の LaunchAgent で常駐させ、工場（Compose の project `factory`）のコンテナが動いている間だけ `caffeinate` でスリープを止める。工場が止まれば普段どおり眠る。システムの設定（pmset）は変えず、`uninstall` で元に戻せる（2026-10-30 改訂。手で起動する版は紐づけた Docker のプロセスが終わると `caffeinate` も終わり、アイドルスリープで約 11 時間止まった）
 
 ## 結果
 
