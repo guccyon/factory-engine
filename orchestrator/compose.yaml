@@ -105,6 +105,9 @@ services:
       # 建設状況の日次レポート（health/daily）。JST のこの時を過ぎたら 1 日 1 回（ページは 6 時に描く）。空の DAILY_REPORT_SCRIPT で止める
       DAILY_REPORT_SCRIPT: ${DAILY_REPORT_SCRIPT-/health/daily/status_report.py}
       DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-5}
+      # 出荷の列車（ADR 0012）。この製品の Release を 1 日 1 回、この時（JST）を過ぎたら切って staging に出す。空で止める
+      RELEASE_TRAIN: ${RELEASE_TRAIN-guccyon/rally}
+      RELEASE_TRAIN_HOUR: ${RELEASE_TRAIN_HOUR:-17}
       ROADMAP: /definitions/roadmap.yaml
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
       BUILD_WORK_DIR: /build-work
