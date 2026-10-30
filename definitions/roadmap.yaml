@@ -64,10 +64,10 @@ phases:
     weight_weeks: 6
     items:
       - { id: expand_contract, ja: "expand/contract のマイグレーション工程", measure: { manual: done } }   # 製品の規約の検査（rally ADR 0004）＋出荷の Rollback の下限（ADR 0012 の 6、#63）
-      - { id: synthetic_seed, ja: "合成シード", measure: { manual: 0.8 } }   # 出荷が staging に 1 回だけ書く（#64、rally #240）。次の Release で実際に書いたら done
+      - { id: synthetic_seed, ja: "合成シード", measure: { manual: done } }   # 出荷が staging に 1 回だけ書く（#64、rally #240）。0.2.0 で書いた（13 秒、2026-10-30）
       - { id: release_provenance, ja: "Release と来歴", measure: { manual: done } }   # Release の来歴＋出荷の来歴（built / deployed / approved / rolled_back、report provenance の出荷の表）
-      - { id: one_click_release, ja: "人間の操作が承認ボタンだけでリリースが完了した実績", measure: { manual: todo } }
-      - { id: rollback_1min, ja: "Rollback が 1 分以内に完了した実績", measure: { manual: todo } }
+      - { id: one_click_release, ja: "人間の操作が承認ボタンだけでリリースが完了した実績", measure: { manual: done } }   # rally 0.1.0・0.2.0（2026-10-30）。人の操作は操業コンソールの「本番に出す」だけ。押してから本番で確かめ終わるまで 7 秒・6 秒
+      - { id: rollback_1min, ja: "Rollback が 1 分以内に完了した実績", measure: { manual: done } }   # rally 0.2.0 → 0.1.0（2026-10-30）。コンソールの「本番を前の版に戻す」から確かめ終わるまで 6.4 秒
       - { id: l3_reproducible, ja: "L3 が同じ PR に同じ判定を返す", measure: { manual: done } }   # core-gates/l3_impact.py（#56）。変更シナリオの PR 13 本に手元で 2 回ずつ、うち 4 本を製品の CI（rally の l3-impact）でも測り、digest が全件一致（2026-10-30）
 
   - id: P3
