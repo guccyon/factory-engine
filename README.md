@@ -10,8 +10,8 @@ Blueprint を 1 枚渡すと、そのプロダクト専用の仮想事業部（P
 
 | ディレクトリ | 役割 | 状態 |
 |---|---|---|
-| `definitions/` | ステージ・成果物の型・ゲート・工場の健康・共通評価仕様・イベント辞書・指標式の宣言（`stages.yaml` `artifacts.yaml` `gates.yaml` `health.yaml` `evalspec.yaml` `events.yaml` `metrics.yaml`） | P0 起案 |
-| `core-gates/` | 汎用ルーブリック（`rubric.yaml`）と shadow 判定（`shadow_review.py`。PR の差分をルーブリックに照らして Defect を出し、events に記録。差し戻さない）・AST ルール・互換性チェッカー | P0（ルーブリック v0、shadow 判定の最小実装） |
+| `definitions/` | ステージ・成果物の型・ゲート・工場の健康・共通評価仕様・イベント辞書・指標式・Learn ループの宣言（`stages.yaml` `artifacts.yaml` `gates.yaml` `health.yaml` `evalspec.yaml` `events.yaml` `metrics.yaml` `learning.yaml`） | P0 起案 |
+| `core-gates/` | 汎用ルーブリック（`rubric.yaml`）と shadow 判定（`shadow_review.py`。PR の差分をルーブリックに照らして Defect を出し、events に記録。差し戻さない）・AST ルール・互換性チェッカー・overlay のルールの検査（`rule_eval.py`。形・eval ケース・発火を決定的に見る。ADR 0013） | P0（ルーブリック v0、shadow 判定の最小実装） |
 | `orchestrator/` | 制御プレーン。Docker Compose（Postgres のキューとロック、S3 互換ストア、dispatcher）と使い捨てワーカー。Issue ラベル → コンテナ → PR | P0 Week 3（試験運転済み） |
 | `core-skills/` | 役割別スキルのテンプレート（現行の Claude スキルが母体） | 未着手 |
 | `eval-corpus/` | 汎用の Golden Set・ルール検証の正例 / 負例 | 未着手（製品側 rally の evals/golden に 4 件） |

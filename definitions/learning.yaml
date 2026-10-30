@@ -1,0 +1,135 @@
+# Learn ループの定義（ADR 0013、P3）
+# 正本: 憲章 05 節の図 4（自己進化ループ）と 07 節の P3。
+# 教師信号 → Retrospective（束ねる）→ Lesson（eval 同梱）→ ルール（3 段階の結晶化）→ ライフサイクル（candidate → shadow → adopted → retired）。
+# 健康の計測は govern が別系統で行う（health.yaml）。learn が出した数値を govern はそのまま使わない。
+# 数値はすべて仮置き（運用パラメータは委任の範囲）。20 件の採用・廃止で見直す。
+
+schema_version: "0.1"
+status: draft
+
+# ---------------------------------------------------------------------
+# 教師信号: 「工場が間違えた」ことを示す出来事。どれも制御プレーンの events / artifacts か GitHub から一次ソースで取れるものだけ
+# signature: 束ねるときの鍵の作り方。同じ鍵の信号が同じ Lesson の材料になる
+# ---------------------------------------------------------------------
+teacher_signals:
+  inspection_adopted:
+    ja: "検査の指摘を judge が採用した（作り込んだ欠陥が出口で見つかった）"
+    source: "artifacts Judgment（category=inspection, stage=judged, verdict=adopt）"
+    signature: "rubric:<rubric_id>"
+    eval_from: { positive: "元 PR の差分（指摘の箇所）", negative: "差し戻しの修正 PR の差分（同じ箇所）" }
+  judgment_replaced:
+    ja: "仮決めを judge が差し替えた"
+    source: "artifacts Judgment（stage=judged, verdict=replace | reject、category≠inspection）"
+    signature: "judgment:<category>"
+    eval_from: { positive: "元 PR の差分", negative: "差し戻しの修正 PR の差分" }
+  human_disagree:
+    ja: "人が judge の裁きに同意しなかった（human_override）"
+    source: "events judgment.graded（grade=disagree）"
+    signature: "judgment:<category> か rubric:<rubric_id>（採点した Judgment から）"
+    eval_from: { positive: "人が誤りとした側", negative: "人が正しいとした側（note から）" }
+  residual_after_sendback:
+    ja: "差し戻しの修正でも指摘が残った"
+    source: "events sendback.residual"
+    signature: "rubric:<rubric_id>（残った指摘）"
+  revert_hotfix:
+    ja: "マージ後 7 日以内の revert・hotfix"
+    source: "health/telemetry/pr_metrics.py の revert_hotfix"
+    signature: "context:<l3 のコンテキスト>（変えたファイルの割り当て）"
+  churn:
+    ja: "短期の Code Churn（2〜3 週で書き直された）"
+    source: "health/telemetry/pr_metrics.py の churn"
+    signature: "context:<l3 のコンテキスト>"
+  golden_defect:
+    ja: "Golden Set の負例で人が欠陥と確かめたもの（lesson 欄）"
+    source: "製品の .factory-config/evals/golden/*.yaml（polarity=one_flawed, preferred が負例でない側）"
+    signature: "rubric:<rubric_ids の先頭>"
+    eval_from: { positive: "patches/ の負例の差分", negative: "元 PR の差分" }
+  stoppage:
+    ja: "工場の停止（factory-bug・ticket）"
+    source: "events stoppage.closed（category in factory-bug, ticket）"
+    signature: "stoppage:<category>"
+    note: "工場自身の改善（Engine の PR）に回す。製品の overlay のルールにはしない"
+  # 憲章の残りの信号（KPI 予測誤差、ストア却下、データ要求への訂正、本番障害）は発生源ができたら足す（P5）
+  later: [kpi_error, store_rejection, data_request_correction, incident]
+
+# ---------------------------------------------------------------------
+# Retrospective: 期間の教師信号を signature で束ねたもの（決定的。LLM を使わない）
+# Lesson: 束 1 つから learn ジョブ（tier-large）が書く。eval ケースのない Lesson は作らない
+# ---------------------------------------------------------------------
+retrospective:
+  window_days: 30
+  schedule: "毎日 1 回（supervisor。日報の後）"
+  min_signals_for_lesson: 1          # 1 件でも Stage 1（episodic）の Lesson は作る
+  ignore_signatures: ["stoppage:*"]  # 停止は Engine の改善に回す（上の stoppage.note）
+
+lesson:
+  required: [teacher_signal, signature, summary, eval_cases, knowledge_stage, confidentiality, source_refs]
+  eval_case:
+    required: [id, polarity, diff_ref, expect]
+    polarity_values: [positive, negative]     # positive: ルールが当たるべき差分、negative: 当たってはいけない差分
+    expect_values: [fire, silent]
+    min_per_lesson: { positive: 1, negative: 1 }
+    diff_ref: "github:<owner>/<repo>#pr<N>[:<path>] か file:<製品の .factory-config/evals/ からの相対パス>"
+
+# ---------------------------------------------------------------------
+# 3 段階の結晶化（憲章 図 4）
+# ---------------------------------------------------------------------
+knowledge_stages:
+  episodic:
+    ja: "Stage 1 エピソード"
+    what: "失敗の差分と修正。似た変更（同じパス・同じコンテキスト）のときだけワーカーに渡す"
+    enter: "Lesson が 1 つできた"
+  rubric:
+    ja: "Stage 2 ルーブリック"
+    what: "複数回の発生を抽象化した観点。検査官（inspect）のルーブリックに足す。判定はペア比較の形（元と修正のどちらが望ましいか）"
+    enter: "同じ signature の信号が 30 日で 3 件以上、かつ 2 つ以上のチケットから（独立に発生した）"
+  crystallized:
+    ja: "Stage 3 決定的な規則"
+    what: "差分の正規表現・ast-grep などに落とした検査。LLM を使わずに同じ判定を返す。元の Stage 2 の項目には降格注記を付ける"
+    enter: "Stage 2 のルールが adopted になり、learn ジョブが決定的な形に書けて、同じ eval ケースを全部通した"
+    check_kinds: [diff_regex]          # 最初は追加行への正規表現だけ（core-gates/rule_eval.py）。ast-grep は要るものが出てから
+
+# ---------------------------------------------------------------------
+# ルールのライフサイクル（全 Stage 共通）
+# ルールは製品の .factory-config/overlay/rules/<id>.yaml に 1 ファイル 1 ルールで置く。状態の変更はルール変更 PR（change_type factory_rule）
+# ---------------------------------------------------------------------
+rule:
+  id_format: "OV-<NNN>"                        # 製品の overlay の通し番号。base の rubric（PR-001 など）と混ぜない。廃止しても再利用しない
+  required: [id, title, state, knowledge_stage, confidentiality, lessons, signature, check, eval_cases]
+  eval_cases: "Lesson の eval ケースの差分を製品の .factory-config/evals/rules/<id>/ にファイルで置き、diff_ref は file: で指す（CI が外に取りに行かない）"
+  check_kinds: { episodic: episode, rubric: rubric, crystallized: diff_regex }
+  optional: [scope, severity, gate, demoted_by, history]
+  confidentiality_values: [product, client, public]   # 必須（憲章 09 節）。還流（Engine への昇格）は public かつ複数の工場で独立に発生したものだけ（P6）
+  severity_values: [must, should, nits]
+
+lifecycle:
+  states: [candidate, shadow, adopted, retired]
+  transitions:
+    candidate_to_shadow:
+      when: "ルール変更 PR の検査（rule_eval）が緑: 自分の eval ケースを全部通し、ほかのルールの eval ケースと Golden Set に退行がない"
+      effect: "検査で判定するが差し戻さない。発火は gate.evaluated（gate=overlay, mode=shadow）に残す"
+    shadow_to_adopted:
+      when: "shadow で 5 回以上発火し、judge・人の裁きと照らした的中率（precision）が 0.8 以上。学習の凍結（breaker learning_freeze）が掛かっていない"
+      min_fires: 5
+      min_precision: 0.80
+      min_days_in_shadow: 3
+      effect: "judge が差し戻しの根拠に使える。Stage 1・2 はワーカーへの知識にも渡る（似た変更のとき）"
+    adopted_to_shadow:
+      when: "カナリア: 採用から 7 日のうちに、そのルールの範囲の教師信号が採用前より増えた、または偽陽性率が 0.3 を超えた"
+      canary_days: 7
+      note: "自動で戻し、日報と停止の記録に残す（breaker rule_canary）"
+    to_retired:
+      when_any:
+        - "発火ゼロが 60 日続いた"
+        - "偽陽性率が 0.3 を超えた状態が 14 日続いた"
+        - "ほかの adopted のルールと矛盾する（同じ差分に逆の判定）"
+        - "根拠の Lesson が無効になった（元の判断が覆った、仕様が変わった）"
+      note: "ファイルは消さず state: retired にする（増える一方にしない。id は再利用しない）"
+
+# ---------------------------------------------------------------------
+# P3 の Exit の測り方（「採用後に対応する教師信号が減った」）
+# ---------------------------------------------------------------------
+exit_measure:
+  signal_rate: "そのルールの signature に当たる教師信号の件数 / そのルールの scope に触れた工場の PR の件数"
+  compare: "shadow に入る前の 30 日 と adopted になった後の 30 日（短いほうに合わせる）"
+  evidence: "factoryctl report learning の「採用したルールの効き目」の表。件数の少なさは Wilson の区間で併記する"
