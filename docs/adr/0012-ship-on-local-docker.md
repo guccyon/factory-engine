@@ -31,4 +31,4 @@ Gen1 の製品（rally）には出荷先がない。予算の都合で常時稼�
 
 - 出荷・承認・Rollback の 3 つが events に残り、Exit 条件の 2 つを実績で示せる
 - 端末が眠っていると出荷も止まる（keep-awake.sh、ADR 0011 の 7）
-- Gen1 のモバイル（Flutter の student-app）は、この ADR の範囲外（TestFlight の配布は Mac の Xcode が要る。iOS ビルドを標準にするかは P2 の中で判断する）
+- **iOS のビルドと配布はオプション**（2026-10-30 オーナー。憲章 P2 の「iOS ビルドは標準かオプションか」の判断）。Engine の標準の出荷（この ADR）には入れず、工場の個別のケイパビリティの 1 つとして別のプロジェクトで作る。Gen1 のモバイル（Flutter の student-app）は出荷の対象外
