@@ -160,6 +160,10 @@ events:
     source: control_plane
     required: [pr_url, defects, chars]
     note: "PR 本文だけの指摘を本文の追記で直した（body_fix のジョブ）。差し戻しの回数に数えない"
+  learn.retrospected:
+    source: control_plane
+    required: [day, signals, clusters, rubric_candidates]
+    note: "ADR 0013。supervisor が 1 日 1 回、直近 30 日の教師信号を signature で束ねた。dedupe は learn.retrospected:<JST の日付>。束の中身は artifacts の Retrospective"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]

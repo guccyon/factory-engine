@@ -164,6 +164,16 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
 
+## Learn ループ（ADR 0013）
+
+supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
+教師信号は今のところ judge が採用した検査の指摘、judge が差し替えた仮決め、人が judge に同意しなかった採点の 3 つ。束ごとに eval ケースの元（元 PR と差し戻しの修正 PR の組）と、Stage 2（rubric）の候補か（3 件以上・2 チケット以上）を出す。
+束から Lesson とルールを書く learn ジョブ、overlay のルールの発火、採用の判定はこの後に足す（形と閾値は `definitions/learning.yaml`）。
+
+```bash
+docker compose exec dispatcher factoryctl report learning --days 30
+```
+
 ## 建設状況の日次レポート（ADR 0008）
 
 supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
