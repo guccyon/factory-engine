@@ -67,6 +67,7 @@ docker compose exec dispatcher factoryctl events 12     # そのジョブのイ�
   - `heartbeat:` supervisor の heartbeat が 30 分ない（`WATCH_HEARTBEAT_MIN`。heartbeat が 1 度でも来てから有効）
   - `job:<id>` 予算・時間の超過と人の手当てを待つ失敗（使用量上限・時間切れ・ターン上限は budget、要求が確定しないは ticket、その他は factory-bug）。同じ Issue の次のジョブが始まったら閉じる
   - `stuck:<id>` 打ち切りの時刻を過ぎても running のまま
+  - `merge:<PR>` supervisor が工場はマージしない（execute=false）と記録した PR が、30 分（`WATCH_MERGE_WAIT_MIN`）マージも閉じもされない。分類は human。マージか閉じられたら閉じる
 - 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
 

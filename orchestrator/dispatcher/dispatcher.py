@@ -62,6 +62,7 @@ JOB_DB_USER, JOB_DB_PASSWORD = "factory", ENV.get("POSTGRES_PASSWORD", "factory"
 WATCH_INTERVAL = int(ENV.get("WATCH_INTERVAL_SEC", "60"))
 IDLE_MIN = int(ENV.get("WATCH_IDLE_MIN", "20"))              # 実行中 0 かつ投入可能 0 がこの分数続いたら停止
 HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の heartbeat がこの分数ないと停止（heartbeat が 1 度でも来てから有効）
+MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
@@ -636,6 +637,28 @@ def watch_once():
         for k in stoppage.open_keys(cur, "stuck:"):
             if int(k.split(":", 1)[1]) not in stuck:
                 stoppage.close_stoppage(cur, k, remedy="ジョブが終了した")
+
+        # 5) マージ待ち: supervisor が「工場はマージしない」（execute=false）と記録した PR が、MERGE_WAIT_MIN 分たってもマージも閉じもされていない。
+        #    ラインが空（idle）と分けて人の判断待ち（human）で開き、見回りがマージ役を起こせるようにする（2026-10-31 の夜間停止）
+        cur.execute("select distinct on (payload->>'pr_url') payload->>'pr_url' as pr_url, occurred_at, correlation_id, payload, "
+                    "now() - occurred_at > make_interval(mins => %s) as long_wait from events "
+                    "where name='supervisor.merge_decided' order by payload->>'pr_url', id desc", (MERGE_WAIT_MIN,))
+        waiting = {}
+        for d in cur.fetchall():
+            if d["payload"].get("execute"):
+                continue
+            cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s", (d["pr_url"],))
+            if cur.fetchone() is None:
+                waiting[f"merge:{d['pr_url'].rsplit('/', 1)[-1]}"] = d
+        for k, d in waiting.items():
+            if d["long_wait"]:
+                why = "承認の表" if d["payload"].get("table") != "auto" else f"phase {d['payload'].get('phase')} の権限（factory_grant）"
+                stoppage.open_stoppage(cur, k, "human", f"マージ待ちの PR（{d['pr_url']}）。{why}で工場は自分でマージしない",
+                                       waiting_for="マージ役（builder のスレッドか人）のマージか差し戻し", started_at=d["occurred_at"],
+                                       correlation_id=d["correlation_id"])
+        for k in stoppage.open_keys(cur, "merge:"):
+            if k not in waiting:
+                stoppage.close_stoppage(cur, k, remedy="PR がマージか閉じられた")
 
 
 def watch_loop():
