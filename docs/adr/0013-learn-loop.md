@@ -1,6 +1,6 @@
 # ADR 0013: Learn ループ（教師信号 → Lesson → ルールのライフサイクル）
 
-- 状態: 提案（2026-10-30。形と決定的な検査は本 ADR と同時に入れる。製品の manifest の factory_rule の autonomy を変えるのは憲法の変更なので、オーナーの選択を待つ。数値は委任の範囲で仮置き）
+- 状態: 承認（2026-10-30。製品の manifest の factory_rule はオーナーが「採用まで自動」を選択。数値は委任の範囲で仮置き）
 - 関係: 憲章 05 節の図 4（自己進化ループ）・06 節（Govern は Learn から独立）・07 節の P3・09 節（機密区分）、ADR 0006（judge と判断の記録）、ADR 0004（supervisor）、`definitions/learning.yaml`、`core-gates/rule_eval.py`
 
 ## 文脈
@@ -26,11 +26,11 @@ P2 の Exit のうち 2 つ（承認ボタンだけのリリース、1 分以内
 9. **Exit は件数の比で示す**。そのルールの signature に当たる教師信号の件数を、そのルールの範囲に触れた工場の PR の件数で割り、shadow 前の 30 日と adopted 後の 30 日を比べる。件数が少ないので Wilson の区間を併記する
 10. **還流（Engine への昇格）は P6**。public かつ複数の工場で独立に発生したものだけ。Gen1 は工場が 1 つなので、記録だけ残す
 
-## オーナーの選択を待つこと（憲法）
+## 製品の manifest の factory_rule（憲法。2026-10-30 オーナーが選択）
 
-製品の manifest の factory_rule の行。builder の案は「採用まで自動」: `pr_create: auto, merge: auto`（7 の検査が緑のときだけ。adopted への昇格も 6 の条件を満たしたら自動、カナリアで自動で戻し、日報で事後に知らせる）。
+製品の manifest の factory_rule の行。決定は「採用まで自動」: `pr_create: auto, merge: auto`（7 の検査が緑のときだけ。adopted への昇格も 6 の条件を満たしたら自動、カナリアで自動で戻し、日報で事後に知らせる）。
 ほかの案は「採用だけボタン」（shadow までは自動、adopted への昇格はコンソールのボタン）と「今のまま」（ルール変更 PR を作らない）。
-選ばれるまでは、ルールの形・検査・Retrospective・Lesson の記録までを入れ、ルール変更 PR は作らない。
+オーナーは「採用まで自動」を選んだ（rally の manifest に反映）。supervisor は CI が緑（mergeable_state が clean）の PR だけを表に掛けるので、rule-eval が通らないルール変更 PR はマージされない。
 
 ## 選ばなかった案
 
