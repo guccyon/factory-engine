@@ -127,15 +127,30 @@ def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool,
     cur_env = st["environments"].get(env)
     if not cur_env or not cur_env.get("previous"):
         return False, "戻す先の版がない"
+    if cur_env.get("rollback_blocked"):
+        return False, cur_env["rollback_blocked"]
     record(cur, "release.rollback_requested", cur_env["release_id"], {"repo": repo, "env": env, "by": by, "via": via})
     return True, f"{env} を {cur_env['previous']} に戻す依頼をした"
 
 
+def contracts_of(cur, repo: str) -> dict[str, list[str]]:
+    """Release ごとに、前の Release から足された contract のマイグレーション（release.built に記録）"""
+    cur.execute("select payload->>'release_id' as rid, payload->'contract_migrations' as c from events "
+                "where name='release.built' and payload->>'repo'=%s", (repo,))
+    return {r["rid"]: list(r["c"] or []) for r in cur.fetchall()}
+
+
 def status(cur, repo: str) -> dict:
-    """環境ごとのいまの版と、その前の版（出した順。Rollback で戻った版も出した版として数える）"""
+    """環境ごとのいまの版と、その前の版（出した順。Rollback で戻った版も出した版として数える）。
+    contract のマイグレーションは DB から消えないので、contract を含む版を出したら、その直前に出ていた版より前には戻せない
+    （直前の版は消した列を使わない版であることが、contract を出す条件。ADR 0012 の 6、製品の ADR 0004）"""
+    cur.execute("select payload->>'release_id' as rid from events where name='release.created' and payload->>'repo'=%s order by id", (repo,))
+    rank = {r["rid"]: i for i, r in enumerate(cur.fetchall())}
+    contracts = contracts_of(cur, repo)
     cur.execute("select name, payload, occurred_at from events where name in ('release.deployed','release.rolled_back') "
                 "and payload->>'repo'=%s and (payload->>'ok')::boolean order by id", (repo,))
     history: dict[str, list[str]] = {}
+    floor: dict[str, str] = {}
     for r in cur.fetchall():
         p = r["payload"]
         h = history.setdefault(p["env"], [])
@@ -143,10 +158,18 @@ def status(cur, repo: str) -> dict:
             while h and h[-1] != p["release_id"]:
                 h.pop()            # 戻した版より後に出した版は履歴から外す（もう一度戻すと、さらに前へ）
         else:
+            if contracts.get(p["release_id"]) and h:
+                f = floor.get(p["env"])
+                if f is None or rank.get(h[-1], -1) > rank.get(f, -1):
+                    floor[p["env"]] = h[-1]
             h.append(p["release_id"])
     envs = {}
     for env, h in history.items():
-        envs[env] = {"release_id": h[-1] if h else None, "previous": h[-2] if len(h) > 1 else None}
+        prev = h[-2] if len(h) > 1 else None
+        envs[env] = {"release_id": h[-1] if h else None, "previous": prev, "rollback_floor": floor.get(env)}
+        if prev and env in floor and rank.get(prev, -1) < rank.get(floor[env], -1):
+            envs[env]["rollback_blocked"] = (f"{prev} には戻せない（DB に contract のマイグレーションが当たっていて、"
+                                             f"戻せるのは {floor[env]} まで）")
     cur.execute("select payload->>'release_id' as rid from events where name='release.created' and payload->>'repo'=%s order by id desc limit 10", (repo,))
     return {"repo": repo, "environments": envs, "releases": [r["rid"] for r in cur.fetchall()]}
 
@@ -210,6 +233,17 @@ def verify(cfg: dict, repo: str, env: str, rel: dict):
         raise RuntimeError(f"{env} の {v['service']} が答えた版が {got}（期待 {rel['app_version']}）")
 
 
+def added_contracts(cur, path: str, repo: str, commit: str) -> list[str]:
+    """前に作った Release のコミットからこのコミットまでに足された contract のマイグレーション（ファイル名に _contract_）。
+    前の Release がなければ空（まだどの環境の DB にも当たっていない）"""
+    cur.execute("select payload->>'commit' as c from events where name='release.built' and payload->>'repo'=%s order by id desc limit 1", (repo,))
+    r = cur.fetchone()
+    if not r or not r["c"]:
+        return []
+    out = sh(["git", "-C", path, "diff", "--name-only", "--diff-filter=A", f"{r['c']}..{commit}"])
+    return sorted(f for f in out.splitlines() if "/migrations/" in f and "_contract_" in f.rsplit("/", 1)[-1] and f.endswith(".sql"))
+
+
 def handle(cur, ev: dict):
     p, name = ev["payload"], ev["name"]
     rid = p["release_id"]
@@ -226,6 +260,7 @@ def handle(cur, ev: dict):
                 sh(["docker", "build", "-q", "-t", image(repo, part, rel["app_version"]), *args, os.path.join(path, spec["context"])],
                    env={"DOCKER_BUILDKIT": "1"}, timeout=3600)
             record(cur, "release.built", rid, {**common, "commit": commit, "seconds": round(time.monotonic() - t0, 1),
+                                               "contract_migrations": added_contracts(cur, path, repo, commit),
                                                "images": [image(repo, part, rel["app_version"]) for part in cfg["images"]]})
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})

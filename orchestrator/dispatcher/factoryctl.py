@@ -141,6 +141,20 @@ def report_provenance(cur, argv):
     out = [f"# 来歴の紐付け（{frm} 〜 {to}、制御プレーンから生成）", "", "生成: `factoryctl report provenance --from --to`（ADR 0007）。属性はすべて optional なので、統計には必ずこの紐付け率を併記する", "",
            "| 項目 | 紐付け率 |", "|---|---|", f"| 工場の PR | {n} |", f"| 製造の来歴あり | {rate(with_prov)} |", f"| モードが分かる | {rate(mode_known)} |",
            f"| Release に入った | {rate(released)} |", f"| 仮決めを含む | {rate(sum(1 for r in rows if r['judgments']))} |"]
+    # 出荷の来歴（ADR 0012）: Release ごとの作り・環境・承認・戻し
+    cur.execute("""select payload->>'release_id' as rid,
+                          (select count(*) from events i where i.name='release.included' and i.payload->>'release_id'=c.payload->>'release_id') as prs,
+                          (select max((b.payload->>'seconds')::numeric) from events b where b.name='release.built' and b.payload->>'release_id'=c.payload->>'release_id') as built_s,
+                          (select string_agg(distinct d.payload->>'env', '・') from events d where d.name='release.deployed' and d.payload->>'release_id'=c.payload->>'release_id') as envs,
+                          (select string_agg(distinct a.payload->>'via', '・') from events a where a.name='release.approved' and a.payload->>'release_id'=c.payload->>'release_id') as approved_via,
+                          (select max((r.payload->>'seconds')::numeric) from events r where r.name='release.rolled_back' and r.payload->>'from'=c.payload->>'release_id') as rollback_s,
+                          (select count(*) from events b, jsonb_array_elements_text(coalesce(b.payload->'contract_migrations','[]'::jsonb)) x
+                            where b.name='release.built' and b.payload->>'release_id'=c.payload->>'release_id') as contracts
+                     from events c where c.name='release.created' and c.occurred_at >= %s::date and c.occurred_at < %s::date order by c.id""", (frm, to))
+    rels = cur.fetchall()
+    if rels:
+        out += ["", "## 出荷（ADR 0012）", "", "| Release | PR | イメージ作り（秒） | 出した環境 | 承認の入口 | この版から戻した秒数 | contract |", "|---|---|---|---|---|---|---|"]
+        out += [f"| {r['rid']} | {r['prs']} | {r['built_s'] or '-'} | {r['envs'] or '-'} | {r['approved_via'] or '-'} | {r['rollback_s'] or '-'} | {r['contracts']} |" for r in rels]
     print("\n".join(out))
 
 
