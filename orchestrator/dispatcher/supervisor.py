@@ -37,6 +37,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import judgment
+import learn
 import ops
 import ship
 import stoppage
@@ -432,6 +433,22 @@ def release_train_step(cur):
             log("release train", rid, len(prs))
 
 
+def learn_step(cur):
+    """1 日 1 回、教師信号を束ねて Retrospective を残す（ADR 0013 の 2）。決定的で、トークンを使わない。日報の後に回す"""
+    if DRY_RUN:
+        return
+    now = datetime.now(timezone(timedelta(hours=9)))
+    if now.hour < DAILY_REPORT_HOUR:
+        return
+    day = f"{now:%Y-%m-%d}"
+    cur.execute("select 1 from events where dedupe_key=%s", (f"learn.retrospected:{day}",))
+    if cur.fetchone():
+        return
+    retro = learn.retrospect(cur)
+    if learn.record_retrospective(cur, retro, day):
+        log("retrospective", day, "signals", retro["signals"], "clusters", len(retro["clusters"]))
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         record(cur, "supervisor.heartbeat", None, {"repos": REPOS})
@@ -441,6 +458,7 @@ def tick():
         enqueue_step(cur, open_prs)
         daily_report_step(cur)
         release_train_step(cur)
+        learn_step(cur)
 
 
 def main():

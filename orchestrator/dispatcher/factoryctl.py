@@ -36,6 +36,9 @@
   factoryctl judgment recategorize <remap.yaml>                 # 類型の振り直し（definitions/judgment-remap-*.yaml。元の類型は category_v1 に残す）
   factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
   factoryctl report judgments [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 類型・モード別の件数、確信度、一致率、差し戻し、類型の見直しの候補
+
+Learn ループ（ADR 0013）:
+  factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
 """
 import json
 import os
@@ -47,6 +50,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import judgment
+import learn
 import ops
 import ship
 import stoppage
@@ -337,6 +341,10 @@ def main(argv):
         report_provenance(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "judgments":
         report_judgments(cur, argv)
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "learning":
+        retro = learn.retrospect(cur, window_days=int(opt(argv, "--days", str(learn.WINDOW_DAYS))))
+        print("\n".join([f"# Learn ループ（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",
+                         "生成: `factoryctl report learning`（ADR 0013）", ""] + learn.report_lines(retro)))
     elif cmd == "mode":
         if len(argv) > 3 and argv[2] == "set" and argv[3] in judgment.MODES:
             cur.execute("insert into events(name, payload) values ('factory.mode_set', %s)", (Jsonb({"mode": argv[3], "until": opt(argv, "--until"), "by": "factoryctl"}),))
