@@ -1,12 +1,67 @@
 #!/bin/sh
-# 工場が動いている間、ホスト（macOS）をスリープさせない（D8）。Docker Desktop の動いている間だけ caffeinate を保つ。
-# 使い方: scripts/keep-awake.sh &   （ログインのたびに一度。すでに動いていれば何もしない）
-# macOS 以外では何もしない。pmset のようにシステムの設定は変えない（止めれば元に戻る）
+# 工場（Compose の project "factory"）のコンテナが動いている間だけ、ホスト（macOS）のスリープを止める（ADR 0011 の 7）。
+# 工場が止まっていれば何もしないので、普段どおり眠れる。pmset などシステムの設定は変えない。
+# 使い方:
+#   scripts/keep-awake.sh install     ログインのたびに launchd が常駐させる（落ちても起こし直す）
+#   scripts/keep-awake.sh uninstall   元に戻す（LaunchAgent を外して消す）
+#   scripts/keep-awake.sh status      常駐しているか、いまスリープを止めているか
+#   scripts/keep-awake.sh             見張りを前面で動かす（launchd が呼ぶもの）
+# macOS 以外では何もしない
 [ "$(uname)" = "Darwin" ] || exit 0
-if pgrep -f "caffeinate -dimsu -w" >/dev/null 2>&1; then
-  exit 0
-fi
-pid=$(pgrep -x "com.docker.backend" | head -1)
-[ -n "$pid" ] || pid=$(pgrep -f "Docker Desktop" | head -1)
-[ -n "$pid" ] || { echo "Docker Desktop が動いていない" >&2; exit 1; }
-exec caffeinate -dimsu -w "$pid"
+
+label="local.factory.keepawake"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+project="${FACTORY_COMPOSE_PROJECT:-factory}"
+interval="${KEEP_AWAKE_INTERVAL:-120}"
+PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
+
+factory_running() {
+  docker ps -q --filter "label=com.docker.compose.project=$project" --filter status=running 2>/dev/null | grep -q .
+}
+
+case "${1:-run}" in
+  install)
+    script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    mkdir -p "$(dirname "$plist")"
+    cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>$script</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/$label.log</string>
+</dict></plist>
+EOF
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+    # 以前の手で起動する版（Docker の pid に紐づけた caffeinate）が残っていれば止める
+    pkill -f "caffeinate -dimsu -w" 2>/dev/null
+    echo "installed: $plist"
+    ;;
+  uninstall)
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
+    rm -f "$plist"
+    echo "uninstalled"
+    ;;
+  status)
+    if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then echo "agent: loaded"; else echo "agent: not loaded"; fi
+    if factory_running; then echo "factory: running"; else echo "factory: stopped"; fi
+    if pgrep -f "caffeinate -ims -t" >/dev/null 2>&1; then echo "sleep: prevented"; else echo "sleep: allowed"; fi
+    ;;
+  run)
+    # 工場が動いていれば interval 秒だけスリープを止め、また確かめる。止まっていれば待つだけ
+    while :; do
+      if factory_running; then
+        caffeinate -ims -t "$interval"
+      else
+        sleep "$interval"
+      fi
+    done
+    ;;
+  *)
+    echo "usage: $0 [install|uninstall|status]" >&2
+    exit 2
+    ;;
+esac
