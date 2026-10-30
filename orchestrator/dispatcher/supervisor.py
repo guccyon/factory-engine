@@ -11,6 +11,9 @@
 - 依存順の投入: `factory:planned` の Issue を工場のチケットに写し（ADR 0009）、本文の「依存: #12 #13」がすべて閉じたものを
   優先度の高い順に `factory:implement` に替える（同時に流すのは上限まで。緊急（p0）は上限を待たない。保留中は流さない）
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
+- 出荷の列車（ADR 0012）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品の Release が今日まだなく、まだ Release に入っていない
+  マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼する。
+  prod へは承認ボタンを待つ
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
 """
@@ -35,6 +38,7 @@ from psycopg.types.json import Jsonb
 
 import judgment
 import ops
+import ship
 import stoppage
 
 ENV = os.environ
@@ -51,6 +55,8 @@ INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"   # 工場の PR ご
 JUDGE_ENABLED = ENV.get("SUPERVISOR_JUDGE", "1") == "1"       # 検査が終わったら、仮決めと指摘を裁く judge のジョブを積む（ADR 0006 後半）
 MODE_DEFAULT, MODE_SCHEDULE = ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", "")
 DAILY_REPORT = ENV.get("DAILY_REPORT_SCRIPT", "/health/daily/status_report.py")   # 空にすると日次レポートを出さない
+RELEASE_TRAIN_HOUR = int(ENV.get("RELEASE_TRAIN_HOUR", "17"))   # JST。空の RELEASE_TRAIN で止める。夕方に検証へ出し、夜に承認を押せるように
+RELEASE_TRAIN = [r.strip() for r in ENV.get("RELEASE_TRAIN", "").split(",") if r.strip()]   # 列車を走らせる製品（出荷の形 ship.yaml を持つもの）
 DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai のページは 6 時にこの結果から描く。Mac が寝ていた日は起きたときに出す
 # 使用量の枠ごとの予算（2026-10-29 オーナー: Max の使用量は毎朝 7:00 から 5 時間ごとにリセット。1 日 約 $100 を枠ごとに均し、
 # 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
@@ -408,6 +414,24 @@ def daily_report_step(cur):
     log("daily report", r.returncode, (r.stdout or r.stderr).strip()[-300:])
 
 
+def release_train_step(cur):
+    """1 日 1 回まで、製品ごとに Release を切って staging に出す（ADR 0012）。判断は持たず、条件を見るだけ"""
+    if DRY_RUN or not RELEASE_TRAIN:
+        return
+    now = datetime.now(timezone(timedelta(hours=9)))
+    if now.hour < RELEASE_TRAIN_HOUR:
+        return
+    for repo in RELEASE_TRAIN:
+        cur.execute("select 1 from events where name='release.created' and payload->>'repo'=%s and occurred_at >= %s",
+                    (repo, now.replace(hour=0, minute=0, second=0, microsecond=0)))
+        if cur.fetchone() or ship.unreleased(cur, repo) == 0 or ship.busy(cur, repo):
+            continue
+        rid, prs = ship.create_release(cur, repo, ship.next_version(cur, repo))
+        if rid:
+            ship.request_ship(cur, rid, "supervisor", "release_train")
+            log("release train", rid, len(prs))
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         record(cur, "supervisor.heartbeat", None, {"repos": REPOS})
@@ -416,6 +440,7 @@ def tick():
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
         daily_report_step(cur)
+        release_train_step(cur)
 
 
 def main():

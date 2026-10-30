@@ -43,6 +43,57 @@ def record(cur, name: str, release_id: str, payload: dict):
     return cur.fetchone()["id"]
 
 
+# ------------------------------------------------------------------ Release を切る（factoryctl・supervisor の出荷の列車）
+def create_release(cur, repo: str, version: str, prs: list[str] | None = None) -> tuple[str | None, list[str]]:
+    """Release を作る（ADR 0007）。prs がなければ、まだどの Release にも入っていないマージ済みの工場の PR をまとめる。
+    すでにあれば (None, [])"""
+    rid = f"{repo}@{version}"
+    if prs is None:
+        cur.execute("select payload->>'pr_url' as u from events e where name='pr.merged' and payload->>'pr_url' like %s "
+                    "and not exists (select 1 from events r where r.name='release.included' and r.payload->>'pr_url'=e.payload->>'pr_url') "
+                    "order by payload->>'merged_at'", (f"https://github.com/{repo}/pull/%",))
+        prs = [r["u"] for r in cur.fetchall()]
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.created',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs}), f"release.created:{rid}"))
+    if cur.fetchone() is None:
+        return None, []
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Release',%s,'ship',%s)",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs})))
+    for u in prs:   # 1 つの PR が入る Release は最初の 1 つ
+        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.included',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                    (f"release:{rid}", Jsonb({"release_id": rid, "app_version": version, "pr_url": u}), f"release.included:{u}"))
+    return rid, prs
+
+
+def next_version(cur, repo: str) -> str:
+    """直近の Release の版の minor を 1 つ上げる（0.1.0 → 0.2.0）。数字 3 つでない版や Release がなければ 0.1.0 から"""
+    cur.execute("select payload->>'app_version' as v from events where name='release.created' and payload->>'repo'=%s order by id desc", (repo,))
+    for r in cur.fetchall():
+        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", r["v"] or "")
+        if m:
+            return f"{m.group(1)}.{int(m.group(2)) + 1}.0"
+    return "0.1.0"
+
+
+def unreleased(cur, repo: str) -> int:
+    cur.execute("select count(*) as n from events e where name='pr.merged' and payload->>'pr_url' like %s "
+                "and not exists (select 1 from events r where r.name='release.included' and r.payload->>'pr_url'=e.payload->>'pr_url')",
+                (f"https://github.com/{repo}/pull/%",))
+    return cur.fetchone()["n"]
+
+
+def busy(cur, repo: str) -> bool:
+    """その製品の出荷の依頼が処理待ちか、staging に出した版が prod への承認を待っているか"""
+    cur.execute("select 1 from events e where name = any(%s) and payload->>'release_id' like %s and not exists "
+                "(select 1 from events r where r.name = any(%s) and (r.payload->>'request_id')::bigint = e.id) limit 1",
+                (list(REQUESTS), f"{repo}@%", list(RESULTS)))
+    if cur.fetchone():
+        return True
+    envs = status(cur, repo)["environments"]
+    staged = envs.get("staging", {}).get("release_id")
+    return bool(staged) and staged != envs.get("prod", {}).get("release_id")
+
+
 # ------------------------------------------------------------------ 入口（factoryctl・コンソール）
 def release_of(cur, release_id: str) -> dict | None:
     cur.execute("select payload from events where name='release.created' and payload->>'release_id'=%s", (release_id,))
