@@ -63,9 +63,9 @@ phases:
     ja: Ship ＋ L3
     weight_weeks: 6
     items:
-      - { id: expand_contract, ja: "expand/contract のマイグレーション工程", measure: { manual: 0.5 } }
-      - { id: synthetic_seed, ja: "合成シード", measure: { manual: 0.5 } }
-      - { id: release_provenance, ja: "Release と来歴", measure: { manual: 0.5 } }
+      - { id: expand_contract, ja: "expand/contract のマイグレーション工程", measure: { manual: done } }   # 製品の規約の検査（rally ADR 0004）＋出荷の Rollback の下限（ADR 0012 の 6、#63）
+      - { id: synthetic_seed, ja: "合成シード", measure: { manual: 0.8 } }   # 出荷が staging に 1 回だけ書く（#64、rally #240）。次の Release で実際に書いたら done
+      - { id: release_provenance, ja: "Release と来歴", measure: { manual: done } }   # Release の来歴＋出荷の来歴（built / deployed / approved / rolled_back、report provenance の出荷の表）
       - { id: one_click_release, ja: "人間の操作が承認ボタンだけでリリースが完了した実績", measure: { manual: todo } }
       - { id: rollback_1min, ja: "Rollback が 1 分以内に完了した実績", measure: { manual: todo } }
       - { id: l3_reproducible, ja: "L3 が同じ PR に同じ判定を返す", measure: { manual: done } }   # core-gates/l3_impact.py（#56）。変更シナリオの PR 13 本に手元で 2 回ずつ、うち 4 本を製品の CI（rally の l3-impact）でも測り、digest が全件一致（2026-10-30）
