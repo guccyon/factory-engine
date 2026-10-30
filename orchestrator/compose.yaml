@@ -20,6 +20,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped   # Mac の再起動のあと、制御プレーンも戻す（2026-10-31。これがないと dispatcher だけ上がって DB に届かない）
 
   # S3 互換のオブジェクトストア（ワーカーのログなど）。MinIO のイメージが Docker Hub から取得できなくなっていたため versitygw を使う（ADR 0003）
   objectstore:
@@ -29,6 +30,7 @@ services:
       - objectdata:/data
     ports:
       - "127.0.0.1:${OBJECTSTORE_PORT:-7070}:7070"
+    restart: unless-stopped
 
   dispatcher:
     build: ./dispatcher
