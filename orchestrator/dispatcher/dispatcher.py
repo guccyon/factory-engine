@@ -122,6 +122,23 @@ def image_for(repo: str, issue: int) -> str:
     return WORKER_IMAGES.get(repo, WORKER_IMAGE)
 
 
+CONTINUE_BRANCH_RE = re.compile(r"^factory/issue-(\d+)-job-\d+$")
+
+
+def continue_target(cur, job_id: int, repo: str, issue: int) -> dict | None:
+    """job.enqueued に「続ける先」があれば返す（rerun --continue と、supervisor の衝突の解消）。
+    渡すのは工場のブランチの名前と PR の番号だけ。形が違えば続けずに普通の実装として流す"""
+    cur.execute("select payload->'continue' as c from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
+    c = (cur.fetchone() or {}).get("c")
+    if not c:
+        return None
+    m = CONTINUE_BRANCH_RE.match(str(c.get("branch") or ""))
+    if not m or int(m.group(1)) != issue or not str(c.get("pr_number") or "").isdigit() or c.get("reason") not in ("incomplete", "conflict"):
+        log("continue target rejected", job_id, c)
+        return None
+    return {"branch": c["branch"], "pr_number": int(c["pr_number"]), "reason": c["reason"]}
+
+
 def provenance(repo: str, image: str) -> dict:
     """製造の来歴（ADR 0007）。全部 optional。取れなければ unknown にして、ラインは止めない"""
     prov = {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "worker_image": image, "worker_image_id": "unknown",
@@ -243,12 +260,14 @@ def run_job(job: dict):
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
+            cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突の解消）
             cmd = ["docker", "run", "--rm", "--name", name,
                    *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
+                   *(["-e", f"CONTINUE_BRANCH={cont['branch']}", "-e", f"CONTINUE_PR={cont['pr_number']}", "-e", f"CONTINUE_REASON={cont['reason']}"] if cont else []),
                    *(["--entrypoint", "/usr/local/bin/clarify.sh"] if kind == "clarify" else []),
                    *(["--entrypoint", "/usr/local/bin/inspect.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "inspect" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/judge.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "judge" else []),
@@ -379,7 +398,7 @@ def run_job(job: dict):
                                                   "change_types": result.get("change_types", ["code_change"]), "provenance": prov, "incomplete": True}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"], "incomplete": True}, dedupe_key=f"pr.opened:{result['pr_url']}")
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
-                comment(repo, issue, f"ジョブ {job_id} は途中で終了しました（{err}）。差分はドラフト PR {result['pr_url']} に残してあります。範囲を満たしていれば建設者がドラフトを外してマージ、足りなければ `factoryctl rerun {job_id}`（MAX_TURNS を上げる）で続きを。")
+                comment(repo, issue, f"ジョブ {job_id} は途中で終了しました（{err}）。差分はドラフト PR {result['pr_url']} に残してあります。範囲を満たしていれば建設者がドラフトを外してマージ、足りなければ `factoryctl rerun {job_id} --continue` でこのブランチから続きを（最初からやり直さない）。")
             else:
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                 tail = "".join(lines[-15:])

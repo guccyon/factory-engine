@@ -63,6 +63,7 @@ DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai �
 # 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
 BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22:25,03:15")
 BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
+CONFLICT_FIX = ENV.get("SUPERVISOR_CONFLICT_FIX", "1") == "1"   # 衝突した工場の PR に、既定ブランチを取り込んで衝突を解くジョブを head ごとに 1 回積む。0 で止める
 LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -213,6 +214,35 @@ def ci_failure_step(cur, p: dict, sha: str):
         stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った", closed_by="supervisor")
 
 
+def conflict_step(cur, p: dict, pr: dict):
+    """工場の PR が既定ブランチと衝突したら（同時に流した PR どうしの CHANGELOG など）、その PR のブランチで衝突を解く
+    実装ジョブを head ごとに 1 回積む。ワーカーは既定ブランチをマージコミットで取り込み、履歴は書き換えない。
+    解けなかったら次の head は来ないので、同じ head では二度積まず、番人のマージ待ちの停止に任せる"""
+    if not CONFLICT_FIX:
+        return
+    ref, sha = pr["head"]["ref"], pr["head"]["sha"]
+    m = re.match(r"^factory/issue-(\d+)-job-\d+$", ref)
+    if not m or (pr["head"].get("repo") or {}).get("full_name") != p["repo"]:
+        return   # 工場のブランチでない PR（人が作り直した PR など）は触らない
+    issue = int(m.group(1))
+    cont = {"branch": ref, "pr_number": p["number"], "reason": "conflict"}
+    if not record(cur, "supervisor.conflict_fix_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha, "continue": cont},
+                  f"supervisor.conflict:{p['url']}@{sha}"):
+        return
+    cur.execute("select id, priority from tickets where source='github' and source_ref=%s", (f"{p['repo']}#{issue}",))
+    t = cur.fetchone() or {}
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority) "
+                    "values (%s,%s,%s,'supervisor','tier-large','implement',%s,%s) returning id",
+                    (f"github:{p['repo']}#{issue}", p["repo"], issue, t.get("id"), t.get("priority") or 50))
+    except psycopg.errors.UniqueViolation:
+        return   # 同じ Issue のジョブがすでに動いている
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (f"github:{p['repo']}#{issue}", jid, Jsonb({"by": "supervisor", "kind": "implement", "continue": cont, "pr_url": p["url"], "head_sha": sha})))
+    log("conflict fix enqueued", p["url"], "job", jid)
+
+
 def merge_step(cur, rules: dict, manifests: dict):
     open_count = 0
     for p in factory_prs(cur):
@@ -237,6 +267,8 @@ def merge_step(cur, rules: dict, manifests: dict):
         open_count += 1
         if not pr.get("draft"):
             ci_failure_step(cur, p, pr["head"]["sha"])
+        if not pr.get("draft") and pr.get("mergeable_state") == "dirty":
+            conflict_step(cur, p, pr)
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
             continue   # CI 待ち・衝突・ドラフト（途中終了）は表を引くまでもない
         sha = pr["head"]["sha"]

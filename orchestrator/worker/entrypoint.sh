@@ -2,6 +2,8 @@
 # ワーカーの手順: 浅いクローン → エージェント（工程 implement）→ commit / push → PR → 結果を最終行に JSON で出す。
 # エージェントの呼び出しは Engine の core-gates/agent_runner.py に集める（runner とモデルは definitions/agents.yaml。ADR 0010）。
 # 環境変数: JOB_ID REPO ISSUE_NUMBER MODEL_TIER MAX_TURNS GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN（任意: ENGINE_REPO ENGINE_REF）
+# 続きのジョブ（任意）: CONTINUE_BRANCH CONTINUE_PR CONTINUE_REASON（incomplete | conflict）。新しいブランチと PR を作らず、
+#   既存の工場の PR のブランチに既定ブランチを取り込んでから続ける。途中終了の続き（rerun --continue）と、工場の PR どうしの衝突の解消に使う
 # 権限は PR 作成まで（P0 autonomy）。マージしない。コンテナは --rm なので終了時に何も残らない。
 set -euo pipefail
 
@@ -20,6 +22,15 @@ MAX_TURNS="${MAX_TURNS:-40}"
 ENGINE_REPO="${ENGINE_REPO:-guccyon/factory-engine}"
 ENGINE_REF="${ENGINE_REF:-main}"
 BRANCH="factory/issue-${ISSUE_NUMBER}-job-${JOB_ID}"
+CONTINUE_BRANCH="${CONTINUE_BRANCH:-}"
+if [ -n "${CONTINUE_BRANCH}" ]; then
+  # 続ける先は工場のブランチと PR の番号だけ（dispatcher も同じ形を確かめてから渡す）
+  if ! [[ "${CONTINUE_BRANCH}" =~ ^factory/issue-${ISSUE_NUMBER}-job-[0-9]+$ ]] || ! [[ "${CONTINUE_PR:-}" =~ ^[0-9]+$ ]]; then
+    echo "[worker] bad continue target"; exit 2
+  fi
+  case "${CONTINUE_REASON:-}" in incomplete|conflict) ;; *) echo "[worker] bad continue reason"; exit 2 ;; esac
+  BRANCH="${CONTINUE_BRANCH}"
+fi
 export GIT_TERMINAL_PROMPT=0
 
 git config --global user.name "factory-worker"
@@ -31,15 +42,48 @@ MODEL=$("${AGENT[@]}" resolve implement --tier "${MODEL_TIER:-tier-large}" | jq 
 echo "[worker] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} model=${MODEL} max_turns=${MAX_TURNS} engine=${ENGINE_REPO}@${ENGINE_REF}"
 
 DEFAULT_BRANCH=$(gh api "repos/${REPO}" --jq .default_branch)
-git clone --quiet --depth 1 --branch "${DEFAULT_BRANCH}" "https://github.com/${REPO}.git" repo
-cd repo
-git checkout -q -b "${BRANCH}"
+CONFLICTS=""
+if [ -n "${CONTINUE_BRANCH}" ]; then
+  # 取り込みに共通の祖先が要るので履歴ごと取る（中身は必要な分だけ）
+  git clone --quiet --filter=blob:none --branch "${DEFAULT_BRANCH}" "https://github.com/${REPO}.git" repo
+  cd repo
+  git fetch --quiet origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
+  git checkout -q -b "${BRANCH}" "origin/${BRANCH}"
+  if ! git merge --no-edit -q "origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
+    CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+  fi
+  echo "[worker] continue ${CONTINUE_REASON} pr=#${CONTINUE_PR} branch=${BRANCH} conflicts=[${CONFLICTS}]"
+else
+  git clone --quiet --depth 1 --branch "${DEFAULT_BRANCH}" "https://github.com/${REPO}.git" repo
+  cd repo
+  git checkout -q -b "${BRANCH}"
+fi
 
 ISSUE_JSON=$(gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json title,body,labels)
 TITLE=$(jq -r .title <<<"${ISSUE_JSON}")
 BODY=$(jq -r '.body // ""' <<<"${ISSUE_JSON}")
 
+CONTINUE_NOTE=""
+if [ -n "${CONTINUE_BRANCH}" ]; then
+  if [ "${CONTINUE_REASON}" = "incomplete" ]; then
+    CONTINUE_NOTE="# 続きのジョブ
+これは PR #${CONTINUE_PR} の続きです。前のジョブは上限で途中終了し、作業はこのブランチ（${BRANCH}）にコミットしてあります。git log と git diff origin/${DEFAULT_BRANCH}...HEAD で前の作業を確かめ、Issue の残りだけを仕上げてください。前の作業をやり直さないこと。"
+  else
+    CONTINUE_NOTE="# 衝突の解消のジョブ
+これは PR #${CONTINUE_PR} のブランチ（${BRANCH}）に既定ブランチを取り込むジョブです。Issue の実装はすでに済んでいます。範囲を広げず、取り込みで起きた衝突の解消と、取り込んだ変更に合わせて壊れたビルド・テストの直しだけを行ってください。"
+  fi
+  if [ -n "${CONFLICTS}" ]; then
+    CONTINUE_NOTE="${CONTINUE_NOTE}
+既定ブランチの取り込みで衝突しています（取り込みは途中で、衝突の印が残っています）: ${CONFLICTS}
+両方の変更の意図を残して解消し、衝突の印（<<<<<<< ======= >>>>>>>）を残さないこと。CHANGELOG.md の追記どうしの衝突は、両方の行を残します。取り込みを中止（git merge --abort）したり、ブランチを作り直したりしないこと。"
+  fi
+  CONTINUE_NOTE="${CONTINUE_NOTE}
+最後の出力の「## 概要」以下は、この続きのジョブでしたことだけを書く（PR の説明には節として追記する）。
+"
+fi
+
 PROMPT=$(cat <<EOF
+${CONTINUE_NOTE}
 あなたは工場のヘッドレスワーカーです。このリポジトリで GitHub Issue #${ISSUE_NUMBER} を実装してください。
 
 # Issue: ${TITLE}
@@ -81,7 +125,16 @@ USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
 COST=$(jq -r '.cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 TURNS=$(jq -r '.num_turns // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 
-if [ -z "$(git status --porcelain)" ]; then
+MERGING=""
+[ -f .git/MERGE_HEAD ] && MERGING="1"   # 衝突のない取り込みはコミット済みなので、ここに来るのは衝突を解いた途中の取り込みだけ
+AHEAD="0"
+[ -n "${CONTINUE_BRANCH}" ] && AHEAD=$(git rev-list --count "origin/${BRANCH}..HEAD")
+if [ -n "${CONFLICTS}" ] && git grep -qE '^(<<<<<<<|>>>>>>>) ' -- ${CONFLICTS} 2>/dev/null; then
+  echo "[worker] conflict markers remain"
+  echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg pr "${CONTINUE_PR}" '{pr_url:null, reason:"conflict_unresolved", continue_pr:($pr|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
+  exit 5
+fi
+if [ -z "$(git status --porcelain)" ] && [ -z "${MERGING}" ] && [ "${AHEAD}" = "0" ]; then
   echo "[worker] no changes produced"
   echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" '{pr_url:null, reason:"no_changes", usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
   exit 3
@@ -96,6 +149,31 @@ LINK_KW="Closes"
 [ -n "${INCOMPLETE}" ] && LINK_KW="Refs"   # 未完了は Issue を閉じない
 PR_TITLE="${TITLE} (#${ISSUE_NUMBER})"
 [ -n "${INCOMPLETE}" ] && PR_TITLE="[未完了] ${PR_TITLE}"
+if [ -n "${CONTINUE_BRANCH}" ]; then
+  # 既存の PR のブランチに積む（取り込みはマージコミットで、履歴は書き換えない）
+  git add -A
+  if [ -n "${MERGING}" ]; then
+    git commit -q --no-edit
+  fi
+  if [ -n "$(git diff --cached --name-only)" ]; then
+    git commit -q -m "$(printf '%s: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による続き。%s\n\nRefs #%s' "$([ "${CONTINUE_REASON}" = conflict ] && echo '衝突の解消' || echo '続き')" "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${INCOMPLETE:+ 途中終了（claude exit ${CLAUDE_RC}）のため未完了。}" "${ISSUE_NUMBER}")"
+  fi
+  git push -q origin "HEAD:${BRANCH}"
+  PR_URL="https://github.com/${REPO}/pull/${CONTINUE_PR}"
+  PR_NUMBER="${CONTINUE_PR}"
+  OLD_BODY=$(gh pr view "${CONTINUE_PR}" -R "${REPO}" --json body --jq .body)
+  SECTION_TITLE=$([ "${CONTINUE_REASON}" = conflict ] && echo "既定ブランチの取り込みと衝突の解消" || echo "続きのジョブ")
+  NEW_BODY=$(printf '%s\n\n## %s（job %s）\n%s\n\n- model: %s、turns: %s、cost(API 換算): $%s\n' "${OLD_BODY}" "${SECTION_TITLE}" "${JOB_ID}" "${SUMMARY}" "${MODEL}" "${TURNS}" "${COST}")
+  if [ "${CONTINUE_REASON}" = "incomplete" ] && [ -z "${INCOMPLETE}" ]; then
+    # 仕上がったら未完了の印を外し、Issue を閉じる参照に直してドラフトを外す
+    NEW_BODY=$(printf '%s' "${NEW_BODY}" | sed -e '/^\*\*未完了\*\*:/d' -e "s/^Refs #${ISSUE_NUMBER}$/Closes #${ISSUE_NUMBER}/")
+    gh pr edit "${CONTINUE_PR}" -R "${REPO}" --title "${TITLE} (#${ISSUE_NUMBER})" --body "${NEW_BODY}" >/dev/null
+    gh pr ready "${CONTINUE_PR}" -R "${REPO}" >/dev/null || true
+  else
+    gh pr edit "${CONTINUE_PR}" -R "${REPO}" --body "${NEW_BODY}" >/dev/null
+  fi
+  echo "[worker] continued pr=${PR_URL}"
+else
 git add -A
 git commit -q -m "$(printf 'feat: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による実装。%s\n\n%s #%s' "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${INCOMPLETE:+ 途中終了（claude exit ${CLAUDE_RC}）のため未完了。}" "${LINK_KW}" "${ISSUE_NUMBER}")"
 git push -q -u origin "${BRANCH}:${BRANCH}"
@@ -116,6 +194,8 @@ EOF
 PR_URL=$(gh pr create -R "${REPO}" --base "${DEFAULT_BRANCH}" --head "${BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}" ${INCOMPLETE:+--draft})
 PR_NUMBER=$(basename "${PR_URL}")
 echo "[worker] pr=${PR_URL}"
+
+fi
 
 CHANGED=$(git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" | tr '\n' ' ')
 CHANGE_TYPE="code_change"
