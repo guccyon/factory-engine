@@ -272,7 +272,7 @@ function render() {
 
   // 頼みたいこと
   const asks = [];
-  (S.needs.approval_prs || []).forEach((p) => asks.push([`承認待ちの PR: ${p.repo}#${p.number} ${p.title}`, p.url]));
+  (S.needs.approval_prs || []).forEach((p) => asks.push([`承認待ちの PR: ${p.repo}#${p.number} ${p.title}${p.days != null ? `（${p.days} 日）` : ""}`, p.url]));
   if ((S.needs.golden_unconfirmed || []).length) asks.push([`Golden Set の確認: ${S.needs.golden_unconfirmed.join(", ")}`]);
   (S.activity.stoppages_open || []).forEach((s) => asks.push([`開いたままの停止（${s.category}）: ${s.what}（${s.since} から）`]));
   if (!asks.length) $("asks").hidden = true;
