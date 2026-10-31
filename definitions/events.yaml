@@ -107,10 +107,22 @@ events:
     source: control_plane
     required: [pr_url, head_sha]
     note: "検証の起動（ADR 0004）。head ごとに 1 回。結果は gate.evaluated（mode=shadow）"
-  supervisor.conflict_fix_enqueued:
+  continue.enqueued:
     source: control_plane
-    required: [pr_url, head_sha, continue]
-    note: "工場の PR が既定ブランチと衝突した（mergeable_state=dirty）ので、その PR のブランチで既定ブランチを取り込み衝突を解く implement ジョブ（CONTINUE_REASON=conflict）を積んだ。head ごとに 1 回"
+    required: [pr_url, head_sha, reason, attempt, continue, by]
+    note: "ADR 0016・0017。工場の PR の続きのジョブ（同じチケットの implement、同じブランチに push）を積んだ。reason は conflict（衝突。head ごとに 1 回）・ci_failed（PR の見張りの pr.ci_failed）・review_fix（検査役がマージ前に採用した指摘）。ci_failed と review_fix は PR ごとに CONTINUE_MAX 回まで。dedupe は continue:{pr_url}@{head_sha}:{reason}"
+  continue.limit_reached:
+    source: control_plane
+    required: [pr_url, reason, max]
+    note: "ADR 0017。合図の続きが上限に達したので、続きのジョブを積まずに人へ回した（ci_failed は停止 ci:、review_fix は差し戻しの Issue）"
+  handoff.saved:
+    source: control_plane
+    required: [volume, state, agent_session]
+    note: "ADR 0017。実装役が作業の文脈（ticket.json・jobs/<job>/）をチケットのボリュームに残した（保留）。agent_session はエージェントの会話の記録（再開の近道）もあったか"
+  handoff.removed:
+    source: control_plane
+    required: [volume, keep_days]
+    note: "ADR 0017。PR がマージか閉じられてから keep_days 日たったので、チケットのボリュームを消した"
   supervisor.enqueued:
     source: control_plane
     required: [repo, issue, deps]

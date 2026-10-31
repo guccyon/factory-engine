@@ -28,7 +28,17 @@ with open(os.environ["FAKE_LOG"], "a") as f:
 if os.environ.get("FAKE_FAIL_ONCE") and not os.path.exists(os.environ["FAKE_FAIL_ONCE"]):
     open(os.environ["FAKE_FAIL_ONCE"], "w").close()
     sys.exit(1)
+if "--resume" in args and os.environ.get("FAKE_RESUME_FAIL"):
+    print("{}"); sys.exit(1)
 out = {"result": "こんにちは", "total_cost_usd": 0.25, "usage": {"input_tokens": 3}, "num_turns": 2}
+if "--dangerously-skip-permissions" in args and os.environ.get("HOME"):
+    # 会話の記録を Claude Code と同じところに書く（作業ディレクトリごとのフォルダ）
+    sid = "s-" + str(sum(1 for _ in open(os.environ["FAKE_LOG"])))
+    d = os.path.join(os.environ["HOME"], ".claude", "projects", "-work-repo")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, sid + ".jsonl"), "w") as f:
+        f.write(json.dumps({"resumed_from": args[args.index("--resume") + 1] if "--resume" in args else None}) + "\\n")
+    out["session_id"] = sid
 if "--json-schema" in args:
     out["structured_output"] = {"ok": True}
 print(json.dumps(out))
@@ -76,7 +86,7 @@ class RunTest(unittest.TestCase):
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
         self.log = d / "log.jsonl"
         self.env = {"PATH": f"{d}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(self.log)}
-        self._old = {k: os.environ.get(k) for k in [*self.env, "FAKE_FAIL_ONCE", "FAKE_RC"]}
+        self._old = {k: os.environ.get(k) for k in [*self.env, "FAKE_FAIL_ONCE", "FAKE_RC", "FAKE_RESUME_FAIL", "HOME"]}
         os.environ.update(self.env)
         ar.RETRY_BASE = 0
 
@@ -122,6 +132,37 @@ class RunTest(unittest.TestCase):
         args = self.calls()[0]
         self.assertIn("--dangerously-skip-permissions", args)
         self.assertEqual(args[args.index("-p") + 1], "作業して")
+
+    def test_state_dir_saves_and_resumes_session(self):
+        home, state = Path(self.tmp.name) / "home", Path(self.tmp.name) / "handoff" / "agent"
+        os.environ["HOME"] = str(home)
+        r1 = ar.run_agentic("implement", "作業して", state_dir=str(state))
+        self.assertFalse(r1.resumed)
+        meta = json.loads((state / "claude-code" / "session.json").read_text())
+        self.assertEqual(meta, {"session_id": "s-1", "project": "-work-repo"})
+        # 別のコンテナ（記録のない HOME）でも、ボリュームの記録から続きを再開する
+        os.environ["HOME"] = str(Path(self.tmp.name) / "home2")
+        r2 = ar.run_agentic("implement", "続きを", state_dir=str(state))
+        self.assertTrue(r2.resumed)
+        args = self.calls()[1]
+        self.assertEqual(args[args.index("--resume") + 1], "s-1")
+        self.assertEqual(json.loads((state / "claude-code" / "session.json").read_text())["session_id"], "s-2")
+
+    def test_resume_failure_falls_back_to_new_session(self):
+        os.environ["HOME"] = str(Path(self.tmp.name) / "home")
+        state = Path(self.tmp.name) / "agent"
+        ar.run_agentic("implement", "作業して", state_dir=str(state))
+        os.environ["FAKE_RESUME_FAIL"] = "1"
+        r = ar.run_agentic("implement", "続きを", state_dir=str(state))
+        self.assertEqual((r.exit, r.resumed, r.output), (0, False, "こんにちは"))
+        self.assertIn("--resume", self.calls()[1])
+        self.assertNotIn("--resume", self.calls()[2])
+
+    def test_no_state_dir_never_resumes(self):
+        os.environ["HOME"] = str(Path(self.tmp.name) / "home")
+        ar.run_agentic("implement", "作業して")
+        ar.run_agentic("implement", "作業して")
+        self.assertNotIn("--resume", self.calls()[1])
 
     def test_cli_rejects_oneshot_step_for_exec(self):
         p = subprocess.run([sys.executable, str(RUNNER), "exec", "judge"], input="x", capture_output=True, text=True)

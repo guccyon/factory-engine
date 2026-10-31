@@ -10,7 +10,7 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.310
 RUN ARCH=$(dpkg --print-architecture) && curl -fsSL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_${ARCH}" -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 # 検査ジョブ（inspect.sh）が core-gates/shadow_review.py を動かすための python3 と PyYAML
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-yaml && rm -rf /var/lib/apt/lists/*
-RUN useradd -m -u 1001 worker
+RUN useradd -m -u 1001 worker && mkdir -p /handoff && chown worker:worker /handoff   # チケットの引き継ぎのボリュームを付けるところ（ADR 0017）
 USER worker
 WORKDIR /work
 COPY --chown=worker:worker entrypoint.sh /usr/local/bin/entrypoint.sh
