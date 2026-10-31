@@ -44,6 +44,25 @@ docker compose exec dispatcher factoryctl enqueue guccyon/rally 3   # ラベル�
 docker compose exec dispatcher factoryctl events 12     # そのジョブのイベント
 ```
 
+## 続きのジョブと引き継ぎのボリューム（ADR 0016・0017）
+
+工場の PR に合図が来たら、同じチケットの実装役を続きから動かし、同じブランチに push する。人に回すのは、直せなかったときと上限に達したときだけ。
+
+| 合図 | 積む役 | 上限 | 直せなかったら |
+|---|---|---|---|
+| 衝突（mergeable_state=dirty） | supervisor | head ごとに 1 回 | 停止 `ci:` |
+| CI 落ち（PR の見張りの `pr.ci_failed`） | supervisor | PR ごとに `CONTINUE_MAX` 回（既定 2） | 停止 `ci:` |
+| 検査役がマージ前に採用した指摘（本文だけの指摘を除く） | dispatcher（judge の後） | PR ごとに `CONTINUE_MAX` 回 | 差し戻しの Issue（ADR 0006） |
+
+実装役の作業の文脈は、チケットごとの Docker のボリューム `factory-ticket-<owner>-<repo>-<issue>` に残る（ワーカーの `/handoff`）。
+
+```bash
+docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine cat /h/ticket.json   # ジョブの履歴・ブランチ・PR
+docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine ls -R /h/jobs        # ジョブごとの報告・仮決め・合図・差分
+```
+
+`agent/` の下はエージェントの会話の記録（Claude Code の `--resume` に使う近道）で、なくても続きは作れる。ボリュームは PR がマージか閉じられてから `HANDOFF_KEEP_DAYS` 日（既定 7）で dispatcher が消す。`/handoff` を持たない古いワーカーのイメージでは、ボリュームなしで続ける（ラインは止めない）。
+
 ## 試験運転（GitHub にも Claude にも触らない）
 
 `.env` に `WORKER_DRY_RUN=20` を入れて上げると、ポーリングとラベル操作を止め、ワーカーは 20 秒数えて偽の結果を返す。

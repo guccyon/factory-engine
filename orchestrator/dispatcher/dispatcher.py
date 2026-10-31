@@ -31,6 +31,7 @@ from minio import Minio
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import continuation
 import judgment
 import ops
 import pr_events
@@ -71,6 +72,7 @@ USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
+REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
@@ -129,14 +131,14 @@ CONTINUE_BRANCH_RE = re.compile(r"^factory/issue-(\d+)-job-\d+$")
 
 
 def continue_target(cur, job_id: int, repo: str, issue: int) -> dict | None:
-    """job.enqueued に「続ける先」があれば返す（rerun --continue と、supervisor の衝突の解消）。
+    """job.enqueued に「続ける先」があれば返す（rerun --continue、衝突の解消、CI 落ち・検査の指摘の直し。ADR 0016・0017）。
     渡すのは工場のブランチの名前と PR の番号だけ。形が違えば続けずに普通の実装として流す"""
     cur.execute("select payload->'continue' as c from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
     c = (cur.fetchone() or {}).get("c")
     if not c:
         return None
     m = CONTINUE_BRANCH_RE.match(str(c.get("branch") or ""))
-    if not m or int(m.group(1)) != issue or not str(c.get("pr_number") or "").isdigit() or c.get("reason") not in ("incomplete", "conflict"):
+    if not m or int(m.group(1)) != issue or not str(c.get("pr_number") or "").isdigit() or c.get("reason") not in continuation.REASONS:
         log("continue target rejected", job_id, c)
         return None
     return {"branch": c["branch"], "pr_number": int(c["pr_number"]), "reason": c["reason"]}
@@ -227,7 +229,8 @@ def poll_loop():
 
 
 # ------------------------------------------------------------------ ワーカーの実行
-FOLLOWUP_KINDS = ("body_fix",)   # 同じ PR の別ジョブ（judge）の中から積まれる種類
+FOLLOWUP_KINDS = ("body_fix",)
+CONTINUE_JA = {"incomplete": "途中終了の続き", "conflict": "衝突の解消", "ci_failed": "CI 落ちの直し", "review_fix": "検査の指摘の直し"}   # 同じ PR の別ジョブ（judge）の中から積まれる種類
 LOCK_RETRY_SEC = 10
 
 def run_job(job: dict):
@@ -263,8 +266,12 @@ def run_job(job: dict):
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
-            cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突の解消）
+            cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突・CI 落ち・検査の指摘）
+            signaled = bool(cont and cont["reason"] in continuation.SIGNALED)   # 合図の中身（CI のチェック名・指摘）を標準入力で渡す
+            volume = continuation.volume_name(repo, issue) if kind == "implement" and continuation.HANDOFF_ENABLED else None   # チケットの引き継ぎのボリューム
             cmd = ["docker", "run", "--rm", "--name", name,
+                   *(["-v", f"{volume}:/handoff", "-e", "HANDOFF_DIR=/handoff"] if volume else []),
+                   *(["-i"] if signaled else []),
                    *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
@@ -277,12 +284,13 @@ def run_job(job: dict):
                    *(["-i", "--entrypoint", "/usr/local/bin/body_fix.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "body_fix" else []),
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix"):   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if kind in ("judge", "body_fix") else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            if kind in ("judge", "body_fix"):
+            piped = kind in ("judge", "body_fix") or signaled
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if piped:
                 proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
                 proc.stdin.close()
             cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
@@ -347,6 +355,20 @@ def run_job(job: dict):
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
             if result and result.get("usage"):
                 record_event(cur, "session.cost_recorded", corr, job_id, {"model": result.get("model"), "usage": usage, "cost_usd": result.get("cost_usd")})
+            if volume:
+                saved = next((l for l in reversed(lines) if l.startswith("[worker] handoff saved")), None)
+                if saved:   # 実装役の文脈をボリュームに残した（保留）。続きのジョブはここから再開する（ADR 0017）
+                    record_event(cur, "handoff.saved", corr, job_id, {"volume": volume, "pr_url": (result or {}).get("pr_url"), "state": state,
+                                                                     "agent_session": "agent_session=yes" in saved,
+                                                                     "continue_reason": cont["reason"] if cont else None})
+            if cont and cont["reason"] == "review_fix" and state != "succeeded" and not preempted_for:
+                # 検査の指摘を続きのジョブで直せなかった。指摘は従来どおり差し戻しの Issue にしてラインは止めない（ADR 0017）
+                try:
+                    sig = judge_inp or {}
+                    file_sendback(cur, repo, corr, job_id, sig.get("pr_url") or f"https://github.com/{repo}/pull/{cont['pr_number']}",
+                                  sig.get("defects") or [], [], sig.get("mode") or "attended", fallback_from=job_id)
+                except Exception as e:  # noqa: BLE001
+                    log("review_fix fallback failed", job_id, repr(e))
             if result and result.get("pr_url") and (result.get("provisional_raw") or "").strip():
                 # ワーカーの仮決め（ADR 0006）。記録の失敗でラインは止めない
                 try:
@@ -396,7 +418,9 @@ def run_job(job: dict):
                                 (corr, job_id, Jsonb({"knowledge_stage": "episodic", "teacher_signal": "worker_self_report", "summary": text,
                                                       "eval_cases": [], "state": "candidate", "source_pr": result["pr_url"]})))
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["pr_open"]])
-                comment(repo, issue, f"ジョブ {job_id} が PR を作成しました: {result['pr_url']}\n消費: {total_tokens:,} tokens（予算 {TOKEN_BUDGET:,}）")
+                comment(repo, issue, (f"ジョブ {job_id} が PR {result['pr_url']} の続き（{CONTINUE_JA.get(cont['reason'], cont['reason'])}）を同じブランチに push しました。"
+                                      if cont else f"ジョブ {job_id} が PR を作成しました: {result['pr_url']}")
+                        + f"\n消費: {total_tokens:,} tokens（予算 {TOKEN_BUDGET:,}）")
             elif state == "failed" and result and result.get("pr_url"):
                 # 途中終了のドラフトも PR として残す。建設者が仕上げてドラフトを外すと、supervisor が判定・検査・judge に回す
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload, blob_key) values ('PR',%s,%s,'implement',%s,%s)",
@@ -435,7 +459,8 @@ def requeue_preempted(cur, job: dict, preempted_for: int, cost_usd):
     record_event(cur, "job.preempted", corr, job["id"], {"preempted_for": preempted_for, "discarded_sec": sec, "discarded_cost_usd": cost_usd,
                                                         "requeued_as": new_id})
     record_event(cur, "job.enqueued", corr, new_id, {"by": "preempt", "attempt": job["attempt"] + 1, "previous": job["id"],
-                                                     "ticket_id": job.get("ticket_id"), "priority": job.get("priority")})
+                                                     "ticket_id": job.get("ticket_id"), "priority": job.get("priority"),
+                                                     **continuation.carry_over(cur, job["id"])})   # 続ける先と合図の中身を引き継ぐ
     if (job.get("kind") or "implement") in ops.PREEMPTIBLE_KINDS:
         swap_label(repo, issue, [LABELS["running"]], [LABELS["queued"]])
         comment(repo, issue, f"緊急のジョブ {preempted_for} を先に流すため、ジョブ {job['id']} を止めて順番待ちに戻しました（ジョブ {new_id}）。止めた時点までの作業は捨てて、最初からやり直します。")
@@ -533,7 +558,32 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
     to_fix = [d for d in live if not is_body_only(d)]
-    items = to_fix + summary["replaced"]
+    if to_fix and REVIEW_FIX:
+        # マージ前の指摘は差し戻しの Issue を切らず、同じ担当の続きのジョブで直す（ADR 0017）。上限・工場のブランチでないときは差し戻しへ
+        try:
+            pr = gh("GET", f"repos/{repo}/pulls/{pr_number}")
+            jid = None
+            if pr["state"] == "open" and (pr["head"].get("repo") or {}).get("full_name") == repo:
+                signal = {"pr_url": pr_url, "mode": mode, "head_sha": pr["head"]["sha"],
+                          "defects": [{k: d.get(k) for k in ("rubric_id", "severity", "location", "evidence", "remediation_hint")} for d in to_fix]}
+                jid = continuation.enqueue(cur, repo=repo, pr_number=pr_number, pr_url=pr_url, branch=pr["head"]["ref"], head_sha=pr["head"]["sha"],
+                                           reason="review_fix", by="judge", signal=signal)
+            if isinstance(jid, int):
+                comment(repo, pr_number, f"judge（モード {mode}）が採用した指摘 {len(to_fix)} 件を、同じ担当の続きのジョブ {jid} で直します（差し戻しの Issue は切りません）。")
+                log("review_fix enqueued", pr_url, "job", jid)
+                to_fix = []
+            elif jid == "limit":
+                record_event(cur, "continue.limit_reached", corr, job_id, {"pr_url": pr_url, "reason": "review_fix", "max": continuation.CONTINUE_MAX})
+        except Exception as e:  # noqa: BLE001
+            log("review_fix enqueue failed", pr_url, repr(e))
+    file_sendback(cur, repo, corr, job_id, pr_url, to_fix, summary["replaced"], mode)
+
+
+def file_sendback(cur, repo: str, corr: str, job_id: int, pr_url: str, to_fix: list[dict], replaced: list[dict], mode: str, fallback_from: int | None = None):
+    """差し戻しの Issue を起票する（ADR 0006）。マージ前の指摘は続きのジョブで直すので、ここに来るのは仮決めの差し替えと、
+    続きのジョブで直せなかった・上限に達した指摘（ADR 0017）"""
+    pr_number = int(pr_url.rsplit("/", 1)[1])
+    items = to_fix + replaced
     if not items:
         return
     # 差し戻しの連鎖: この PR 自体が差し戻しの修正なら、2 回目は流さず人へ（空回りの防止）
@@ -564,7 +614,7 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         n += 1
         lines += ["", f"### {n}. 検査の指摘 [{d.get('rubric_id', '?')} / {d.get('severity', '?')}] {d.get('location', '')}", _quote(d.get("evidence", "")),
                   "", "直し方の手がかり:", _quote(d.get("remediation_hint", ""))]
-    for r in summary["replaced"]:
+    for r in replaced:
         n += 1
         lines += ["", f"### {n}. 仮決めの差し替え（{r['category']}）: {r.get('question') or ''}", "差し替え後:", _quote(r.get("replacement") or ""),
                   "", "理由（judge の解釈）:", _quote(r.get("interpretation") or "")]
@@ -579,8 +629,9 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         log("sendback filing failed", pr_url, repr(e))
         return
     record_event(cur, "sendback.filed", corr, job_id, {"origin_pr": pr_url, "fix_issue": issue["html_url"], "fix_corr": f"github:{repo}#{issue['number']}",
-                                                     "mode": mode, "defects": len(to_fix), "replaced": len(summary["replaced"])})
-    comment(repo, pr_number, f"judge（モード {mode}）が指摘 {len(to_fix)} 件と仮決めの差し替え {len(summary['replaced'])} 件を採用し、差し戻しを {issue['html_url']} に起票しました。"
+                                                     "mode": mode, "defects": len(to_fix), "replaced": len(replaced),
+                                                     **({"fallback_from_job": fallback_from} if fallback_from else {})})
+    comment(repo, pr_number, f"{'続きのジョブで直せなかった指摘を引き取り、' if fallback_from else ''}judge（モード {mode}）が指摘 {len(to_fix)} 件と仮決めの差し替え {len(replaced)} 件を採用し、差し戻しを {issue['html_url']} に起票しました。"
             + ("依存が閉じたら supervisor が流します。" if mode == "unattended" else "流すときは Issue のラベル factory:fix-proposed を factory:planned に替えてください。"))
 
 
@@ -702,11 +753,21 @@ def watch_once():
 
 
 def watch_loop():
+    last_cleanup = 0.0
     while True:
         try:
             watch_once()
         except Exception as e:  # noqa: BLE001  番人の失敗でラインを止めない
             log("watch error", repr(e))
+        if time.time() - last_cleanup > 3600:   # 済んだチケットの引き継ぎのボリュームを消す（1 時間に 1 回。ADR 0017）
+            last_cleanup = time.time()
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    n = continuation.cleanup(cur, log)
+                    if n:
+                        log(f"handoff volumes removed: {n}")
+            except Exception as e:  # noqa: BLE001
+                log("handoff cleanup error", repr(e))
         time.sleep(WATCH_INTERVAL)
 
 
@@ -748,7 +809,8 @@ def recover():
                         "values (%s,%s,%s,%s,'recover',%s,%s,%s,%s) returning id",
                         (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"], j["ticket_id"], j["priority"]))
             new_id = cur.fetchone()["id"]
-            record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"]})
+            record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"],
+                                                                         **continuation.carry_over(cur, j["id"])})   # 続ける先と入力を引き継ぐ
             log(f"recovered job {j['id']} -> re-enqueued as {new_id}")
 
 

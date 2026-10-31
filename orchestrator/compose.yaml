@@ -74,6 +74,11 @@ services:
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}             # 例: unattended=22:00-08:00（Asia/Tokyo）。factoryctl mode set が優先
       # 差し戻し（ADR 0006 / D5）。上限は仮置き
       SENDBACK_PER_PR: ${SENDBACK_PER_PR:-1}
+      # 続きのジョブと引き継ぎのボリューム（ADR 0017）。マージ前の指摘は差し戻しでなく同じ担当の続きで直す。上限は仮置き
+      REVIEW_FIX: ${REVIEW_FIX:-1}
+      CONTINUE_MAX: ${CONTINUE_MAX:-2}
+      HANDOFF_VOLUMES: ${HANDOFF_VOLUMES:-1}
+      HANDOFF_KEEP_DAYS: ${HANDOFF_KEEP_DAYS:-7}
       SENDBACK_DAILY_MAX: ${SENDBACK_DAILY_MAX:-5}
       LOW_CONFIDENCE: ${LOW_CONFIDENCE:-0.6}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
@@ -101,6 +106,9 @@ services:
       SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
       SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}       # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
       SUPERVISOR_JUDGE: ${SUPERVISOR_JUDGE:-1}           # 検査のあと、仮決めと指摘を裁く judge のジョブを積む（ADR 0006）
+      SUPERVISOR_CONFLICT_FIX: ${SUPERVISOR_CONFLICT_FIX:-1}   # 衝突した工場の PR を、同じブランチで既定ブランチを取り込んで直す（ADR 0016）
+      SUPERVISOR_CI_FIX: ${SUPERVISOR_CI_FIX:-1}               # CI が落ちた工場の PR を、同じ担当の続きのジョブで直す（ADR 0017）
+      CONTINUE_MAX: ${CONTINUE_MAX:-2}
       FACTORY_MODE: ${FACTORY_MODE:-}                    # 既定のモード（attended）。製品の manifest に持たせるのは承認付き PR で
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}
       CHANGE_TYPE_RULES: /definitions/change_type_rules.yaml

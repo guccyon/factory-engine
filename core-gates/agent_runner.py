@@ -11,6 +11,10 @@ Python から:
     agent_runner.py resolve implement --tier tier-small          # {"step","tier","runner","model",...}
     agent_runner.py run clarify.asker --schema '<json>' < prompt  # {"output","cost_usd","usage","model","runner"}
     agent_runner.py exec implement --max-turns 40 < prompt        # ツールありで作業させる。終了コードは runner のもの
+    agent_runner.py exec implement --state-dir /handoff/agent < prompt   # runner の会話の記録をこの下に保存し、あれば続きから再開する
+
+--state-dir は「あれば使う近道」（ADR 0017）。続きのジョブの正は工場のボリュームの引き継ぎの記録（ticket.json・jobs/）で、
+runner の記録がなくても、壊れていても、別の runner に替えても続きは作れる。中身の形は runner ごとに <state-dir>/<runner>/ の下で閉じる。
 
 依存: python3（標準ライブラリ）。agents.yaml は PyYAML があればそれで、なければ ruby で読む。
 """
@@ -53,6 +57,7 @@ class Result:
     runner: str = ""
     num_turns: int = 0
     exit: int = 0
+    resumed: bool = False   # runner の会話の記録から続きを再開した（--state-dir の近道が効いた）
 
 
 def load_agents(path: Path = AGENTS_FILE) -> dict:
@@ -119,17 +124,66 @@ def _claude_oneshot(a: Agent, prompt: str, schema: dict | None, max_turns: int, 
                   model=a.model, runner=a.runner, num_turns=res.get("num_turns") or 0)
 
 
-def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None) -> Result:
+def _claude_projects() -> Path:
+    return Path.home() / ".claude" / "projects"   # Claude Code が会話の記録を置くところ（作業ディレクトリごとのフォルダ）
+
+
+def _claude_restore(state: Path | None) -> str | None:
+    """前のジョブの会話の記録を ~/.claude/projects に戻し、そのセッション id を返す。なければ None"""
+    if state is None:
+        return None
+    try:
+        meta = json.loads((state / "session.json").read_text(encoding="utf-8"))
+        sid, project = str(meta["session_id"]), str(meta["project"])
+        src = state / f"{sid}.jsonl"
+        if not src.is_file() or "/" in project or "/" in sid:
+            return None
+        dst = _claude_projects() / project
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / src.name).write_bytes(src.read_bytes())
+        return sid
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _claude_save(state: Path | None, sid: str | None):
+    """会話の記録を state に写す（次の続きのジョブの近道）。失敗してもジョブは止めない"""
+    if state is None or not sid:
+        return
+    try:
+        found = next(iter(_claude_projects().glob(f"*/{sid}.jsonl")), None)
+        if found is None:
+            return
+        state.mkdir(parents=True, exist_ok=True)
+        (state / found.name).write_bytes(found.read_bytes())
+        (state / "session.json").write_text(json.dumps({"session_id": sid, "project": found.parent.name}), encoding="utf-8")
+    except OSError as e:
+        print(f"[agent_runner] session save failed: {e}", file=sys.stderr)
+
+
+def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, state_dir: str | None = None) -> Result:
     # ワーカーの中だけで使う（使い捨てのコンテナなので権限の確認を省く）。stderr はそのまま流す
-    r = subprocess.run(["claude", "-p", prompt, "--model", a.model, "--max-turns", str(max_turns),
-                        "--output-format", "json", "--dangerously-skip-permissions"],
-                       stdout=subprocess.PIPE, text=True, cwd=cwd)
+    state = Path(state_dir) / "claude-code" if state_dir else None
+    base = ["claude", "-p", prompt, "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions"]
+    sid = _claude_restore(state)
+    resumed = bool(sid)
+    r = subprocess.run(base + (["--resume", sid] if sid else []), stdout=subprocess.PIPE, text=True, cwd=cwd)
     try:
         res = json.loads(r.stdout)
     except json.JSONDecodeError:
         res = {}
+    if resumed and r.returncode != 0 and not res.get("num_turns"):
+        # 記録から再開できなかった（版の違い・記録の破損）。近道をあきらめて新しい会話で続ける（引き継ぎの記録はプロンプトにある）
+        print("[agent_runner] resume failed; starting a new session", file=sys.stderr)
+        resumed = False
+        r = subprocess.run(base, stdout=subprocess.PIPE, text=True, cwd=cwd)
+        try:
+            res = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            res = {}
+    _claude_save(state, res.get("session_id"))
     return Result(output=res.get("result") or "", cost_usd=res.get("total_cost_usd") or 0.0, usage=res.get("usage") or {},
-                  model=a.model, runner=a.runner, num_turns=res.get("num_turns") or 0, exit=r.returncode)
+                  model=a.model, runner=a.runner, num_turns=res.get("num_turns") or 0, exit=r.returncode, resumed=resumed)
 
 
 ONESHOT = {"claude-code": _claude_oneshot}
@@ -143,12 +197,14 @@ def run(step: str, prompt: str, *, schema: dict | None = None, tier: str | None 
     return ONESHOT[a.runner](a, prompt, schema, max_turns, retries)
 
 
-def run_agentic(step: str, prompt: str, *, tier: str | None = None, max_turns: int = 40, cwd: str | None = None) -> Result:
-    """ツールありで作業させる（実装）。失敗しても例外にせず exit に runner の終了コードを入れて返す"""
+def run_agentic(step: str, prompt: str, *, tier: str | None = None, max_turns: int = 40, cwd: str | None = None,
+                state_dir: str | None = None) -> Result:
+    """ツールありで作業させる（実装）。失敗しても例外にせず exit に runner の終了コードを入れて返す。
+    state_dir があれば runner の会話の記録をそこに残し、次はそこから再開する（なくても動く近道）"""
     a = resolve(step, tier)
     if a.mode != "agentic":
         raise AgentError(f"step {step} is not agentic")
-    return AGENTIC[a.runner](a, prompt, max_turns, cwd)
+    return AGENTIC[a.runner](a, prompt, max_turns, cwd, state_dir)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -163,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--max-turns", type=int, default=3)
         if name == "exec":
             sp.add_argument("--max-turns", type=int, default=40)
+            sp.add_argument("--state-dir", help="runner の会話の記録を置くところ（続きのジョブの近道。ADR 0017）")
     a = p.parse_args(argv)
     try:
         if a.cmd == "resolve":
@@ -172,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "run":
             r = run(a.step, prompt, schema=json.loads(a.schema) if a.schema else None, tier=a.tier, max_turns=a.max_turns)
         else:
-            r = run_agentic(a.step, prompt, tier=a.tier, max_turns=a.max_turns)
+            r = run_agentic(a.step, prompt, tier=a.tier, max_turns=a.max_turns, state_dir=a.state_dir)
     except AgentError as e:
         print(f"[agent_runner] {e}", file=sys.stderr)
         return 2
