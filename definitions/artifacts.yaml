@@ -60,6 +60,10 @@ types:
     stage: [design, govern]
     required: [kind, status, question, options, recommended, subject]
     note: "ADR 0025 の P4-7。人に選んでもらう依頼（画面の案・抜き取り）。status: open | chosen | returned。options は 1〜4 件で、画像はオブジェクトストアの choices/ の下（image_key）"
+  Plan:
+    stage: [triage, define]
+    required: [repo, issue, round, decision, route, design_scale, notes, summary, questions, confidence]
+    note: "ADR 0025・0026。プランナーの着手判定 1 回分。decision: ready | ask | escalate、route: implement | ui_design | design_system。指示役はこれと経路のラベルで配る"
   DesignReview:
     stage: [operate, routine]
     required: [repo, week, sha, summary, strengths, findings, checked]

@@ -73,8 +73,8 @@ import stoppage
 
 
 def design_input(cur, job_id: int, kind: str) -> dict:
-    """デザインの線のジョブを積み直すときは、前の入力（直しの指摘・検査する案）を引き継ぐ"""
-    if kind not in ("ui_design", "ui_design_review"):
+    """デザインの線とプランナーのジョブを積み直すときは、前の入力（直しの指摘・検査する案・判定の回数）を引き継ぐ"""
+    if kind not in ("ui_design", "ui_design_review", "plan"):
         return {}
     cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
     inp = (cur.fetchone() or {}).get("inp")
