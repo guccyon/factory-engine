@@ -89,7 +89,9 @@ phases:
     items:
       - { id: intake_clarify, ja: "intake / clarify の窓口と要求者ペルソナ", measure: { manual: 0.5 } }
       - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff と Ticket の生産", measure: { manual: todo } }
-      - { id: opportunity_to_ticket, ja: "Opportunity から人手なしで Ticket 群が流れる", measure: { manual: todo } }
+      - { id: opportunity_to_ticket, ja: "テーマ 1 つから人が触らずに Requirements と段の束（依存つき）が出る", measure: { manual: todo } }   # ADR 0025 の完了条件 1
+      - { id: design_variants, ja: "画面を含む段でデザイナー役が案（キャプチャつき）を出し、重い画面は人の選択を経て実装に流れる", measure: { manual: todo } }   # ADR 0025 の 2・3
+      - { id: screen_capture_taste, ja: "実装後の画面のキャプチャが PR に付き、人の違和感の印が教師信号として Learn に入る", measure: { manual: todo } }   # ADR 0025 の 4
       - { id: clarify_3_rounds, ja: "clarify が往復 3 回以内で収束", measure: { manual: todo } }
 
   - id: P5
