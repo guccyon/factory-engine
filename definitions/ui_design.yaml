@@ -30,10 +30,38 @@ designer:
     - "モックは外部の資源を読まない（Web フォント・CDN・画像の URL を使わない。書体は同梱のものを font-family で指定するだけ）"
     - "案どうしは、選ぶ価値のある違い（流れ・情報の優先順位・密度）にする。色違いだけの案は作らない"
     - "用語は specs/glossary.yaml の語を使う"
+    - "人が判断できる材料にする: PRD の要約・ユーザーフロー・画面定義書（package.screen_sections の節）・設計の理由を必ず書く。画面だけを出さない（ADR 0026）"
 
 uxspec:
-  required: [ticket, screens, states, design_system_constraints, design_system_gaps, variants, recommended, brand_impact]
-  screen_required: [id, purpose, new, elements, behaviors]
+  required: [ticket, prd, user_flow, screens, states, design_system_constraints, design_system_gaps, variants, recommended, brand_impact, rationale]
+  screen_required: [id, purpose, new, transitions, elements, behaviors]
+
+# デザインのパッケージ（ADR 0026 の決定 3）。人が判断に使う材料で、UXSpec の項目として書く。レビューページはここから組み立てる
+# 画面定義書の節は仮置き（2026-11-01。オーナーと詰める）。小さな改修では 0・3〜6 の差分だけでよい
+package:
+  prd:                               # PRD の要約。PRD 本体があればそのパスか URL を source に
+    goal: 誰がこの画面で何を達成したいか（利用者の言葉で 1〜2 文）
+    success: 達成した状態（何ができれば成功か）
+    scope: 範囲（入れるもの・入れないもの）
+    source: 要求の出どころ（Issue、specs/ の PRD のパスなど）
+  user_flow: 画面の前後のつながり。手順ごとに from（どこから）・action（利用者の操作）・to（どこへ）
+  rationale:                         # 設計の理由（節 2）
+    why: なぜこの案を推すか
+    rejected: 検討してとらなかった案と理由（idea・reason）
+    requirement_map: PRD の要求ごとに、画面のどこで満たすか（requirement・how）
+  screen_sections:                   # 画面定義書の節（screens[] の項目名 → 中身）
+    id: "0 基本情報: 画面 id（英数字）。route・audience（誰が見るか）も書く"
+    purpose: "1 目的: この画面で利用者が達成したいこと、フローの中の位置"
+    transitions: "3 画面遷移: entries（どこから来るか・条件・渡すデータ）と exits（操作ごとの行き先、戻る・中断のとき）"
+    elements: "4 レイアウトと要素: 領域ごとの要素。部品名（デザインシステム）・表示内容とデータの出どころ・必須か・並び順"
+    states: "5 状態: この画面に起きる状態ごとの見え方（初期・読み込み中・空・一部だけ・エラー・権限なし・オフライン・上限超え）"
+    behaviors: "6 操作と振る舞い: 要素 × 操作 → 条件 → 結果（遷移・API・表示の変化）。入力の検証とエラー文言、二重押し、取り消し"
+    microinteractions: "7 マイクロインタラクション: trigger（きっかけ）・rules（ルール）・feedback（フィードバック）・loops（繰り返しとモード）"
+    copy: "8 文言: 見出し・ボタン・エラー・空の状態の文。用語は glossary"
+    accessibility: "9 アクセシビリティ: 読み上げの順、タップ領域、コントラスト、動きを減らす設定のとき"
+    analytics: "10 計測: 発火する行動イベントの id（specs/analytics/events.yaml）"
+    contract_needs: "11 契約への要求: 必要な API と項目"
+  open_questions: "12 未決と仮決め: 決めきれなかった点と仮の値"
 
 inspector:
   max_turns: 20
@@ -46,6 +74,7 @@ inspector:
     revisions_exhausted: "直しを 1 回使った後も直しが要る"
   viewpoints:                        # デザイン検査役の観点（definitions/design_guideline.yaml の check: design_inspector の受け皿）
     acceptance: {ja: 受け入れ条件, question: "Issue の受け入れ条件を、画面の要素と振る舞いで満たしているか"}
+    package: {ja: 判断の材料, question: "PRD の要約・ユーザーフロー・画面定義書（遷移・状態・振る舞い・マイクロインタラクション）・設計の理由が揃い、人が好み以上の判断をできるか。設計の理由が PRD の要求と対応しているか（ADR 0026）"}
     states: {ja: 状態, question: "読み込み中・空・失敗・送信中・確認など、その画面に起きる状態が揃っているか"}
     design_system: {ja: デザインシステム, question: "デザインシステムの部品と画面の型だけで組まれているか。足りない部品を gaps に出しているか"}
     content: {ja: 文言, question: "文言と表記の決まり（動詞のボタン、誤りの知らせ方、用語集の語）に沿っているか"}

@@ -15,6 +15,8 @@
   POST /api/choices/<id>/return           {"reason"} どの案も選ばず作り手に戻す
   POST /api/choices/<id>/flag             {"note", "option"?} 違和感の印（教師信号 taste_flag）
   GET  /api/choices/<id>/image/<option>   案の画像（オブジェクトストアの choices/ の下から中継する）
+  GET  /review/<UXSpec の id>             デザインのレビューページ（ADR 0026）。PRD の要約・ユーザーフロー・画面定義書・案・検査役の判断と、承認・直し・違和感
+  GET  /review/<UXSpec の id>/image/<名前>.png   レビューページの案の画像（案の HTML はこの origin では開かない）
 - 出荷の操作は events に依頼を書くだけで、docker を動かすのは shipper（このサービスに docker のソケットは渡さない）
 - 操作は ops.py を通り、dispatcher・supervisor・factoryctl と同じ振る舞いになる。誰が操作したかは events に残す
 - 外部のサービス・CDN に依存しない（閉じた網・オンプレミスで動かせるように）。GitHub にも触らない（制御プレーンだけを読む）
@@ -39,6 +41,7 @@ import design_line
 import drain
 import judgment
 import ops
+import review_page
 import ship
 
 ENV = os.environ
@@ -289,6 +292,16 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/choices/(\d+)/image/([A-Za-z0-9_-]{1,20})", url.path)
         if m:
             return self._choice_image(int(m.group(1)), m.group(2))
+        m = re.fullmatch(r"/review/(\d+)", url.path)
+        if m:
+            with db() as conn, conn.cursor() as cur:
+                ctx = review_page.load(cur, int(m.group(1)))
+            if not ctx:
+                return self._json(404, {"error": "no such design"})
+            return self._send(200, review_page.render(ctx, TOKEN).encode(), "text/html; charset=utf-8")
+        m = re.fullmatch(r"/review/(\d+)/image/([A-Za-z0-9][A-Za-z0-9_-]{0,31}\.png)", url.path)
+        if m:
+            return self._review_image(int(m.group(1)), m.group(2))
         if url.path == "/api/host/keep-awake":   # ホストの keep-awake.sh から。読むだけで工場の状態は変えない（合言葉は要らない）
             q = parse_qs(url.query)
             host_agent.update(seen=datetime.now(timezone.utc), factory_running=q.get("factory", [""])[0] == "running")
@@ -313,6 +326,22 @@ class Handler(BaseHTTPRequestHandler):
             obj.close()
             obj.release_conn()
         self._send(200, data, "image/png" if key.endswith(".png") else "application/octet-stream")
+
+    def _review_image(self, aid: int, name: str):
+        """レビューページの案の画像。その UXSpec の files に載っている PNG だけを、オブジェクトストアの design/ の下から中継する"""
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("select payload->'files'->>%s as key from artifacts where id=%s and type='UXSpec'", (name, aid))
+            row = cur.fetchone()
+        key = (row or {}).get("key")
+        if not key or not key.startswith("design/") or ".." in key or store() is None:
+            return self._json(404, {"error": "no image"})
+        obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
+        try:
+            data = obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+        self._send(200, data, "image/png")
 
     def do_POST(self):  # noqa: N802
         if not self._host_ok():
@@ -353,7 +382,7 @@ h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;bo
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}button,select{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
 button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stops{padding:0 16px}#stops div{margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
 #ship{padding:0 16px}.rel{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
-.rel .env b{font-size:15px}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}
+.rel .env b{font-size:15px}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}a.btn{font-size:12px;padding:3px 10px;border-radius:6px;background:var(--ok);color:#fff;text-decoration:none}
 #choices{padding:0 16px}.ch{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:var(--card)}
 .opts{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin:8px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:8px}
 .opt.rec{border-color:var(--ok)}.opt img{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}.ch input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(360px,100%)}
@@ -392,6 +421,7 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
 const KIND={design_variants:"画面の案の選択",taste_sample:"抜き取り"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
+ if(c.kind==="design_variants"&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
   <div class="acts"><button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");

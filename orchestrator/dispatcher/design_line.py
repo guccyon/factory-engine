@@ -7,7 +7,8 @@
   → 検査役の判断（route 済み）に従って作用する
      approve: 推す案で UXSpec を Issue の本文に足し、factory:planned へ（依存を見て supervisor が実装に回す）
      revise:  指摘と前の UXSpec を渡して ui_design を積み直す（1 回まで。2 回目の直しは検査役の側で人へ倒れる）
-     human:   factory:design-choice を付けて Issue に案の一覧を書く。人は factoryctl design pick（P4-7 で選択の画面）で選ぶ
+     human:   factory:design-choice を付けて Issue に案の一覧を書く。判断する人の受信トレイにレビューページ（review_page.py、ADR 0026）を積み、
+              人はそこで選ぶ（factoryctl design pick でも選べる）
   → 人の選択（ui_design.chosen）は poll の周回で apply_choices が Issue に反映する
 
 デザインシステムに足りない部品（design_system_gaps）は、画面に直書きさせずに別のタスク（Issue）にして、画面のタスクの依存にする。
@@ -17,12 +18,19 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 
 import yaml
 from psycopg.types.json import Jsonb
 
 import choice
+import review_page
+
+try:   # 受信トレイ（ADR 0026 の決定 7）。入るまでは何もしない
+    import inbox
+except ImportError:  # pragma: no cover
+    inbox = None
 
 TRIGGER_LABEL, CHOICE_LABEL, AFTER_LABEL = "factory:design", "factory:design-choice", "factory:planned"   # definitions/ui_design.yaml の labels
 RUNNING_LABEL, FAILED_LABEL = "factory:running", "factory:failed"
@@ -33,6 +41,30 @@ MAX_HTML_INLINE = 20000   # 推す案の HTML を Issue に載せる上限（実
 REASON_JA = {"new_screen": "新しい画面", "brand_impact": "ブランドと印象に効く画面", "low_confidence": "検査役の確信度が低い",
              "revisions_exhausted": "直しを 1 回使った後も直しが要る", "inspector": "検査役が人の判断が要るとした"}
 DECIDED_JA = {"design_inspector": "デザイン検査役が承認した", "human": "人が選んだ"}
+PUBLIC_URL = os.environ.get("CONSOLE_PUBLIC_URL", "").rstrip("/")   # Issue のコメントに出すレビューページの URL の前半（なければパスだけ）
+
+
+def inbox_key(aid) -> str:
+    return f"design_review:{aid}"
+
+
+def review_link(aid) -> str:
+    return PUBLIC_URL + review_page.url(aid)
+
+
+def ask_reviewers(cur, repo: str, issue: int, corr: str, d: dict, reasons: list[str]) -> bool:
+    """判断する人の受信トレイにレビューページを積む（通知・再通知は受信トレイが持つ）。Gen1 は体験も見た目もプロダクトオーナー（オーナー）が見る"""
+    if inbox is None or not d.get("id"):
+        return False
+    why = "、".join(REASON_JA.get(x, x) for x in reasons) or "人の判断が要る"
+    return inbox.request(cur, inbox_key(d["id"]), "review_page", "po", f"{repo}#{issue} の画面の設計を判断する（{why}）",
+                         url=review_page.url(d["id"]), action="レビューページで案を承認するか、直しを頼む", correlation_id=corr, by="design_line")
+
+
+def close_review(cur, aid, by: str, outcome: str) -> bool:
+    if inbox is None or not aid:
+        return False
+    return inbox.resolve(cur, inbox_key(aid), by, outcome)
 
 
 # ------------------------------------------------------------------ ワーカーの出力
@@ -160,6 +192,7 @@ def act_on_review(cur, repo: str, issue: int, corr: str, job_id: int, inp: dict,
                      f"ui_design.awaiting_choice:{d.get('id')}"))
         comment(repo, issue, choice_comment(d, v, result.get("human_reasons") or []))
         request_choice(cur, repo, issue, corr, job_id, d, v, result.get("human_reasons") or [])
+        ask_reviewers(cur, repo, issue, corr, d, result.get("human_reasons") or [])
 
 
 def request_choice(cur, repo: str, issue: int, corr: str, job_id: int, d: dict, v: dict, reasons: list[str]) -> int | None:
@@ -184,6 +217,7 @@ def return_to_designer(cur, repo: str, issue: int, corr: str, reason: str, model
     cur.execute("select id from artifacts where type='UXSpec' and payload->>'repo'=%s and (payload->>'issue')::int=%s order by id desc limit 1", (repo, issue))
     r = cur.fetchone()
     d = load_design(cur, r["id"]) if r else {}
+    close_review(cur, (d or {}).get("id"), "human", "returned")
     nxt = {"round": int((d or {}).get("round") or 1) + 1, "previous_uxspec": (d or {}).get("uxspec") or {}, "previous_artifact_id": (d or {}).get("id"),
            "findings": [{"severity": "major", "viewpoint": "human", "variant": None, "evidence": reason[:300], "fix": "人の一言に沿って案を作り直す"}]}
     return enqueue(cur, repo, issue, corr, "ui_design", model_tier, nxt, attempt=nxt["round"])
@@ -251,6 +285,7 @@ def handoff(cur, gh, comment, repo: str, issue: int, corr: str, d: dict, variant
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('ui_design.handed_off',%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (corr, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": verdict_id, "variant": variant,
                               "decided_by": decided_by, "gaps_issue": gaps_issue}), f"ui_design.handed_off:{d.get('id')}"))
+    close_review(cur, d.get("id"), decided_by, f"chosen:{variant}")
     comment(repo, issue, f"画面の設計が決まりました（案 `{variant}`、{DECIDED_JA.get(decided_by, decided_by)}）。UXSpec を本文に足して、投入待ち（{AFTER_LABEL}）に戻しました。"
                          + (f"\nデザインシステムに足りない部品は #{gaps_issue} で先に足します（このタスクの依存）。" if gaps_issue else ""))
 
@@ -325,7 +360,7 @@ def choice_comment(d: dict, v: dict, reasons: list[str]) -> str:
                       *note, "",
                       "### 案", *_variants_lines(d), "",
                       f"推す理由（デザイナー役）: {spec.get('recommended_reason') or '（なし）'}", "",
-                      "案の画像は操業コンソールの選択の画面か `factoryctl design export` で見られます。",
+                      f"PRD の要約・ユーザーフロー・画面定義書・案の画像はレビューページ（{review_link(d.get('id'))}）で見て、そこで承認・直しを返せます。",
                       f"選ぶ: `factoryctl design pick {d.get('repo')}#{d.get('issue')} <案>`。選ぶまでこのタスクは流れず、ほかのタスクは流れます。", "",
                       "---", "_デザイン検査役（ADR 0025）_"])
 
