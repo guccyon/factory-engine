@@ -112,7 +112,8 @@ def _choices(cur) -> list[dict]:
         out.append({"key": f"choice:{r['id']}", "kind": "choice", "who": "design_chief" if design else "owner",
                     "title": ("画面の案の選択: " if design else "抜き取り: ") + _clip(p.get("question"), 200),
                     "action": "案を選ぶか、どれも違えば戻す" + (f"（推奨 {p['recommended']}）" if p.get("recommended") else ""),
-                    "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1]})
+                    "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1],
+                    "uxspec": (p.get("subject") or {}).get("uxspec") if design else None})
     return out
 
 
@@ -153,7 +154,11 @@ def items(cur, now: datetime | None = None) -> list[dict]:
         except Exception as e:  # noqa: BLE001
             out.append({"key": f"error:{type(e).__name__}", "kind": "error", "who": "builder", "title": "受信トレイの一部を読めなかった",
                         "action": repr(e)[:200], "url": "", "since": None, "ref": ""})
+    # 画面の案の選択は、レビューページ（review_page.py）が同じ UXSpec の依頼を積んでいればそちらに任せる（二重に出さない）
+    reviews = {i["key"].removeprefix("task:design_review:") for i in out if i["key"].startswith("task:design_review:")}
+    out = [i for i in out if not (i["kind"] == "choice" and i.get("uxspec") and i["uxspec"] in reviews)]
     for i in out:
+        i.pop("uxspec", None)
         i["age_sec"] = _age(i["since"], now)
     out.sort(key=lambda i: -(i["age_sec"] or 0))
     return out

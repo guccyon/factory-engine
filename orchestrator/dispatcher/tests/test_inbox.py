@@ -155,3 +155,13 @@ def test_github_issue_skips_first_notice_of_stoppages(monkeypatch):
     st = {"key": "stoppage:merge:1", "kind": "stoppage", "who": "owner", "title": "t", "url": "", "age_sec": 1, "action": "a", "announced": True}
     assert notify_inbox._send("github-issue", [(st, "new")]) and calls == []
     assert notify_inbox._send("github-issue", [(st, "renotify")]) and len(calls) == 1
+
+
+def test_design_choice_defers_to_review_page(cur):
+    opts = [{"id": "A", "label": "a"}, {"id": "B", "label": "b"}]
+    aid = choice.request(cur, "design_variants", "github:o/r#9", "q", opts, subject={"repo": "o/r", "ticket": "9", "uxspec": "ux-9"})
+    other = choice.request(cur, "design_variants", "github:o/r#10", "q", opts, subject={"repo": "o/r", "ticket": "10", "uxspec": "ux-10"})
+    assert {i["key"] for i in inbox.items(cur)} == {f"choice:{aid}", f"choice:{other}"}   # レビューページがまだなければ選択をそのまま出す
+    inbox.request(cur, "design_review:ux-9", "review_page", "po", "画面 9 のレビュー", url="/review/ux-9")
+    xs = inbox.items(cur)
+    assert {i["key"] for i in xs} == {"task:design_review:ux-9", f"choice:{other}"} and all("uxspec" not in i for i in xs)
