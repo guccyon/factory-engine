@@ -245,19 +245,62 @@ def merge_step(cur, rules: dict, manifests: dict):
         d = decide(classify(pr_files(p["repo"], p["number"]), rules), manifests[p["repo"]])
         d.update({"pr_url": p["url"], "head_sha": sha, "executed": False})
         # 判定は head と結論（表・権限）ごとに 1 回。manifest が変わって結論が変われば、同じ head でも記録し直して従う（2026-10-31）
-        if not record(cur, "supervisor.merge_decided", p["corr"], d, f"merge.decided:{p['url']}@{sha}:{d['table']}/{d['factory_grant']}"):
-            continue   # この head ではもう同じ結論で判定した
-        log("merge decided", p["url"], d["table"], "grant", d["factory_grant"], d["change_types"])
-        if DRY_RUN:
+        if record(cur, "supervisor.merge_decided", p["corr"], d, f"merge.decided:{p['url']}@{sha}:{d['table']}/{d['factory_grant']}"):
+            log("merge decided", p["url"], d["table"], "grant", d["factory_grant"], d["change_types"])
+            if DRY_RUN:
+                continue
+            enqueue_inspect(cur, p, sha)
+            if d["table"] == "human_approve":
+                gh("POST", f"repos/{p['repo']}/issues/{p['number']}/labels", {"labels": [APPROVAL_LABEL]})
+        elif DRY_RUN:
             continue
-        enqueue_inspect(cur, p, sha)
-        if d["table"] == "human_approve":
-            gh("POST", f"repos/{p['repo']}/issues/{p['number']}/labels", {"labels": [APPROVAL_LABEL]})
-        if d["execute"]:
-            gh("PUT", f"repos/{p['repo']}/pulls/{p['number']}/merge", {"merge_method": "squash", "sha": sha})
-            record(cur, "supervisor.merged", p["corr"], {"pr_url": p["url"], "head_sha": sha}, f"supervisor.merged:{p['url']}")
-            open_count -= 1
+        # マージは表が auto で、かつ検査役が承認してから（ADR 0014）。承認は周期ごとに見直すので、検査・judge が終わった周期でマージする
+        if not d["execute"]:
+            continue
+        cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.merged:{p['url']}",))
+        if cur.fetchone():
+            continue   # マージ済み。pr.merged の記録待ち
+        ok, basis = inspector_approved(cur, p["url"], sha)
+        if not ok:
+            continue
+        record(cur, "supervisor.inspector_approved", p["corr"], {"pr_url": p["url"], "head_sha": sha, "basis": basis}, f"inspector.approved:{p['url']}@{sha}")
+        gh("PUT", f"repos/{p['repo']}/pulls/{p['number']}/merge", {"merge_method": "squash", "sha": sha})
+        record(cur, "supervisor.merged", p["corr"], {"pr_url": p["url"], "head_sha": sha, "basis": basis}, f"supervisor.merged:{p['url']}")
+        log("merged", p["url"], basis)
+        open_count -= 1
     return open_count
+
+
+def inspector_approved(cur, pr_url: str, sha: str) -> tuple[bool, str]:
+    """検査役の承認（ADR 0014）。(承認したか, 根拠) を返す。
+    検査（inspect）と judge がその head で終わっていて、judge が人に回した判断がない（あれば、人が停止 judge: を閉じるまで待つ）ときに承認する。
+    採用された指摘は差し戻しの Issue で直すので、マージは止めない（ラインを止めない方針 D7）"""
+    if not INSPECT_ENABLED:
+        return True, "検査なし（SUPERVISOR_INSPECT=0）"
+    cur.execute("select occurred_at from events where dedupe_key=%s", (f"supervisor.inspect:{pr_url}@{sha}",))
+    ins = cur.fetchone()
+    if not ins:
+        return False, "検査待ち"
+    cur.execute("select 1 from events where name='gate.evaluated' and payload->>'pr_url'=%s and occurred_at > %s", (pr_url, ins["occurred_at"]))
+    if not cur.fetchone():
+        return False, "検査中"
+    if not JUDGE_ENABLED:
+        return True, "検査済み（judge なし）"
+    cur.execute("select occurred_at, payload from events where dedupe_key=%s", (f"supervisor.judge:{pr_url}@{sha}",))
+    jd = cur.fetchone()
+    if not jd:
+        return False, "判定待ち"
+    if jd["payload"].get("skipped"):
+        return True, "検査で仮決めも指摘もなかった"
+    cur.execute("select payload->>'verdict' as verdict from events where name='judgment.judged' and payload->>'pr_url'=%s and occurred_at > %s",
+                (pr_url, jd["occurred_at"]))
+    verdicts = [r["verdict"] for r in cur.fetchall()]
+    if not verdicts:
+        return False, "判定中"
+    if "escalate" in verdicts and stoppage.open_keys(cur, f"judge:{pr_url}"):
+        return False, "judge が人に回した判断の待ち"
+    n_adopt = sum(1 for v in verdicts if v == "adopt")
+    return True, f"judge が {len(verdicts)} 件を裁いた（採用 {n_adopt}。採用した指摘は差し戻しで直す）"
 
 
 def enqueue_inspect(cur, p: dict, sha: str):

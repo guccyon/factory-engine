@@ -107,7 +107,8 @@ docker compose exec dispatcher factoryctl hold 12
 判断は持たず、状態と表を見て工程を起動するだけの常駐プロセス（compose の `supervisor`。dispatcher と同じイメージ）。60 秒ごとに:
 
 - `supervisor.heartbeat` を出す（途絶えたら番人が停止を開く）
-- 工場の PR が `mergeable_state=clean`（CI 通過・衝突なし・ドラフトでない）になったら、変更ファイルを `definitions/change_type_rules.yaml` で変更種別に写し、製品の manifest を引いて `supervisor.merge_decided` を記録する。表が承認を求めれば PR に `factory:needs-approval`。表が auto で、かつ工場の権限（`phase_grants` の merge）も auto のときだけ squash でマージする。それ以外は記録だけ（shadow）
+- 工場の PR が `mergeable_state=clean`（CI 通過・衝突なし・ドラフトでない）になったら、変更ファイルを `definitions/change_type_rules.yaml` で変更種別に写し、製品の manifest を引いて `supervisor.merge_decided` を記録する。表が承認を求めれば PR に `factory:needs-approval`。表が auto で、かつ工場の権限（`phase_grants` の merge）も auto のときは、**検査役の承認**（下の「検査役」）が出た周期に squash でマージする（ADR 0014）。それ以外は記録だけ（shadow）
+- 検査役（ADR 0014。2026-10-31 オーナー）: 人がやる承認を委任する役で、いまは検査（inspect）と judge の組み合わせ。その head で検査と judge が終わり、judge が人に回した判断がなければ承認（`supervisor.inspector_approved`）し、表が auto の PR はその後にマージする。人に回した判断があれば停止 `judge:` を人が閉じるまで待つ。採用された指摘は差し戻しで直すのでマージは止めない（D7）。検査がなければ（`SUPERVISOR_INSPECT=0`）CI 緑で承認とみなす
 - マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。`SUPERVISOR_INSPECT=0` で止める
 - 判定した PR が閉じたら `pr.merged`（誰がマージしたか）/ `pr.closed_unmerged` を記録する。判定と人の判断の一致率の材料
 - `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら、優先度の高い順に `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計）まで。p0 は上限を待たない。保留中は流さない

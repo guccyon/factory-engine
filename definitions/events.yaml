@@ -81,10 +81,15 @@ events:
   supervisor.merge_decided:
     source: control_plane
     required: [pr_url, head_sha, change_types, table, factory_grant, execute]
-    note: "ADR 0004。table は manifest の matrix と always_human_approve を引いた値、factory_grant は phase_grants の merge。両方 auto のときだけ実行する。dedupe は PR と head ごと"
+    note: "ADR 0004。table は manifest の matrix と always_human_approve を引いた値、factory_grant は phase_grants の merge。両方 auto のときだけ実行する（実行は検査役の承認の後。ADR 0014）。dedupe は PR・head・結論ごと（2026-10-31）"
+  supervisor.inspector_approved:
+    source: control_plane
+    required: [pr_url, head_sha, basis]
+    note: "ADR 0014。検査役（検査＋judge）がその head を承認した。表が auto の PR はこの後にマージする。dedupe は PR と head ごと"
   supervisor.merged:
     source: control_plane
     required: [pr_url, head_sha]
+    note: "ADR 0014 以降は inspector_approved の後にだけ出る"
   supervisor.inspect_enqueued:
     source: control_plane
     required: [pr_url, head_sha]

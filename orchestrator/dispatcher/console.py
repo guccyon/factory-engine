@@ -44,7 +44,7 @@ TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
 TOKEN = secrets.token_urlsafe(24)   # 起動ごとに変わる。画面を開き直せば新しいものが入る
 HOST_AGENT_FRESH_SEC = 600   # これより長く keep-awake.sh から連絡がなければ、ホストの見張りは居ないとみなす（トグルを出さない）
 host_agent: dict = {}         # keep-awake.sh の最後の連絡（プロセスの中だけ。再起動しても次の問い合わせで戻る）
-PR_STAGE_EVENTS = ("supervisor.merge_decided", "gate.evaluated", "supervisor.judge_enqueued", "judgment.judged")
+PR_STAGE_EVENTS = ("supervisor.merge_decided", "gate.evaluated", "supervisor.judge_enqueued", "judgment.judged", "supervisor.inspector_approved")
 
 
 def db():
@@ -116,8 +116,8 @@ def snapshot(cur) -> dict:
             stage, note = "human", "マージに人の承認が要る（" + ", ".join(pl.get("change_types") or []) + "）"
         else:
             stage, note = "review", {None: "CI 待ち", "supervisor.merge_decided": "検査中", "gate.evaluated": "判定待ち",
-                                     "supervisor.judge_enqueued": "マージ待ち" if pl.get("skipped") else "判定中",
-                                     "judgment.judged": "マージ待ち"}[name]
+                                     "supervisor.judge_enqueued": "検査役の承認待ち" if pl.get("skipped") else "判定中",
+                                     "judgment.judged": "検査役の承認待ち", "supervisor.inspector_approved": "マージ待ち"}[name]
         items.append(item(stage, ticket_id=t.get("id"), ref=ref, title=t.get("title") or "", pr_url=p["pr_url"], note=note, priority=t.get("priority")))
     # 今日の済み・失敗
     cur.execute("select e.payload->>'pr_url' as pr_url, e.correlation_id, e.occurred_at, t.title from events e "
