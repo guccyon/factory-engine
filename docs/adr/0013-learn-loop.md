@@ -54,3 +54,11 @@ P2 の Exit のうち 2 つ（承認ボタンだけのリリース、1 分以内
 - 検査（`core-gates/shadow_review.py`）は製品の既定ブランチの overlay から shadow と adopted の rubric・episodic の段のルールを読み、ルーブリックに足す。shadow のルールの指摘には `shadow: true` を付け、judge は裁く（的中率の材料）が dispatcher は差し戻さない
 - ルールの成績（発火・採用・不採用・的中率）は `factoryctl report learning` に出す。adopted への昇格とカナリアの自動化は、成績が溜まってから足す
 - 指摘の本文が Issue を経てワーカーのプロンプトに、工場が書いたルールが検査官のプロンプトに入るので、この変更はオーナーの承認を得てからマージする
+
+## 追記（2026-10-31）: 状態の移り変わりを自動で起票する
+
+- supervisor が 1 時間に 1 回、製品の既定ブランチの overlay のルールを読み、`learn.transition` で次の状態を判定する（`definitions/learning.yaml` の lifecycle の数値）。その状態に入った時刻は、ルールのファイルが最後に変わったコミットの時刻とみなし、成績はその時刻からの judge の裁きで数える
+  - shadow → adopted: 発火 5 回以上、的中率 0.8 以上、shadow で 3 日以上
+  - adopted → shadow（カナリア）: 採用から 7 日のうちに、裁かれた 3 件以上で偽陽性率が 0.3 を超えた
+- 判定が出たら、`state` の 1 行を書き換える Issue（`factory:planned` と `factory:learn`）を起票し、`learn.rule_transition_filed` に残す。ワーカーは判断せず書き換えるだけで、ルール変更 PR は factory_rule として検査を通り自動でマージされる（「採用まで自動」）
+- まだ足していないもの: カナリアの「範囲の教師信号が増えた」、retired への移り変わり、学習の凍結（breaker learning_freeze。ブレーカーの仕組みがまだない）。`LEARN_RULE_TRANSITIONS=0` で止められる

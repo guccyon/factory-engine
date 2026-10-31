@@ -74,6 +74,9 @@ DESIGN_REVIEW_DEFS = ENV.get("DESIGN_REVIEW_DEFINITIONS", "/definitions/design_r
 QUALITY_REPOS = [r.strip() for r in (ENV.get("QUALITY_REPOS") or ENV.get("FACTORY_REPOS", "")).split(",") if r.strip()]
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
+LEARN_RULE_TRANSITIONS = ENV.get("LEARN_RULE_TRANSITIONS", "1") == "1"   # overlay のルールの shadow → adopted と、カナリアで戻すのを自動で起票する（ADR 0013 の 6）。0 で止める
+OVERLAY_RULES_DIR = ".factory-config/overlay/rules"
+_transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -574,6 +577,54 @@ def learn_step(cur):
     log("rule issue filed", c["signature"], issue["html_url"])
 
 
+def overlay_rules(repo: str) -> list[dict]:
+    """製品の既定ブランチの overlay のルール。{id, path, state, since}。since はそのファイルが最後に変わったコミットの時刻（状態に入った時刻とみなす）"""
+    out = []
+    for e in gh("GET", f"repos/{repo}/contents/{OVERLAY_RULES_DIR}") or []:
+        if not re.fullmatch(r"OV-\d+\.ya?ml", e.get("name", "")):
+            continue
+        f = gh("GET", f"repos/{repo}/contents/{urllib.parse.quote(e['path'])}")
+        rule = yaml.safe_load(base64.b64decode(f["content"]).decode()) or {}
+        commits = gh("GET", f"repos/{repo}/commits?path={urllib.parse.quote(e['path'])}&per_page=1") or []
+        if not commits or not rule.get("id"):
+            continue
+        since = datetime.fromisoformat(commits[0]["commit"]["committer"]["date"].replace("Z", "+00:00"))
+        out.append({"id": rule["id"], "path": e["path"], "state": rule.get("state", ""), "since": since})
+    return out
+
+
+def rule_transition_step(cur, now: datetime | None = None):
+    """overlay のルールの状態の移り変わりを判定し、変える Issue を起票する（ADR 0013 の 6・8）。判定は govern 側（ここ）が events から計算し、
+    ワーカーは state の 1 行を書き換えるだけ。ルール変更 PR は factory_rule として検査を通って自動でマージされる"""
+    global _transitions_checked_at
+    if DRY_RUN or not LEARN_RULE_TRANSITIONS or time.time() - _transitions_checked_at < 3600:
+        return
+    _transitions_checked_at = time.time()
+    now = now or datetime.now(timezone.utc)
+    for repo in REPOS:
+        try:
+            rules = overlay_rules(repo)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:   # overlay のない製品
+                continue
+            raise
+        for r in rules:
+            stats = {s["id"]: s for s in learn.rule_stats(cur, r["since"], now)}
+            s = stats.get(r["id"])
+            t = learn.transition(r["state"], r["since"], s, now)
+            if not t:
+                continue
+            key = f"learn.rule_transition:{repo}:{r['id']}:{t['to']}:{r['since']:%Y%m%dT%H%M%S}"
+            cur.execute("select 1 from events where dedupe_key=%s", (key,))
+            if cur.fetchone():
+                continue
+            title, body = learn.transition_issue(r["id"], r["path"], r["state"], t, s)
+            issue = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})
+            record(cur, "learn.rule_transition_filed", f"github:{repo}#{issue['number']}",
+                   {"rule": r["id"], "from": r["state"], "to": t["to"], "why": t["why"], "issue": issue["html_url"], "stats": s}, key)
+            log("rule transition filed", repo, r["id"], r["state"], "->", t["to"], issue["html_url"])
+
+
 def design_review_due(now: datetime, schedule: dict) -> bool:
     """その週（ISO 週）の指定の曜日・時（JST）を過ぎたか。過ぎていれば週末まで拾う"""
     wd = WEEKDAYS.index(schedule.get("weekday", "saturday"))
@@ -625,6 +676,7 @@ def tick():
         daily_report_step(cur)
         release_train_step(cur)
         learn_step(cur)
+        rule_transition_step(cur)
         design_review_step(cur)
 
 

@@ -186,3 +186,42 @@ def rule_lines(stats: list[dict]) -> list[str]:
         p = f"{s['precision']:.0%}" if s["precision"] is not None else "—"
         out.append(f"| {s['id']} | {'shadow' if s['shadow'] else 'adopted'} | {s['fires']} | {s['adopt']} | {s['reject']} | {s['escalate']} | {p} |")
     return out + ["", "- adopted への昇格の条件は 5 回以上の発火と的中率 0.8 以上（definitions/learning.yaml）"]
+
+
+# ------------------------------------------------------------------ 状態の移り変わり（ADR 0013 の 6。govern 側の判定）
+PROMOTE_MIN_FIRES = 5          # definitions/learning.yaml の lifecycle.shadow_to_adopted
+PROMOTE_MIN_PRECISION = 0.80
+PROMOTE_MIN_DAYS = 3
+CANARY_DAYS = 7                # lifecycle.adopted_to_shadow
+CANARY_MAX_FALSE_POSITIVE = 0.30
+CANARY_MIN_JUDGED = 3          # 偽陽性率を言うのに要る、裁かれた件数の下限（1〜2 件で戻さない）
+
+
+def transition(state: str, since: datetime, s: dict | None, now: datetime) -> dict | None:
+    """ルール 1 つの次の状態。since はその状態に入った時刻、s はその時刻からの成績（rule_stats の 1 行。発火なしは None）。
+    shadow → adopted: 5 回以上の発火、的中率 0.8 以上、shadow で 3 日以上。
+    adopted → shadow（カナリア）: 採用から 7 日のうちに、裁かれた 3 件以上で偽陽性率が 0.3 を超えた。
+    「範囲の教師信号が増えた」と retired は、成績が溜まってから足す"""
+    days = (now - since).total_seconds() / 86400
+    judged = (s["adopt"] + s["reject"]) if s else 0
+    if state == "shadow" and s and days >= PROMOTE_MIN_DAYS and s["fires"] >= PROMOTE_MIN_FIRES \
+            and s["precision"] is not None and s["precision"] >= PROMOTE_MIN_PRECISION:
+        return {"to": "adopted", "why": f"shadow で {days:.0f} 日、発火 {s['fires']} 回、的中率 {s['precision']:.0%}"}
+    if state == "adopted" and s and days <= CANARY_DAYS and judged >= CANARY_MIN_JUDGED \
+            and s["reject"] / judged > CANARY_MAX_FALSE_POSITIVE:
+        return {"to": "shadow", "why": f"採用から {days:.0f} 日のカナリアで、偽陽性率 {s['reject'] / judged:.0%}（{s['reject']} / {judged}）"}
+    return None
+
+
+def transition_issue(rule_id: str, path: str, frm: str, t: dict, s: dict) -> tuple[str, str]:
+    """状態を変える Issue。変更は state の 1 行だけ。判定は govern 側で済んでいるので、ワーカーには判断させない"""
+    verb = "採用する" if t["to"] == "adopted" else "shadow に戻す（カナリア）"
+    p = f"{s['precision']:.0%}" if s.get("precision") is not None else "—"
+    lines = [f"overlay のルール {rule_id} を{verb}（Engine の ADR 0013 の 6、Learn ループのライフサイクル）。",
+             "", f"判定（工場の supervisor が judge の裁きの記録から計算済み）: {t['why']}。",
+             "", "| 発火 | 採用 | 不採用 | 人へ | 的中率 |", "|---|---|---|---|---|",
+             f"| {s['fires']} | {s['adopt']} | {s['reject']} | {s['escalate']} | {p} |",
+             "", "## やること", f"- `{path}` の `state: {frm}` を `state: {t['to']}` に変える",
+             "", "## やらないこと", "- ほかの行・ほかのルール・eval ケース・アプリのコードの変更",
+             "", "## 受け入れ条件", "- CI の rule-eval が緑（factory_rule として自動でマージされる）"]
+    return f"{rule_id} を{verb}", "\n".join(lines)
