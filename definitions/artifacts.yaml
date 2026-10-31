@@ -56,6 +56,10 @@ types:
     stage: learn
     required: [day, window_days, signals, clusters]
     note: "ADR 0013。教師信号を signature で束ねたもの（決定的）。clusters の 1 つが learn ジョブの入力になり、Lesson を 1 つ書く"
+  DesignReview:
+    stage: [operate, routine]
+    required: [repo, week, sha, summary, strengths, findings, checked]
+    note: "ADR 0022。週 1 回の設計の診断の所見（エージェントがコードを読んで書く）。人が読むためのもので、ワーカーのプロンプトにも learn の入力にも入れない"
   Lesson:
     stage: learn
     required: [teacher_signal, summary, eval_cases, knowledge_stage]   # eval ケース同梱必須。P3 からは signature・confidentiality・source_refs も（definitions/learning.yaml の lesson）

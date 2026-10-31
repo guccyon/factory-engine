@@ -36,5 +36,7 @@ steps:
   body_fix:                   # PR 本文への追記（core-gates/body_fix.py）
     tier: tier-small
     tools: none
+  design_review:              # 週 1 回の設計の診断（core-gates/design_review.py。製品を読むだけ。ADR 0022）
+    tier: tier-judge
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge

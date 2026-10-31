@@ -32,6 +32,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import continuation
+import design
 import drain
 import judgment
 import ops
@@ -260,7 +261,7 @@ def run_job(job: dict, reattaching: bool = False):
                 cur.execute("select payload from events where name='job.started' and job_id=%s order by id desc limit 1", (job_id,))
                 prov = ((cur.fetchone() or {}).get("payload") or {}).get("provenance") or {}
                 image = prov.get("worker_image") or WORKER_IMAGE
-            elif kind in ("inspect", "judge", "body_fix"):   # 検査・judge・本文の追記のジョブ（ADR 0004 / 0006）。issue_number は PR の番号。ラベルは結果を見て付ける
+            elif kind in ("inspect", "judge", "body_fix", "design_review"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             else:
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
@@ -272,7 +273,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix") and not reattaching:
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review") and not reattaching:
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
@@ -294,9 +295,10 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["--entrypoint", "/usr/local/bin/inspect.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "inspect" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/judge.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "judge" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/body_fix.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "body_fix" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/design_review.sh"] if kind == "design_review" else []),
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix", "design_review") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -306,7 +308,7 @@ def run_job(job: dict, reattaching: bool = False):
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
-                piped = kind in ("judge", "body_fix") or signaled
+                piped = kind in ("judge", "body_fix", "design_review") or signaled
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if piped:
                     proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -353,6 +355,8 @@ def run_job(job: dict, reattaching: bool = False):
             elif time.time() > deadline and proc.returncode not in (0,):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
+                state, err = "succeeded", None
+            elif proc.returncode == 0 and result and result.get("kind") == "design_review" and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
@@ -407,6 +411,13 @@ def run_job(job: dict, reattaching: bool = False):
                     basis = (cur.fetchone() or {}).get("b") or "unknown"
                     summary = judgment.record_judged(cur, corr, job_id, result["pr_url"], judge_inp, result["verdicts"], ev_mode, basis)
                     act_on_judgment(cur, repo, corr, job_id, result["pr_url"], summary, ev_mode)
+            elif kind == "design_review":
+                # 設計の診断（ADR 0022）: 所見を残し、製品の固定 Issue に書く。人が読むためのもので、ワーカーには渡さない
+                if state == "succeeded":
+                    try:
+                        design.record(cur, repo, issue, corr, job_id, result, gh, comment)
+                    except Exception as e:  # noqa: BLE001  書けなくても所見は events に残る。ラインは止めない
+                        log("design review publish failed", repo, repr(e))
             elif kind == "inspect":
                 # 検査（shadow）: gate.evaluated と InspectionReport を残すだけ。差し戻し（修正 Issue の起票）は judge の後半（ADR 0006）
                 rep = ((result or {}).get("report") or {}).get("result") or {}
