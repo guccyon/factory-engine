@@ -73,6 +73,15 @@ services:
       WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 投入待ちの段がこの数を切ったら知らせる（停止ではない。0 で無効）
       NOTIFIER: ${NOTIFIER:-github-issue}
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
+      # 受信トレイの通知（ADR 0026 の決定 7）。通知先は建てるときに選ぶ: log / github-issue / slack をカンマで。受信トレイ自体はコンソールに常にある
+      INBOX_NOTIFY: ${INBOX_NOTIFY:-log}
+      INBOX_RENOTIFY_MIN: ${INBOX_RENOTIFY_MIN:-240}     # 前の通知からこれだけ残っていれば知らせ直す（仮置き）
+      INBOX_ESCALATE_MIN: ${INBOX_ESCALATE_MIN:-1440}    # 出てからこれだけたてば代理（INBOX_PROXY）にも知らせる（仮置き）
+      INBOX_PROXY: ${INBOX_PROXY:-builder}
+      INBOX_QUIET: ${INBOX_QUIET:-}                      # 知らせない時間（例 22-7、REPORT_TZ の時）。明けた最初の周回でまとめて送る
+      CONSOLE_URL: ${CONSOLE_URL:-http://localhost:8790} # 通知のリンクの前に付ける（コンソールの中の選択・出荷へのリンク）
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}          # slack を選ぶときだけ。値は .env に置き、リポジトリに書かない
+      INBOX_SLACK_MENTIONS: ${INBOX_SLACK_MENTIONS:-}    # 誰の出番かごとのメンション（例 po=<@U…>,design_chief=<@U…>）。.env に置く
       # 来歴（ADR 0007）。上げ直すときに Engine の版（git rev-parse --short HEAD）を入れる。モードは judge（ADR 0006 後半）まで unknown
       ENGINE_VERSION: ${ENGINE_VERSION:-unknown}
       FACTORY_MODE: ${FACTORY_MODE:-}

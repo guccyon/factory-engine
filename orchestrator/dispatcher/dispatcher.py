@@ -38,6 +38,7 @@ import design
 import design_line
 import drain
 import judgment
+import notify_inbox
 import ops
 import pr_events
 import reattach
@@ -998,6 +999,11 @@ def watch_loop():
             watch_once()
         except Exception as e:  # noqa: BLE001  番人の失敗でラインを止めない
             log("watch error", repr(e))
+        try:   # 受信トレイの通知（ADR 0026 の決定 7）。失敗してもラインと番人は止めない
+            with db() as conn, conn.cursor() as cur:
+                notify_inbox.tick(cur)
+        except Exception as e:  # noqa: BLE001
+            log("inbox notify error", repr(e))
         if time.time() - last_cleanup > 3600:   # 済んだチケットの引き継ぎのボリュームを消す（1 時間に 1 回。ADR 0017）
             last_cleanup = time.time()
             try:
