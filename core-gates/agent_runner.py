@@ -107,13 +107,14 @@ def _retry(cmd: list[str], *, input: str | None, retries: int, cwd: str | None =
 # --- runner: claude-code -------------------------------------------------------------------------------
 
 def _claude_oneshot(a: Agent, prompt: str, schema: dict | None, max_turns: int, retries: int) -> Result:
-    cmd = ["claude", "-p", prompt, "--model", a.model, "--output-format", "json", "--max-turns", str(max_turns)]
+    # プロンプトは標準入力で渡す。引数に載せると、長い差分を含む judge などで OS の上限（Argument list too long）に当たる
+    cmd = ["claude", "-p", "--model", a.model, "--output-format", "json", "--max-turns", str(max_turns)]
     if a.tools == "none":
         cmd += ["--tools", ""]
     if schema is not None:
         cmd += ["--json-schema", json.dumps(schema)]
     # --bare はキーチェーンの認証を読まないので使わない（Mac で動かす shadow_review・pairwise_judge）
-    res = json.loads(_retry(cmd, input=None, retries=retries))
+    res = json.loads(_retry(cmd, input=prompt, retries=retries))
     if schema is not None:
         out = res.get("structured_output") or res.get("result")
         if isinstance(out, str):
@@ -164,10 +165,10 @@ def _claude_save(state: Path | None, sid: str | None):
 def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, state_dir: str | None = None) -> Result:
     # ワーカーの中だけで使う（使い捨てのコンテナなので権限の確認を省く）。stderr はそのまま流す
     state = Path(state_dir) / "claude-code" if state_dir else None
-    base = ["claude", "-p", prompt, "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions"]
+    base = ["claude", "-p", "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions"]
     sid = _claude_restore(state)
     resumed = bool(sid)
-    r = subprocess.run(base + (["--resume", sid] if sid else []), stdout=subprocess.PIPE, text=True, cwd=cwd)
+    r = subprocess.run(base + (["--resume", sid] if sid else []), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
     try:
         res = json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -176,7 +177,7 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
         # 記録から再開できなかった（版の違い・記録の破損）。近道をあきらめて新しい会話で続ける（引き継ぎの記録はプロンプトにある）
         print("[agent_runner] resume failed; starting a new session", file=sys.stderr)
         resumed = False
-        r = subprocess.run(base, stdout=subprocess.PIPE, text=True, cwd=cwd)
+        r = subprocess.run(base, input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
         try:
             res = json.loads(r.stdout)
         except json.JSONDecodeError:

@@ -72,9 +72,14 @@ import ship
 import stoppage
 
 
-def design_input(cur, job_id: int, kind: str) -> dict:
-    """デザインの線のジョブを積み直すときは、前の入力（直しの指摘・検査する案）を引き継ぐ"""
-    if kind not in ("ui_design", "ui_design_review"):
+# 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
+# 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review")
+
+
+def carried_input(cur, job_id: int, kind: str) -> dict:
+    """入力を受け取る種類のジョブを積み直すときは、前の入力（PR・指摘・検査する案など）を引き継ぐ"""
+    if kind not in PIPED_KINDS:
         return {}
     cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
     inp = (cur.fetchone() or {}).get("inp")
@@ -395,7 +400,7 @@ def main(argv):
         new_id = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
                     (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **carried,
-                                                                               **design_input(cur, job_id, j["kind"])})))
+                                                                               **carried_input(cur, job_id, j["kind"])})))
         print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] + ' (' + cont['reason'] + ')' if cont else ''})")
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
