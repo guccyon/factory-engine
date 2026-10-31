@@ -122,7 +122,11 @@ events:
   handoff.removed:
     source: control_plane
     required: [volume, keep_days]
-    note: "ADR 0017。PR がマージか閉じられてから keep_days 日たったので、チケットのボリュームを消した"
+    note: "ADR 0017・0021。チケットのボリュームを消した。why が tidy なら後片付けで記録をオブジェクトストアに置いたあと、why がなければ PR がマージか閉じられてから keep_days 日たった"
+  handoff.archived:
+    source: control_plane
+    required: [volume, blob_key, bytes, pr_url, outcome]
+    note: "ADR 0021。後片付け。PR がマージか閉じられたチケットのボリュームを、選り分けずにそのまま tar.gz でオブジェクトストアに置いた（dispatcher の糸。ラインとは非同期）。outcome は merged か closed_unmerged"
   supervisor.enqueued:
     source: control_plane
     required: [repo, issue, deps]

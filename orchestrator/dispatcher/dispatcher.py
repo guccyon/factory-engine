@@ -36,6 +36,7 @@ import judgment
 import ops
 import pr_events
 import stoppage
+import tidy
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -771,6 +772,22 @@ def watch_loop():
         time.sleep(WATCH_INTERVAL)
 
 
+def tidy_loop():
+    """後片付け（ADR 0021）。ラインとは別の糸で、済んだチケットのボリュームをオブジェクトストアに置いて消す。
+    ジョブの枠を使わず、ラインの完了を待たせない（片付けは成果物に含めない）"""
+    def put(key: str, data: bytes):
+        store.put_object(BUCKET, key, io.BytesIO(data), len(data), content_type="application/gzip")
+    while True:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                n = tidy.run(cur, WORKER_IMAGE, put, log)
+                if n:
+                    log(f"tidy: archived and removed {n} volumes")
+        except Exception as e:  # noqa: BLE001  片付けの失敗でラインを止めない
+            log("tidy error", repr(e))
+        time.sleep(tidy.TIDY_INTERVAL)
+
+
 # ------------------------------------------------------------------ Webhook（任意）
 class Hook(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
@@ -825,6 +842,8 @@ def main():
     threading.Thread(target=ops_loop, daemon=True).start()
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
+    if tidy.TIDY_ENABLED:
+        threading.Thread(target=tidy_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)
