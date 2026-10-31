@@ -15,6 +15,19 @@ def exists(name: str) -> bool:
     return subprocess.run(["docker", "container", "inspect", name], capture_output=True).returncode == 0
 
 
+# Docker ごと止まった（Docker Desktop の再起動・Mac の停止）ときにワーカーが受ける終了コード（SIGTERM・SIGKILL）
+KILLED_CODES = {137, 143}
+
+
+def killed(name: str) -> bool:
+    """コンテナが終わっていて、終了コードがシグナルによるもの。ワーカーは自分で終わったのではなく外から止められた"""
+    r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name], capture_output=True, text=True)
+    if r.returncode != 0:
+        return False
+    status, _, code = r.stdout.strip().partition(" ")
+    return status == "exited" and code.lstrip("-").isdigit() and int(code) in KILLED_CODES
+
+
 def remove(name: str):
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 

@@ -684,7 +684,7 @@ def file_sendback(cur, repo: str, corr: str, job_id: int, pr_url: str, to_fix: l
 def classify_failure(p: dict) -> tuple[str, str, str] | None:
     """失敗したジョブを (分類, 何が止まったか, 待っているもの) にする。自動で回復するものは None"""
     err = p.get("error") or ""
-    if err in ("orphaned_by_restart", "lock_held", "cancel_requested"):
+    if err in ("orphaned_by_restart", "killed_by_shutdown", "lock_held", "cancel_requested"):
         return None
     if p.get("usage_limited"):
         return "budget", "契約の使用量上限でジョブが止まった", "使用量上限のリセット後の rerun"
@@ -934,6 +934,7 @@ def recover() -> list[dict]:
     """dispatcher の再起動で取り残された running ジョブを片付ける（ADR 0020）。
     コンテナが残っていれば（動いていても終わっていても）つなぎ直すジョブとして返す。run_loop が枠を取ってから run_job(reattaching=True) で続ける。
     コンテナが残っていなければ、ワーカーは最初からやり直せる（冪等）ので failed にし、attempt+1 で再投入する。
+    コンテナが残っていても、シグナルで終わっていた（Docker ごと止まった）ものは同じく積み直す。
     記録を終えたのに残っているコンテナ（記録の後、片付けの前に落ちた）は消す。"""
     containers = reattach.job_containers()
     resume: list[dict] = []
@@ -941,11 +942,17 @@ def recover() -> list[dict]:
         cur.execute("select * from jobs where state='running' order by id")
         for j in cur.fetchall():
             name = j["container_id"]
+            error = "orphaned_by_restart"
             if name and (j["id"] in containers or reattach.exists(name)):
-                resume.append(j)
-                continue
-            cur.execute("update jobs set state='failed', finished_at=now(), error='orphaned_by_restart' where id=%s", (j["id"],))
-            record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": "orphaned_by_restart"})
+                if not reattach.killed(name):
+                    resume.append(j)
+                    continue
+                # Docker ごと止まってワーカーがシグナルで終わっていた。つなぎ直すと失敗として記録されるので、積み直す（2026-10-31）
+                error = "killed_by_shutdown"
+                reattach.remove(name)
+                containers.pop(j["id"], None)
+            cur.execute("update jobs set state='failed', finished_at=now(), error=%s where id=%s", (error, j["id"]))
+            record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": error})
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,'recover',%s,%s,%s,%s) returning id",
                         (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"], j["ticket_id"], j["priority"]))

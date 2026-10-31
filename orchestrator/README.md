@@ -69,7 +69,7 @@ docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine ls -R /h/jobs     
 
 ワーカーのコンテナは dispatcher から独立して動く（`--rm` なし。名前 `factory-job-<id>`、ラベル `factory.job=<id>`）。dispatcher を上げ直すと、
 running のジョブのコンテナにつなぎ直し（`job.reattached`）、出力を最初から読み直して終わりを待ち、いつもどおり記録する。コンテナが残っていないジョブだけ
-`orphaned_by_restart` で積み直す。終わったコンテナは dispatcher が記録を終えてから消す。
+`orphaned_by_restart` で積み直す。コンテナが残っていてもシグナル（終了コード 137・143）で終わっていたもの（Docker ごと止まった）は `killed_by_shutdown` で積み直す。終わったコンテナは dispatcher が記録を終えてから消す。
 
 入れ替え方は 2 通り:
 
