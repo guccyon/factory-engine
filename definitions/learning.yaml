@@ -50,7 +50,7 @@ teacher_signals:
     signature: "stoppage:<category>"
     note: "工場自身の改善（Engine の PR）に回す。製品の overlay のルールにはしない"
   quality_regression:
-    ja: "定期診断の指標が前回より悪くなった（内部品質。ADR 0017）"
+    ja: "定期診断の指標が前回より悪くなった（内部品質。ADR 0019）"
     source: "events quality.regressed（原因の PR は from_sha..to_sha の間にマージされた工場の PR）"
     signature: "quality:<指標>"
     eval_from: { positive: "原因の PR の差分（悪くした箇所）", negative: "直した PR の差分があれば" }

@@ -37,10 +37,11 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "quality"))
-import ingest as quality_ingest  # noqa: E402  内部品質の取り込み（health/quality/ingest.py、ADR 0017）
+import ingest as quality_ingest  # noqa: E402  内部品質の取り込み（health/quality/ingest.py、ADR 0019）
 
 ENV = os.environ
-QUALITY_REPOS = [r.strip() for r in ENV.get("QUALITY_REPOS", "").split(",") if r.strip()]   # 内部品質の定期診断を取り込む製品（製品の CI に quality.yml があるもの）
+# 内部品質の定期診断を取り込む製品（製品の CI に quality.yml があるもの）。既定は工場の製品すべて（quality.yml がなければ取り込むものがないだけ）
+QUALITY_REPOS = [r.strip() for r in (ENV.get("QUALITY_REPOS") or ENV.get("FACTORY_REPOS", "")).split(",") if r.strip()]
 JST = timezone(timedelta(hours=9))   # slim イメージに tzdata がないので固定のオフセット
 HERE = Path(__file__).resolve().parent
 ROADMAP = Path(ENV.get("ROADMAP") or HERE.parent.parent / "definitions" / "roadmap.yaml")
@@ -403,7 +404,7 @@ def ingest_quality(conn, day: str):
 
 
 def quality_trend(conn, days: int = 30) -> dict:
-    """製品ごとの内部品質の診断（quality.snapshot、ADR 0017）の推移。日付の古い順"""
+    """製品ごとの内部品質の診断（quality.snapshot、ADR 0019）の推移。日付の古い順"""
     if conn is None:
         return {}
     out: dict[str, list[dict]] = {}
@@ -444,7 +445,7 @@ LEVELS_JA = {"easy": "易", "medium": "中", "hard": "難"}
 
 
 def change_cost(conn, weeks: int = 6) -> list[dict]:
-    """難易度ごと・ISO 週ごとの変更のコストの中央値（quality.yaml の change_cost、ADR 0017）。難易度（pr.difficulty）のあるマージだけ"""
+    """難易度ごと・ISO 週ごとの変更のコストの中央値（quality.yaml の change_cost、ADR 0019）。難易度（pr.difficulty）のあるマージだけ"""
     if conn is None:
         return []
     with conn.cursor() as cur:

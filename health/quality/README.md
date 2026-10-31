@@ -1,11 +1,11 @@
 # health/quality
 
-内部品質の定期診断（`definitions/quality.yaml`、ADR 0017）。コードの作りが長い目で悪くなっていないかを数値で残す。
+内部品質の定期診断（`definitions/quality.yaml`、ADR 0019）。コードの作りが長い目で悪くなっていないかを数値で残す。
 
 - `snapshot.py measure`: 製品のチェックアウトを測って、指標・スコア・ホットスポットを JSON に出す。どのパスを測るかは製品の `.factory-config/quality.yaml`
 - `snapshot.py floor`: PR の base と head の結果を比べて、下限割れを Markdown に出す（shadow。終了コードは常に 0）
 
-測るのは製品の CI（`.github/workflows/quality.yml`）。main は 1 日 1 回測って成果物 `quality-snapshot` に残し、日次レポートが描く前に `quality.snapshot` に写す（`ingest.py`）。マージ済みの工場の PR の難易度（`pr.difficulty`）も同じときに残す。日報に推移と難易度別の変更のコストを出す。
+測るのは製品の CI（`.github/workflows/quality.yml`）。取り込む製品は環境変数 `QUALITY_REPOS`（なければ `FACTORY_REPOS`）。main は 1 日 1 回測って成果物 `quality-snapshot` に残し、日次レポートが描く前に `quality.snapshot` に写す（`ingest.py`）。マージ済みの工場の PR の難易度（`pr.difficulty`）も同じときに残す。日報に推移と難易度別の変更のコストを出す。
 
 LLM を使わない。数値はワーカーのプロンプトに入れない（目標にさせない）。
 

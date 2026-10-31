@@ -1,4 +1,4 @@
-# 内部品質の定期診断の定義（ADR 0017）
+# 内部品質の定期診断の定義（ADR 0019）
 # 2026-10-31 の内部品質の方針（オーナー 決定 A1〜E1）の Q1（定期診断）・Q4（下限を shadow で 1 つ）にあたる。
 # 何を測るか・スコアの式・下限の規則・変更の集中箇所（ホットスポット）をここで決める。各製品のどのパスを測るかは製品の .factory-config/quality.yaml。
 # 実装: health/quality/snapshot.py（この定義と 1 対 1。LLM を使わない。同じ版のコードに同じ数値を返す）
@@ -121,6 +121,18 @@ output:
   event: quality.snapshot
   fields: [repo, sha, day, score, metrics, distributions, hotspots, lines, tool_versions]
   where: "製品の CI の成果物（quality-snapshot.json）→ 日次レポートが描く前に events の quality.snapshot に写す（health/quality/ingest.py）。日報・健康レポートで推移を出す"
+
+# この定義で増えるイベント。events.yaml には、承認待ちの PR（ADR 0017・0018）が入った後に移す（承認待ちの PR と同じファイルに触らないため）
+events:
+  quality.snapshot:
+    required: [repo, sha, day, score, metrics, counts, hotspots, run_id]
+    note: "製品ごとに 1 日 1 件。dedupe は quality.snapshot:<repo>:<JST の日付>。ワーカーには渡さない"
+  quality.regressed:
+    required: [repo, day, metric, before, after, from_sha, to_sha]
+    note: "前回の診断より悪くなった指標（floor=true は下限の規則の数）。教師信号 quality_regression の元。原因の PR は from_sha..to_sha の間にマージされたもの。dedupe は quality.regressed:<repo>:<日付>:<指標>"
+  pr.difficulty:
+    required: [pr_url, level, points, files, lines, areas, contract_diff, schema_diff, new_files]
+    note: "マージ済みの工場の PR の難易度（change_cost.difficulty）。日次レポートが差分から決める。dedupe は pr.difficulty:<pr_url>"
 
 # ---------------------------------------------------------------------
 # 変更のコストの推移（方針の補足: 長期の生産性の低下はコストに直結する）

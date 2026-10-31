@@ -190,18 +190,6 @@ events:
     source: control_plane
     required: [signature, issue, signals, day]
     note: "ADR 0013 の 3。Stage 2 の候補で負例の元がある束から、ルール化の Issue（factory:planned）を 1 日 1 本まで起票した。工場の implement ジョブがルール変更 PR を書く。dedupe は signature ごと"
-  quality.snapshot:
-    source: control_plane
-    required: [repo, sha, day, score, metrics, counts, hotspots, run_id]
-    note: "ADR 0017。製品の CI（quality.yml）が main を測った内部品質の診断。日次レポートが描く前に製品ごとに 1 日 1 件写す。dedupe は quality.snapshot:<repo>:<JST の日付>。ワーカーには渡さない"
-  quality.regressed:
-    source: control_plane
-    required: [repo, day, metric, before, after, from_sha, to_sha]
-    note: "ADR 0017。前回の診断より悪くなった指標（floor=true は下限の規則の数）。教師信号 quality_regression の元。原因の PR は from_sha..to_sha の間にマージされたもの。dedupe は quality.regressed:<repo>:<日付>:<指標>"
-  pr.difficulty:
-    source: control_plane
-    required: [pr_url, level, points, files, lines, areas, contract_diff, schema_diff, new_files]
-    note: "ADR 0017。マージ済みの工場の PR の難易度（quality.yaml の change_cost.difficulty）。日次レポートが差分から決める。dedupe は pr.difficulty:<pr_url>"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]

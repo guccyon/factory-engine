@@ -1,4 +1,4 @@
-"""内部品質の取り込み（health/quality/ingest.py）と日報の内部品質の欄（ADR 0017）。
+"""内部品質の取り込み（health/quality/ingest.py）と日報の内部品質の欄（ADR 0019）。
 
 DB を使うテストは、空の Postgres に orchestrator/postgres/init/*.sql を当て、TEST_DATABASE_URL を向けて動かす（なければ飛ばす）:
   TEST_DATABASE_URL=postgresql://factory@localhost:5432/factory_test python -m pytest health/quality/tests

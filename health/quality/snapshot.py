@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""内部品質の定期診断（definitions/quality.yaml、ADR 0017）。
+"""内部品質の定期診断（definitions/quality.yaml、ADR 0019）。
 
 製品のチェックアウトを測って、指標・スコア・ホットスポットを JSON に出す（measure）。
 PR の base と head の結果を比べて、下限割れを Markdown で出す（floor。shadow なので終了コードは常に 0）。

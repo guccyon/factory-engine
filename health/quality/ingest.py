@@ -1,4 +1,4 @@
-"""内部品質の診断と変更の難易度を制御プレーンに取り込む（definitions/quality.yaml、ADR 0017）。
+"""内部品質の診断と変更の難易度を制御プレーンに取り込む（definitions/quality.yaml、ADR 0019）。
 
 日次レポート（health/daily/status_report.py）が描く前に 1 回呼ぶ:
 - 製品の CI（.github/workflows/quality.yml）が main を測った成果物 quality-snapshot を、製品ごとに 1 日 1 件 quality.snapshot に写す。
