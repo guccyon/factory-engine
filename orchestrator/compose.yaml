@@ -153,6 +153,9 @@ services:
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
       FACTORY_MODE: ${FACTORY_MODE:-}
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}
+      OBJECTSTORE_ENDPOINT: objectstore:7070             # 人の選択の画面で案の画像を中継する（choices/ の下だけ読む。ADR 0025）
+      OBJECTSTORE_ACCESS_KEY: ${OBJECTSTORE_ACCESS_KEY:-factory}
+      OBJECTSTORE_SECRET_KEY: ${OBJECTSTORE_SECRET_KEY:-factory-objectstore}
     ports:
       - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_HOST_PORT:-8790}:8790"   # 同じ LAN の端末から見るときは CONSOLE_BIND=0.0.0.0 と CONSOLE_ALLOWED_HOSTS にホスト名（例 host.example.local）
     restart: unless-stopped

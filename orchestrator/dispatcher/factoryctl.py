@@ -61,6 +61,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import choice
 import continuation
 import design_line
 import drain
@@ -107,6 +108,9 @@ def design_cmd(cur, argv) -> int:
             c = design_line.choose(cur, repo, issue, argv[4], opt(argv, "--by", "builder"), opt(argv, "--note", ""))
         except (ValueError, IndexError) as e:
             print(e); return 1
+        aid = choice.find_open(cur, "design_variants", repo, str(issue))   # 操業コンソールの依頼も閉じる
+        if aid:
+            choice.choose(cur, aid, c["variant"], opt(argv, "--by", "builder"), opt(argv, "--note", ""))
         print(f"選んだ: {repo}#{issue} 案 {c['variant']}（検査役の推す案と{'一致' if c['agree'] else '不一致'}）。dispatcher が次の周回で Issue に反映する")
         return 0
     cur.execute("select id from artifacts where type='UXSpec' and payload->>'repo'=%s and (payload->>'issue')::int=%s order by id desc limit 1", (repo, issue))

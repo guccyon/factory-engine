@@ -153,6 +153,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 - 画面: 人の出番・作業中・順番待ち・投入待ち（同時に流す上限）・依存待ち・検査と判定とマージ待ち・今日の済み。上に工場長の生存・モード・作業中の数・今日の費用・開いている停止
 - 操作: 優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）、保留・再開、止める。すべて events に `ticket.*` / `job.cancel_requested` として残る
 - API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
+- 人の選択（ADR 0025）: デザイン検査役が人に回した画面の案（`design_variants`）と、内部品質の抜き取り（`taste_sample`）を、上部の「人の選択」に案の画像つきで並べる。「この案にする」「どれも違う（戻す。一言は必須）」「違和感（一言は必須）」を押せる。記録は artifacts の `HumanChoice` と events の `choice.requested`・`choice.made`（推奨との一致 `agreed`）・`choice.returned`・`taste.flagged`（教師信号 taste_flag）。依頼は `choice.request()` で作り、画像はオブジェクトストアの `choices/` か `design/` の下に置く（コンソールが中継し、外の URL は出さない）。デザインの線（`design_line`）は検査役が人に回したときに依頼を作り、画面で選ぶと `factoryctl design pick` と同じく `ui_design.chosen` を残す（Issue への反映は dispatcher の周回）。「どれも違う」は人の一言を指摘にしてデザイナー役を積み直す
 
 チケットと優先度:
 

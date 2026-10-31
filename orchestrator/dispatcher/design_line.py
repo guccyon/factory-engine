@@ -22,6 +22,8 @@ import re
 import yaml
 from psycopg.types.json import Jsonb
 
+import choice
+
 TRIGGER_LABEL, CHOICE_LABEL, AFTER_LABEL = "factory:design", "factory:design-choice", "factory:planned"   # definitions/ui_design.yaml の labels
 RUNNING_LABEL, FAILED_LABEL = "factory:running", "factory:failed"
 MARK, MARK_END = "<!-- factory-uxspec:v1 -->", "<!-- /factory-uxspec -->"
@@ -157,6 +159,34 @@ def act_on_review(cur, repo: str, issue: int, corr: str, job_id: int, inp: dict,
                                           "recommended": v.get("chosen_variant"), "reasons": result.get("human_reasons") or []}),
                      f"ui_design.awaiting_choice:{d.get('id')}"))
         comment(repo, issue, choice_comment(d, v, result.get("human_reasons") or []))
+        request_choice(cur, repo, issue, corr, job_id, d, v, result.get("human_reasons") or [])
+
+
+def request_choice(cur, repo: str, issue: int, corr: str, job_id: int, d: dict, v: dict, reasons: list[str]) -> int | None:
+    """操業コンソールの「人の選択」に案を出す（P4-7、choice.HumanChoice）。同じ UXSpec には 1 度だけ"""
+    if choice.find_open(cur, "design_variants", repo, str(issue)):
+        return None
+    spec, files = d.get("uxspec") or {}, d.get("files") or {}
+    options = [{"id": str(x.get("id")), "label": x.get("name") or str(x.get("id")), "note": x.get("tradeoff") or "",
+                "image_key": files.get(f"{x.get('id')}.png")} for x in (spec.get("variants") or [])[:choice.MAX_OPTIONS]]
+    rec = v.get("chosen_variant") or spec.get("recommended")
+    try:
+        return choice.request(cur, "design_variants", corr, f"#{issue} の画面の案", options,
+                              recommended=rec if rec in {o["id"] for o in options} else None,
+                              subject={"repo": repo, "ticket": str(issue), "uxspec": str(d.get("id") or "")},
+                              context="デザイン検査役が人に回した: " + "、".join(REASON_JA.get(x, x) for x in reasons), job_id=job_id)
+    except ValueError:   # 形が合わない案は画面に出さず、factoryctl design pick で選ぶ
+        return None
+
+
+def return_to_designer(cur, repo: str, issue: int, corr: str, reason: str, model_tier: str) -> int | None:
+    """人がどの案も選ばなかった。人の一言を直しの指摘としてデザイナー役を積み直す（回数は数える。この後の検査役の「直し」は人へ回る）"""
+    cur.execute("select id from artifacts where type='UXSpec' and payload->>'repo'=%s and (payload->>'issue')::int=%s order by id desc limit 1", (repo, issue))
+    r = cur.fetchone()
+    d = load_design(cur, r["id"]) if r else {}
+    nxt = {"round": int((d or {}).get("round") or 1) + 1, "previous_uxspec": (d or {}).get("uxspec") or {}, "previous_artifact_id": (d or {}).get("id"),
+           "findings": [{"severity": "major", "viewpoint": "human", "variant": None, "evidence": reason[:300], "fix": "人の一言に沿って案を作り直す"}]}
+    return enqueue(cur, repo, issue, corr, "ui_design", model_tier, nxt, attempt=nxt["round"])
 
 
 # ------------------------------------------------------------------ 人の選択

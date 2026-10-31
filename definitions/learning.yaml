@@ -57,7 +57,7 @@ teacher_signals:
     note: "learn はまだ読まない（束ねるのは診断が 2 週間たまってから）。1 日の悪化に原因の PR が複数あるときは全部に付ける"
   taste_flag:
     ja: "人が抜き取りで違和感を付けた（内部品質の感覚。週 5 件）"
-    source: "抜き取りの画面（操業コンソール。次の段で作る）の記録。結果は Golden Set にも入る"
+    source: "events taste.flagged（操業コンソールの「人の選択」。画面の案と抜き取りの両方から付く。ADR 0025）。結果は Golden Set にも入る"
     signature: "taste:<言語化の候補>"
     eval_from: { positive: "違和感を付けた PR の差分", negative: "同じ観点で違和感のなかった差分" }
     note: "発生源（抜き取りの画面）ができてから"

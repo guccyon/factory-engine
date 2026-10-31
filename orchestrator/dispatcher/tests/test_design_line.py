@@ -168,3 +168,25 @@ def test_human_choice_flow(cur):
     assert "id: b" in gh.body and "<p>b</p>" in gh.body and "人が選んだ" in gh.body
     assert ("DELETE", "factory%3Adesign-choice") in gh.labels()
     assert dl.apply_choices(cur, gh, gh.comment, store.__getitem__) == 0
+
+
+@needs_db
+def test_human_route_opens_a_console_choice(cur):
+    import choice
+    aid, store = draft(cur, {**SPEC, "brand_impact": True})
+    review(cur, GH(), aid, "human", store, reasons=["brand_impact"])
+    [c] = choice.open_choices(cur)
+    assert c["kind"] == "design_variants" and c["recommended"] == "a" and c["subject"] == {"repo": REPO, "ticket": str(ISSUE), "uxspec": str(aid)}
+    assert {o["id"]: o["image_key"] for o in c["options"]}["a"].startswith("design/")
+    assert dl.request_choice(cur, REPO, ISSUE, CORR, None, dl.load_design(cur, aid), {}, []) is None   # 同じタスクに 2 つ出さない
+
+
+@needs_db
+def test_return_requeues_designer_with_the_human_note(cur):
+    aid, store = draft(cur, {**SPEC, "brand_impact": True})
+    review(cur, GH(), aid, "human", store, reasons=["brand_impact"])
+    cur.execute("update jobs set state='succeeded'")
+    jid = dl.return_to_designer(cur, REPO, ISSUE, CORR, "どれも文字が小さい", "tier-large")
+    cur.execute("select payload from events where name='job.enqueued' and job_id=%s", (jid,))
+    inp = cur.fetchone()["payload"]["input"]
+    assert inp["round"] == 2 and inp["findings"][0]["evidence"] == "どれも文字が小さい" and inp["previous_artifact_id"] == aid

@@ -282,6 +282,22 @@ events:
     source: control_plane
     required: [repo, week, sha, summary, strengths, findings, checked]
     note: "ADR 0022。設計の診断の所見。dispatcher が記録し、固定 Issue の本文（ページのスナップショット付き）を書き換える。人が読むためのもので、ワーカーのプロンプトには入れない。dedupe は design.reviewed:<repo>:<ISO 週>。同じ中身を artifacts の DesignReview に残す"
+  choice.requested:
+    source: control_plane
+    required: [artifact_id, kind, options, recommended]
+    note: "ADR 0025 の P4-7。人の選択の依頼を作った（kind: design_variants＝デザイン検査役が人に回した画面の案、taste_sample＝内部品質の抜き取り）。中身は artifacts の HumanChoice。操業コンソールの「人の選択」に出る"
+  choice.made:
+    source: control_plane
+    required: [artifact_id, kind, option, recommended, agreed, by, reason]
+    note: "人が案を選んだ。agreed は推奨と一致したか（推奨がなければ null）。デザイン検査役の委任を広げる根拠の一致率に使う。次の工程を起こすのは supervisor"
+  choice.returned:
+    source: control_plane
+    required: [artifact_id, kind, by, reason]
+    note: "人がどの案も選ばず作り手に戻した。reason は作り直しの入力"
+  taste.flagged:
+    source: control_plane
+    required: [artifact_id, kind, option, note, signature, subject, by]
+    note: "違和感の印。教師信号 taste_flag（learning.yaml）の発生源。signature は taste:<一言を詰めて 40 字>（仮。言語化の候補への寄せは learn が後で行う）"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
