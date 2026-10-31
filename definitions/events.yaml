@@ -157,15 +157,15 @@ events:
   factory.drain_requested:
     source: control_plane
     required: [by]
-    note: "ADR 0018。ラインの一時停止（factoryctl drain・操業コンソール）。dispatcher は順番待ちを取り出さず、割り込まない。reason は任意"
+    note: "ADR 0020。ラインの一時停止（factoryctl drain・操業コンソール）。dispatcher は順番待ちを取り出さず、割り込まない。reason は任意"
   factory.drain_released:
     source: control_plane
     required: [by]
-    note: "ADR 0018。ラインの再開（factoryctl resume・操業コンソール）。最後の drain_requested / drain_released が今の状態"
+    note: "ADR 0020。ラインの再開（factoryctl resume・操業コンソール）。最後の drain_requested / drain_released が今の状態"
   job.reattached:
     source: control_plane
     required: [container]
-    note: "ADR 0018。上げ直した dispatcher が、動いている（終わっている）ジョブのコンテナにつなぎ直した。job.started は出し直さない"
+    note: "ADR 0020。上げ直した dispatcher が、動いている（終わっている）ジョブのコンテナにつなぎ直した。job.started は出し直さない"
   factory.mode_set:
     source: control_plane
     required: [mode, by]

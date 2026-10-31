@@ -7,7 +7,7 @@ GitHub Issue（factory:implement）
    │ poll 30s / webhook
    ▼
 dispatcher ──claim(SKIP LOCKED)──▶ postgres（jobs / events / artifacts）
-   │ docker run（--rm なし、ADR 0018）    ▲
+   │ docker run（--rm なし、ADR 0020）    ▲
    ▼                                      │ 結果・usage・ログの場所
 worker（浅いクローン → claude -p → push → gh pr create）──ログ──▶ objectstore（S3 互換）
 ```
@@ -41,11 +41,11 @@ docker compose exec dispatcher factoryctl stop 12       # 停止（コンテナ�
 docker compose exec dispatcher factoryctl rerun 12      # 同じ Issue で attempt+1 を投入
 docker compose exec dispatcher factoryctl enqueue guccyon/rally 3   # ラベルを使わずに投入
 docker compose exec dispatcher factoryctl events 12     # そのジョブのイベント
-docker compose exec dispatcher factoryctl drain --wait 3000   # ラインを一時停止して、入れ替えてよくなるまで待つ（ADR 0018）
+docker compose exec dispatcher factoryctl drain --wait 3000   # ラインを一時停止して、入れ替えてよくなるまで待つ（ADR 0020）
 docker compose exec dispatcher factoryctl resume        # ラインを再開
 ```
 
-## 工場の入れ替え（ADR 0018）
+## 工場の入れ替え（ADR 0020）
 
 ワーカーのコンテナは dispatcher から独立して動く（`--rm` なし。名前 `factory-job-<id>`、ラベル `factory.job=<id>`）。dispatcher を上げ直すと、
 running のジョブのコンテナにつなぎ直し（`job.reattached`）、出力を最初から読み直して終わりを待ち、いつもどおり記録する。コンテナが残っていないジョブだけ

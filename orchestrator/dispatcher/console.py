@@ -8,7 +8,7 @@
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
-  POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0018）
+  POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
 - 出荷の操作は events に依頼を書くだけで、docker を動かすのは shipper（このサービスに docker のソケットは渡さない）

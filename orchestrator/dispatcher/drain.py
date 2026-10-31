@@ -1,4 +1,4 @@
-"""ラインの一時停止（drain）と再開（ADR 0018）。工場の入れ替えのために、外から中に干渉する口。
+"""ラインの一時停止（drain）と再開（ADR 0020）。工場の入れ替えのために、外から中に干渉する口。
 
 dispatcher・factoryctl・操業コンソール・番人が同じ関数を通る。状態の正本は events（最後の factory.drain_requested / factory.drain_released）。
 一時停止の間、dispatcher は順番待ちのジョブを取り出さず、割り込みもしない。実行中のジョブは最後まで流す。

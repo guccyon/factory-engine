@@ -68,7 +68,7 @@ HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の he
 STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジョブの出力がこの分数止まったら停止（完了まで定期的に見る。2026-10-31 オーナー）
 LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
-DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0018）
+DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
@@ -218,7 +218,7 @@ LOCK_RETRY_SEC = 10
 
 def run_job(job: dict, reattaching: bool = False):
     """ジョブのコンテナを起動して、終わるまで出力を受け、結果を記録する。
-    reattaching は dispatcher の上げ直しで、動いている（終わっている）コンテナにつなぎ直すとき（ADR 0018）。起動の前の準備はしない"""
+    reattaching は dispatcher の上げ直しで、動いている（終わっている）コンテナにつなぎ直すとき（ADR 0020）。起動の前の準備はしない"""
     job_id, repo, issue, corr = job["id"], job["repo"], job["issue_number"], job["correlation_id"]
     lock_key = f"{repo}#{issue}"
     with db() as conn, conn.cursor() as cur:
@@ -256,7 +256,7 @@ def run_job(job: dict, reattaching: bool = False):
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
-            # --rm を付けない。dispatcher が落ちてもコンテナは動き続け、終わった後も出力と終了コードを残す。片付けは記録の後（ADR 0018）
+            # --rm を付けない。dispatcher が落ちてもコンテナは動き続け、終わった後も出力と終了コードを残す。片付けは記録の後（ADR 0020）
             cmd = ["docker", "run", "--name", name, "--label", f"{reattach.JOB_LABEL}={job_id}",
                    *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
@@ -412,7 +412,7 @@ def run_job(job: dict, reattaching: bool = False):
             cur.execute("update jobs set state='failed', finished_at=now(), error=%s where id=%s and state='running'", (repr(e)[:500], job_id))
             record_event(cur, "job.finished", corr, job_id, {"state": "failed", "error": repr(e)[:500]})
         finally:
-            reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0018）
+            reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0020）
             if JOB_DB_ENABLED:
                 try:
                     cur.execute(f'drop database if exists "job_{job_id}" with (force)')   # ワーカーの状態を残さない
@@ -442,7 +442,7 @@ def requeue_preempted(cur, job: dict, preempted_for: int, cost_usd):
 
 def ops_once():
     with db() as conn, conn.cursor() as cur:
-        # ラインの一時停止中は割り込まない（止めても次を流せない。ADR 0018）
+        # ラインの一時停止中は割り込まない（止めても次を流せない。ADR 0020）
         for victim, urgent in ([] if drain.active(cur) else ops.preempt_victims(cur, MAX_PARALLEL)):
             ops.stop_job(cur, victim["id"], "dispatcher", f"緊急のジョブ {urgent['id']} を先に流す", preempted_for=urgent["id"])
             log(f"preempt job {victim['id']} (priority {victim['priority']}) for job {urgent['id']} (priority {urgent['priority']})")
@@ -463,7 +463,7 @@ def ops_loop():
 
 def run_loop(reattached: list[dict] | None = None):
     sem = threading.BoundedSemaphore(MAX_PARALLEL)
-    for j in reattached or []:   # 上げ直す前から動いているジョブ（ADR 0018）。枠を数えるため、ほかより先に枠を取る
+    for j in reattached or []:   # 上げ直す前から動いているジョブ（ADR 0020）。枠を数えるため、ほかより先に枠を取る
         got = sem.acquire(blocking=False)   # 上限を下げて上げ直したときは枠を超えて流れる（つなぎ直しは捨てない）
 
         def _resume(j=j, got=got):
@@ -478,7 +478,7 @@ def run_loop(reattached: list[dict] | None = None):
         job = None
         try:
             with db() as conn, conn.cursor() as cur:
-                if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0018）。実行中のジョブはそのまま流す
+                if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。実行中のジョブはそのまま流す
                     sem.release()
                     time.sleep(3)
                     continue
@@ -637,7 +637,7 @@ def watch_once():
             for k in idle_open:
                 stoppage.close_stoppage(cur, k, remedy="ジョブが投入された")
 
-        # 1b) ラインの一時停止（ADR 0018）が DRAIN_MIN 分続いている: 入れ替えの後の再開を忘れていないか
+        # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 入れ替えの後の再開を忘れていないか
         drain_open = stoppage.open_keys(cur, "drain:")
         if draining and draining["minutes"] >= DRAIN_MIN:
             if not drain_open:
@@ -760,7 +760,7 @@ class Hook(BaseHTTPRequestHandler):
 
 
 def recover() -> list[dict]:
-    """dispatcher の再起動で取り残された running ジョブを片付ける（ADR 0018）。
+    """dispatcher の再起動で取り残された running ジョブを片付ける（ADR 0020）。
     コンテナが残っていれば（動いていても終わっていても）つなぎ直すジョブとして返す。run_loop が枠を取ってから run_job(reattaching=True) で続ける。
     コンテナが残っていなければ、ワーカーは最初からやり直せる（冪等）ので failed にし、attempt+1 で再投入する。
     記録を終えたのに残っているコンテナ（記録の後、片付けの前に落ちた）は消す。"""
