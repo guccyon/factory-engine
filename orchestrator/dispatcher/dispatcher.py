@@ -55,7 +55,7 @@ PLAN_LABEL = ENV.get("PLAN_LABEL", planner.TRIGGER_LABEL)   # チケットの入
 TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify", DESIGN_LABEL: "ui_design", PLAN_LABEL: "plan"}
 TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "要求を確かめる質問をこの Issue に書きます（最大 3 往復）",
               "ui_design": "実装の前に、画面の要素と振る舞い（UXSpec）と案のモックを作り、デザイン検査役に見せます",
-              "plan": "着手できるかを判定し、実装役・画面のデザイナー・デザインシステムのデザイナーのどれに回すかを決めます"}
+              "plan": "着手できるかを判定し、実装役・プロダクトデザイナー・デザインシステムのデザイナーのどれに回すかを決めます"}
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))

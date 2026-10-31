@@ -18,7 +18,7 @@ from psycopg.types.json import Jsonb
 # definitions/planner.yaml の labels・roles・asking と同じ値（dispatcher のコンテナには definitions/ がないので写す。食い違いはテストで見る）
 TRIGGER_LABEL, NEEDS_INFO_LABEL, ESCALATE_LABEL = "factory:plan", "factory:needs-info", "factory:plan-human"
 ROLE_LABELS = {"design_system": "factory:design-system", "ui_design": "factory:design", "implement": "factory:planned"}
-ROLE_JA = {"design_system": "デザインシステムのデザイナー", "ui_design": "画面のデザイナー", "implement": "実装役"}
+ROLE_JA = {"design_system": "デザインシステムのデザイナー", "ui_design": "プロダクトデザイナー", "implement": "実装役"}
 MAX_ROUNDS = 2
 MARKER = "<!-- factory:plan-questions -->"
 RUNNING_LABEL, QUEUED_LABEL = "factory:running", "factory:queued"

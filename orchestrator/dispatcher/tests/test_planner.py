@@ -141,7 +141,7 @@ def test_escalate_goes_to_human(cur):
     c = Calls()
     run(cur, c, res("escalate", ["ui_design", "implement"], ["rounds_exhausted"], round_=3))
     assert c.labels == [(ISSUE, ("factory:running",), ("factory:plan-human",))]
-    assert "往復を使い切った" in c.comments[0] and "factory:plan" in c.comments[0] and "画面のデザイナー → 実装役" in c.comments[0]
+    assert "往復を使い切った" in c.comments[0] and "factory:plan" in c.comments[0] and "プロダクトデザイナー → 実装役" in c.comments[0]
     assert len(pn.plans(cur, CORR)) == 1
 
 

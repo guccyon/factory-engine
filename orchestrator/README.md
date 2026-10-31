@@ -116,9 +116,9 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 チケットの入口。役の一覧・よくある並び・決まりは `definitions/planner.yaml`。
 
 - Issue に `factory:plan` を付けると、dispatcher が `plan` のジョブに積む。プランナー（`worker/plan.sh` → `core-gates/plan.py`、tier-small）が、Issue の本文とコメント、製品の `specs/`（デザインシステムの有無）と `.factory-config/knowledge/`（プロダクトの既定）を読み、着手判定と経路を返す。読むだけで、何も書き換えない
-- 経路は型から選ばず、タスクに合わせて「どの役をどの順で通すか」の並び（`steps`）として組む。役は `design_system`（デザインシステムのデザイナー）・`ui_design`（画面のデザイナー）・`implement`（実装役）。よくある並び（実装だけ、画面 → 実装、デザインシステム → 画面 → 実装、デザインシステムだけ）は例で、縛りではない。役ごとに focus（何をさせるか）・why・effort（手間の見込み）を書く
+- 経路は型から選ばず、タスクに合わせて「どの役をどの順で通すか」の並び（`steps`）として組む。役は `design_system`（デザインシステムのデザイナー）・`ui_design`（プロダクトデザイナー）・`implement`（実装役）。よくある並び（実装だけ、画面 → 実装、デザインシステム → 画面 → 実装、デザインシステムだけ）は例で、縛りではない。役ごとに focus（何をさせるか）・why・effort（手間の見込み）を書く
 - 指示役は最初の役のラベル（`factory:design-system`・`factory:design`・`factory:planned`）で配る。`factory:design-system` はデザインシステムのデザイナー役ができるまでラベルのまま待つ
-- 決定論で当てるのは安全のための最小限（guards）だけ: デザインシステムがなく進め方の指定もないのに画面のデザイナーへ回す並びは問いに替える、確信度が低い・往復を使い切った・問いがない・経路が空なら人へ（`factory:plan-human`）。よくある例との食い違い（小さな改修にデザイナー、新しい画面にデザイナーなし、実装の後のデザイン）は印（advisories）を付けるだけで経路は変えない
+- 決定論で当てるのは安全のための最小限（guards）だけ: デザインシステムがなく進め方の指定もないのにプロダクトデザイナーへ回す並びは問いに替える、確信度が低い・往復を使い切った・問いがない・経路が空なら人へ（`factory:plan-human`）。よくある例との食い違い（小さな改修にデザイナー、新しい画面にデザイナーなし、実装の後のデザイン）は印（advisories）を付けるだけで経路は変えない
 - 着手できないときは、理由と選択肢つきの問いを Issue のコメントに書いて `factory:needs-info`。問いのコメントより後に返事が付くと、dispatcher の周回が判定し直しを積む（問いは 2 回まで）。Gen1 は建設者がオーナーの代理で答える
 - 判断の根拠は後で見返せるように残す: artifacts の `Plan` に 3 層（根拠・解釈・確信度）、役ごとの理由、とらなかった並びと理由、当てた決まりと印、入力の版（Engine と製品のコミット、定義とプロンプトの版）。events の `plan.decided`（経路・手間・費用）・`plan.asked`・`plan.answered`。`factoryctl plan list` / `plan show owner/repo#123` で見る
 - 今の入口（`factory:planned`・`factory:implement`・`factory:design`）はそのまま使える。新しいチケットは `factory:plan` から入れる
