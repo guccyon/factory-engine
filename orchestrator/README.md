@@ -235,6 +235,8 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 
 知見の変更セット（ADR 0024 の 3）: supervisor が `case.analyzed` のうち最初に回すテーマ（`learning_taxonomy.yaml` の `status: first`、いまは 4 と 6）の学びがあるものを、製品の Issue（`factory:planned`・`factory:learn`）にする。本文の個人情報・環境の名前に見える形は伏せる。工場の implement ジョブが事例記録 `cases/C-NNNN.md` と知見の下書き（`status: draft`・`confidence: hypothesis`）を 1 本の PR に書き、`knowledge_check.py --index` で `INDEX.md` を作り直す。PR は変更種別 `knowledge`（`change_type_rules.yaml`）で、委員会ができるまでは manifest に無い種別として人の承認に倒れる。1 日に `KNOWLEDGE_ISSUES_PER_DAY`（既定 2）件まで。`KNOWLEDGE_ISSUES=0` で止める。置き場（`.factory-config/knowledge/README.md`）の無い製品には起票しない。
 
+知見の委員会（ADR 0024 の 4）: 変更種別 `knowledge` の工場の PR は、CI を通った後に supervisor が `committee_review` のジョブを PR ごとに 1 回積む（同じ PR の検査が動いている間は次の周回で）。ワーカーの `core-gates/committee_review.py` が、変更の差分・知見の置き場・`specs/` の写しを 4 役（整合・根拠・担保・反対）の別々のエージェントに読ませ、票を決定論で集める（`knowledge.yaml` の `committee.aggregation`）。差し戻し以外は議決 `committee/D-NNNN.yaml` と、下書きを active にした知見を PR のブランチに積む。dispatcher は PR にまとめを書き、sendback は閉じ、human は承認のラベル、enforce は担保の Issue を起票する。変更種別 `knowledge` を自動でマージするのは委員会が採用したときだけ（manifest の表で `knowledge` を auto にしたとき）。`COMMITTEE=0` で止める。
+
 ```bash
 docker compose exec dispatcher factoryctl report learning --days 30
 ```

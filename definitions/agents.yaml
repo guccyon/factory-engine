@@ -40,5 +40,7 @@ steps:
     tier: tier-judge
   case_review:                # 事例型の分析役（core-gates/case_review.py。出来事の記録を読むだけ。ADR 0023）
     tier: tier-judge
+  committee_review:           # 知見の委員会の 4 役（core-gates/committee_review.py。材料の写しを読むだけ。ADR 0024）
+    tier: tier-judge
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge

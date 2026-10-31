@@ -39,6 +39,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import case
+import committee
 import continuation
 import design
 import judgment
@@ -80,6 +81,7 @@ OVERLAY_RULES_DIR = ".factory-config/overlay/rules"
 CASE_REVIEW = ENV.get("CASE_REVIEW", "1") == "1"   # 事例型の分析役（ADR 0023）。差し戻しと長い停止を 1 日に数件、なぜなぜで分析する。0 で止める
 CASE_REVIEW_DEFS = ENV.get("LEARNING_TAXONOMY", "/definitions/learning_taxonomy.yaml")   # 事例型の分析役の数値（per_day）
 KNOWLEDGE_ISSUES = ENV.get("KNOWLEDGE_ISSUES", "1") == "1"   # 事例の分析から、知見の変更セットの Issue を起票する（ADR 0024 の 3）。0 で止める
+COMMITTEE = ENV.get("COMMITTEE", "1") == "1"   # 知見の変更セットの PR を委員会の 4 役に審査させる（ADR 0024 の 4）。0 で止める（人の承認だけになる）
 KNOWLEDGE_ISSUES_PER_DAY = int(ENV.get("KNOWLEDGE_ISSUES_PER_DAY", "2"))   # 委員会ができるまでは知見の PR は人の承認（knowledge 種別）なので少なく
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
@@ -324,6 +326,8 @@ def merge_step(cur, rules: dict, manifests: dict):
                 gh("POST", f"repos/{p['repo']}/issues/{p['number']}/labels", {"labels": [APPROVAL_LABEL]})
         elif DRY_RUN:
             continue
+        if "knowledge" in d["change_types"]:
+            enqueue_committee(cur, p, sha)   # 周回ごとに試す。同じ PR の検査ジョブが動いている間は積めない（1 PR 1 ジョブ）
         # マージは表が auto で、かつ検査役が承認してから（ADR 0014）。承認は周期ごとに見直すので、検査・judge が終わった周期でマージする
         if not d["execute"]:
             continue
@@ -333,6 +337,8 @@ def merge_step(cur, rules: dict, manifests: dict):
         ok, basis = inspector_approved(cur, p["url"], sha)
         if not ok:
             continue
+        if "knowledge" in d["change_types"] and not committee.approved(cur, p["url"]):
+            continue   # 知見の変更セットは委員会の採用を待つ（ADR 0024）
         record(cur, "supervisor.inspector_approved", p["corr"], {"pr_url": p["url"], "head_sha": sha, "basis": basis}, f"inspector.approved:{p['url']}@{sha}")
         gh("PUT", f"repos/{p['repo']}/pulls/{p['number']}/merge", {"merge_method": "squash", "sha": sha})
         record(cur, "supervisor.merged", p["corr"], {"pr_url": p["url"], "head_sha": sha, "basis": basis}, f"supervisor.merged:{p['url']}")
@@ -390,6 +396,26 @@ def enqueue_inspect(cur, p: dict, sha: str):
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
                 (p["corr"], jid, Jsonb({"by": "supervisor", "kind": "inspect", "pr_url": p["url"], "head_sha": sha})))
     log("inspect enqueued", p["url"], "job", jid)
+
+
+def enqueue_committee(cur, p: dict, sha: str):
+    """知見の変更セットの PR を、CI を通った後に委員会へ持ち込む（ADR 0024 の 4）。PR ごとに 1 回。
+    委員会は議決を PR のブランチに積むので head が変わるが、議決があれば積み直さない"""
+    if not COMMITTEE or committee.decided(cur, p["url"]):
+        return
+    cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.committee:{p['url']}",))
+    if cur.fetchone():
+        return
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','committee_review') returning id",
+                    (f"committee:{p['url']}", p["repo"], p["number"]))
+    except psycopg.errors.UniqueViolation:
+        return   # 同じ PR の検査・judge が待ち・実行中。次の周回で積む
+    jid = cur.fetchone()["id"]
+    record(cur, "supervisor.committee_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha, "job_id": jid}, f"supervisor.committee:{p['url']}")
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (f"committee:{p['url']}", jid, Jsonb({"by": "supervisor", "kind": "committee_review", "pr_url": p["url"], "head_sha": sha})))
+    log("committee enqueued", p["url"], "job", jid)
 
 
 def judge_step(cur, manifests: dict):
