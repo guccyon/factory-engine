@@ -10,8 +10,7 @@
 - ボリューム: チケットごとの Docker の名前付きボリューム（factory-ticket-<owner>-<repo>-<issue>）。中身はエージェントに依存しない形
   （ticket.json と jobs/<job>/ の Markdown・JSON。書くのはワーカーの entrypoint.sh）。エージェントのセッション記録（claude --resume）は
   agent/ の下の「あれば使う近道」で、なくても続きは作れる
-- 片付け（ADR 0018）: PR がマージか閉じられたら、dispatcher の糸がボリュームをそのままオブジェクトストアに移して消す（機械だけ。ラインとは非同期）。
-  移せないまま HANDOFF_KEEP_DAYS 日たったボリュームも消す
+- 片付け: PR がマージか閉じられてから HANDOFF_KEEP_DAYS 日でボリュームを消す（後片付けの役割ができるまでの機械的な片付け）
 
 続ける先は工場のブランチ名と PR の番号だけで、シェルにもプロンプトにも PR の本文は渡さない。合図の中身（CI のチェック名、指摘）は
 job.enqueued の input に残し、ワーカーには標準入力で JSON として渡す（ワーカーはデータとしてファイルに置き、指示としては扱わせない）。
@@ -21,7 +20,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import time
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -99,71 +97,31 @@ def enqueue(cur, *, repo: str, pr_number: int, pr_url: str, branch: str, head_sh
     return jid
 
 
-def remove_volume(cur, corr: str, name: str, why: str, log=print) -> bool:
-    """チケットのボリュームを消して handoff.removed を記録する。同じチケットに後でまたボリュームができたら、それも消せるように
-    記録の重複よけは直前の handoff.saved ごとにする"""
-    p = subprocess.run(["docker", "volume", "rm", "-f", name], capture_output=True, text=True)
-    if p.returncode != 0:
-        log("handoff remove failed", name, p.stderr[-200:])
-        return False
-    cur.execute("select max(id) as id from events where name='handoff.saved' and correlation_id=%s", (corr,))
-    last = (cur.fetchone() or {}).get("id")
-    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('handoff.removed',%s,%s,%s) on conflict (dedupe_key) do nothing",
-                (corr, Jsonb({"volume": name, "keep_days": HANDOFF_KEEP_DAYS, "why": why}), f"handoff.removed:{name}@{last}"))
-    return True
-
-
-def archive(volume: str, image: str) -> bytes | None:
-    """ボリュームの中身をそのまま tar.gz で取り出す（エージェントの会話の記録 agent/ も含める）。取れなければ None。
-    選り分け（クレンジング）はしない。Learn ループと健康指標が要る入力が分かってから、片付けの流れごと見直す（2026-10-31 オーナー）"""
-    p = subprocess.run(["docker", "run", "--rm", "--entrypoint", "tar", "-v", f"{volume}:/h:ro", image, "czf", "-", "-C", "/h", "."],
-                       capture_output=True, timeout=300)
-    return p.stdout if p.returncode == 0 and p.stdout else None
-
-
-DONE_TICKETS = """select distinct on (e.correlation_id) e.correlation_id as corr, e.payload->>'pr_url' as pr_url, e.name from events e
-                    where e.name in ('pr.merged','pr.closed_unmerged') and e.correlation_id like 'github:%%#%%' {age}
-                      and exists (select 1 from events h where h.name='handoff.saved' and h.correlation_id=e.correlation_id
-                                   and not exists (select 1 from events r where r.name='handoff.removed' and r.correlation_id=h.correlation_id and r.id > h.id))
-                      and not exists (select 1 from jobs j where j.correlation_id=e.correlation_id and j.state in ('queued','running'))
-                    order by e.correlation_id, e.id desc"""
-
-
-def tidy(cur, image: str, put, log=print) -> int:
-    """後片付け（ADR 0018）。PR がマージか閉じられたチケットのボリュームを、そのままオブジェクトストアの
-    tickets/<repo>/<issue>/handoff-<日時>.tar.gz に移し（put(key, data)）、移せたらボリュームを消す。LLM は使わない。
-    ラインのジョブとは別に dispatcher の糸で動き、成果物（PR）には何も足さない。移せなければ消さずに次の回へ。片付けた数を返す"""
+def cleanup(cur, log=print) -> int:
+    """PR がマージか閉じられてから HANDOFF_KEEP_DAYS 日たったチケットのボリュームを消す。消した数を返す"""
     if not HANDOFF_ENABLED:
         return 0
-    cur.execute(DONE_TICKETS.format(age=""))
+    cur.execute("""select distinct e.correlation_id as corr from events e
+                    where e.name in ('pr.merged','pr.closed_unmerged') and e.occurred_at < now() - make_interval(days => %s)
+                      and e.correlation_id like 'github:%%#%%'
+                      and exists (select 1 from events h where h.name='handoff.saved' and h.correlation_id=e.correlation_id
+                                   and not exists (select 1 from events r where r.name='handoff.removed' and r.correlation_id=h.correlation_id and r.id > h.id))
+                      and not exists (select 1 from jobs j where j.correlation_id=e.correlation_id and j.state in ('queued','running'))""",
+                (HANDOFF_KEEP_DAYS,))
     n = 0
     for r in cur.fetchall():
         repo, _, issue = r["corr"].split(":", 1)[1].rpartition("#")
         if not issue.isdigit():
             continue
         name = volume_name(repo, int(issue))
-        data = archive(name, image)
-        if not data:
-            log("handoff archive failed", name)
+        p = subprocess.run(["docker", "volume", "rm", "-f", name], capture_output=True, text=True)
+        if p.returncode != 0:
+            log("handoff cleanup failed", name, p.stderr[-200:])
             continue
-        key = f"tickets/{repo}/{issue}/handoff-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.tar.gz"
-        put(key, data)
-        cur.execute("insert into events(name, correlation_id, payload) values ('handoff.archived',%s,%s)",
-                    (r["corr"], Jsonb({"volume": name, "blob_key": key, "bytes": len(data), "pr_url": r["pr_url"],
-                                       "outcome": "merged" if r["name"] == "pr.merged" else "closed_unmerged"})))
-        if remove_volume(cur, r["corr"], name, "tidy", log):
-            n += 1
-    return n
-
-
-def cleanup(cur, log=print) -> int:
-    """片付けで移せないまま PR の後 HANDOFF_KEEP_DAYS 日たったボリュームを消す（受け皿）。消した数を返す"""
-    if not HANDOFF_ENABLED:
-        return 0
-    cur.execute(DONE_TICKETS.format(age="and e.occurred_at < now() - make_interval(days => %s)"), (HANDOFF_KEEP_DAYS,))
-    n = 0
-    for r in cur.fetchall():
-        repo, _, issue = r["corr"].split(":", 1)[1].rpartition("#")
-        if issue.isdigit() and remove_volume(cur, r["corr"], volume_name(repo, int(issue)), "keep_days", log):
-            n += 1
+        # 同じチケットに後でまたボリュームができても消せるよう、重複よけは直前の handoff.saved ごとにする
+        cur.execute("select max(id) as id from events where name='handoff.saved' and correlation_id=%s", (r["corr"],))
+        last = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('handoff.removed',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                    (r["corr"], Jsonb({"volume": name, "keep_days": HANDOFF_KEEP_DAYS}), f"handoff.removed:{name}@{last}"))
+        n += 1
     return n

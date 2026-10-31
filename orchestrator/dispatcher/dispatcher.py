@@ -72,7 +72,6 @@ USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
-TIDY_INTERVAL = int(ENV.get("HANDOFF_TIDY_INTERVAL_SEC", "300"))   # 後片付けの見回りの間隔（ADR 0018）
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
 
@@ -754,29 +753,22 @@ def watch_once():
 
 
 def watch_loop():
+    last_cleanup = 0.0
     while True:
         try:
             watch_once()
         except Exception as e:  # noqa: BLE001  番人の失敗でラインを止めない
             log("watch error", repr(e))
+        if time.time() - last_cleanup > 3600:   # 済んだチケットの引き継ぎのボリュームを消す（1 時間に 1 回。ADR 0017）
+            last_cleanup = time.time()
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    n = continuation.cleanup(cur, log)
+                    if n:
+                        log(f"handoff volumes removed: {n}")
+            except Exception as e:  # noqa: BLE001
+                log("handoff cleanup error", repr(e))
         time.sleep(WATCH_INTERVAL)
-
-
-def tidy_loop():
-    """後片付け（ADR 0018）。ラインとは別の糸で、済んだチケットの引き継ぎの記録をオブジェクトストアに移してボリュームを消す。
-    ジョブの枠を使わず、ラインの完了を待たせない（片付けは成果物に含めない）"""
-    def put(key: str, data: bytes):
-        store.put_object(BUCKET, key, io.BytesIO(data), len(data), content_type="application/gzip")
-    while True:
-        try:
-            with db() as conn, conn.cursor() as cur:
-                n = continuation.tidy(cur, WORKER_IMAGE, put, log)
-                m = continuation.cleanup(cur, log)
-                if n or m:
-                    log(f"handoff tidied: archived {n}, expired {m}")
-        except Exception as e:  # noqa: BLE001  片付けの失敗でラインを止めない
-            log("tidy error", repr(e))
-        time.sleep(TIDY_INTERVAL)
 
 
 # ------------------------------------------------------------------ Webhook（任意）
@@ -833,8 +825,6 @@ def main():
     threading.Thread(target=ops_loop, daemon=True).start()
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
-    if continuation.HANDOFF_ENABLED:
-        threading.Thread(target=tidy_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)

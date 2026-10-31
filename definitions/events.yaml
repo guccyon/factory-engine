@@ -121,12 +121,8 @@ events:
     note: "ADR 0017。実装役が作業の文脈（ticket.json・jobs/<job>/）をチケットのボリュームに残した（保留）。agent_session はエージェントの会話の記録（再開の近道）もあったか"
   handoff.removed:
     source: control_plane
-    required: [volume, keep_days, why]
-    note: "ADR 0017・0018。チケットのボリュームを消した。why は tidy（後片付けで記録を移したあと）か keep_days（移せないまま PR の後 keep_days 日たった）"
-  handoff.archived:
-    source: control_plane
-    required: [volume, blob_key, bytes, pr_url, outcome]
-    note: "ADR 0018。後片付け。PR がマージか閉じられたチケットのボリュームを、選り分けずにそのまま tar.gz でオブジェクトストアに移した（dispatcher の糸。ラインとは非同期）"
+    required: [volume, keep_days]
+    note: "ADR 0017。PR がマージか閉じられてから keep_days 日たったので、チケットのボリュームを消した"
   supervisor.enqueued:
     source: control_plane
     required: [repo, issue, deps]

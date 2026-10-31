@@ -209,67 +209,16 @@ def test_failed_review_fix_job_files_sendback(cur, fake_gh):
     assert cur.fetchone()["payload"]["fallback_from_job"] == 42
 
 
-# ------------------------------------------------------------------ 後片付け役（ADR 0018）
-def saved(cur, corr=P["corr"]):
-    cur.execute("insert into events(name, correlation_id, payload) values ('handoff.saved',%s,%s)", (corr, Jsonb({"volume": "v", "state": "succeeded", "agent_session": False})))
-
-
-def merged(cur, url=P["url"], days_ago=0):
-    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.merged',%s,%s, now() - make_interval(days => %s))",
-                (P["corr"], Jsonb({"pr_url": url}), days_ago))
-
-
-class Run:
-    def __init__(self, archive_ok=True):
-        self.calls, self.archive_ok = [], archive_ok
-
-    def __call__(self, cmd, **k):
-        self.calls.append(cmd)
-        ok = self.archive_ok or cmd[:3] != ["docker", "run", "--rm"]
-        return type("R", (), {"returncode": 0 if ok else 1, "stderr": "", "stdout": b"TAR" if ok else b""})()
-
-
-def test_tidy_archives_whole_volume_then_removes(cur, monkeypatch):
-    run, puts = Run(), []
-    monkeypatch.setattr(continuation.subprocess, "run", run)
-    saved(cur)
-    merged(cur)
-    assert continuation.tidy(cur, "img", lambda k, d: puts.append((k, d))) == 1
-    assert puts[0][0].startswith("tickets/o/r/249/handoff-") and puts[0][1] == b"TAR"
-    assert "--exclude=./agent" not in run.calls[0]   # 選り分けずにそのまま移す
-    assert run.calls[1] == ["docker", "volume", "rm", "-f", "factory-ticket-o-r-249"]
-    cur.execute("select payload from events where name='handoff.archived'")
-    assert cur.fetchone()["payload"]["outcome"] == "merged"
-    assert continuation.tidy(cur, "img", lambda k, d: puts.append(k)) == 0   # 片付けたら二度はしない
-
-
-def test_tidy_waits_for_open_pr_and_running_jobs(cur, monkeypatch):
-    run = Run()
-    monkeypatch.setattr(continuation.subprocess, "run", run)
-    saved(cur)
-    assert continuation.tidy(cur, "img", lambda k, d: None) == 0   # PR がまだ開いている
-    merged(cur)
-    cur.execute("insert into jobs(correlation_id, repo, issue_number, state) values (%s,%s,249,'running')", (P["corr"], REPO))
-    assert continuation.tidy(cur, "img", lambda k, d: None) == 0   # 同じチケットのジョブが動いている
-    assert run.calls == []
-
-
-def test_tidy_keeps_volume_when_archive_fails(cur, monkeypatch):
-    run = Run(archive_ok=False)
-    monkeypatch.setattr(continuation.subprocess, "run", run)
-    saved(cur)
-    merged(cur)
-    assert continuation.tidy(cur, "img", lambda k, d: None) == 0
-    assert all(c[:3] != ["docker", "volume", "rm"] for c in run.calls)
-
-
 def test_keep_days_cleanup_sees_new_volume_after_removal(cur, monkeypatch):
     calls = []
     monkeypatch.setattr(continuation.subprocess, "run", lambda cmd, **k: calls.append(cmd) or type("R", (), {"returncode": 0, "stderr": ""})())
-    saved(cur)
-    merged(cur, days_ago=10)
+    def saved():
+        cur.execute("insert into events(name, correlation_id, payload) values ('handoff.saved',%s,%s)", (P["corr"], Jsonb({"volume": "v"})))
+    saved()
+    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.merged',%s,%s, now() - interval '10 days')",
+                (P["corr"], Jsonb({"pr_url": P["url"]})))
     assert continuation.cleanup(cur) == 1
     assert continuation.cleanup(cur) == 0   # 消した後は数えない
-    saved(cur)   # 同じチケットに新しいボリューム
+    saved()   # 同じチケットに新しいボリューム
     assert continuation.cleanup(cur) == 1
     assert calls[0] == ["docker", "volume", "rm", "-f", "factory-ticket-o-r-249"]
