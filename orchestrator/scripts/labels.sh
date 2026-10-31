@@ -19,6 +19,8 @@ create "factory:needs-judgment" "b60205" "judge が人に回した判断があ�
 create "factory:sendback" "fef2c0" "差し戻し（judge が採用した指摘の修正）"
 create "factory:fix-proposed" "d4c5f9" "差し戻しの提案。流すときは factory:planned に替える（attended の 1 タップ）"
 create "factory:status" "5319e7" "工場の状況（番人が操業停止を通知する Issue。ADR 0005）"
+create "factory:design" "d4c5f9" "画面を含むタスク: 実装の前にデザイナー役とデザイン検査役を通す（ADR 0025。決まると factory:planned に戻る）"
+create "factory:design-choice" "fbca04" "画面の案を人が選ぶのを待っている（factoryctl design pick。ADR 0025）"
 create "factory:clarified" "0e8a16" "要求が確定した（何を・何のために・いつまでに・どの精度で）"
 create "factory:priority:p0" "b60205" "緊急: 作業中のものを止めてでも先に流す（障害の調査・hotfix。ADR 0009）"
 create "factory:priority:p1" "d93f0b" "急ぎ: 順番待ちの先頭に回す（ADR 0009）"

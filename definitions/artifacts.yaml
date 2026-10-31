@@ -64,6 +64,10 @@ types:
     stage: learn
     required: [incident, kind, ticket, summary, viewpoints, root_causes, learnings, had_session]
     note: "ADR 0023。事例型の分析役が 1 件の出来事（差し戻し・停止）を観点ごとになぜなぜで掘った結果。知見の置き場と committee が決まるまで記録だけ"
+  CommitteeDecision:
+    stage: learn
+    required: [pr_url, outcome, decision, votes, enforce, added, pushed_sha]
+    note: "ADR 0024。知見の委員会の議決。git の committee/D-NNNN.yaml と同じ票を、差し戻し（git に残らない）も含めて制御プレーンに残す"
   Lesson:
     stage: learn
     required: [teacher_signal, summary, eval_cases, knowledge_stage]   # eval ケース同梱必須。P3 からは signature・confidentiality・source_refs も（definitions/learning.yaml の lesson）
@@ -100,7 +104,8 @@ types:
 # 補助の型（ステージ表に出てくるもの）
 auxiliary_types:
   Rejection:        { stage: triage, required: [request, reason] }
-  UXSpec:           { stage: design, required: [screens, states, design_system_constraints] }
+  UXSpec:           { stage: design, required: [screens, states, design_system_constraints, design_system_gaps, uxspec, files, round] }   # ADR 0025。デザイナー役の案 1 回分。uxspec は definitions/ui_design.yaml の形、files は案のファイルのオブジェクトストアのキー
+  DesignVerdict:    { stage: design, required: [design_artifact_id, round, decision, inspector_decision, chosen_variant, findings, evidence, interpretation, score, decided_by] }   # ADR 0025。デザイン検査役の判断（approve・revise・human）を judge と同じ 3 層で
   ADR:              { stage: design, required: [title, status, context, decision, alternatives, consequences] }
   ContractDiff:     { stage: design, required: [contract, kind, compat_impact] }
   SchemaDiff:       { stage: design, required: [tables, kind, destructive] }
