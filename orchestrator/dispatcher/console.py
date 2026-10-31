@@ -390,7 +390,7 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`}
  const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
-const KIND={design_variants:"画面の案の選択",taste_sample:"抜き取り"};
+const KIND={design_variants:"画面の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>

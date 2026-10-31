@@ -117,11 +117,21 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 
 - Issue に `factory:plan` を付けると、dispatcher が `plan` のジョブに積む。プランナー（`worker/plan.sh` → `core-gates/plan.py`、tier-small）が、Issue の本文とコメント、製品の `specs/`（デザインシステムの有無）と `.factory-config/knowledge/`（プロダクトの既定）を読み、着手判定と経路を返す。読むだけで、何も書き換えない
 - 経路は型から選ばず、タスクに合わせて「どの役をどの順で通すか」の並び（`steps`）として組む。役は `design_system`（デザインシステムのデザイナー）・`ui_design`（プロダクトデザイナー）・`implement`（実装役）。よくある並び（実装だけ、画面 → 実装、デザインシステム → 画面 → 実装、デザインシステムだけ）は例で、縛りではない。役ごとに focus（何をさせるか）・why・effort（手間の見込み）を書く
-- 指示役は最初の役のラベル（`factory:design-system`・`factory:design`・`factory:planned`）で配る。`factory:design-system` はデザインシステムのデザイナー役ができるまでラベルのまま待つ
+- 指示役は最初の役のラベル（`factory:design-system`・`factory:design`・`factory:planned`）で配る。デザインシステムの仕事の後にほかの役が続く経路は、デザインシステムの仕事を別のチケットに切り（`plan.split`）、元のチケットは `factory:waiting-steps` で待つ。切ったチケットが閉じると、周回が次の役のラベルを付ける（`plan.advanced`）
 - 決定論で当てるのは安全のための最小限（guards）だけ: デザインシステムがなく進め方の指定もないのにプロダクトデザイナーへ回す並びは問いに替える、確信度が低い・往復を使い切った・問いがない・経路が空なら人へ（`factory:plan-human`）。よくある例との食い違い（小さな改修にデザイナー、新しい画面にデザイナーなし、実装の後のデザイン）は印（advisories）を付けるだけで経路は変えない
 - 着手できないときは、理由と選択肢つきの問いを Issue のコメントに書いて `factory:needs-info`。問いのコメントより後に返事が付くと、dispatcher の周回が判定し直しを積む（問いは 2 回まで）。Gen1 は建設者がオーナーの代理で答える
 - 判断の根拠は後で見返せるように残す: artifacts の `Plan` に 3 層（根拠・解釈・確信度）、役ごとの理由、とらなかった並びと理由、当てた決まりと印、入力の版（Engine と製品のコミット、定義とプロンプトの版）。events の `plan.decided`（経路・手間・費用）・`plan.asked`・`plan.answered`。`factoryctl plan list` / `plan show owner/repo#123` で見る
 - 今の入口（`factory:planned`・`factory:implement`・`factory:design`）はそのまま使える。新しいチケットは `factory:plan` から入れる
+
+## デザインシステムのデザイナー役（ADR 0025・0026）
+
+コンセプト・原則・ガイドラインから、トークン・部品・画面の型まで考える役。数値と決まりは `definitions/design_system.yaml`、何を基準化するかは `definitions/design_guideline.yaml`。
+
+- Issue に `factory:design-system`（プランナーが付けるか、人か建設者が付ける）→ `design_system` のジョブ（`worker/design_system.sh` → `core-gates/design_system.py`、tier-large、`factory-worker:design` で動く）
+- concept の段（デザインシステムがない製品、作り直し）: コンセプトとトーン＆マナーの案（2〜3）と、案ごとの見本の画面（今の代表の画面を案のトークンで描き直した静的 HTML とキャプチャ）を作る。案は `DesignConcept`、見本は `design/<job_id>/`。人の選択（`HumanChoice` の `concept_tone`。ブランドに効くので必ず人）に回して `factory:design-choice`
+- 操業コンソールの「人の選択」で選ぶと、周回が spec の段を積む。「どれも違う」で戻すと、人の一言を付けて concept を作り直す
+- spec の段（選ばれた案か、いまのデザインシステムへの追加）: デザインガイドラインの必須の節を `specs/design/` のファイル（principles・concept_tone・tokens・components・patterns・content・accessibility・governance）として書く。正本は `DesignSystemSpec` に残し、Issue の本文に足して `factory:planned`。実装役がファイルを置き、両アプリのテーマと基本の部品をトークンに合わせる（PR は今の検査と judge を通る）
+- events: `design_system.concepts_drafted`・`awaiting_choice`・`choice_applied`（推す案との一致 `agreed`）・`handed_off`
 
 ## デザインの線（ADR 0025。デザイナー役とデザイン検査役）
 

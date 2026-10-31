@@ -46,6 +46,9 @@ steps:
   ui_design:                  # デザイナー役（core-gates/ui_design.py。UXSpec と案のモックを書く。ADR 0025）
     tier: tier-large
     mode: agentic
+  design_system:              # デザインシステムのデザイナー役（core-gates/design_system.py。コンセプトの案とデザインシステムの正本を書く。ADR 0025・0026）
+    tier: tier-large
+    mode: agentic
   ui_design_review:           # デザイン検査役（core-gates/ui_design_review.py。案と規範の写しを読むだけ。ADR 0025）
     tier: tier-judge
   plan:                       # プランナー（core-gates/plan.py。チケットと規範の写しを読むだけ。着手判定と経路。ADR 0025・0026）

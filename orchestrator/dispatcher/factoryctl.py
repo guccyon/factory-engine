@@ -79,7 +79,7 @@ import stoppage
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan")
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system")
 
 
 def carried_input(cur, job_id: int, kind: str) -> dict:

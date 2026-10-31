@@ -18,6 +18,7 @@ labels:
   trigger: factory:plan              # チケットの入口。人か P3 のタスクの補充が付ける
   needs_info: factory:needs-info     # 起票者への問いの返事待ち
   escalate: factory:plan-human       # 人の判断待ち（往復を使い切った・確信が低い）
+  waiting: factory:waiting-steps     # 経路の前の役（デザインシステムの仕事を切った別のチケット）が閉じるのを待っている
 
 roles:                               # 経路に入れられる役。label は最初の役に回すときに付けるラベル（指示役はこれで配る）
   design_system:
