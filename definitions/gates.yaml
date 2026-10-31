@@ -42,6 +42,8 @@ gates:
     implementations:
       contract_compat: { script: core-gates/compat_check.py, status: shadow, since: "2026-10-28",
                          note: "OpenAPI・AsyncAPI の base と head を比べる。製品の CI が Engine の固定した版を取って走らせ、Job Summary に残すだけ（必須チェックへの格上げは建設者の確認のうえ）" }
+      quality_floor: { script: health/quality/snapshot.py, status: shadow, since: "2026-10-31",
+                       note: "内部品質の下限（definitions/quality.yaml の floor。Gen1 は『複雑すぎる関数を増やさない』の 1 つ）。製品の CI が PR の base と head を同じ方法で測って比べ、Job Summary に出すだけ（ADR 0019）" }
     existing_examples:              # 棚卸し 2 節。手元の運用にすでにある型。Engine の core-gates に一般化する候補
       - "依存方向テスト（レイヤー間の参照を spec で列挙して違反を落とす）"
       - "対になる文書の構造一致テスト（README の多言語版）"

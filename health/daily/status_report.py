@@ -36,7 +36,12 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "quality"))
+import ingest as quality_ingest  # noqa: E402  内部品質の取り込み（health/quality/ingest.py、ADR 0019）
+
 ENV = os.environ
+# 内部品質の定期診断を取り込む製品（製品の CI に quality.yml があるもの）。既定は工場の製品すべて（quality.yml がなければ取り込むものがないだけ）
+QUALITY_REPOS = [r.strip() for r in (ENV.get("QUALITY_REPOS") or ENV.get("FACTORY_REPOS", "")).split(",") if r.strip()]
 JST = timezone(timedelta(hours=9))   # slim イメージに tzdata がないので固定のオフセット
 HERE = Path(__file__).resolve().parent
 ROADMAP = Path(ENV.get("ROADMAP") or HERE.parent.parent / "definitions" / "roadmap.yaml")
@@ -387,6 +392,97 @@ def fmt_activity(a: dict) -> list[str]:
     return lines
 
 
+def ingest_quality(conn, day: str):
+    """描く前に、製品の CI の診断とマージの難易度を取り込む。失敗してもレポートは出す"""
+    try:
+        defs = quality_ingest.load_definitions()
+        n = quality_ingest.ingest_snapshots(conn, QUALITY_REPOS, day, gh, TOKEN, defs, log=lambda *a: print(*a, file=sys.stderr))
+        m = quality_ingest.ingest_difficulty(conn, gh, defs, log=lambda *a: print(*a, file=sys.stderr))
+        print(f"[status-report] 内部品質: 診断 {n} 件、難易度 {m} 件を取り込んだ")
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] 内部品質を取り込めない:", repr(e), file=sys.stderr)
+
+
+def quality_trend(conn, days: int = 30) -> dict:
+    """製品ごとの内部品質の診断（quality.snapshot、ADR 0019）の推移。日付の古い順"""
+    if conn is None:
+        return {}
+    out: dict[str, list[dict]] = {}
+    with conn.cursor() as cur:
+        cur.execute("""select payload from events where name='quality.snapshot' and occurred_at > now() - make_interval(days => %s)
+                       order by payload->>'day'""", (days,))
+        for (p,) in cur.fetchall():
+            out.setdefault(p.get("repo"), []).append({"day": p.get("day"), "score": p.get("score"), "metrics": p.get("metrics") or {},
+                                                      "hotspots": (p.get("hotspots") or [])[:3]})
+    return out
+
+
+QUALITY_LABELS = {"complex_function_ratio": "複雑すぎる関数", "long_function_ratio": "長すぎる関数", "duplication_ratio": "重複",
+                  "tests_per_kloc": "テスト / 1000 行", "lint_warnings_per_kloc": "Linter の警告 / 1000 行", "layer_violations": "層の違反"}
+
+
+def fmt_quality(qt: dict) -> list[str]:
+    if not qt:
+        return ["（内部品質の診断はまだありません）"]
+    lines = []
+    for repo, hist in qt.items():
+        last = hist[-1]
+        prev = hist[-2] if len(hist) > 1 else None
+        d = "" if not prev or prev["score"] is None or last["score"] is None else f"（前回 {'+' if last['score'] >= prev['score'] else ''}{last['score'] - prev['score']}）"
+        lines.append(f"**{repo}** スコア {last['score']}{d}（{last['day']}）")
+        lines.append("- " + "、".join(f"{ja} {last['metrics'][k]}" for k, ja in QUALITY_LABELS.items() if last["metrics"].get(k) is not None))
+        if last["hotspots"]:
+            lines.append("- よく変わり複雑なファイル: " + "、".join(f"`{h['file']}`（{h['changes']} 回 × {h['max_ccn']}）" for h in last["hotspots"]))
+        if len(hist) >= 2:
+            xs = ", ".join(f'"{(h["day"] or "")[5:]}"' for h in hist)
+            ys = ", ".join(str(h["score"] if h["score"] is not None else 0) for h in hist)
+            lines += ["", "```mermaid", "xychart-beta", f'  title "{repo} の内部品質のスコア"', f"  x-axis [{xs}]", '  y-axis "点" 0 --> 100', f"  line [{ys}]", "```"]
+        lines.append("")
+    return lines
+
+
+LEVELS_JA = {"easy": "易", "medium": "中", "hard": "難"}
+
+
+def change_cost(conn, weeks: int = 6) -> list[dict]:
+    """難易度ごと・ISO 週ごとの変更のコストの中央値（quality.yaml の change_cost、ADR 0019）。難易度（pr.difficulty）のあるマージだけ"""
+    if conn is None:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("""
+          select to_char(date_trunc('week', (e.payload->>'merged_at')::timestamptz at time zone 'Asia/Tokyo'), 'IYYY-"W"IW') as week,
+                 d.payload->>'level' as level,
+                 extract(epoch from ((e.payload->>'merged_at')::timestamptz - t.created_at)) / 3600 as lead_h,
+                 (select coalesce(sum((j.result->>'cost_usd')::float), 0) from jobs j where j.correlation_id = e.correlation_id) as cost,
+                 (select count(*) from jobs j where j.correlation_id = e.correlation_id) as jobs,
+                 (select count(*) from events s where s.name = 'sendback.filed' and s.payload->>'origin_pr' = e.payload->>'pr_url') as sendbacks
+            from events e
+            join events d on d.dedupe_key = 'pr.difficulty:' || (e.payload->>'pr_url')
+            left join tickets t on t.source = 'github' and 'github:' || t.source_ref = e.correlation_id
+           where e.name = 'pr.merged'
+             and (e.payload->>'merged_at')::timestamptz > now() - make_interval(weeks => %s)""", (weeks,))
+        rows = cur.fetchall()
+    groups: dict[tuple, list] = {}
+    for week, level, lead_h, cost, jobs, sendbacks in rows:
+        groups.setdefault((week, level), []).append((lead_h, cost, jobs, sendbacks))
+    def med(xs):
+        xs = sorted(x for x in xs if x is not None)
+        return xs[len(xs) // 2] if xs else None
+    return [{"week": w, "level": lv, "n": len(v), "lead_time_hours": med([x[0] for x in v]), "cost_usd": med([x[1] for x in v]),
+             "jobs": med([x[2] for x in v]), "sendbacks": med([x[3] for x in v])} for (w, lv), v in sorted(groups.items())]
+
+
+def fmt_change_cost(cc: list[dict]) -> list[str]:
+    if not cc:
+        return ["（難易度の付いたマージはまだありません）"]
+    lines = ["| 週 | 難易度 | 件数 | リードタイム（時間） | 費用（USD） | ジョブ | 差し戻し |", "|---|---|---|---|---|---|---|"]
+    for r in cc:
+        lt = "-" if r["lead_time_hours"] is None else f"{r['lead_time_hours']:.1f}"
+        lines.append(f"| {r['week']} | {LEVELS_JA.get(r['level'], r['level'])} | {r['n']}{'（参考）' if r['n'] < 3 else ''} | {lt} | "
+                     f"{(r['cost_usd'] or 0):.2f} | {r['jobs']} | {r['sendbacks']} |")
+    return lines + ["", "中央値。同じ難易度で週を追って増えていれば、作りが変えにくくなっている兆し。"]
+
+
 def fmt_trend(history: list[dict]) -> list[str]:
     if len(history) < 2:
         return ["（推移は 2 日分たまってから出ます）"]
@@ -415,7 +511,8 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 推移", "", *fmt_trend(history), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
+    lines += ["## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
+              "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
               "<sub>health/daily/status_report.py が生成（LLM 不使用）。日次の記録はこの Issue のコメント。</sub>"]
     return "\n".join(lines)
 
@@ -431,6 +528,8 @@ def render_daily(snap: dict, prev: dict | None) -> str:
         before = {p["id"]: p["progress"] for p in prev.get("phases", [])}
         moved = [f"{p['id']} {pct(before.get(p['id'], 0))} → {pct(p['progress'])}" for p in pr["phases"] if abs(p["progress"] - before.get(p["id"], 0)) >= 0.005]
         lines.append("- 動いたフェーズ: " + ("、".join(moved) if moved else "なし"))
+    for repo, hist in (snap.get("quality") or {}).items():
+        lines.append(f"- 内部品質: {fmt_quality({repo: hist[-2:] if len(hist) > 1 else hist})[0]}")
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
     return "\n".join(lines)
 
@@ -498,11 +597,13 @@ def main() -> int:
 
     # 「前日」は JST の 0〜24 時で区切る（毎朝の配信で前日分を丸ごと見せる）
     today0 = now.astimezone(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+    if conn is not None and args.publish:
+        ingest_quality(conn, date)
     progress = roadmap_progress(conn)
     snap = {"date": date, "generated_at": now.isoformat(), "progress": progress,
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
-            "cost_budget_usd": COST_BUDGET_USD}
+            "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],
