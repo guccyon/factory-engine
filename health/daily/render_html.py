@@ -8,6 +8,7 @@
 使い方:
   render_html.py --out construction.html                 # Issue から読む（GH_TOKEN か gh の認証）
   render_html.py --snapshot snap.json --out construction.html
+  render_html.py --out construction.html --link "設計の診断=https://..."   # 見出しの横にほかのページへのリンクを出す（何度でも）
 """
 from __future__ import annotations
 
@@ -59,8 +60,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--snapshot", help="スナップショットの JSON（省略時は Issue から読む）")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--link", action="append", default=[], help="見出しの横に出すリンク（題=URL）。ページの URL はリポジトリに置かず、公開する側が渡す")
     args = ap.parse_args()
     snap = json.loads(Path(args.snapshot).read_text()) if args.snapshot else from_issue()
+    snap["links"] = [l.split("=", 1) for l in args.link if "=" in l and l.split("=", 1)[1].startswith("https://")]
     data = json.dumps(snap, ensure_ascii=False).replace("</", "<\\/")   # script の中で閉じタグにならないように
     html = (HERE / "page.html").read_text().replace("/*__SNAPSHOT__*/null", data)
     Path(args.out).write_text(html)
