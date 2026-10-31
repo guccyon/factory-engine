@@ -62,6 +62,8 @@ JOB_DB_USER, JOB_DB_PASSWORD = "factory", ENV.get("POSTGRES_PASSWORD", "factory"
 WATCH_INTERVAL = int(ENV.get("WATCH_INTERVAL_SEC", "60"))
 IDLE_MIN = int(ENV.get("WATCH_IDLE_MIN", "20"))              # 実行中 0 かつ投入可能 0 がこの分数続いたら停止
 HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の heartbeat がこの分数ないと停止（heartbeat が 1 度でも来てから有効）
+STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジョブの出力がこの分数止まったら停止（完了まで定期的に見る。2026-10-31 オーナー）
+LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
@@ -267,10 +269,12 @@ def run_job(job: dict):
             lines: list[str] = []
             deadline = time.time() + JOB_TIMEOUT
             cancelled = False
+            LAST_OUTPUT[job_id] = time.time()
             while True:
                 line = proc.stdout.readline()
                 if line:
                     lines.append(line)
+                    LAST_OUTPUT[job_id] = time.time()
                     if len(lines) % 20 == 0:
                         cur.execute("select cancel_requested from jobs where id=%s", (job_id,))
                         if cur.fetchone()["cancel_requested"]:
@@ -281,6 +285,7 @@ def run_job(job: dict):
                     subprocess.run(["docker", "kill", name], capture_output=True)
                     proc.wait(timeout=30)
                     break
+            LAST_OUTPUT.pop(job_id, None)
             # 止める印はログが出ない間にも付く（ops_loop がコンテナを止める）。終わった時点でもう一度見る
             cur.execute("select cancel_requested, preempted_for from jobs where id=%s", (job_id,))
             cj = cur.fetchone()
@@ -637,6 +642,21 @@ def watch_once():
         for k in stoppage.open_keys(cur, "stuck:"):
             if int(k.split(":", 1)[1]) not in stuck:
                 stoppage.close_stoppage(cur, k, remedy="ジョブが終了した")
+
+        # 5) 実行中のジョブの滞り: 出力が STALL_MIN 分止まっている（打ち切りを待たずに知らせる。完了まで毎周期見る）
+        cur.execute("select id, correlation_id, started_at from jobs where state='running'")
+        stalled = {}
+        for r in cur.fetchall():
+            last = LAST_OUTPUT.get(r["id"])
+            if last is not None and time.time() - last > STALL_MIN * 60:
+                stalled[r["id"]] = r
+        for r in stalled.values():
+            stoppage.open_stoppage(cur, f"stall:{r['id']}", "factory-bug", f"ジョブの出力が {STALL_MIN} 分止まっている",
+                                   waiting_for="出力の再開か、dispatcher の調査（factoryctl stop / rerun）", started_at=r["started_at"],
+                                   correlation_id=r["correlation_id"], job_id=r["id"])
+        for k in stoppage.open_keys(cur, "stall:"):
+            if int(k.split(":", 1)[1]) not in stalled:
+                stoppage.close_stoppage(cur, k, remedy="出力が再開した、またはジョブが終了した")
 
         # 5) マージ待ち: supervisor が「工場はマージしない」（execute=false）と記録した PR が、MERGE_WAIT_MIN 分たってもマージも閉じもされていない。
         #    ラインが空（idle）と分けて人の判断待ち（human）で開き、見回りがマージ役を起こせるようにする（2026-10-31 の夜間停止）
