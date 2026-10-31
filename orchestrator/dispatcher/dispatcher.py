@@ -774,7 +774,18 @@ def watch_once():
             if int(k.split(":", 1)[1]) not in stalled:
                 stoppage.close_stoppage(cur, k, remedy="出力が再開した、またはジョブが終了した")
 
-        # 5) マージ待ち: supervisor が「工場はマージしない」（execute=false）と記録した PR が、MERGE_WAIT_MIN 分たってもマージも閉じもされていない。
+        # 6) 結果の出た PR に紐づく停止（judge: / sendback: / ci: / merge:）が開いたままなら閉じる。
+        #    judge がマージの直後に終わると、supervisor の「PR が閉じたら閉じる」をすり抜けて開いたまま残る（2026-10-31、rally #253）
+        for k in stoppage.open_keys(cur, ""):
+            prefix, _, url = k.partition(":")
+            if prefix not in ("judge", "sendback", "ci", "merge") or not url.startswith("https://"):
+                continue
+            cur.execute("select name from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s limit 1", (url,))
+            r = cur.fetchone()
+            if r:
+                stoppage.close_stoppage(cur, k, remedy="PR が" + ("マージされた" if r["name"] == "pr.merged" else "閉じられた") + "（結果の出た PR の停止は閉じる）")
+
+        # 7) マージ待ち: supervisor が「工場はマージしない」（execute=false）と記録した PR が、MERGE_WAIT_MIN 分たってもマージも閉じもされていない。
         #    ラインが空（idle）と分けて人の判断待ち（human）で開き、見回りがマージ役を起こせるようにする（2026-10-31 の夜間停止）
         cur.execute("select distinct on (payload->>'pr_url') payload->>'pr_url' as pr_url, occurred_at, correlation_id, payload, "
                     "now() - occurred_at > make_interval(mins => %s) as long_wait from events "
