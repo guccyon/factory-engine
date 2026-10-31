@@ -103,6 +103,13 @@ docker compose exec dispatcher factoryctl priority guccyon/rally#170 p0 --reason
 docker compose exec dispatcher factoryctl hold 12
 ```
 
+## PR の見張り（ADR 0015）
+
+工場の PR に起きた動き（push、CI の結果、衝突、レビュー）を GitHub から拾い、抽象化したイベント（`pr.head_updated` / `pr.ci_failed` / `pr.ci_passed` / `pr.conflicted` / `pr.review_submitted`）として events に発行する、決定論的なモジュール（`dispatcher/pr_events.py`。dispatcher の中のスレッド）。オーケストレーター（supervisor）は GitHub を見ずにこのイベントを読む。
+
+- 入口は 2 つ。Webhook（`WEBHOOK_SECRET` があれば dispatcher の `/webhook` が `pull_request` / `pull_request_review` / `check_suite` / `check_run` / `workflow_run` を受ける。商用・クラウドで即時）と、ポーリング（`PR_EVENTS_INTERVAL_SEC`、既定 60 秒。オンプレミスや手元）。どちらも「見に行く合図」で、事実は GitHub の今の状態を取り直して決める。同じ事実は dedupe で 1 回しか発行しないので、両方動いても二重にならない
+- `PR_EVENTS_SOURCE=both|poll|webhook`（既定 both。webhook だけだと見逃しを拾えない）、`PR_EVENTS_ENABLED=0` で止める
+
 ## 工場長の supervisor（ADR 0004）
 
 判断は持たず、状態と表を見て工程を起動するだけの常駐プロセス（compose の `supervisor`。dispatcher と同じイメージ）。60 秒ごとに:

@@ -202,18 +202,18 @@ def factory_prs(cur) -> list[dict]:
 
 def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None):
     """工場の PR の CI が落ちた・衝突しているなら停止として開く（検査・judge は CI が通るまで積まないので、黙って止まらないように）。
-    次の head で CI が通れば閉じる。PR が閉じても閉じる"""
+    事実は PR の見張り（pr_events、ADR 0015）が発行したイベントから読む。GitHub には問い合わせない。次の head で CI が通れば閉じる。PR が閉じても閉じる"""
     key = f"ci:{p['url']}"
-    if mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
+    cur.execute("select name, payload from events where name in ('pr.ci_failed','pr.ci_passed','pr.conflicted') "
+                "and payload->>'pr_url'=%s and payload->>'head_sha'=%s", (p["url"], sha))
+    seen = {r["name"]: r["payload"] for r in cur.fetchall()}
+    if "pr.conflicted" in seen or mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
         stoppage.open_stoppage(cur, key, "ticket", "工場の PR が main と衝突している。検査と judge に進めない",
                                waiting_for="builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
-        return
-    runs = (gh("GET", f"repos/{p['repo']}/commits/{sha}/check-runs?per_page=50") or {}).get("check_runs", [])
-    failed = sorted({r["name"] for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled")})
-    if failed:
-        stoppage.open_stoppage(cur, key, "ticket", f"工場の PR の CI が落ちた（{', '.join(failed)}）。検査と judge に進めない",
+    elif "pr.ci_failed" in seen:
+        stoppage.open_stoppage(cur, key, "ticket", f"工場の PR の CI が落ちた（{', '.join(seen['pr.ci_failed'].get('failed') or [])}）。検査と judge に進めない",
                                waiting_for="builder が直すか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
-    elif runs and all(r.get("status") == "completed" for r in runs):
+    elif "pr.ci_passed" in seen:
         stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った（衝突も解けた）", closed_by="supervisor")
 
 

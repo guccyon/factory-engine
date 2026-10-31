@@ -33,6 +33,7 @@ from psycopg.types.json import Jsonb
 
 import judgment
 import ops
+import pr_events
 import stoppage
 
 ENV = os.environ
@@ -700,11 +701,15 @@ class Hook(BaseHTTPRequestHandler):
         if not hmac.compare_digest(sig, mac):
             self.send_response(401); self.end_headers(); return
         ev = json.loads(body or b"{}")
-        if self.headers.get("X-GitHub-Event") == "issues" and ev.get("action") == "labeled" and ev.get("label", {}).get("name") == TRIGGER_LABEL:
+        event = self.headers.get("X-GitHub-Event", "")
+        if event == "issues" and ev.get("action") == "labeled" and ev.get("label", {}).get("name") == TRIGGER_LABEL:
             repo, n = ev["repository"]["full_name"], ev["issue"]["number"]
             if repo in REPOS and enqueue(repo, n, "webhook", issue_json=ev["issue"]):
                 swap_label(repo, n, [TRIGGER_LABEL], [LABELS["queued"]])
         self.send_response(204); self.end_headers()
+        # PR の動き（push・CI・レビュー）は PR の見張りがイベントにする（ADR 0015）。payload は合図で、事実は見張りが取り直す
+        if event in pr_events.WEBHOOK_EVENTS:
+            threading.Thread(target=pr_events.handle_webhook, args=(event, ev), daemon=True).start()
 
     def log_message(self, *a):  # 静かに
         pass
@@ -739,6 +744,7 @@ def main():
     threading.Thread(target=ops_loop, daemon=True).start()
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
+    pr_events.start(threading)
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
