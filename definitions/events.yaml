@@ -226,6 +226,10 @@ events:
     source: control_plane
     required: [signature, issue, signals, day]
     note: "ADR 0013 の 3。Stage 2 の候補で負例の元がある束から、ルール化の Issue（factory:planned）を 1 日 1 本まで起票した。工場の implement ジョブがルール変更 PR を書く。dedupe は signature ごと"
+  learn.rule_transition_filed:
+    source: control_plane
+    required: [rule, from, to, why, issue, stats]
+    note: "ADR 0013 の 6。supervisor が judge の裁きから overlay のルールの次の状態（shadow → adopted、カナリアで adopted → shadow）を判定し、state を書き換える Issue（factory:planned）を起票した。dedupe はルール・行き先・状態に入った時刻ごと"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]
