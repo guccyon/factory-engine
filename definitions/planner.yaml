@@ -1,0 +1,53 @@
+# プランナー（ADR 0025 のプランナーの節、ADR 0026 の着手判定）
+#
+# チケットの入口。Issue に factory:plan → プランナー（plan）が着手判定と経路の振り分けをする:
+#   ready     → 経路のラベルを付ける。指示役（dispatcher / supervisor）はラベルどおりに配る
+#                 implement      → factory:planned（デザイナーなしで実装役へ。依存を見て supervisor が投入）
+#                 ui_design      → factory:design（画面のデザイナー → デザイン検査役 → 実装）
+#                 design_system  → factory:design-system（デザインシステムのデザイナー → 画面のデザイナー → 実装）
+#   ask       → 理由と選択肢つきの問いを Issue のコメントで起票者に返し、factory:needs-info。返信が付いたら判定し直す
+#   escalate  → 問いの往復を使い切っても決まらない。factory:plan-human を付けて人に回す
+# プランナーは製品のリポジトリも Issue も書き換えない（読むだけ）。作用は dispatcher が結果を見て行う。
+# Gen1 は、問いへの回答とチケットへの要求・要件の記載を、オーナーの代理で建設者が行う（2026-11-01 戦略会議）。
+# 数値は仮置き（2026-11-01。運用しながら直す）。
+
+schema_version: "0.1"
+status: draft
+
+labels:
+  trigger: factory:plan              # チケットの入口。人か P3 のタスクの補充が付ける
+  needs_info: factory:needs-info     # 起票者への問いの返事待ち
+  escalate: factory:plan-human       # 人の判断待ち（往復を使い切った・確信が低い）
+  routes:                            # 経路ごとに付けるラベル（指示役はこれを見て配る）
+    implement: factory:planned
+    ui_design: factory:design
+    design_system: factory:design-system
+
+routes:
+  implement: {ja: 実装役へ直行, when: "画面がない、または既存の画面の小さな改修（項目 1 つ・文言・並び）で、既存の部品と画面定義のままで足りる"}
+  ui_design: {ja: 画面のデザイナー, when: "新しい画面、既存の画面の作り直し、複数の画面にまたがる機能。デザインシステムがあるか、既存の画面に倣ってよいとチケットに書いてある"}
+  design_system: {ja: デザインシステムのデザイナー, when: "デザインシステムがまだない製品で、チケットが「デザインシステムから作る」を選んだ。デザインシステムに部品・型・基準を足す、コンセプトやトーン＆マナーを作り直す"}
+
+design_scales:                       # デザインの依頼の大きさ（ADR 0026 の 1）。経路の決定論の当てはめに使う
+  none: 画面がない
+  small: 既存の画面の小さな改修
+  screen: 新しい画面 1 枚、既存の画面の作り直し
+  feature: 複数の画面にまたがる新機能
+  system: デザインシステムそのもの（オンボーディング、部品・基準の追加）
+
+asking:
+  max_rounds: 2                      # 起票者への問いは 2 回まで。3 回目の判定でも決まらなければ人へ
+  max_questions: 3                   # 1 回の問いは 3 つまで（選択肢つき）
+  human_below_confidence: 0.6        # ready でも確信度がこれ未満なら人へ
+  answer_marker: "<!-- factory:plan-questions -->"   # 問いのコメントの印。これより後の、印のないコメントを返事とみなす
+
+planner:
+  max_turns: 12
+  rules:
+    - "チケットの本文と、これまでの問いと返事（comments.md）を読む。返事に書かれたことは、起票者の決定として扱う"
+    - "製品の specs/design/ があればデザインシステムがある（tokens と部品の一覧を見る）。なければ、まだない"
+    - "デザインシステムがない製品で画面を含むチケットは、デザインの進め方の指定（既存の画面に倣って任せる／先にデザイン案を出す／デザインシステムを作るところから）がなければ ask にする"
+    - "製品の知見（.factory-config/knowledge/）に同じ問いへの答え（プロダクトの既定）があれば、それに従い、同じ問いを繰り返さない"
+    - "小さな改修（design_scale: small）は implement にする。新しい画面と作り直しは ui_design 以上にする"
+    - "問いは起票者が選ぶだけで答えられる形にする（選択肢 2〜4 つと、推す選択肢）。何を決めると着手できるかを 1 文で書く"
+    - "受け入れ条件がない・何を作るかが読めないチケットは ask にする（中身を推測で埋めない）"
