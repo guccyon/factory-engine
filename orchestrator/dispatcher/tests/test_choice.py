@@ -18,10 +18,11 @@ OPTS = [{"id": "A", "label": "確認の段", "image_key": "choices/1/a.png"}, {"
 
 def test_validate_rejects_bad_shapes():
     assert choice.validate("nope", OPTS)
-    assert choice.validate("design_variants", OPTS[:1])                       # 案の選択は 2 案以上
+    assert choice.validate("design_variants", OPTS[:1]) is None               # 小さな追加は 1 案でも人に回る（ui_design.yaml の small_change_min）
     assert choice.validate("design_variants", [OPTS[0], dict(OPTS[1], id="A")])  # id の重複
     assert choice.validate("design_variants", [OPTS[0], dict(OPTS[1], image_key="../etc/passwd")])
     assert choice.validate("design_variants", [OPTS[0], dict(OPTS[1], image_key="other/x.png")])
+    assert choice.validate("design_variants", [OPTS[0], dict(OPTS[1], image_key="design/12/b.png")]) is None
     assert choice.validate("taste_sample", OPTS[:1]) is None
     assert choice.validate("design_variants", OPTS) is None
 

@@ -35,6 +35,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 import choice
+import design_line
 import drain
 import judgment
 import ops
@@ -46,6 +47,7 @@ PORT = int(ENV.get("CONSOLE_PORT", "8790"))
 ALLOWED_HOSTS = {h.strip() for h in ENV.get("CONSOLE_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()}
 OPERATOR = ENV.get("CONSOLE_OPERATOR", "builder")
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
+MODEL_TIER = ENV.get("MODEL_TIER", "tier-large")   # 人が案を戻したときに積み直すデザイナー役のモデル（dispatcher と同じ値）
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 段の残りがこれを切ると赤く出す（番人の知らせと同じ値。dispatcher.py）
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
@@ -232,10 +234,20 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
     m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag)", path)
     if m:
         aid, what = int(m.group(1)), m.group(2)
+        c = choice.get(cur, aid)
+        sub = (c or {}).get("subject") or {}
+        design = bool(c and c.get("kind") == "design_variants" and c.get("status") == "open" and sub.get("repo") and str(sub.get("ticket", "")).isdigit())
         if what == "choose":
+            if design:   # デザインの線に渡す（Issue への反映は dispatcher の周回。ADR 0025）
+                try:
+                    design_line.choose(cur, sub["repo"], int(sub["ticket"]), str(body.get("option") or ""), by, reason)
+                except ValueError as e:
+                    return 409, {"error": str(e)}
             ok, msg = choice.choose(cur, aid, str(body.get("option") or ""), by, reason)
         elif what == "return":
             ok, msg = choice.return_to_maker(cur, aid, by, reason)
+            if ok and design:
+                design_line.return_to_designer(cur, sub["repo"], int(sub["ticket"]), c["correlation_id"], reason, MODEL_TIER)
         else:
             opt = body.get("option")
             ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, str(opt) if opt else None)
@@ -292,7 +304,7 @@ class Handler(BaseHTTPRequestHandler):
             row = cur.fetchone()
         opt = next((o for o in (row["payload"]["options"] if row else []) if o["id"] == option_id), None)
         key = (opt or {}).get("image_key")
-        if not key or not key.startswith(choice.IMAGE_PREFIX) or store() is None:
+        if not key or not choice.image_key_ok(key) or store() is None:
             return self._json(404, {"error": "no image"})
         obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
         try:

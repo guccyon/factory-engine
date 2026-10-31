@@ -7,7 +7,7 @@
 - 違和感の印: taste.flagged（教師信号 taste_flag。signature は taste:<言語化の候補>。learning.yaml）
 
 ここは記録だけで、次の工程を起こすのは supervisor（状態は制御プレーンに置く。ADR 0020）。
-案の画像はオブジェクトストアの choices/ の下に置き、操業コンソールが中継する（外部の URL を画面に出さない）。
+案の画像はオブジェクトストアの choices/ か design/（デザイナー役の案。design_line.store_files）の下に置き、操業コンソールが中継する（外部の URL を画面に出さない）。
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import re
 from psycopg.types.json import Jsonb
 
 KINDS = {"design_variants": "画面の案の選択", "taste_sample": "抜き取り"}
-IMAGE_PREFIX = "choices/"
+IMAGE_PREFIXES = ("choices/", "design/")
 MAX_OPTIONS, MAX_LEN = 4, 1000
 OPTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 
@@ -36,11 +36,13 @@ def validate(kind: str, options: list[dict]) -> str | None:
         return "options の id は英数字・_・- の 20 文字以内で重複なし"
     for o in options:
         key = o.get("image_key")
-        if key is not None and (not isinstance(key, str) or not key.startswith(IMAGE_PREFIX) or ".." in key):
-            return f"image_key は {IMAGE_PREFIX} の下だけ"
-    if kind == "design_variants" and len(options) < 2:
-        return "画面の案の選択は 2 案以上"
+        if key is not None and not image_key_ok(key):
+            return f"image_key は {' か '.join(IMAGE_PREFIXES)} の下だけ"
     return None
+
+
+def image_key_ok(key) -> bool:
+    return isinstance(key, str) and key.startswith(IMAGE_PREFIXES) and ".." not in key
 
 
 def request(cur, kind: str, correlation_id: str, question: str, options: list[dict], *, recommended: str | None = None,
@@ -66,6 +68,20 @@ def open_choices(cur, limit: int = 50) -> list[dict]:
     cur.execute("select id, correlation_id, created_at, payload from artifacts where type='HumanChoice' and payload->>'status'='open' "
                 "order by id limit %s", (limit,))
     return [{"id": r["id"], "correlation_id": r["correlation_id"], "created_at": r["created_at"], **r["payload"]} for r in cur.fetchall()]
+
+
+def get(cur, aid: int) -> dict | None:
+    cur.execute("select id, correlation_id, payload from artifacts where id=%s and type='HumanChoice'", (aid,))
+    r = cur.fetchone()
+    return {"id": r["id"], "correlation_id": r["correlation_id"], **r["payload"]} if r else None
+
+
+def find_open(cur, kind: str, repo: str, ticket: str) -> int | None:
+    """subject の repo と ticket で開いている依頼を探す（factoryctl から選んだときに画面の依頼も閉じるため）"""
+    cur.execute("select id from artifacts where type='HumanChoice' and payload->>'status'='open' and payload->>'kind'=%s "
+                "and payload->'subject'->>'repo'=%s and payload->'subject'->>'ticket'=%s order by id desc limit 1", (kind, repo, ticket))
+    r = cur.fetchone()
+    return r["id"] if r else None
 
 
 def _get_open(cur, aid: int):
