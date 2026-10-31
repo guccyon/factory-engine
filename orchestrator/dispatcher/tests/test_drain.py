@@ -133,6 +133,22 @@ def test_watcher_opens_drain_stoppage_and_skips_idle(cur):
     assert not stoppage.open_keys(cur, "drain:")
 
 
+def test_watcher_opens_budget_stoppage_instead_of_idle(cur):
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, state, enqueued_at, finished_at) "
+                "values ('github:o/r#9','o/r',9,'succeeded', now() - interval '2 hours', now() - interval '2 hours')")
+    cur.execute("insert into events(name, payload, occurred_at) values ('supervisor.enqueued', '{}', now() - interval '3 hours')")
+    cur.execute("insert into events(name, payload, occurred_at) values ('supervisor.budget_paused', %s, now() - interval '1 hour')",
+                (Jsonb({"window_start": "2026-10-31T17:00:00+09:00", "budget_usd": 90.0, "spent_usd": 93.45}),))
+    dispatcher.watch_once()
+    assert stoppage.open_keys(cur, "budget:") and not stoppage.open_keys(cur, "idle:")
+    cur.execute("select category from stoppages where key like 'budget:%%'")
+    assert cur.fetchone()["category"] == "budget"
+    cur.execute("insert into events(name, payload) values ('supervisor.enqueued', '{}')")   # 次の枠で投入を再開した
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, state) values ('github:o/r#10','o/r',10,'queued')")
+    dispatcher.watch_once()
+    assert not stoppage.open_keys(cur, "budget:")
+
+
 def test_recover_reattaches_live_containers_and_requeues_lost(cur, docker):
     live = job(cur, "o/r#1", state="running", container="factory-job-1")
     lost = job(cur, "o/r#2", state="running", container="factory-job-2")

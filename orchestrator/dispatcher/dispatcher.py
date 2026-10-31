@@ -696,6 +696,15 @@ def classify_failure(p: dict) -> tuple[str, str, str] | None:
     return "factory-bug", "ジョブが失敗した（未分類。人が分類を直す）", "原因の調査と rerun"
 
 
+def budget_paused(cur) -> dict | None:
+    """supervisor が枠の予算の使い切りで投入を止めているか。止めた記録（supervisor.budget_paused）がその後の投入より新しく、
+    枠の長さ（最大 5 時間）を過ぎていなければ止めている。枠の設定は supervisor の側にあるので、記録だけから判断する"""
+    cur.execute("select occurred_at, payload from events where name='supervisor.budget_paused' and occurred_at > now() - interval '6 hours' "
+                "and occurred_at > coalesce((select max(occurred_at) from events where name='supervisor.enqueued'), '-infinity') "
+                "order by id desc limit 1")
+    return cur.fetchone()
+
+
 def watch_once():
     with db() as conn, conn.cursor() as cur:
         # 番人が見始めた時点。これより前のジョブの失敗は遡って開かない（過去分は builder が手で記録している）
@@ -710,14 +719,27 @@ def watch_once():
                     "from jobs", (IDLE_MIN,))
         j = cur.fetchone()
         idle_open = stoppage.open_keys(cur, "idle:")
+        budget_open = stoppage.open_keys(cur, "budget:")
         draining = drain.state(cur)
+        paused = budget_paused(cur)
         if j["r"] == 0 and j["q"] == 0:
-            if not idle_open and not draining and j["last"] and j["long_idle"]:   # 一時停止中は drain: で知らせる
+            if paused:   # 枠の予算を使い切って supervisor が投入を止めている。ラインが空（idle）と分ける（2026-10-31）
+                for k in idle_open:
+                    stoppage.close_stoppage(cur, k, remedy="予算の枠の使い切りによる停止として開き直した")
+                if not budget_open and not draining:
+                    p = paused["payload"]
+                    stoppage.open_stoppage(cur, f"budget:{p.get('window_start')}", "budget",
+                                           f"使用量の枠の予算を使い切ったので新しい段を投入していない（{p.get('spent_usd')} / ${p.get('budget_usd')}）",
+                                           waiting_for="次の使用量の枠の始まり（supervisor が自分で投入を再開する）", started_at=paused["occurred_at"])
+            elif not idle_open and not draining and j["last"] and j["long_idle"]:   # 一時停止中は drain: で知らせる
                 stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "idle", "ラインが空（実行中・投入可能のジョブがない）",
                                        waiting_for="次の Ticket（factory:implement / factory:request のラベル）か、承認待ちの PR の判断", started_at=j["last"])
         else:
             for k in idle_open:
                 stoppage.close_stoppage(cur, k, remedy="ジョブが投入された")
+        if not paused or j["r"] or j["q"]:
+            for k in budget_open:
+                stoppage.close_stoppage(cur, k, remedy="次の枠に入り、投入を再開した")
 
         # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 入れ替えの後の再開を忘れていないか
         drain_open = stoppage.open_keys(cur, "drain:")
