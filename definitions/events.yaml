@@ -121,8 +121,20 @@ events:
     note: "ADR 0017。実装役が作業の文脈（ticket.json・jobs/<job>/）をチケットのボリュームに残した（保留）。agent_session はエージェントの会話の記録（再開の近道）もあったか"
   handoff.removed:
     source: control_plane
-    required: [volume, keep_days]
-    note: "ADR 0017。PR がマージか閉じられてから keep_days 日たったので、チケットのボリュームを消した"
+    required: [volume, keep_days, why]
+    note: "ADR 0017・0018。チケットのボリュームを消した。why は cleanup（後片付け役が記録を移したあと）か keep_days（PR の後 keep_days 日たって残っていた）"
+  handoff.archived:
+    source: control_plane
+    required: [volume, blob_key, bytes]
+    note: "ADR 0018。後片付けの永続化。チケットのボリュームの引き継ぎの記録（会話の記録 agent/ を除く）を tar.gz でオブジェクトストアに移した"
+  supervisor.cleanup_enqueued:
+    source: control_plane
+    required: [pr_url, outcome]
+    note: "ADR 0018。工場の PR がマージか閉じられ、チケットにボリュームが残っているので、後片付けのジョブ（kind=cleanup）を積んだ。PR ごとに 1 回"
+  cleanup.finished:
+    source: control_plane
+    required: [pr_url, state, archived, handoff_notes, refile]
+    note: "ADR 0018。後片付けが終わった。申し送りと再起票の案の件数（案は CleanupReport とチケットの Issue のコメント。起票はしない）"
   supervisor.enqueued:
     source: control_plane
     required: [repo, issue, deps]

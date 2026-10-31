@@ -10,7 +10,8 @@
 - ボリューム: チケットごとの Docker の名前付きボリューム（factory-ticket-<owner>-<repo>-<issue>）。中身はエージェントに依存しない形
   （ticket.json と jobs/<job>/ の Markdown・JSON。書くのはワーカーの entrypoint.sh）。エージェントのセッション記録（claude --resume）は
   agent/ の下の「あれば使う近道」で、なくても続きは作れる
-- 片付け: PR がマージか閉じられてから HANDOFF_KEEP_DAYS 日でボリュームを消す（後片付けの役割ができるまでの機械的な片付け）
+- 片付け: PR がマージか閉じられたら後片付け役（ADR 0018）が記録をオブジェクトストアに移してボリュームを消す。
+  後片付け役が動かなかったときの受け皿として、HANDOFF_KEEP_DAYS 日たって残っているボリュームも消す
 
 続ける先は工場のブランチ名と PR の番号だけで、シェルにもプロンプトにも PR の本文は渡さない。合図の中身（CI のチェック名、指摘）は
 job.enqueued の input に残し、ワーカーには標準入力で JSON として渡す（ワーカーはデータとしてファイルに置き、指示としては扱わせない）。
@@ -97,28 +98,42 @@ def enqueue(cur, *, repo: str, pr_number: int, pr_url: str, branch: str, head_sh
     return jid
 
 
+def remove_volume(cur, corr: str, name: str, why: str, log=print) -> bool:
+    """チケットのボリュームを消して handoff.removed を記録する。同じチケットに後でまたボリュームができたら、それも消せるように
+    記録の重複よけは直前の handoff.saved ごとにする"""
+    p = subprocess.run(["docker", "volume", "rm", "-f", name], capture_output=True, text=True)
+    if p.returncode != 0:
+        log("handoff remove failed", name, p.stderr[-200:])
+        return False
+    cur.execute("select max(id) as id from events where name='handoff.saved' and correlation_id=%s", (corr,))
+    last = (cur.fetchone() or {}).get("id")
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('handoff.removed',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                (corr, Jsonb({"volume": name, "keep_days": HANDOFF_KEEP_DAYS, "why": why}), f"handoff.removed:{name}@{last}"))
+    return True
+
+
+def archive(volume: str, image: str) -> bytes | None:
+    """ボリュームの引き継ぎの記録を tar.gz で取り出す（エージェントの会話の記録 agent/ は含めない）。取れなければ None"""
+    p = subprocess.run(["docker", "run", "--rm", "--entrypoint", "tar", "-v", f"{volume}:/h:ro", image,
+                        "czf", "-", "--exclude=./agent", "-C", "/h", "."], capture_output=True, timeout=300)
+    return p.stdout if p.returncode == 0 and p.stdout else None
+
+
 def cleanup(cur, log=print) -> int:
-    """PR がマージか閉じられてから HANDOFF_KEEP_DAYS 日たったチケットのボリュームを消す。消した数を返す"""
+    """PR がマージか閉じられてから HANDOFF_KEEP_DAYS 日たって、まだ残っているチケットのボリュームを消す（後片付け役が動かなかった・失敗したときの受け皿）。
+    消した数を返す"""
     if not HANDOFF_ENABLED:
         return 0
     cur.execute("""select distinct e.correlation_id as corr from events e
                     where e.name in ('pr.merged','pr.closed_unmerged') and e.occurred_at < now() - make_interval(days => %s)
                       and e.correlation_id like 'github:%%#%%'
-                      and exists (select 1 from events h where h.name='handoff.saved' and h.correlation_id=e.correlation_id)
-                      and not exists (select 1 from events r where r.name='handoff.removed' and r.correlation_id=e.correlation_id)
+                      and exists (select 1 from events h where h.name='handoff.saved' and h.correlation_id=e.correlation_id
+                                   and not exists (select 1 from events r where r.name='handoff.removed' and r.correlation_id=h.correlation_id and r.id > h.id))
                       and not exists (select 1 from jobs j where j.correlation_id=e.correlation_id and j.state in ('queued','running'))""",
                 (HANDOFF_KEEP_DAYS,))
     n = 0
     for r in cur.fetchall():
         repo, _, issue = r["corr"].split(":", 1)[1].rpartition("#")
-        if not issue.isdigit():
-            continue
-        name = volume_name(repo, int(issue))
-        p = subprocess.run(["docker", "volume", "rm", "-f", name], capture_output=True, text=True)
-        if p.returncode != 0:
-            log("handoff cleanup failed", name, p.stderr[-200:])
-            continue
-        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('handoff.removed',%s,%s,%s) on conflict (dedupe_key) do nothing",
-                    (r["corr"], Jsonb({"volume": name, "keep_days": HANDOFF_KEEP_DAYS}), f"handoff.removed:{name}"))
-        n += 1
+        if issue.isdigit() and remove_volume(cur, r["corr"], volume_name(repo, int(issue)), "keep_days", log):
+            n += 1
     return n

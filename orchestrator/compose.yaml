@@ -108,6 +108,7 @@ services:
       SUPERVISOR_JUDGE: ${SUPERVISOR_JUDGE:-1}           # 検査のあと、仮決めと指摘を裁く judge のジョブを積む（ADR 0006）
       SUPERVISOR_CONFLICT_FIX: ${SUPERVISOR_CONFLICT_FIX:-1}   # 衝突した工場の PR を、同じブランチで既定ブランチを取り込んで直す（ADR 0016）
       SUPERVISOR_CI_FIX: ${SUPERVISOR_CI_FIX:-1}               # CI が落ちた工場の PR を、同じ担当の続きのジョブで直す（ADR 0017）
+      SUPERVISOR_CLEANUP: ${SUPERVISOR_CLEANUP:-1}             # 工場の PR がマージか閉じられたら、後片付けのジョブを積む（ADR 0018）
       CONTINUE_MAX: ${CONTINUE_MAX:-2}
       FACTORY_MODE: ${FACTORY_MODE:-}                    # 既定のモード（attended）。製品の manifest に持たせるのは承認付き PR で
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}

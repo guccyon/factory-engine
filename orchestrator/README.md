@@ -61,7 +61,9 @@ docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine cat /h/ticket.json
 docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine ls -R /h/jobs        # ジョブごとの報告・仮決め・合図・差分
 ```
 
-`agent/` の下はエージェントの会話の記録（Claude Code の `--resume` に使う近道）で、なくても続きは作れる。ボリュームは PR がマージか閉じられてから `HANDOFF_KEEP_DAYS` 日（既定 7）で dispatcher が消す。`/handoff` を持たない古いワーカーのイメージでは、ボリュームなしで続ける（ラインは止めない）。
+`agent/` の下はエージェントの会話の記録（Claude Code の `--resume` に使う近道）で、なくても続きは作れる。
+
+PR がマージか閉じられたら、後片付け役（ADR 0018）が動く。dispatcher が記録（`agent/` を除く）をオブジェクトストアの `tickets/<repo>/<issue>/handoff-job-<job>.tar.gz` に移してボリュームを消し、後片付け役は申し送りと再起票の**案**をチケットの Issue にコメントする（起票はしない）。後片付けが動かなかったボリュームは、PR の後 `HANDOFF_KEEP_DAYS` 日（既定 7）で dispatcher が消す。`/handoff` を持たない古いワーカーのイメージでは、ボリュームなしで続ける（ラインは止めない）。
 
 ## 試験運転（GitHub にも Claude にも触らない）
 

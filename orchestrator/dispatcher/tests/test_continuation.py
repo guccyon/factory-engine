@@ -207,3 +207,91 @@ def test_failed_review_fix_job_files_sendback(cur, fake_gh):
     dispatcher.file_sendback(cur, REPO, P["corr"], None, P["url"], [DEFECT], [], "attended", fallback_from=42)
     cur.execute("select payload from events where name='sendback.filed'")
     assert cur.fetchone()["payload"]["fallback_from_job"] == 42
+
+
+# ------------------------------------------------------------------ 後片付け役（ADR 0018）
+def saved(cur, corr=P["corr"]):
+    cur.execute("insert into events(name, correlation_id, payload) values ('handoff.saved',%s,%s)", (corr, Jsonb({"volume": "v", "state": "succeeded", "agent_session": False})))
+
+
+def merged(cur, url=P["url"], days_ago=0):
+    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.merged',%s,%s, now() - make_interval(days => %s))",
+                (P["corr"], Jsonb({"pr_url": url}), days_ago))
+
+
+def cleanups(cur):
+    cur.execute("select j.issue_number, j.kind, e.payload from jobs j join events e on e.job_id=j.id and e.name='job.enqueued' where j.kind='cleanup' order by j.id")
+    return cur.fetchall()
+
+
+def test_cleanup_enqueued_once_per_pr_with_records(cur, monkeypatch):
+    monkeypatch.setattr(supervisor, "REPOS", [REPO])
+    saved(cur)
+    merged(cur)
+    cur.execute("insert into events(name, correlation_id, payload) values ('sendback.filed',%s,%s)",
+                (P["corr"], Jsonb({"origin_pr": P["url"], "fix_issue": "https://github.com/o/r/issues/9"})))
+    continuation.enqueue(cur, repo=REPO, pr_number=256, pr_url=P["url"], branch=BRANCH, head_sha="a", reason="ci_failed", by="t", signal={})
+    finish_all(cur, "succeeded")
+    supervisor.cleanup_step(cur)
+    supervisor.cleanup_step(cur)
+    rows = cleanups(cur)
+    assert len(rows) == 1 and rows[0]["issue_number"] == 249
+    inp = rows[0]["payload"]["input"]
+    assert inp["outcome"] == "merged" and inp["sendbacks"] == ["https://github.com/o/r/issues/9"] and inp["continues"] == {"ci_failed": 1}
+
+
+def test_cleanup_needs_a_live_volume(cur, monkeypatch):
+    monkeypatch.setattr(supervisor, "REPOS", [REPO])
+    merged(cur)
+    supervisor.cleanup_step(cur)   # ボリュームがない（handoff.saved がない）
+    assert cleanups(cur) == []
+    saved(cur)
+    cur.execute("insert into events(name, correlation_id, payload) values ('handoff.removed',%s,%s)", (P["corr"], Jsonb({"volume": "v"})))
+    supervisor.cleanup_step(cur)   # もう消えた
+    assert cleanups(cur) == []
+
+
+def test_cleanup_retries_when_ticket_is_busy(cur, monkeypatch):
+    monkeypatch.setattr(supervisor, "REPOS", [REPO])
+    saved(cur)
+    merged(cur)
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, state) values (%s,%s,249,'running')", (P["corr"], REPO))
+    supervisor.cleanup_step(cur)
+    assert cleanups(cur) == []
+    finish_all(cur, "succeeded")
+    supervisor.cleanup_step(cur)
+    assert len(cleanups(cur)) == 1
+
+
+def test_act_on_cleanup_reports_and_discards(cur, monkeypatch):
+    posted, removed = [], []
+    monkeypatch.setattr(dispatcher, "comment", lambda repo, n, text: posted.append((n, text)))
+    monkeypatch.setattr(continuation, "remove_volume", lambda cur, corr, name, why, log=print: removed.append((name, why)) or True)
+    result = {"pr_url": P["url"], "model": "m", "report": {"summary": "s", "handoff_notes": [{"note": "次は\n移行を先に"}],
+                                                           "refile": [{"title": "保留した判断", "reason": "r", "body": "b"}]}}
+    dispatcher.act_on_cleanup(cur, REPO, 249, P["corr"], None, "succeeded", result, {"pr_url": P["url"], "outcome": "merged"}, "vol", "tickets/k")
+    cur.execute("select payload from artifacts where type='CleanupReport'")
+    assert cur.fetchone()["payload"]["refile"][0]["title"] == "保留した判断"
+    assert posted and posted[0][0] == 249 and "起票はしていません" in posted[0][1] and "- 次は 移行を先に" in posted[0][1]
+    assert removed == [("vol", "cleanup")]
+
+
+def test_act_on_cleanup_keeps_volume_if_not_archived(cur, monkeypatch):
+    posted, removed = [], []
+    monkeypatch.setattr(dispatcher, "comment", lambda repo, n, text: posted.append(text))
+    monkeypatch.setattr(continuation, "remove_volume", lambda *a, **k: removed.append(a) or True)
+    dispatcher.act_on_cleanup(cur, REPO, 249, P["corr"], None, "succeeded", {"report": {"summary": "s", "handoff_notes": [], "refile": []}},
+                              {"pr_url": P["url"]}, "vol", None)
+    assert posted == [] and removed == []   # 案がなければ書かない。移せていなければ消さない
+
+
+def test_keep_days_cleanup_sees_new_volume_after_removal(cur, monkeypatch):
+    calls = []
+    monkeypatch.setattr(continuation.subprocess, "run", lambda cmd, **k: calls.append(cmd) or type("R", (), {"returncode": 0, "stderr": ""})())
+    saved(cur)
+    merged(cur, days_ago=10)
+    assert continuation.cleanup(cur) == 1
+    assert continuation.cleanup(cur) == 0   # 消した後は数えない
+    saved(cur)   # 同じチケットに新しいボリューム
+    assert continuation.cleanup(cur) == 1
+    assert calls[0] == ["docker", "volume", "rm", "-f", "factory-ticket-o-r-249"]

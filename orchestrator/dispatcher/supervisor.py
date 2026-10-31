@@ -10,6 +10,7 @@
 - 検証の起動: マージを判定した head ごとに検査ジョブ（kind=inspect、L4 の shadow 判定）を積む。結果は gate.evaluated と InspectionReport
 - 続きのジョブ（ADR 0016・0017）: 工場の PR が衝突したら（head ごとに 1 回）、CI が落ちたら（PR ごとに CONTINUE_MAX 回まで）、
   同じチケットの実装役の続きのジョブを積む。直している間は停止を開かず、直せなかったら停止 ci: を開いて人へ
+- 後片付け（ADR 0018）: 工場の PR がマージか閉じられたら、そのチケットの後片付けのジョブを 1 回積む
 - 依存順の投入: `factory:planned` の Issue を工場のチケットに写し（ADR 0009）、本文の「依存: #12 #13」がすべて閉じたものを
   優先度の高い順に `factory:implement` に替える（同時に流すのは上限まで。緊急（p0）は上限を待たない。保留中は流さない）
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
@@ -67,6 +68,7 @@ DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai �
 BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22:25,03:15")
 BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
 CONFLICT_FIX = ENV.get("SUPERVISOR_CONFLICT_FIX", "1") == "1"   # 衝突した工場の PR に、既定ブランチを取り込んで衝突を解くジョブを head ごとに 1 回積む。0 で止める
+CLEANUP_ENABLED = ENV.get("SUPERVISOR_CLEANUP", "1") == "1"   # 工場の PR がマージか閉じられたら、後片付けのジョブを積む（ADR 0018）。0 で止める
 CI_FIX = ENV.get("SUPERVISOR_CI_FIX", "1") == "1"   # CI が落ちた工場の PR に、同じ担当の続きのジョブを積む（PR ごとに CONTINUE_MAX 回まで。ADR 0017）。0 で止める
 LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
@@ -420,6 +422,49 @@ def judge_step(cur, manifests: dict):
         log("judge enqueued", r["pr_url"], "job", jid, "mode", mode)
 
 
+def cleanup_step(cur):
+    """後片付け役（ADR 0018）: 工場の PR がマージか閉じられ、そのチケットにまだ引き継ぎのボリュームがあれば、後片付けのジョブを PR ごとに 1 回積む。
+    入力は制御プレーンの記録だけで組み立てる（PR の結末、judge が人に回した判断、差し戻し、続きのジョブの回数）。
+    同じチケットのジョブが動いていれば積まず、次の周期で積み直す"""
+    if not CLEANUP_ENABLED or DRY_RUN:
+        return
+    cur.execute("""select e.correlation_id as corr, e.name, e.payload->>'pr_url' as pr_url from events e
+                    where e.name in ('pr.merged','pr.closed_unmerged') and e.occurred_at > now() - interval '7 days'
+                      and e.correlation_id like 'github:%%#%%'
+                      and exists (select 1 from events h where h.name='handoff.saved' and h.correlation_id=e.correlation_id
+                                   and not exists (select 1 from events r where r.name='handoff.removed' and r.correlation_id=h.correlation_id and r.id > h.id))
+                      and not exists (select 1 from events c where c.dedupe_key = 'supervisor.cleanup:' || (e.payload->>'pr_url'))""")
+    for r in cur.fetchall():
+        repo, _, issue = r["corr"].split(":", 1)[1].rpartition("#")
+        if repo not in REPOS or not issue.isdigit():
+            continue
+        cur.execute("select payload->>'artifact_id' as id, payload->>'category' as category from events where name='judgment.judged' "
+                    "and payload->>'pr_url'=%s and payload->>'verdict'='escalate'", (r["pr_url"],))
+        escalated = cur.fetchall()
+        for e in escalated:   # 問いの文は仮決めの成果物にある（judge の入力）。なければ類型だけ
+            cur.execute("select payload->>'question' as q from artifacts where id::text=%s", (e["id"] or "",))
+            e["question"] = (cur.fetchone() or {}).get("q")
+        cur.execute("select payload->>'fix_issue' as url from events where name='sendback.filed' and payload->>'origin_pr'=%s", (r["pr_url"],))
+        sendbacks = [x["url"] for x in cur.fetchall()]
+        cur.execute("select payload->>'reason' as reason, count(*) as n from events where name='continue.enqueued' and payload->>'pr_url'=%s group by 1",
+                    (r["pr_url"],))
+        continues = {x["reason"]: x["n"] for x in cur.fetchall()}
+        inp = {"pr_url": r["pr_url"], "outcome": "merged" if r["name"] == "pr.merged" else "closed_unmerged",
+               "escalated": [{"category": e["category"], "question": e["question"]} for e in escalated], "sendbacks": sendbacks, "continues": continues}
+        if not record(cur, "supervisor.cleanup_enqueued", r["corr"], {"pr_url": r["pr_url"], "outcome": inp["outcome"]}, f"supervisor.cleanup:{r['pr_url']}"):
+            continue
+        try:
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-small','cleanup') returning id",
+                        (r["corr"], repo, int(issue)))
+        except psycopg.errors.UniqueViolation:   # 同じチケットのジョブが動いている。次の周期で積み直せるよう記録を消す
+            cur.execute("delete from events where dedupe_key=%s", (f"supervisor.cleanup:{r['pr_url']}",))
+            continue
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (r["corr"], jid, Jsonb({"by": "supervisor", "kind": "cleanup", "pr_url": r["pr_url"], "input": inp})))
+        log("cleanup enqueued", r["pr_url"], "job", jid)
+
+
 def budget_window(now: datetime) -> tuple[datetime, float] | None:
     """今（JST）の使用量の枠の開始時刻と予算。枠は前日からまたぐ（22 時の枠は翌 3 時まで）。週末は開始した日で決める"""
     def parse(spec):
@@ -575,6 +620,7 @@ def tick():
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
         judge_step(cur, manifests)
+        cleanup_step(cur)
         enqueue_step(cur, open_prs)
         daily_report_step(cur)
         release_train_step(cur)
