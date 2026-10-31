@@ -2,6 +2,7 @@
 """工場の操業コンソール（ADR 0009）。工場のいまを見て、順番・保留・停止を操作する常駐サービス。
 
 - 操業 API（JSON）が正本で、画面はその利用者の 1 つ。将来の顧客向けアプリも同じ API を使う
+  GET  /api/inbox                         受信トレイ: 人が対応するものの一覧（ADR 0026 の決定 7。inbox.py）。/api/state にも inbox として入る
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
@@ -37,6 +38,7 @@ from psycopg.rows import dict_row
 import choice
 import design_line
 import drain
+import inbox
 import judgment
 import ops
 import ship
@@ -282,7 +284,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"error": "host not allowed"})
         if self.path == "/api/state":
             with db() as conn, conn.cursor() as cur:
-                return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur)})
+                return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur)})
+        if self.path == "/api/inbox":
+            with db() as conn, conn.cursor() as cur:
+                return self._json(200, inbox.view(cur))
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
         url = urlsplit(self.path)
@@ -357,9 +362,15 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 #choices{padding:0 16px}.ch{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:var(--card)}
 .opts{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin:8px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:8px}
 .opt.rec{border-color:var(--ok)}.opt img{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}.ch input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(360px,100%)}
+#bell{position:relative;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:13px}#bell svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2}
+#bell .n{min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#bell.has .n{background:var(--p0);color:#fff}
+#inbox{padding:0 16px}#inbox[hidden]{display:none}.ib{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.ib h2{font-size:14px;margin:0 0 8px}
+.ib a{color:var(--accent)}.ib ul{list-style:none;margin:0;padding:0}.ib li{padding:8px 0;border-top:1px solid var(--line);display:grid;gap:2px}.ib li:first-child{border-top:0}.who{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--sub);margin-right:6px}
+.ch:target,.rel:target,#ship:target{outline:2px solid var(--accent);outline-offset:2px}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 </style></head><body>
-<header><h1>工場の操業コンソール</h1><span id="hdr"></span></header>
+<header><h1>工場の操業コンソール</h1><button id="bell" aria-expanded="false" aria-controls="inbox" title="受信トレイ: 人が対応するもの"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>受信トレイ <span class="n" id="bell-n">0</span></button><span id="hdr"></span></header>
+<section id="inbox" hidden></section>
 <section id="stops"></section>
 <section id="ship"></section>
 <section id="choices"></section>
@@ -390,12 +401,16 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`}
  const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
+const WHO_ORDER=["owner","po","design_chief","builder","requester"];
+function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
+ return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
+  return `<li><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div></li>`}).join("")}</ul></div>`}
 const KIND={design_variants:"画面の案の選択",taste_sample:"抜き取り"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
   <div class="acts"><button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
- return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
+ return `<div class="ch" id="choice-${c.id}"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
   <div class="opts">${opts}</div><div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div></div>`}).join("")}
 function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||"")];
  if(i.job_id)meta.push(`ジョブ ${i.job_id}${i.kind&&i.kind!=="implement"?"（"+esc(i.kind)+"）":""}${i.attempt>1?" 試行"+i.attempt:""}`);
@@ -417,6 +432,8 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   lineView(f.line),
   f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" ");
  document.getElementById("ship").innerHTML=shipView(s.releases||[]);
+ const ib=s.inbox||{count:0,items:[]},bell=document.getElementById("bell");document.getElementById("bell-n").textContent=ib.count;bell.classList.toggle("has",ib.count>0);
+ bell.setAttribute("aria-label",`受信トレイ ${ib.count} 件`);document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";document.getElementById("inbox").innerHTML=inboxView(ib);
  const ce=document.getElementById("choices"),typing=ce.contains(document.activeElement);if(!typing)ce.innerHTML=choicesView(s.choices||[]);
  document.getElementById("stops").innerHTML=f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("");
  document.getElementById("lanes").innerHTML=LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
@@ -433,6 +450,9 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]")
  if(b.dataset.a==="stop"){if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと止める";setTimeout(()=>{b.classList.remove("armed");b.textContent="止める"},4000);return}
   return post(`/api/jobs/${b.dataset.j}/stop`,{})}
  post(`/api/tickets/${b.dataset.t}/${b.dataset.a}`,{})});
+document.getElementById("bell").addEventListener("click",()=>{const p=document.getElementById("inbox"),b=document.getElementById("bell");p.hidden=!p.hidden;b.setAttribute("aria-expanded",String(!p.hidden));
+ try{localStorage.setItem("inbox-open",p.hidden?"0":"1")}catch(e){}});
+try{if(localStorage.getItem("inbox-open")==="1"){document.getElementById("inbox").hidden=false;document.getElementById("bell").setAttribute("aria-expanded","true")}}catch(e){}
 load();setInterval(load,10000);
 </script></body></html>"""
 
