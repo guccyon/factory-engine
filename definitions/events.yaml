@@ -322,6 +322,26 @@ events:
     source: control_plane
     required: [artifact_id, kind, option, note, signature, subject, by]
     note: "違和感の印。教師信号 taste_flag（learning.yaml）の発生源。signature は taste:<一言を詰めて 40 字>（仮。言語化の候補への寄せは learn が後で行う）"
+  inbox.requested:
+    source: control_plane
+    required: [key, kind, who, title, url, action, by]
+    note: "ADR 0026 の決定 7。他の工程（レビューページの承認待ち、着手判定で起票者に返した問いなど）が受信トレイに積んだ依頼（inbox.request）。who は owner / po / design_chief / builder / requester。停止・人の選択・本番待ちは積まなくても受信トレイが拾う"
+  inbox.resolved:
+    source: control_plane
+    required: [key, by, outcome]
+    note: "受信トレイの依頼が済んだ（inbox.resolve）。key は inbox.requested の key"
+  inbox.notified:
+    source: control_plane
+    required: [key, kind, who, reason, count, channels]
+    note: "受信トレイの 1 件を通知した（notify_inbox）。reason は new / renotify / escalate。key は受信トレイの key（stoppage:… / choice:… / release:… / task:…）。channels は届いた通知先（log / github-issue / slack）"
+  inbox.escalated:
+    source: control_plane
+    required: [key, kind, who, to, age_sec]
+    note: "INBOX_ESCALATE_MIN を過ぎても残っているので代理（INBOX_PROXY。Gen1 は建設者）にも知らせた"
+  inbox.cleared:
+    source: control_plane
+    required: [key, kind, who, notified, escalated, waited_sec]
+    note: "通知した件が受信トレイから消えた。waited_sec は最初の通知から消えるまで（判断待ちの滞留の SLI。ADR 0026 の決定 7）"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
