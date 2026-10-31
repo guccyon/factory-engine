@@ -1,0 +1,92 @@
+# デザインガイドラインのアウトライン（ADR 0025）
+# 工場が作るプロダクトは、オンボーディングでこのアウトラインに沿ってデザインガイドラインを作り、開発とともに育てる。
+# ここは Engine の標準（何を基準化するか）。値と本文はプロダクトのリポジトリの specs/design/ に置く。
+#
+# 参考にした構成（2026-10-31 時点の公開のデザインシステム）:
+#   Material Design 3（Google）、Human Interface Guidelines（Apple）、Polaris（Shopify）、Carbon（IBM）、
+#   Atlassian Design System、Primer（GitHub）、デジタル庁デザインシステム、SmartHR Design System
+# 多くに共通する骨格は「原則 → 基礎（トークン）→ 部品 → 画面の型 → 文言 → アクセシビリティ → 運用」。
+# 日本語の文字組み（行間・約物・表記）はデジタル庁と SmartHR を、部品ページの書き方は Polaris と Carbon を主に参考にする。
+
+schema_version: "0.1"
+status: draft
+
+# 各基準の書き方（全セクション共通）
+rule_format:
+  level: "must | should | may（must だけがマージを止める）"
+  statement: "基準の 1 文"
+  why: "理由（利用者にとっての意味）"
+  check: "deterministic（lint・トークン外の値の検出など） | design_inspector（デザイン検査役の観点） | human（人の違和感の印）"
+  examples: "良い例・悪い例（キャプチャ）"
+
+# オンボーディングで最低限埋める節（required_at_onboarding: true）と、開発とともに足す節
+sections:
+  - id: principles
+    ja: デザインの原則
+    required_at_onboarding: true
+    contents: [プロダクトの目的と利用者, 原則（3〜5 個。迷ったときの優先順位つき）, やらないこと]
+    reference: "Polaris の experience values、Carbon の principles、デジタル庁の原則"
+
+  - id: concept_tone
+    ja: コンセプトとトーン＆マナー
+    required_at_onboarding: true
+    contents: [誰にどんな印象を与えるか, ムード（形容詞 3〜5 個とその反対語）, 言葉づかいの声と調子（場面ごとの調子の変え方）, 写真・イラスト・アイコンの扱い, 競合や参考との違い]
+    reference: "Atlassian と Polaris の voice and tone、HIG の branding"
+
+  - id: foundations
+    ja: 基礎（トークン）
+    required_at_onboarding: true
+    contents:
+      color: [意味の役割（主・副・文字・背景・面・境界）, 状態の色（成功・注意・危険・情報）, 濃淡の段階, ダークモードの扱い, コントラストの基準]
+      typography: [書体（同梱する）, 大きさと太さの段階, 行間（日本語の本文は 1.6〜1.8 目安）, 字間・約物の扱い, 数字の書体]
+      spacing_layout: [余白の段階（4 か 8 の倍数）, グリッドと段組み, 画面幅の区切り（スマホ・タブレット・PC）, 安全領域]
+      shape_elevation: [角丸の段階, 影と重なりの段階]
+      iconography: [アイコンの線の太さ・大きさ・使う集合, ラベルとの併記]
+      motion: [時間と緩急の段階, 動きを減らす設定への対応]
+    reference: "Material 3 の styles と tokens、Carbon の 2x grid と spacing、デジタル庁のタイポグラフィ"
+
+  - id: components
+    ja: 部品
+    required_at_onboarding: true      # オンボーディングでは基本の部品だけ（ボタン・入力・カード・一覧の行・知らせ・空・読み込み中・確認）
+    page_format: [用途, 使わない場面と代わりの部品, 構造（部位の名前）, 種類（主・副・危険など）, 状態（通常・押下・無効・読み込み中・失敗）, 振る舞い, 文言, アクセシビリティ, 良い例・悪い例]
+    reference: "Polaris と Carbon の component ページ、Primer の components"
+
+  - id: patterns
+    ja: 画面の型と振る舞いのパターン
+    required_at_onboarding: true      # オンボーディングでは 一覧・詳細・入力・送る前の確認 の 4 つ
+    contents: [一覧, 詳細, 入力フォーム（検証と誤りの出し方）, 送る前の確認と取り消せない操作, 検索と絞り込み, 空・読み込み中・失敗, 知らせと反応（保存した・失敗した）, 権限がないとき, はじめての利用（オンボーディング）, 設定, ナビゲーション]
+    reference: "Carbon と Primer の patterns（empty states、forms、loading、notifications）、HIG の patterns"
+
+  - id: content
+    ja: 文言と表記
+    required_at_onboarding: true
+    contents: [表記の決まり（漢字とかな、数字、単位、日時）, ボタンと操作の名前（動詞で）, 誤りの知らせ（何が起きたか・どうすればよいか）, 敬語と呼びかけ, 用語集との対応（specs/glossary.yaml）]
+    reference: "SmartHR のライティングガイドライン、Polaris の content guidelines"
+
+  - id: accessibility
+    ja: アクセシビリティ
+    required_at_onboarding: true
+    contents: [基準は WCAG 2.2 AA, 文字と背景のコントラスト, 押せる大きさ（iOS 44pt・Android 48dp）, フォーカスと順序, 読み上げのラベル, 色だけに頼らない, 文字の拡大]
+    reference: "WCAG 2.2、HIG と Material の accessibility、デジタル庁のアクセシビリティ"
+
+  - id: platforms
+    ja: プラットフォームごとの差
+    required_at_onboarding: false
+    contents: [iOS と Android の作法の違いをどこまで合わせるか, Web の管理画面とアプリの違い]
+
+  - id: data_visualization
+    ja: データの見せ方（グラフと数字）
+    required_at_onboarding: false
+    contents: [グラフの種類の選び方, 系列の色, 数字の書式と単位, 空と欠損の表示]
+    reference: "Carbon の data visualization"
+
+  - id: governance
+    ja: 運用（ガイドラインの育て方）
+    required_at_onboarding: true
+    contents:
+      - 部品と基準のライフサイクル（提案 → 試用 → 安定 → 廃止）と版
+      - 変更の入り口（デザイン検査役の指摘、人の違和感の印、画面の段で足りなかった部品）
+      - 変更の承認（新しい部品・基準の追加は工場、must の追加と原則・コンセプトの変更は人）
+      - 決定論の検査に移せる基準（トークン外の色や余白、部品外の要素）を lint にする
+      - 変更の記録（CHANGELOG と、どの画面に効くか）
+    reference: "Carbon と Polaris の contributing と governance"
