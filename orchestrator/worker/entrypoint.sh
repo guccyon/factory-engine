@@ -238,7 +238,19 @@ PR_TITLE="${TITLE} (#${ISSUE_NUMBER})"
 [ -n "${INCOMPLETE}" ] && PR_TITLE="[未完了] ${PR_TITLE}"
 if [ -n "${CONTINUE_BRANCH}" ]; then
   # 既存の PR のブランチに積む（取り込みはマージコミットで、履歴は書き換えない）。待っている間に PR がマージ・閉じられていたら積まない
-  if [ "$(gh pr view "${CONTINUE_PR}" -R "${REPO}" --json state --jq .state)" != "OPEN" ]; then
+  # 通信の一時的な失敗を「閉じている」と取り違えない（2026-10-31 ジョブ 395 は 1 回の接続の失敗で直しを捨てた）。数回やり直し、分からなければ別の理由で終える
+  PR_STATE=""
+  for wait in 0 2 4 8; do
+    sleep "${wait}"
+    PR_STATE=$(gh pr view "${CONTINUE_PR}" -R "${REPO}" --json state --jq .state 2>/dev/null) && [ -n "${PR_STATE}" ] && break
+    PR_STATE=""
+  done
+  if [ -z "${PR_STATE}" ]; then
+    echo "[worker] pr #${CONTINUE_PR} state unknown (gh failed)"
+    echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg pr "${CONTINUE_PR}" '{pr_url:null, reason:"pr_state_unknown", continue_pr:($pr|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
+    exit 7
+  fi
+  if [ "${PR_STATE}" != "OPEN" ]; then
     echo "[worker] pr #${CONTINUE_PR} is not open"
     echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg pr "${CONTINUE_PR}" '{pr_url:null, reason:"pr_not_open", continue_pr:($pr|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
     exit 6
