@@ -119,6 +119,9 @@ services:
       # 出荷の列車（ADR 0012）。この製品の Release を 1 日 1 回、この時（JST）を過ぎたら切って staging に出す。空で止める
       RELEASE_TRAIN: ${RELEASE_TRAIN-guccyon/rally}
       RELEASE_TRAIN_HOUR: ${RELEASE_TRAIN_HOUR:-17}
+      # 週 1 回の設計の診断（ADR 0022）。definitions/design_review.yaml の曜日・時（JST）を過ぎたら製品ごとに 1 回。0 で止める
+      DESIGN_REVIEW: ${DESIGN_REVIEW:-1}
+      QUALITY_REPOS: ${QUALITY_REPOS:-}
       ROADMAP: /definitions/roadmap.yaml
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
       BUILD_WORK_DIR: /build-work

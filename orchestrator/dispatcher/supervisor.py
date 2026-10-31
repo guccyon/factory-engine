@@ -39,6 +39,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import continuation
+import design
 import judgment
 import learn
 import ops
@@ -68,6 +69,10 @@ BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22
 BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
 CONFLICT_FIX = ENV.get("SUPERVISOR_CONFLICT_FIX", "1") == "1"   # 衝突した工場の PR に、既定ブランチを取り込んで衝突を解くジョブを head ごとに 1 回積む。0 で止める
 CI_FIX = ENV.get("SUPERVISOR_CI_FIX", "1") == "1"   # CI が落ちた工場の PR に、同じ担当の続きのジョブを積む（PR ごとに CONTINUE_MAX 回まで。ADR 0017）。0 で止める
+DESIGN_REVIEW = ENV.get("DESIGN_REVIEW", "1") == "1"   # 週 1 回の設計の診断のジョブを積む（ADR 0022）。0 で止める
+DESIGN_REVIEW_DEFS = ENV.get("DESIGN_REVIEW_DEFINITIONS", "/definitions/design_review.yaml")
+QUALITY_REPOS = [r.strip() for r in (ENV.get("QUALITY_REPOS") or ENV.get("FACTORY_REPOS", "")).split(",") if r.strip()]
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -569,6 +574,47 @@ def learn_step(cur):
     log("rule issue filed", c["signature"], issue["html_url"])
 
 
+def design_review_due(now: datetime, schedule: dict) -> bool:
+    """その週（ISO 週）の指定の曜日・時（JST）を過ぎたか。過ぎていれば週末まで拾う"""
+    wd = WEEKDAYS.index(schedule.get("weekday", "saturday"))
+    return (now.weekday(), now.hour) >= (wd, int(schedule.get("hour", 2)))
+
+
+def design_review_step(cur, now: datetime | None = None):
+    """週 1 回、製品ごとに設計の診断のジョブを積む（ADR 0022）。固定 Issue に積み、結果は dispatcher が書く。予算の枠は見ない（週 1 回で小さい）"""
+    if not DESIGN_REVIEW or DRY_RUN:
+        return
+    now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
+    try:
+        defs = yaml.safe_load(open(DESIGN_REVIEW_DEFS, encoding="utf-8"))
+    except OSError:
+        return
+    if not design_review_due(now, defs.get("schedule") or {}):
+        return
+    week = design.week_of(now)
+    for repo in QUALITY_REPOS:
+        cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.design_review:{repo}:{week}",))
+        if cur.fetchone():
+            continue
+        try:
+            issue = design.ensure_issue(gh, repo)
+        except Exception as e:  # noqa: BLE001  次の周回でやり直す
+            log("design review issue failed", repo, repr(e))
+            continue
+        corr = f"github:{repo}#{issue}"
+        prev = design.previous_findings(cur, repo)
+        try:
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','design_review') returning id",
+                        (corr, repo, issue))
+        except psycopg.errors.UniqueViolation:
+            continue   # 同じ Issue のジョブが待ち・実行中
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (corr, jid, Jsonb({"by": "supervisor", "kind": "design_review", "week": week, "input": {"previous": prev}})))
+        record(cur, "supervisor.design_review_enqueued", corr, {"repo": repo, "week": week, "issue": issue, "job_id": jid}, f"supervisor.design_review:{repo}:{week}")
+        log("design review enqueued", repo, week, "job", jid)
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         record(cur, "supervisor.heartbeat", None, {"repos": REPOS})
@@ -579,6 +625,7 @@ def tick():
         daily_report_step(cur)
         release_train_step(cur)
         learn_step(cur)
+        design_review_step(cur)
 
 
 def main():

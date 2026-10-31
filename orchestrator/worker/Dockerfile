@@ -23,4 +23,6 @@ COPY --chown=worker:worker inspect.sh /usr/local/bin/inspect.sh
 COPY --chown=worker:worker judge.sh /usr/local/bin/judge.sh
 # PR 本文だけの指摘を本文の追記で直すジョブ（2026-10-27）
 COPY --chown=worker:worker body_fix.sh /usr/local/bin/body_fix.sh
+# 週 1 回の設計の診断のジョブ（ADR 0022）
+COPY --chown=worker:worker design_review.sh /usr/local/bin/design_review.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

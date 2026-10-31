@@ -1,0 +1,172 @@
+<title>設計の診断</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 建設日報と同じ紙面: 上に要約と数値の診断の帯、その下に所見の一覧（重い順）、横に観点の点検表とよくできているところ */
+:root {
+  --paper: #f5f7f6; --sheet: #ffffff; --ink: #1c2731; --muted: #5d6b76; --rule: #d8dfe3;
+  --steel: #3c6e98; --steel-soft: #c7d8e7;
+  --high: #b4413a; --high-soft: #f3d6d3; --mid: #b7791f; --mid-soft: #f3e3c6; --low: #5d6b76; --low-soft: #e3e8eb; --good: #2e7d4f;
+  --f-body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --f-num: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #11171c; --sheet: #182129; --ink: #e3e9ed; --muted: #94a3ae; --rule: #2a3742;
+  --steel: #7fb0db; --steel-soft: #2c4559;
+  --high: #e27a72; --high-soft: #4a2826; --mid: #e0a84a; --mid-soft: #4a3a1e; --low: #a3b1bb; --low-soft: #26323b; --good: #5cbf86; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #11171c; --sheet: #182129; --ink: #e3e9ed; --muted: #94a3ae; --rule: #2a3742;
+  --steel: #7fb0db; --steel-soft: #2c4559;
+  --high: #e27a72; --high-soft: #4a2826; --mid: #e0a84a; --mid-soft: #4a3a1e; --low: #a3b1bb; --low-soft: #26323b; --good: #5cbf86; color-scheme: dark }
+body { background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 48px }
+main { max-width: 1080px; margin: 0 auto; display: grid; gap: 28px }
+h1, h2, h3 { text-wrap: balance; margin: 0 }
+h2 { font-size: 13px; letter-spacing: .12em; color: var(--muted); font-weight: 700 }
+.num, code { font-family: var(--f-num); font-variant-numeric: tabular-nums }
+code { font-size: 12.5px; background: var(--low-soft); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere }
+.muted { color: var(--muted) }
+a { color: var(--steel) }
+a:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px }
+
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; border-bottom: 2px solid var(--ink); padding-bottom: 10px }
+header.top h1 { font-size: 22px; letter-spacing: .04em }
+header.top .meta { font-size: 13px; color: var(--muted) }
+
+.lead { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 340px); gap: 28px; align-items: start }
+@media (max-width: 760px) { .lead { grid-template-columns: minmax(0, 1fr) } }
+.summary { font-size: 17px; line-height: 1.8; max-width: 40em; margin: 8px 0 0 }
+.counts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; padding: 2px 10px; border-radius: 999px; white-space: nowrap }
+.chip.high { background: var(--high-soft); color: var(--high) }
+.chip.mid { background: var(--mid-soft); color: var(--mid) }
+.chip.low { background: var(--low-soft); color: var(--low) }
+.chip.view { background: transparent; color: var(--muted); border: 1px solid var(--rule); font-weight: 400 }
+
+.gauge { background: var(--sheet); border: 1px solid var(--rule); padding: 16px 18px; display: grid; gap: 10px }
+.gauge .big { font-family: var(--f-num); font-size: 48px; line-height: 1; font-weight: 600 }
+.gauge .big small { font-size: 16px; font-weight: 400; color: var(--muted) }
+.gauge svg { width: 100%; height: 56px; display: block }
+.gauge dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; margin: 0; font-size: 13px }
+.gauge dt { color: var(--muted) }
+.gauge dd { margin: 0; text-align: right }
+
+.body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 28px; align-items: start }
+@media (max-width: 860px) { .body { grid-template-columns: minmax(0, 1fr) } }
+.findings { display: grid; gap: 0; border-top: 1px solid var(--rule) }
+.finding { display: grid; grid-template-columns: 6px minmax(0, 1fr); gap: 0 16px; padding: 18px 0; border-bottom: 1px solid var(--rule) }
+.finding .stripe { border-radius: 3px }
+.finding.high .stripe { background: var(--high) }
+.finding.mid .stripe { background: var(--mid) }
+.finding.low .stripe { background: var(--low) }
+.finding .head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center }
+.finding h3 { font-size: 16px; width: 100%; margin-top: 4px }
+.finding p { margin: 8px 0 0; max-width: 42em }
+.finding .label { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .08em; margin-top: 10px }
+.finding ul.ev { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 8px }
+
+aside { display: grid; gap: 24px }
+.panel { background: var(--sheet); border: 1px solid var(--rule); padding: 14px 16px }
+.panel h2 { margin-bottom: 8px }
+.panel ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; font-size: 14px }
+.views { list-style: none; padding: 0 !important }
+.views li { display: flex; justify-content: space-between; gap: 8px }
+.views .n { font-family: var(--f-num); color: var(--muted) }
+.views .off { color: var(--muted) }
+.empty { padding: 32px 0; color: var(--muted) }
+footer { font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 10px }
+</style>
+
+<main id="app">
+  <header class="top">
+    <h1>設計の診断</h1>
+    <div class="meta" id="meta">スナップショットを読み込んでいます</div>
+  </header>
+</main>
+
+<script>
+const S = /*__SNAPSHOT__*/null;
+const SEV = { high: "重", mid: "中", low: "小" };
+const VIEW_DEFAULT = { glossary: "用語とコードの名前", boundaries: "コンテキストの境界", aggregates: "集約と不変条件の置き場所",
+  layers: "層と依存の向き", errors: "失敗の表し方", clients: "画面のアプリの作り", drift: "説明と実装のずれ" };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const inline = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+const pct = v => v == null ? "—" : (v * 100).toFixed(1) + "%";
+const fix = (v, d = 1) => v == null ? "—" : Number(v).toFixed(d);
+
+function spark(trend) {
+  const pts = (trend || []).filter(t => t.score != null);
+  if (pts.length < 2) return '<p class="muted" style="margin:0;font-size:13px">推移はまだ 1 点だけです</p>';
+  const W = 300, H = 56, P = 4;
+  const ys = pts.map(p => p.score), lo = Math.min(...ys, 80) - 2, hi = Math.max(...ys, 100);
+  const x = i => P + i * (W - 2 * P) / (pts.length - 1), y = v => H - P - (v - lo) * (H - 2 * P) / (hi - lo);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.score).toFixed(1)}`).join("");
+  const last = pts[pts.length - 1];
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="スコアの推移 ${esc(pts[0].day)} から ${esc(last.day)}">
+    <line x1="${P}" x2="${W - P}" y1="${y(100)}" y2="${y(100)}" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <path d="${d} L${x(pts.length - 1)},${H - P} L${P},${H - P} Z" fill="var(--steel-soft)" opacity=".6"/>
+    <path d="${d}" fill="none" stroke="var(--steel)" stroke-width="2"/>
+    <circle cx="${x(pts.length - 1)}" cy="${y(last.score)}" r="3.5" fill="var(--steel)"/></svg>
+    <div class="muted num" style="font-size:12px;display:flex;justify-content:space-between"><span>${esc(pts[0].day)}</span><span>${esc(last.day)}</span></div>`;
+}
+
+function render() {
+  const app = document.getElementById("app");
+  if (!S) { document.getElementById("meta").textContent = "スナップショットがありません"; return; }
+  const r = S.review || {}, q = S.quality || {}, views = { ...VIEW_DEFAULT, ...(S.viewpoints || {}) };
+  const order = { high: 0, mid: 1, low: 2 };
+  const fs = (r.findings || []).slice().sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3));
+  const n = k => fs.filter(f => f.severity === k).length;
+  const gen = S.generated_at ? new Date(S.generated_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", dateStyle: "medium", timeStyle: "short" }) : "";
+  document.getElementById("meta").innerHTML =
+    `<span class="num">${esc(S.repo)}</span>・${esc(S.week)}・<span class="num">${esc((S.sha || "").slice(0, 7))}</span>・${esc(gen)} 更新` +
+    (S.issue_url ? `・<a href="${esc(S.issue_url)}">Issue で見る</a>` : "");
+
+  const m = q.metrics || {}, c = q.counts || {};
+  const gauge = q.score == null ? `<div class="gauge"><h2>数値の診断</h2><p class="muted" style="margin:0">まだ測っていません</p></div>` :
+    `<div class="gauge"><h2>数値の診断（${esc(q.day)}）</h2>
+      <div class="big">${fix(q.score, 0)}<small> / 100</small></div>
+      ${spark(S.quality_trend)}
+      <dl>
+        <dt>複雑すぎる関数</dt><dd class="num">${c.complex_functions ?? "—"} / ${c.functions ?? "—"} 本</dd>
+        <dt>長すぎる関数</dt><dd class="num">${pct(m.long_function_ratio)}</dd>
+        <dt>重複したコード</dt><dd class="num">${pct(m.duplication_ratio)}</dd>
+        <dt>テスト（1000 行あたり）</dt><dd class="num">${fix(m.tests_per_kloc)}</dd>
+        <dt>層の違反</dt><dd class="num">${m.layer_violations ?? "—"}</dd>
+      </dl></div>`;
+
+  const finding = (f, i) => `<article class="finding ${esc(f.severity)}"><div class="stripe" aria-hidden="true"></div><div>
+      <div class="head"><span class="num muted">${i + 1}</span><span class="chip ${esc(f.severity)}">${SEV[f.severity] || esc(f.severity)}</span>
+        <span class="chip view">${esc(views[f.viewpoint] || f.viewpoint)}</span><h3>${inline(f.title)}</h3></div>
+      <p>${inline(f.body)}</p>
+      ${f.fix ? `<div class="label">直し方</div><p style="margin-top:2px">${inline(f.fix)}</p>` : ""}
+      ${(f.evidence || []).length ? `<div class="label">根拠</div><ul class="ev">${f.evidence.slice(0, 8).map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul>` : ""}
+    </div></article>`;
+
+  const checked = new Set(r.checked_viewpoints || []);
+  const viewList = Object.keys(views).map(k => {
+    const cnt = fs.filter(f => f.viewpoint === k).length;
+    return `<li><span class="${checked.has(k) ? "" : "off"}">${esc(views[k])}</span><span class="n">${checked.has(k) ? cnt + " 件" : "見ていない"}</span></li>`;
+  }).join("");
+
+  app.insertAdjacentHTML("beforeend", `
+    <section class="lead">
+      <div><h2>要約</h2><p class="summary">${inline(r.summary)}</p>
+        <div class="counts"><span class="chip high">重 ${n("high")}</span><span class="chip mid">中 ${n("mid")}</span><span class="chip low">小 ${n("low")}</span></div></div>
+      ${gauge}
+    </section>
+    <section class="body">
+      <div><h2>所見（重い順）</h2>
+        ${fs.length ? `<div class="findings" style="margin-top:8px">${fs.map(finding).join("")}</div>` : `<p class="empty">所見はありません</p>`}</div>
+      <aside>
+        <div class="panel"><h2>観点ごとの件数</h2><ul class="views">${viewList}</ul></div>
+        <div class="panel"><h2>よくできているところ</h2><ul>${(r.strengths || []).map(s => `<li>${inline(s)}</li>`).join("") || '<li class="muted">なし</li>'}</ul></div>
+      </aside>
+    </section>
+    <footer>工場が週 1 回、${esc(S.repo)} の main を読んで書き換えます（factory-engine の ADR 0022）。所見は人が読むためのもので、工場の実装役には渡しません。
+      数値の診断は毎日の計測（ADR 0019）の直近の値です。job ${esc(S.job_id)}。</footer>`);
+}
+render();
+</script>

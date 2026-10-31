@@ -1,0 +1,54 @@
+# 週 1 回の設計の診断（ADR 0022）
+# 2026-10-31 オーナー「アプリ側のドメインモデリングなどの品質を見たい。工場のダッシュボードから見られるのが良い」→ 週 1 回、工場の工程に足す（決定カード）。
+# 内部品質の定期診断（quality.yaml、ADR 0019）は数値で測る。数値に出ないもの（境界・用語・不変条件の置き場所）を、エージェントがコードを読んで所見にする。
+# 実装: core-gates/design_review.py（ワーカーの design_review.sh が動かす）、dispatcher が結果を製品の固定 Issue に書く、health/design/render_html.py がページにする
+#
+# 原則:
+# - 所見は人が読むためのもの。ワーカー（実装役・検査役）のプロンプトには入れない（quality.yaml と同じ）
+# - 所見から改善チケットを自動で起票しない。起票は内部品質の方針 B1（ラインの 15% 上限）の仕組みができてから、人の採否を通す
+# - 観点を足す・外すのはオーナーの承認（方針 A1。基準の変更は人が承認）
+# - コードは読むだけで書き換えない。製品のリポジトリに書くのは固定 Issue（output.issue_label）の本文とコメントだけ
+
+schema_version: "0.1"
+status: draft
+
+schedule:
+  weekday: saturday          # JST。ラインの空きやすい夜に回す。その時を過ぎて週（ISO 週、月曜始まり）の間に 1 回（逃したら日曜まで拾う）
+  hour: 2                    # この時（JST）を過ぎたら、その週（ISO 週）に 1 回
+  repos: "QUALITY_REPOS（なければ FACTORY_REPOS）"
+  max_turns: 80
+
+# 観点。エージェントはこの順に読み、該当しない観点は飛ばしてよい
+viewpoints:
+  glossary:
+    ja: "用語とコードの名前"
+    question: "specs/glossary.yaml の用語とコードの型・関数の名前が一致しているか。コードにあって用語集にない業務の概念、用語集と意味がずれた名前はないか"
+  boundaries:
+    ja: "コンテキストの境界"
+    question: "specs/context-map.yaml のコンテキストとコードのモジュールが対応しているか。コンテキストどうしの依存の輪、ほかのコンテキストの内部を直接読む箇所、置き場所が違う概念はないか"
+  aggregates:
+    ja: "集約と不変条件の置き場所"
+    question: "specs/product-context.md の不変条件が 1 か所で守られているか。集約の外から状態を書き換えられる公開メソッド、アプリケーション層に漏れた業務の判断はないか"
+  layers:
+    ja: "層と依存の向き"
+    question: "docs/adr の層の決まり（domain は外部に依存しない、など）が守られているか。契約や DB の文字列表現、利用者向けの文言が domain に入っていないか"
+  errors:
+    ja: "失敗の表し方"
+    question: "業務の失敗の型がコンテキストごとに分かれているか。1 つの型や 1 つの対応表に集まって変更が集中していないか"
+  clients:
+    ja: "画面のアプリの作り"
+    question: "画面のアプリ（Web・モバイル）の状態の持ち方、API の型の扱い、同じ表示の書き方が画面ごとにずれていないか"
+  drift:
+    ja: "説明と実装のずれ"
+    question: "コメント・README・ADR に書かれたことと、今のコードの振る舞いがずれていないか"
+
+severity:
+  high: "利用者の取り違え・不変条件が破れる道がある、または次の機能追加で大きな作り直しが要る"
+  mid: "変更が 1 か所に集中する、境界が弱まる、など、放っておくと変更のコストが上がる"
+  low: "表記のずれ、古い説明など、直すのは小さい"
+
+output:
+  event: design.reviewed
+  issue_label: "factory:design-review"   # 製品のリポジトリの固定 Issue。本文を毎週書き換え、週ごとにコメントを残す
+  max_findings: 10
+  max_strengths: 6

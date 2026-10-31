@@ -218,6 +218,14 @@ events:
     source: control_plane
     required: [signature, issue, signals, day]
     note: "ADR 0013 の 3。Stage 2 の候補で負例の元がある束から、ルール化の Issue（factory:planned）を 1 日 1 本まで起票した。工場の implement ジョブがルール変更 PR を書く。dedupe は signature ごと"
+  supervisor.design_review_enqueued:
+    source: control_plane
+    required: [repo, week, issue, job_id]
+    note: "ADR 0022。supervisor が週 1 回、製品ごとに設計の診断のジョブ（kind=design_review）を固定 Issue（factory:design-review）に積んだ。dedupe は supervisor.design_review:<repo>:<ISO 週>"
+  design.reviewed:
+    source: control_plane
+    required: [repo, week, sha, summary, strengths, findings, checked]
+    note: "ADR 0022。設計の診断の所見。dispatcher が記録し、固定 Issue の本文（ページのスナップショット付き）を書き換える。人が読むためのもので、ワーカーのプロンプトには入れない。dedupe は design.reviewed:<repo>:<ISO 週>。同じ中身を artifacts の DesignReview に残す"
   gate.evaluated:
     source: inspector
     required: [pr_id, gate, result, defects]
