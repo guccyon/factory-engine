@@ -55,6 +55,8 @@ START_DATE = ENV.get("CONSTRUCTION_START", "2026-10-25")   # 建設の初日（�
 FACTORY_BRANCH_RE = re.compile(r"^factory/issue-\d+-job-\d+")
 SNAPSHOT_MARK = "factory-snapshot:v1"   # Issue の本文の末尾に埋める JSON（base64）。claude.ai のページはこれから描く
 APPROVAL_LABEL = "factory:needs-approval"
+# マージに必ず人の承認が要るリポジトリ（マージ基準。工場そのものの変更）。ラベルが無くても、下書きでない開いた PR はすべて承認待ちとして載せる
+HUMAN_MERGE_REPOS = [r.strip() for r in ENV.get("HUMAN_MERGE_REPOS", "guccyon/factory-engine").split(",") if r.strip()]
 TREND_DAYS = 14
 
 
@@ -104,6 +106,31 @@ def merged_prs(repo: str, pages: int = 3) -> list[dict]:
 def labeled_open_prs(repo: str, label: str) -> list[dict]:
     items = gh("GET", f"repos/{repo}/issues?state=open&per_page=100&labels={urllib.parse.quote(label)}")
     return [i for i in items if "pull_request" in i]
+
+
+def open_prs(repo: str) -> list[dict]:
+    return gh("GET", f"repos/{repo}/pulls?state=open&per_page=100")
+
+
+def approval_prs(now: datetime) -> list[dict]:
+    """承認待ちの PR を古い順に返す。ラベル factory:needs-approval（supervisor の判定）と、HUMAN_MERGE_REPOS の下書きでない開いた PR"""
+    seen: dict[tuple, dict] = {}
+
+    def add(repo: str, number: int, title: str, url: str, created: str, why: str):
+        key = (repo, number)
+        if key not in seen:
+            days = (now - parse_ts(created)).total_seconds() / 86400 if created else None
+            seen[key] = {"repo": repo, "number": number, "title": title, "url": url, "why": why,
+                         "days": round(days, 1) if days is not None else None}
+
+    for r in REPOS:
+        for i in labeled_open_prs(r, APPROVAL_LABEL):
+            add(r, i["number"], i["title"], i["html_url"], i.get("created_at", ""), "label")
+    for r in HUMAN_MERGE_REPOS:
+        for p in open_prs(r):
+            if not p.get("draft"):
+                add(r, p["number"], p["title"], p["html_url"], p.get("created_at", ""), "repo")
+    return sorted(seen.values(), key=lambda x: -(x["days"] or 0))
 
 
 def yaml_files(repo: str, path: str) -> list[dict]:
@@ -328,11 +355,10 @@ def merge_gate(conn, until: datetime) -> dict | None:
             "total": len(rows), "auto": sum(1 for r in rows if r[3])}
 
 
-def needs(progress: dict) -> dict:
+def needs(progress: dict, now: datetime | None = None) -> dict:
     out: dict = {}
     try:
-        out["approval_prs"] = [{"repo": r, "number": i["number"], "title": i["title"], "url": i["html_url"]}
-                               for r in REPOS for i in labeled_open_prs(r, APPROVAL_LABEL)]
+        out["approval_prs"] = approval_prs(now or datetime.now(timezone.utc))
     except Exception as e:  # noqa: BLE001
         out["approval_prs_error"] = type(e).__name__
     for ph in progress["phases"]:
@@ -359,7 +385,8 @@ def bar(x: float, width: int = 10) -> str:
 def fmt_needs(nd: dict) -> list[str]:
     lines = []
     for p in nd.get("approval_prs", []):
-        lines.append(f"- 承認待ちの PR: [{p['repo']}#{p['number']}]({p['url']}) {p['title']}")
+        age = f"（{p['days']:g} 日）" if p.get("days") is not None else ""
+        lines.append(f"- 承認待ちの PR: [{p['repo']}#{p['number']}]({p['url']}) {p['title']}{age}")
     if nd.get("golden_unconfirmed"):
         lines.append(f"- Golden Set の確認: {', '.join(nd['golden_unconfirmed'])}")
     for k in ("approval_prs_error", "golden_unconfirmed_error"):
