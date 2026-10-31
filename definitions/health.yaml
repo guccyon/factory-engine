@@ -14,6 +14,7 @@ independence:
 viewpoints:
   flow:      { ja: "仕事が詰まっていないか" }
   quality:   { ja: "検査官の予測が当たっているか", phase: P1 }
+  internal_quality: { ja: "コードの作りが悪くなっていないか（長期の推移）", definitions: "quality.yaml（ADR 0017）" }
   learning:  { ja: "賢くなっているか、太っているだけか", phase: P1 }
   economy:   { ja: "単位あたりコスト" }
   trust:     { ja: "人間との関係が健全か" }

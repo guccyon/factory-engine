@@ -1,0 +1,148 @@
+# 内部品質の定期診断の定義（ADR 0017）
+# 2026-10-31 の内部品質の方針（オーナー 決定 A1〜E1）の Q1（定期診断）・Q4（下限を shadow で 1 つ）にあたる。
+# 何を測るか・スコアの式・下限の規則・変更の集中箇所（ホットスポット）をここで決める。各製品のどのパスを測るかは製品の .factory-config/quality.yaml。
+# 実装: health/quality/snapshot.py（この定義と 1 対 1。LLM を使わない。同じ版のコードに同じ数値を返す）
+#
+# 原則:
+# - 測るのは govern の側。learn の数値は使わない（health.yaml の independence と同じ）
+# - ワーカー（実装役・検査役）に数値を目標として見せない。プロンプトに入れない。見るのは人と日報・健康レポート
+# - 指標・スコアの式・下限の緩和・観点の追加はオーナーの承認が要る（方針 A1）。値（閾値・重み）は仮置きで、運用しながら調整する
+# - 内部品質（コードの作り）だけを扱う。外部品質（実行環境での E2E・探索的テスト）は別の定義に分ける
+
+schema_version: "0.1"
+status: draft
+
+# ---------------------------------------------------------------------
+# いつ測るか
+# ---------------------------------------------------------------------
+schedule:
+  snapshot: "1 日 1 回、製品の main 全体を測る（製品の CI の定期実行。結果を成果物として残し、supervisor が quality.snapshot に写す）"
+  on_pr: "PR ごとに、base と head を同じ方法で測って比べる（下限の判定。shadow）"
+  weekly: "ミューテーションの全体実行は週 1 回（重いので毎日はしない）"
+
+# ---------------------------------------------------------------------
+# 指標。どれも「少ないほど良い（lower）」か「多いほど良い（higher）」のどちらか
+# per_kloc: 製品コード 1000 行あたり。ratio: 全体に対する割合。count: そのままの数
+# 製品コードとテストのコードは製品の設定（.factory-config/quality.yaml）の paths で分ける
+# ---------------------------------------------------------------------
+metrics:
+  layer_violations:
+    ja: "層の依存の向きの違反"
+    better: lower
+    unit: count
+    source: "製品の依存方向の検査の失敗件数（CI が数えて snapshot に渡す。rally は architecture クレートのテスト）"
+  lint_warnings_per_kloc:
+    ja: "Linter の警告（ふだんは通している厳しめの観点も含める）"
+    better: lower
+    unit: per_kloc
+    source: "Rust は cargo clippy の pedantic を警告として数える（CI は -D warnings で通しているので、ここで数えるのはその外側の観点）"
+  complex_function_ratio:
+    ja: "複雑すぎる関数の割合"
+    better: lower
+    unit: ratio
+    source: "製品コードの関数のうち、分岐の数（循環的複雑度）が complexity_limit を超えるもの"
+    complexity_limit: 10
+    note: "Gen1 は lizard の循環的複雑度で測る。Rust の認知的複雑度は clippy の cognitive_complexity（25 超え）を lint_warnings に含めて別に数える"
+  long_function_ratio:
+    ja: "長すぎる関数の割合"
+    better: lower
+    unit: ratio
+    source: "製品コードの関数のうち、コメントと空行を除いた行数が length_limit を超えるもの"
+    length_limit: 60
+  duplication_ratio:
+    ja: "重複したコードの割合"
+    better: lower
+    unit: ratio
+    source: "製品コードの行（空白とコメントを除いて正規化）を 6 行の窓で見て、2 か所以上に出る窓に含まれる行 / 全体の行"
+    window_lines: 6
+  tests_per_kloc:
+    ja: "テストの数"
+    better: higher
+    unit: per_kloc
+    source: "テスト関数の数（Rust の #[test]・#[tokio::test]・#[sqlx::test]、TypeScript の test( / it(、Dart の test( / testWidgets(）"
+  mutation_score:
+    ja: "テストが振る舞いを縛っている強さ"
+    better: higher
+    unit: ratio
+    source: "週 1 回の全体のミューテーションテスト（gates.yaml の L2 と同じ方法）。結果がない日は前回の値を使わず null"
+    phase: next   # 週 1 回の全体実行ができてから。それまでは null
+
+  # 分布として残す（スコアには入れない。推移を見る材料）
+  distributions:
+    complexity: [p50, p90, max]
+    function_length: [p50, p90, max]
+
+# 測れない言語: lizard が読めない言語（Gen1 は Dart）は、行数・重複・テストの数だけ測り、複雑さと長さは null にする
+
+# ---------------------------------------------------------------------
+# スコア（0〜100）。指標ごとに good と bad の間で 0〜100 に直線で写し、weight で重み付き平均する
+# good より良ければ 100、bad より悪ければ 0。値が null の指標は重みごと外す
+# ---------------------------------------------------------------------
+score:
+  formula: "round(Σ weight × sub_score / Σ weight)。sub_score = 100 × clamp((bad − value) / (bad − good), 0, 1)（higher の指標は向きを逆に）"
+  components:
+    layer_violations:        { weight: 2, good: 0,    bad: 3 }
+    lint_warnings_per_kloc:  { weight: 1, good: 5,    bad: 40 }
+    complex_function_ratio:  { weight: 2, good: 0.01, bad: 0.08 }
+    long_function_ratio:     { weight: 1, good: 0.02, bad: 0.10 }
+    duplication_ratio:       { weight: 2, good: 0.03, bad: 0.15 }
+    tests_per_kloc:          { weight: 1, good: 40,   bad: 10 }
+    mutation_score:          { weight: 2, good: 0.85, bad: 0.50 }
+  note: "good / bad は仮置き。最初の 2 週間の実測で見直す（見直しは承認）"
+
+# ---------------------------------------------------------------------
+# 下限（悪化を入れない）。Gen1 は 1 つだけ shadow で始める（方針 E1 の Q4）
+# PR の head を base と同じ方法で測り、下限の指標が悪くなっていたら「下限割れ」を Job Summary に出す。差し戻さない
+# ---------------------------------------------------------------------
+floor:
+  mode: shadow
+  rules:
+    complex_functions:
+      ja: "複雑すぎる関数を増やさない"
+      measure: "製品コードの関数のうち complexity_limit を超えるものの数（ratio ではなく数）"
+      fails_when: "head の数 > base の数"
+      note: "既にある複雑な関数を直すまでは求めない（増やさないことだけ）。同じ PR で 1 つ直して 1 つ増やしたら通る"
+  candidates: [duplication_ratio, long_function_ratio, lint_warnings_per_kloc]   # shadow の様子を見て足す（足すのは承認）
+  relax: "下限を緩める（指標を外す・許す幅を広げる）のはオーナーの承認"
+
+# ---------------------------------------------------------------------
+# ホットスポット: よく変わる × 複雑なファイル。改善チケットの起票元（方針 B1、Q5）
+# ---------------------------------------------------------------------
+hotspot:
+  window_days: 90
+  formula: "変更の回数（window_days のうち main のコミットでそのファイルを変えた回数） × そのファイルの関数の最大の循環的複雑度"
+  top: 10
+  scope: "製品コードだけ（テスト・生成物・文書は除く）"
+
+# ---------------------------------------------------------------------
+# 残すもの
+# ---------------------------------------------------------------------
+output:
+  event: quality.snapshot
+  fields: [repo, sha, day, score, metrics, distributions, hotspots, lines, tool_versions]
+  where: "製品の CI の成果物（quality-snapshot.json）→ 日次レポートが描く前に events の quality.snapshot に写す（health/quality/ingest.py）。日報・健康レポートで推移を出す"
+
+# ---------------------------------------------------------------------
+# 変更のコストの推移（方針の補足: 長期の生産性の低下はコストに直結する）
+# 内部品質が落ちると、同じ難しさの変更にかかる時間・トークン・差し戻しが増えるはず。難易度で分けて週ごとの中央値を見る
+# 難易度は日次レポートがマージ済みの PR の差分から決めて pr.difficulty に残す。LLM を使わない
+# ---------------------------------------------------------------------
+change_cost:
+  difficulty:
+    points:
+      areas: "触れた領域（パスの上 2 段。文書と CHANGELOG を除く）の数 − 1"
+      contract_diff: { points: 2, paths: ["^specs/contracts/"] }
+      schema_diff: { points: 2, paths: ["/migrations/"] }
+      new_files: { points: 1, when: "製品コードの新しいファイルが 3 つ以上（テストを除く）" }
+      size: { points: [[500, 1], [1500, 2]], measure: "追加＋削除の行数（生成物も含む）" }
+    levels: { easy: [0, 1], medium: [2, 3], hard: [4, 99] }
+    exclude_paths: ["^docs/", "CHANGELOG\\.md$", "README(\\.\\w+)?\\.md$", "^\\.factory-config/"]
+    test_paths: ["/tests?/", "\\.test\\.", "_test\\."]
+    note: "Gen1 は領域をパスで数える。コンテキスト（L3 の割り当て）で数えるのは次。見積の規模（Issue に書かれた大きさ）は入口に項目ができてから"
+  measures:
+    lead_time_hours: "チケットの作成 → PR のマージ"
+    cost_usd: "そのチケットのジョブ（実装・検査・judge・続き）の費用の合計（API 単価換算）"
+    jobs: "そのチケットのジョブの数（やり直し・続きを含む）"
+    sendbacks: "その PR からの差し戻しの数（sendback.filed）"
+  window: "ISO 週ごとの中央値。難易度ごとに件数を併記（件数が 3 未満の週は参考）"
+  known_gaps: "工場の PR を人が衝突を解いて別の PR でマージしたもの（ADR 0016 の前）は、元の PR が closed_unmerged になるので数えない"

@@ -49,6 +49,18 @@ teacher_signals:
     source: "events stoppage.closed（category in factory-bug, ticket）"
     signature: "stoppage:<category>"
     note: "工場自身の改善（Engine の PR）に回す。製品の overlay のルールにはしない"
+  quality_regression:
+    ja: "定期診断の指標が前回より悪くなった（内部品質。ADR 0017）"
+    source: "events quality.regressed（原因の PR は from_sha..to_sha の間にマージされた工場の PR）"
+    signature: "quality:<指標>"
+    eval_from: { positive: "原因の PR の差分（悪くした箇所）", negative: "直した PR の差分があれば" }
+    note: "learn はまだ読まない（束ねるのは診断が 2 週間たまってから）。1 日の悪化に原因の PR が複数あるときは全部に付ける"
+  taste_flag:
+    ja: "人が抜き取りで違和感を付けた（内部品質の感覚。週 5 件）"
+    source: "抜き取りの画面（操業コンソール。次の段で作る）の記録。結果は Golden Set にも入る"
+    signature: "taste:<言語化の候補>"
+    eval_from: { positive: "違和感を付けた PR の差分", negative: "同じ観点で違和感のなかった差分" }
+    note: "発生源（抜き取りの画面）ができてから"
   # 憲章の残りの信号（KPI 予測誤差、ストア却下、データ要求への訂正、本番障害）は発生源ができたら足す（P5）
   later: [kpi_error, store_rejection, data_request_correction, incident]
 
