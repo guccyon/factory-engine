@@ -74,9 +74,14 @@ phases:
     ja: Learn ループ
     weight_weeks: 6
     items:
-      - { id: lesson_eval, ja: "Retrospective → Lesson（eval 同梱）", measure: { manual: todo } }
-      - { id: crystallize, ja: "3 段階の結晶化とルールのライフサイクル", measure: { manual: todo } }
-      - { id: rule_adopted, ja: "自動生成ルールが shadow を経て採用され、教師信号が減った", measure: { manual: todo } }
+      # 2026-10-31 オーナー: 完了条件を学習の体系（ADR 0023、definitions/learning_taxonomy.yaml）に合わせて書き直す。
+      # 完了は「最初に選んだテーマ（4 言葉と伝達・6 工程）で、入力から作用先まで 1 周回り、効き目を測れた」。外向きのテーマ（1・2）は P5 へ
+      - { id: taxonomy, ja: "学習の体系（8 テーマ・4 型・承認の線）を定義した", measure: { manual: done } }   # ADR 0023
+      - { id: case_analyst, ja: "事例型の分析役が差し戻しと停止をなぜなぜで分析し、記録に残す", measure: { manual: todo } }
+      - { id: knowledge_store, ja: "知見の蓄積（形式・鮮度・矛盾の解消・形骸化の防止）と committee（決定論で担保するかの判断）", measure: { manual: todo } }   # 設計中
+      - { id: theme4_loop, ja: "テーマ 4（言葉と伝達）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: todo } }
+      - { id: theme6_loop, ja: "テーマ 6（工程の進め方）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: todo } }
+      - { id: rule_adopted, ja: "テーマ 5: 自動生成ルールが shadow を経て採用され、教師信号が減った", measure: { manual: todo } }   # ADR 0013。採用とカナリアの起票は #96
 
   - id: P4
     ja: 上流自動化
@@ -94,6 +99,7 @@ phases:
       - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }
       - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
       - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
+      - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）
 
   - id: P6
     ja: メタ化
