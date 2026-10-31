@@ -129,3 +129,12 @@ def test_spec_is_handed_to_implement_once(cur):
     assert c.labels == [(ISSUE, ("factory:running", "factory:design-system"), ("factory:planned",))]
     cur.execute("select payload from events where name='design_system.handed_off'")
     assert cur.fetchone()["payload"]["files"] == ["tokens.yaml"]
+
+
+@needs_db
+def test_concept_choice_shows_in_inbox_for_design_chief(cur):
+    import inbox
+    concept_round(cur, Calls())
+    item = next(i for i in inbox._choices(cur))
+    assert item["who"] == "design_chief" and item["title"].startswith("コンセプトとトーン＆マナーの選択: ")
+    assert inbox.CHOICE_TITLES.keys() == choice.KINDS.keys()
