@@ -105,7 +105,10 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 - dispatcher が Request（raw）を artifacts に残し、clarify のジョブを積む。ワーカーは `worker/clarify.sh` で動く（リポジトリはクローンしない）
 - 問い手（tier-judge）が足りない項目を 1 つずつ Issue のコメントで聞き、ペルソナ（tier-small）が答える。最大 3 往復
 - 4 項目が埋まれば Request（clarified）を artifacts に残してラベルを `factory:clarified` に。埋まらなければ failed（unresolved）
-- events に `request.received` / `request.clarified` / `request.unresolved`（往復回数）。triage と Deliver への接続は P4
+- 確定したら、採点役（`clarify.grader`、tier-judge）が確定した要求と架空の要求者の隠れた意図を比べる。問い手が推測で埋めて確定にしたものを見分けるため。本物の要求者（隠れた意図がない）は採点しない
+- events に `request.received` / `request.clarified` / `request.unresolved`（往復回数、`converged`、`intent_match`、食い違った項目 `missed`）。`converged` は「確定・往復 3 回以内・意図と一致」で、P4 の完了条件の物差し（`definitions/roadmap.yaml` の `clarify_3_rounds`。ペルソナごとの最新の結果で 8 人以上）
+- ペルソナは 10 人（CS・サクセス・マーケ・営業・経営・本部の運営・コーチ担当）。前半 5 人は数字を知りたい問い、後半 5 人は経営の問いと画面や機能への要望。全員を一巡させるのは `scripts/clarify-bench.sh guccyon/rally`（1 人ずつ要求の Issue を起票する。ペルソナを足したらワーカーのイメージを作り直す）
+- triage と Deliver への接続は P4
 
 ## 操業停止の記録と番人（ADR 0005）
 
@@ -232,6 +235,8 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 検査は製品の overlay の shadow・adopted のルールもルーブリックに足し、shadow のルールの指摘は judge が裁くだけで差し戻さない。成績（発火・的中率）は report learning に出る。adopted への昇格とカナリアの戻しは、supervisor が 1 時間に 1 回判定して `state` を書き換える Issue を起票する（`LEARN_RULE_TRANSITIONS=0` で止める。閾値は `definitions/learning.yaml`）。
 
 事例型の分析役（ADR 0023）: supervisor が 1 日に数件（`definitions/learning_taxonomy.yaml` の per_day）、差し戻し（後片付けが会話の記録を保存した後）と 60 分以上の停止（予算・一時停止を除く）を選び、`case_review` のジョブを積む。dispatcher は起こすときに後片付けのアーカイブからセッションの抜粋（エージェントの文とツールの名前だけ。秘密情報に見える文字列は伏せる）を入力に足す。結果（観点ごとのなぜなぜ・真因・テーマごとの学びの候補）は events の `case.analyzed` と artifacts の `CaseAnalysis` に残すだけ。`CASE_REVIEW=0` で止める。
+
+知見の変更セット（ADR 0024 の 3）: supervisor が `case.analyzed` のうち最初に回すテーマ（`learning_taxonomy.yaml` の `status: first`、いまは 4 と 6）の学びがあるものを、製品の Issue（`factory:planned`・`factory:learn`）にする。本文の個人情報・環境の名前に見える形は伏せる。工場の implement ジョブが事例記録 `cases/C-NNNN.md` と知見の下書き（`status: draft`・`confidence: hypothesis`）を 1 本の PR に書き、`knowledge_check.py --index` で `INDEX.md` を作り直す。PR は変更種別 `knowledge`（`change_type_rules.yaml`）で、委員会ができるまでは manifest に無い種別として人の承認に倒れる。1 日に `KNOWLEDGE_ISSUES_PER_DAY`（既定 2）件まで。`KNOWLEDGE_ISSUES=0` で止める。置き場（`.factory-config/knowledge/README.md`）の無い製品には起票しない。
 
 ```bash
 docker compose exec dispatcher factoryctl report learning --days 30
