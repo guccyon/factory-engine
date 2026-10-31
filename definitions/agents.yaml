@@ -36,8 +36,5 @@ steps:
   body_fix:                   # PR 本文への追記（core-gates/body_fix.py）
     tier: tier-small
     tools: none
-  cleanup:                    # 後片付け役の申し送りと再起票の案（core-gates/cleanup.py。ADR 0018）
-    tier: tier-small
-    tools: none
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge

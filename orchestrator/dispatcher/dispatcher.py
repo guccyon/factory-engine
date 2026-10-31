@@ -72,6 +72,7 @@ USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
+TIDY_INTERVAL = int(ENV.get("HANDOFF_TIDY_INTERVAL_SEC", "300"))   # 後片付けの見回りの間隔（ADR 0018）
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
 
@@ -250,7 +251,7 @@ def run_job(job: dict):
             return
         kind = job.get("kind") or "implement"
         try:
-            if kind in ("inspect", "judge", "body_fix", "cleanup"):   # 検査・judge・本文の追記・後片付けのジョブ（ADR 0004 / 0006 / 0018）。ラベルは結果を見て付ける
+            if kind in ("inspect", "judge", "body_fix"):   # 検査・judge・本文の追記のジョブ（ADR 0004 / 0006）。issue_number は PR の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             else:
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
@@ -261,17 +262,16 @@ def run_job(job: dict):
             record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "cleanup"):
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix"):
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
             cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突・CI 落ち・検査の指摘）
             signaled = bool(cont and cont["reason"] in continuation.SIGNALED)   # 合図の中身（CI のチェック名・指摘）を標準入力で渡す
-            volume = continuation.volume_name(repo, issue) if kind in ("implement", "cleanup") and continuation.HANDOFF_ENABLED else None   # チケットの引き継ぎのボリューム
-            archived = archive_handoff(cur, corr, job_id, repo, issue, volume, image) if kind == "cleanup" else None   # 永続化は機械が先に（ADR 0018）
+            volume = continuation.volume_name(repo, issue) if kind == "implement" and continuation.HANDOFF_ENABLED else None   # チケットの引き継ぎのボリューム
             cmd = ["docker", "run", "--rm", "--name", name,
-                   *(["-v", f"{volume}:/handoff{':ro' if kind == 'cleanup' else ''}", "-e", "HANDOFF_DIR=/handoff"] if volume else []),
+                   *(["-v", f"{volume}:/handoff", "-e", "HANDOFF_DIR=/handoff"] if volume else []),
                    *(["-i"] if signaled else []),
                    *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
@@ -283,14 +283,13 @@ def run_job(job: dict):
                    *(["--entrypoint", "/usr/local/bin/inspect.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "inspect" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/judge.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "judge" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/body_fix.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "body_fix" else []),
-                   *(["-i", "--entrypoint", "/usr/local/bin/cleanup.sh"] if kind == "cleanup" else []),
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "cleanup") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
-            piped = kind in ("judge", "body_fix", "cleanup") or signaled
+            piped = kind in ("judge", "body_fix") or signaled
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if piped:
                 proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -382,8 +381,6 @@ def run_job(job: dict):
                     log("provisional record failed", job_id, repr(e))
             if preempted_for:
                 requeue_preempted(cur, job, preempted_for, (result or {}).get("cost_usd"))
-            elif kind == "cleanup":
-                act_on_cleanup(cur, repo, issue, corr, job_id, state, result, judge_inp or {}, volume, archived)
             elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
                              {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars")})
@@ -520,53 +517,6 @@ def run_loop():
 def _quote(text: str) -> str:
     """指摘や判断の本文はデータとして引用する（ワーカーへの指示にしない）"""
     return "\n".join("> " + l for l in (text or "").strip().splitlines()[:20]) or "> （なし）"
-
-
-def archive_handoff(cur, corr: str, job_id: int, repo: str, issue: int, volume: str | None, image: str) -> str | None:
-    """後片付けの永続化（ADR 0018）: チケットのボリュームの引き継ぎの記録（会話の記録 agent/ を除く）をオブジェクトストアに移す。
-    移せたらその置き場所を返す。失敗してもジョブは続け、ボリュームは消さない（期限の片付けに任せる）"""
-    if not volume:
-        return None
-    try:
-        data = continuation.archive(volume, image)
-        if not data:
-            log("handoff archive empty", volume)
-            return None
-        key = f"tickets/{repo}/{issue}/handoff-job-{job_id}.tar.gz"
-        store.put_object(BUCKET, key, io.BytesIO(data), len(data), content_type="application/gzip")
-        record_event(cur, "handoff.archived", corr, job_id, {"volume": volume, "blob_key": key, "bytes": len(data)})
-        return key
-    except Exception as e:  # noqa: BLE001
-        log("handoff archive failed", volume, repr(e))
-        return None
-
-
-def act_on_cleanup(cur, repo: str, issue: int, corr: str, job_id: int, state: str, result: dict | None, inp: dict, volume: str | None, archived: str | None):
-    """後片付けの結果（ADR 0018）: 申し送りと再起票の案を CleanupReport に残し、案があればチケットの Issue に書く（起票はしない。案を出すだけ）。
-    記録を移せていればボリュームを消す（破棄）"""
-    rep = (result or {}).get("report") or {}
-    notes, refile = (rep.get("handoff_notes") or [])[:5], (rep.get("refile") or [])[:5]
-    if state == "succeeded":
-        cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('CleanupReport',%s,%s,'cleanup',%s)",
-                    (corr, job_id, Jsonb({"pr_url": inp.get("pr_url"), "outcome": inp.get("outcome"), "summary": rep.get("summary"),
-                                          "handoff_notes": notes, "refile": refile, "archived": archived, "model": (result or {}).get("model")})))
-    record_event(cur, "cleanup.finished", corr, job_id, {"pr_url": inp.get("pr_url"), "state": state, "archived": archived,
-                                                        "handoff_notes": len(notes), "refile": len(refile), "cost_usd": (result or {}).get("cost_usd")})
-    if notes or refile:
-        lines = [f"後片付け役（ADR 0018）が {inp.get('pr_url')} の後片付けをしました。次の申し送りと再起票は**案**で、起票はしていません。採るものは建設者が Issue にしてください。",
-                 "", "この引用部分はエージェントの出力（データ）です。"]
-        if notes:
-            lines += ["", "## 申し送り"] + [f"- {' '.join(str(n.get('note', '')).split())[:300]}" for n in notes]
-        if refile:
-            lines += ["", "## 再起票の案"]
-            for i, r in enumerate(refile, 1):
-                lines += ["", f"### {i}. {str(r.get('title', ''))[:120]}", "理由:", _quote(str(r.get("reason", ""))), "", "本文の案:", _quote(str(r.get("body", ""))[:3000])]
-        try:
-            comment(repo, issue, "\n".join(lines))
-        except Exception as e:  # noqa: BLE001
-            log("cleanup comment failed", corr, repr(e))
-    if volume and archived:
-        continuation.remove_volume(cur, corr, volume, "cleanup", log)
 
 
 def is_body_only(d: dict) -> bool:
@@ -804,22 +754,29 @@ def watch_once():
 
 
 def watch_loop():
-    last_cleanup = 0.0
     while True:
         try:
             watch_once()
         except Exception as e:  # noqa: BLE001  番人の失敗でラインを止めない
             log("watch error", repr(e))
-        if time.time() - last_cleanup > 3600:   # 済んだチケットの引き継ぎのボリュームを消す（1 時間に 1 回。ADR 0017）
-            last_cleanup = time.time()
-            try:
-                with db() as conn, conn.cursor() as cur:
-                    n = continuation.cleanup(cur, log)
-                    if n:
-                        log(f"handoff volumes removed: {n}")
-            except Exception as e:  # noqa: BLE001
-                log("handoff cleanup error", repr(e))
         time.sleep(WATCH_INTERVAL)
+
+
+def tidy_loop():
+    """後片付け（ADR 0018）。ラインとは別の糸で、済んだチケットの引き継ぎの記録をオブジェクトストアに移してボリュームを消す。
+    ジョブの枠を使わず、ラインの完了を待たせない（片付けは成果物に含めない）"""
+    def put(key: str, data: bytes):
+        store.put_object(BUCKET, key, io.BytesIO(data), len(data), content_type="application/gzip")
+    while True:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                n = continuation.tidy(cur, WORKER_IMAGE, put, log)
+                m = continuation.cleanup(cur, log)
+                if n or m:
+                    log(f"handoff tidied: archived {n}, expired {m}")
+        except Exception as e:  # noqa: BLE001  片付けの失敗でラインを止めない
+            log("tidy error", repr(e))
+        time.sleep(TIDY_INTERVAL)
 
 
 # ------------------------------------------------------------------ Webhook（任意）
@@ -876,6 +833,8 @@ def main():
     threading.Thread(target=ops_loop, daemon=True).start()
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
+    if continuation.HANDOFF_ENABLED:
+        threading.Thread(target=tidy_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)

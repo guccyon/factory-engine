@@ -219,70 +219,48 @@ def merged(cur, url=P["url"], days_ago=0):
                 (P["corr"], Jsonb({"pr_url": url}), days_ago))
 
 
-def cleanups(cur):
-    cur.execute("select j.issue_number, j.kind, e.payload from jobs j join events e on e.job_id=j.id and e.name='job.enqueued' where j.kind='cleanup' order by j.id")
-    return cur.fetchall()
+class Run:
+    def __init__(self, archive_ok=True):
+        self.calls, self.archive_ok = [], archive_ok
+
+    def __call__(self, cmd, **k):
+        self.calls.append(cmd)
+        ok = self.archive_ok or cmd[:3] != ["docker", "run", "--rm"]
+        return type("R", (), {"returncode": 0 if ok else 1, "stderr": "", "stdout": b"TAR" if ok else b""})()
 
 
-def test_cleanup_enqueued_once_per_pr_with_records(cur, monkeypatch):
-    monkeypatch.setattr(supervisor, "REPOS", [REPO])
+def test_tidy_archives_whole_volume_then_removes(cur, monkeypatch):
+    run, puts = Run(), []
+    monkeypatch.setattr(continuation.subprocess, "run", run)
     saved(cur)
     merged(cur)
-    cur.execute("insert into events(name, correlation_id, payload) values ('sendback.filed',%s,%s)",
-                (P["corr"], Jsonb({"origin_pr": P["url"], "fix_issue": "https://github.com/o/r/issues/9"})))
-    continuation.enqueue(cur, repo=REPO, pr_number=256, pr_url=P["url"], branch=BRANCH, head_sha="a", reason="ci_failed", by="t", signal={})
-    finish_all(cur, "succeeded")
-    supervisor.cleanup_step(cur)
-    supervisor.cleanup_step(cur)
-    rows = cleanups(cur)
-    assert len(rows) == 1 and rows[0]["issue_number"] == 249
-    inp = rows[0]["payload"]["input"]
-    assert inp["outcome"] == "merged" and inp["sendbacks"] == ["https://github.com/o/r/issues/9"] and inp["continues"] == {"ci_failed": 1}
+    assert continuation.tidy(cur, "img", lambda k, d: puts.append((k, d))) == 1
+    assert puts[0][0].startswith("tickets/o/r/249/handoff-") and puts[0][1] == b"TAR"
+    assert "--exclude=./agent" not in run.calls[0]   # 選り分けずにそのまま移す
+    assert run.calls[1] == ["docker", "volume", "rm", "-f", "factory-ticket-o-r-249"]
+    cur.execute("select payload from events where name='handoff.archived'")
+    assert cur.fetchone()["payload"]["outcome"] == "merged"
+    assert continuation.tidy(cur, "img", lambda k, d: puts.append(k)) == 0   # 片付けたら二度はしない
 
 
-def test_cleanup_needs_a_live_volume(cur, monkeypatch):
-    monkeypatch.setattr(supervisor, "REPOS", [REPO])
-    merged(cur)
-    supervisor.cleanup_step(cur)   # ボリュームがない（handoff.saved がない）
-    assert cleanups(cur) == []
+def test_tidy_waits_for_open_pr_and_running_jobs(cur, monkeypatch):
+    run = Run()
+    monkeypatch.setattr(continuation.subprocess, "run", run)
     saved(cur)
-    cur.execute("insert into events(name, correlation_id, payload) values ('handoff.removed',%s,%s)", (P["corr"], Jsonb({"volume": "v"})))
-    supervisor.cleanup_step(cur)   # もう消えた
-    assert cleanups(cur) == []
-
-
-def test_cleanup_retries_when_ticket_is_busy(cur, monkeypatch):
-    monkeypatch.setattr(supervisor, "REPOS", [REPO])
-    saved(cur)
+    assert continuation.tidy(cur, "img", lambda k, d: None) == 0   # PR がまだ開いている
     merged(cur)
     cur.execute("insert into jobs(correlation_id, repo, issue_number, state) values (%s,%s,249,'running')", (P["corr"], REPO))
-    supervisor.cleanup_step(cur)
-    assert cleanups(cur) == []
-    finish_all(cur, "succeeded")
-    supervisor.cleanup_step(cur)
-    assert len(cleanups(cur)) == 1
+    assert continuation.tidy(cur, "img", lambda k, d: None) == 0   # 同じチケットのジョブが動いている
+    assert run.calls == []
 
 
-def test_act_on_cleanup_reports_and_discards(cur, monkeypatch):
-    posted, removed = [], []
-    monkeypatch.setattr(dispatcher, "comment", lambda repo, n, text: posted.append((n, text)))
-    monkeypatch.setattr(continuation, "remove_volume", lambda cur, corr, name, why, log=print: removed.append((name, why)) or True)
-    result = {"pr_url": P["url"], "model": "m", "report": {"summary": "s", "handoff_notes": [{"note": "次は\n移行を先に"}],
-                                                           "refile": [{"title": "保留した判断", "reason": "r", "body": "b"}]}}
-    dispatcher.act_on_cleanup(cur, REPO, 249, P["corr"], None, "succeeded", result, {"pr_url": P["url"], "outcome": "merged"}, "vol", "tickets/k")
-    cur.execute("select payload from artifacts where type='CleanupReport'")
-    assert cur.fetchone()["payload"]["refile"][0]["title"] == "保留した判断"
-    assert posted and posted[0][0] == 249 and "起票はしていません" in posted[0][1] and "- 次は 移行を先に" in posted[0][1]
-    assert removed == [("vol", "cleanup")]
-
-
-def test_act_on_cleanup_keeps_volume_if_not_archived(cur, monkeypatch):
-    posted, removed = [], []
-    monkeypatch.setattr(dispatcher, "comment", lambda repo, n, text: posted.append(text))
-    monkeypatch.setattr(continuation, "remove_volume", lambda *a, **k: removed.append(a) or True)
-    dispatcher.act_on_cleanup(cur, REPO, 249, P["corr"], None, "succeeded", {"report": {"summary": "s", "handoff_notes": [], "refile": []}},
-                              {"pr_url": P["url"]}, "vol", None)
-    assert posted == [] and removed == []   # 案がなければ書かない。移せていなければ消さない
+def test_tidy_keeps_volume_when_archive_fails(cur, monkeypatch):
+    run = Run(archive_ok=False)
+    monkeypatch.setattr(continuation.subprocess, "run", run)
+    saved(cur)
+    merged(cur)
+    assert continuation.tidy(cur, "img", lambda k, d: None) == 0
+    assert all(c[:3] != ["docker", "volume", "rm"] for c in run.calls)
 
 
 def test_keep_days_cleanup_sees_new_volume_after_removal(cur, monkeypatch):
