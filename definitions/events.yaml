@@ -242,6 +242,26 @@ events:
     source: control_plane
     required: [incident, analysis_event, themes, learnings, issue, day]
     note: "ADR 0024 の 3。supervisor が事例の分析（case.analyzed）のうち最初に回すテーマ（learning_taxonomy.yaml の status: first）の学びがあるものを、知見の変更セットの Issue（factory:planned・factory:learn）にした。工場の implement ジョブが事例記録と知見の下書きを 1 本の PR に書く。1 日に KNOWLEDGE_ISSUES_PER_DAY 件まで。dedupe は出来事ごと"
+  ui_design.drafted:
+    source: control_plane
+    required: [repo, issue, artifact_id, round, variants, recommended, gaps]
+    note: "ADR 0025。デザイナー役（kind=ui_design）が UXSpec と案のファイルを返した。ファイルは design/<job_id>/ に置き、UXSpec は artifacts に残し、デザイン検査役のジョブを積む"
+  ui_design.reviewed:
+    source: control_plane
+    required: [repo, issue, verdict_id, design_artifact_id, round, decision, inspector_decision, human_reasons, chosen_variant, confidence, must]
+    note: "ADR 0025。デザイン検査役（kind=ui_design_review）の判断。decision は委任の範囲（新しい画面・ブランド・低確信・直しの回数）を当てた後の最後の判断、inspector_decision は検査役の答え"
+  ui_design.awaiting_choice:
+    source: control_plane
+    required: [repo, issue, design_artifact_id, verdict_id, recommended, reasons]
+    note: "ADR 0025。人の選択に回した（factory:design-choice）。dedupe は案ごと"
+  ui_design.chosen:
+    source: human
+    required: [repo, issue, design_artifact_id, variant, recommended, agree, by]
+    note: "ADR 0025。人が案を選んだ（factoryctl design pick、選択の画面）。agree は検査役の推す案と一致したか（委任を広げる判断の材料）。dedupe は案ごと"
+  ui_design.handed_off:
+    source: control_plane
+    required: [repo, issue, design_artifact_id, variant, decided_by, gaps_issue]
+    note: "ADR 0025。決まった案の UXSpec を Issue の本文に足し、factory:planned に戻した。足りない部品があれば別の段を起票して依存にした（gaps_issue）。dedupe は案ごと"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]

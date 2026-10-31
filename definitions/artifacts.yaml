@@ -100,7 +100,8 @@ types:
 # 補助の型（ステージ表に出てくるもの）
 auxiliary_types:
   Rejection:        { stage: triage, required: [request, reason] }
-  UXSpec:           { stage: design, required: [screens, states, design_system_constraints] }
+  UXSpec:           { stage: design, required: [screens, states, design_system_constraints, design_system_gaps, uxspec, files, round] }   # ADR 0025。デザイナー役の案 1 回分。uxspec は definitions/ui_design.yaml の形、files は案のファイルのオブジェクトストアのキー
+  DesignVerdict:    { stage: design, required: [design_artifact_id, round, decision, inspector_decision, chosen_variant, findings, evidence, interpretation, score, decided_by] }   # ADR 0025。デザイン検査役の判断（approve・revise・human）を judge と同じ 3 層で
   ADR:              { stage: design, required: [title, status, context, decision, alternatives, consequences] }
   ContractDiff:     { stage: design, required: [contract, kind, compat_impact] }
   SchemaDiff:       { stage: design, required: [tables, kind, destructive] }

@@ -30,6 +30,7 @@ docker compose logs -f dispatcher
 - `worker/Dockerfile`: 基本（git・gh・Claude Code・yq）
 - `worker/Dockerfile.rust`: 基本 ＋ Rust ツールチェーン（cargo / rustfmt / clippy、C ツールチェーン）。`docker build -t factory-worker:rust -f worker/Dockerfile.rust worker`
 - `worker/Dockerfile.flutter`: 基本 ＋ Flutter（3.47.8 に固定。flutter analyze / flutter test まで。Android / iOS の SDK は入れない）。`docker build -t factory-worker:flutter -f worker/Dockerfile.flutter worker`
+- `worker/Dockerfile.design`: 基本 ＋ ヘッドレスの Chromium と日本語の書体（Noto CJK）。デザイナー役（ADR 0025）が案のモックを撮る。`docker compose build worker worker-design`（`factory-worker:design`。`.env` の `UI_DESIGN_IMAGE` で替えられる）
 - どのリポジトリにどのイメージを使うかは `.env` の `WORKER_IMAGES`（例: `guccyon/rally=factory-worker:rust`）
 - Issue ごとに変えるときは、Issue に `factory:image:<名前>`（例: `factory:image:flutter`）のラベルを付ける。リポジトリの設定より優先する
 
@@ -109,6 +110,18 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 - events に `request.received` / `request.clarified` / `request.unresolved`（往復回数、`converged`、`intent_match`、食い違った項目 `missed`）。`converged` は「確定・往復 3 回以内・意図と一致」で、P4 の完了条件の物差し（`definitions/roadmap.yaml` の `clarify_3_rounds`。ペルソナごとの最新の結果で 8 人以上）
 - ペルソナは 10 人（CS・サクセス・マーケ・営業・経営・本部の運営・コーチ担当）。前半 5 人は数字を知りたい問い、後半 5 人は経営の問いと画面や機能への要望。全員を一巡させるのは `scripts/clarify-bench.sh guccyon/rally`（1 人ずつ要求の Issue を起票する。ペルソナを足したらワーカーのイメージを作り直す）
 - triage と Deliver への接続は P4
+
+## デザインの線（ADR 0025。デザイナー役とデザイン検査役）
+
+画面を含む段は、実装の前に画面の要素と振る舞い（UXSpec）と案を決める。数値と観点は `definitions/ui_design.yaml`。
+
+- 段（Issue）に `factory:planned` の代わりに `factory:design` を付ける（プランナーができるまでは人か建設者が付ける）
+- dispatcher が `ui_design` のジョブに積む。デザイナー役（`worker/ui_design.sh` → `core-gates/ui_design.py`、`factory-worker:design` で動く）が、製品の `specs/design/`（デザインシステム）・用語集・今の画面を読み、UXSpec と 2〜3 案の静的 HTML を書いて Chromium で撮る（外への通信は止める）。案のファイルは `design/<job_id>/` に置き、UXSpec は artifacts（`UXSpec`）に残す
+- 続けてデザイン検査役（`ui_design_review` → `core-gates/ui_design_review.py`）が、別の文脈で案の画像・HTML・製品の `specs/` を見て、受け入れ条件・状態・デザインシステム・文言・アクセシビリティ・案の違いの観点で 承認／直し／人へ を返す。判断は judge と同じ 3 層（根拠・解釈・確信度）で `DesignVerdict` に残す
+- 人へ回す条件はエージェントの答えにかかわらず決定論で当てる: 新しい画面、ブランドと印象に効く画面、確信度 0.7 未満、直しを 1 回使った後の直し。must の指摘が残る案は承認しない
+- 承認: 決まった案の UXSpec（とモックの HTML）を Issue の本文の節に足し、`factory:planned` に戻す。実装役は同じ PR で `specs/ux/issue-<番号>.yaml` に置く。デザインシステムに足りない部品（`design_system_gaps`）は別の段を起票して依存にする（画面に直書きさせない）
+- 直し: 指摘と前の UXSpec を渡してデザイナー役を 1 回だけ積み直す
+- 人へ: `factory:design-choice` を付け、Issue に案と推す案を書く。人は `factoryctl design list` / `show` / `export`（案のファイルを tar で）で見て、`factoryctl design pick owner/repo#123 <案>` で選ぶ。dispatcher が次の周回で Issue に反映する。検査役の推す案との一致を `ui_design.chosen` の `agree` に残す（委任を広げる判断の材料）。操業コンソールの選択の画面は P4-7
 
 ## 操業停止の記録と番人（ADR 0005）
 

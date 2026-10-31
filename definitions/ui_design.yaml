@@ -1,0 +1,54 @@
+# デザイナー役とデザイン検査役（ADR 0025。P4-6・P4-10）
+#
+# 画面を含む段は、実装の前にデザインの線を通る:
+#   Issue に factory:design → デザイナー役（ui_design）: UXSpec と 2〜3 案のモック（静的 HTML）とキャプチャ
+#   → デザイン検査役（ui_design_review）: 承認／直し（1 回まで）／人へ
+#   → 承認か人の選択のあと、UXSpec を Issue の本文に足して factory:planned（依存を見て supervisor が実装に回す）
+# 数値は仮置き（2026-11-01。委任の範囲で運用しながら直す）。観点の追加・変更はデザインガイドラインの変更と同じ入り口（ADR 0025）。
+
+schema_version: "0.1"
+status: draft
+
+labels:
+  trigger: factory:design            # 画面を含む段。人かプランナーが付ける（factory:planned の代わり）
+  choice: factory:design-choice      # 人の選択待ち（factoryctl design pick か、操業コンソールの選択の画面 P4-7）
+  after: factory:planned             # デザインが決まった段は投入待ちへ
+
+designer:
+  max_turns: 40
+  variants: {min: 2, max: 3, small_change_min: 1}   # 小さな追加（既存の画面に要素を 1 つ足す程度）は 1 案でよい
+  viewports:                                        # 案ごとに選ぶ。アプリの種類で決める
+    mobile: [390, 844]
+    desktop: [1280, 900]
+  max_file_bytes: 2000000                           # 1 ファイル（HTML・PNG）の上限。超えた案は捨てる
+  rules:
+    - "案はデザインシステム（製品の specs/design/）の部品と画面の型だけで組む。トークン外の色・余白・部品を直書きしない"
+    - "足りない部品は design_system_gaps に書く（画面の段とは別に、デザインシステムに部品を足す段を切る）"
+    - "デザインシステムがまだない製品では、今の画面の見た目（apps/ のコード）を写し、そのことを design_system_constraints に書く"
+    - "画面の要素と振る舞い（操作・状態・遷移）は必ず決める。見た目の細部は後追いでよい（ADR 0025 の E1）"
+    - "状態（読み込み中・空・失敗・送信中・確認・権限がないとき）のうち、その画面に起きるものを states に全部書く"
+    - "モックは外部の資源を読まない（Web フォント・CDN・画像の URL を使わない。書体は同梱のものを font-family で指定するだけ）"
+    - "案どうしは、選ぶ価値のある違い（流れ・情報の優先順位・密度）にする。色違いだけの案は作らない"
+    - "用語は specs/glossary.yaml の語を使う"
+
+uxspec:
+  required: [ticket, screens, states, design_system_constraints, design_system_gaps, variants, recommended, brand_impact]
+  screen_required: [id, purpose, new, elements, behaviors]
+
+inspector:
+  max_turns: 20
+  max_revisions: 1                   # 直しは 1 回まで（ADR 0025）。2 回目の「直し」は人へ
+  human_below_confidence: 0.7        # 検査役の確信度がこれ未満なら人へ
+  human_when:                        # 検査役の答えにかかわらず人へ回す（ADR 0025 の E1。決定論で決める）
+    new_screen: "新しい画面（UXSpec の screens に new: true がある）"
+    brand_impact: "ブランドと印象に効く画面（UXSpec の brand_impact: true。生徒が見る画面の見た目など）"
+    low_confidence: "検査役の確信度が低い"
+    revisions_exhausted: "直しを 1 回使った後も直しが要る"
+  viewpoints:                        # デザイン検査役の観点（definitions/design_guideline.yaml の check: design_inspector の受け皿）
+    acceptance: {ja: 受け入れ条件, question: "Issue の受け入れ条件を、画面の要素と振る舞いで満たしているか"}
+    states: {ja: 状態, question: "読み込み中・空・失敗・送信中・確認など、その画面に起きる状態が揃っているか"}
+    design_system: {ja: デザインシステム, question: "デザインシステムの部品と画面の型だけで組まれているか。足りない部品を gaps に出しているか"}
+    content: {ja: 文言, question: "文言と表記の決まり（動詞のボタン、誤りの知らせ方、用語集の語）に沿っているか"}
+    accessibility: {ja: アクセシビリティ, question: "文字と背景のコントラスト（WCAG 2.2 AA）、押せる大きさ（44pt・48dp）、色だけに頼らないか"}
+    variants: {ja: 案の違い, question: "案どうしの違いが選ぶ価値のある違いか。推奨の案とその理由が妥当か"}
+  severities: [must, should, nits]   # must が残る案は承認しない
