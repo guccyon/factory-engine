@@ -251,6 +251,7 @@ function render() {
   const series = S.series || [];
   const yday = series.length ? series[series.length - 1].date : "";
   $("meta").textContent = `${yday ? md(yday) + " までの集計" : ""} · ${S.date} 朝に更新`;
+  (S.links || []).forEach(([t, u]) => { const a = el("a", null, t); a.href = u; a.target = "_blank"; a.rel = "noopener"; $("meta").append(" · ", a); });   // ほかのページ（render_html.py の --link）
 
   // 全体
   const hist = (S.progress_history || []).filter((h) => h.overall != null);
