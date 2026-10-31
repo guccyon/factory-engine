@@ -1,0 +1,79 @@
+# 知見の蓄積と委員会（ADR 0024）。全工場で共通の形・状態・期限・委員会の手順。
+# 製品ごとの知見は製品のリポジトリの .factory-config/knowledge/ に 1 件 1 ファイル。使用の記録は制御プレーンの events。
+# 決定は 2026-10-31 オーナー（知見の蓄積と委員会への回答）。数値は仮置き。
+
+schema_version: "0.1"
+status: adopted
+
+layout:
+  root: .factory-config/knowledge
+  knowledge: "K-NNNN.yaml"          # 知見 1 件 1 主張・1 ファイル。最初はフラット（テーマは中の theme で引く）
+  cases: "cases/C-NNNN.md"          # 事例記録（なぜなぜの過程）
+  committee: "committee/D-NNNN.yaml" # 委員会の議決
+  index: "INDEX.md"                 # 自動生成（core-gates/knowledge_check.py --index）。手で編集しない
+  owner: committee                  # 置き場の構造（ディレクトリの分け方）は委員会がオーナー。週 1 の定例で見直し、変えるときは Issue にしてラインで
+
+knowledge:
+  required: [id, theme, kind, statement, scope, confidence, evidence, status, verified_at, confidentiality]
+  required_unless_draft: [decided_by]
+  id: "^K-\\d{4,}$"
+  themes: [1, 2, 3, 4, 5, 6, 7, 8]   # definitions/learning_taxonomy.yaml の themes の id
+  kinds:
+    fact: "この製品・業務について確かめた事実"
+    term_usage: "言葉の使い分け、同じ意味の言い換えの禁止"
+    practice: "こうするとうまくいく・失敗するというやり方"
+    causal: "A が起きると B が起きやすいという因果（なぜなぜの結論）"
+    preference: "人の好み・判断の傾向"
+    hypothesis_test: "改善の仮説と予測、試した結果"
+  scope_keys: [contexts, roles, paths]
+  confidence:
+    hypothesis: { ja: 仮説, review_days: 30, note: "事例 1 件から出た。エージェントには渡さない" }
+    confirmed:  { ja: 確認済み, review_days: 90, note: "独立した事例 2 件以上で再現した、または人が承認した" }
+    settled:    { ja: 確定, review_days: null, note: "決定論で担保されたか、規範（specs/）に取り込まれた。担保が外れたら confirmed に戻す" }
+  status: [draft, active, stale, superseded, retired]   # ファイルは消さず状態だけ変える。id は再利用しない
+  evidence_kinds: [case, pr, issue, session, event, spec, restricted]   # restricted は制限付きの保管先の不透明な id（R-NNNN）。中身は書かない
+  enforcement:
+    levels: [context, checklist, deterministic]
+    solution_kinds: [lint, test, type, schema, ci_check, config, overlay_rule]
+    note: "決定論で担保しても知見は消さず、どの解決策で担保したかを solutions に残す（Issue・PR・時期・議決）"
+  confidentiality: [product, client, public]
+
+# エージェントに渡す知見（2026-10-31 オーナー）
+context_for_agents:
+  include: "status=active かつ confidence が confirmed か settled（settled で deterministic の担保が効いているものは渡さない）"
+  attach: [confidence, verified_at]
+  usage_event: knowledge.used   # 渡した記録。数えるのは測る側
+
+# 失効のきっかけ（決定論で見るもの）
+invalidation:
+  - "review_by を過ぎた（日次の棚卸し）"
+  - "scope のコードや specs/ が変わった、invalidate_when に当たった"
+  - "根拠の PR が revert された、根拠の判断が覆った"
+  - "知見に従った作業が差し戻された（反証。測る側）"
+  - "60 日使われていない（測る側）"
+
+# 変更セット: 新しい知見には、影響を受ける既存の知見の扱いを必ず添える（1 本の PR）
+change_set:
+  treatments: [keep, amend, supersede, retire, recheck]
+  pr_body: "追加・置き換え・廃止・そのまま（理由つき）を並べる"
+
+# 委員会（2026-10-31 オーナー: 観点別の 4 役、割れたら人。出来事ごとの持ち込み＋週 1 の定例）
+committee:
+  roles:
+    consistency: { ja: 整合, question: "過去の知見・規範（specs/）と矛盾や重複がないか。変更セットの扱いは妥当か" }
+    evidence:    { ja: 根拠, question: "一次記録に辿れるか。確かさの段は妥当か。個人情報が抽象化で切れているか" }
+    enforcement: { ja: 担保, question: "決定論で担保できないか（繰り返し・確かさ・線の引きやすさ・外したときの痛さ・作る費用）" }
+    dissent:     { ja: 反対, question: "採らない理由を探す。範囲が広すぎないか、反例はないか" }
+  author_excluded: true          # 知見を書いた分析役は委員会に入らない
+  outcomes: [adopt, enforce, human, sendback]
+  split_goes_to: human
+  meetings:
+    per_event: "変更セットの PR の決定論の検査が緑になったら持ち込む"
+    weekly: "その週の議決、決定論化の候補、期限切れ・矛盾の候補、置き場の構造をまとめて見直す"
+  implements: false              # 委員会は実装しない。担保や改善は Issue にして工場のラインで作る
+
+# 個人情報（2026-10-31 オーナー: git に一切置かない。抽象化で切る）
+personal_data:
+  git: forbidden
+  guards: ["変更セットの CI の決定論の検出（core-gates/knowledge_check.py）", "委員会の根拠の担当"]
+  restricted_store: "利用者の情報をどうしても含む知見は、制御プレーンの制限付きの保管先（システムの管理者だけ、読んだ記録を残す）に置き、git からは restricted:R-NNNN で指すだけ"
