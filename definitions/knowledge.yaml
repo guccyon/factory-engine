@@ -67,6 +67,13 @@ committee:
   author_excluded: true          # 知見を書いた分析役は委員会に入らない
   outcomes: [adopt, enforce, human, sendback]
   split_goes_to: human
+  # 議決の集め方（決定論。core-gates/committee_review.py の aggregate）。2026-10-31 仮置き
+  aggregation:
+    - "個人情報を見つけた役がいる → sendback"
+    - "4 役とも adopt か enforce → adopt（enforce の票があれば enforce: 採用して担保の Issue を起票）"
+    - "3 役以上が sendback → sendback（PR を閉じる。票は制御プレーンに残す）"
+    - "それ以外（割れた・人に回す票がある・欠けた役がある）→ human（人のマージが採用、閉じれば不採用）"
+  on_record: "sendback 以外は committee/D-NNNN.yaml を書き、この PR で足した下書きの知見を active にして decided_by: committee:D-NNNN を付ける。確かさは変えない（confirmed に上げるのは再現か人の承認）"
   meetings:
     per_event: "変更セットの PR の決定論の検査が緑になったら持ち込む"
     weekly: "その週の議決、決定論化の候補、期限切れ・矛盾の候補、置き場の構造をまとめて見直す"

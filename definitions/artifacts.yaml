@@ -64,6 +64,10 @@ types:
     stage: learn
     required: [incident, kind, ticket, summary, viewpoints, root_causes, learnings, had_session]
     note: "ADR 0023。事例型の分析役が 1 件の出来事（差し戻し・停止）を観点ごとになぜなぜで掘った結果。知見の置き場と committee が決まるまで記録だけ"
+  CommitteeDecision:
+    stage: learn
+    required: [pr_url, outcome, decision, votes, enforce, added, pushed_sha]
+    note: "ADR 0024。知見の委員会の議決。git の committee/D-NNNN.yaml と同じ票を、差し戻し（git に残らない）も含めて制御プレーンに残す"
   Lesson:
     stage: learn
     required: [teacher_signal, summary, eval_cases, knowledge_stage]   # eval ケース同梱必須。P3 からは signature・confidentiality・source_refs も（definitions/learning.yaml の lesson）

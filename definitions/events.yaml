@@ -242,6 +242,18 @@ events:
     source: control_plane
     required: [incident, analysis_event, themes, learnings, issue, day]
     note: "ADR 0024 の 3。supervisor が事例の分析（case.analyzed）のうち最初に回すテーマ（learning_taxonomy.yaml の status: first）の学びがあるものを、知見の変更セットの Issue（factory:planned・factory:learn）にした。工場の implement ジョブが事例記録と知見の下書きを 1 本の PR に書く。1 日に KNOWLEDGE_ISSUES_PER_DAY 件まで。dedupe は出来事ごと"
+  supervisor.committee_enqueued:
+    source: control_plane
+    required: [pr_url, head_sha, job_id]
+    note: "ADR 0024 の 4。supervisor が変更種別 knowledge の工場の PR を、CI を通った後に知見の委員会のジョブ（kind=committee_review）へ持ち込んだ。同じ PR の検査・judge が動いている間は次の周回で積む。dedupe は PR ごと"
+  committee.decided:
+    source: control_plane
+    required: [pr_url, outcome, decision, votes, enforce, added, pushed_sha]
+    note: "ADR 0024 の 4。知見の委員会の 4 役（整合・根拠・担保・反対）の票と議決（adopt・enforce・human・sendback）。sendback 以外は議決 committee/D-NNNN.yaml と active にした知見を PR のブランチに積んだ（pushed_sha）。dispatcher が PR にまとめを書き、sendback は閉じ、human は人の承認へ、enforce は担保の Issue を起票する。同じ中身を artifacts の CommitteeDecision に残す。dedupe は PR ごと"
+  committee.enforce_filed:
+    source: control_plane
+    required: [decision, knowledge, solution_kind, issue]
+    note: "ADR 0024 の 4・6。委員会が決定論で担保すると決めた知見の担保を、委員会が実装せずに Issue（factory:planned・factory:learn）にした。工場のラインが担保を作り、知見の enforcement.solutions に記録する"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]
