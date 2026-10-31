@@ -8,6 +8,8 @@
   表が auto で、かつ工場の権限（phase_grants の merge）も auto のときだけ実際にマージする。それ以外は記録だけ（shadow）
 - 結果: 判定を記録した PR が閉じたら、誰がマージしたか（しなかったか）を記録する（判定と人の判断の一致率の材料）
 - 検証の起動: マージを判定した head ごとに検査ジョブ（kind=inspect、L4 の shadow 判定）を積む。結果は gate.evaluated と InspectionReport
+- 続きのジョブ（ADR 0016・0017）: 工場の PR が衝突したら（head ごとに 1 回）、CI が落ちたら（PR ごとに CONTINUE_MAX 回まで）、
+  同じチケットの実装役の続きのジョブを積む。直している間は停止を開かず、直せなかったら停止 ci: を開いて人へ
 - 依存順の投入: `factory:planned` の Issue を工場のチケットに写し（ADR 0009）、本文の「依存: #12 #13」がすべて閉じたものを
   優先度の高い順に `factory:implement` に替える（同時に流すのは上限まで。緊急（p0）は上限を待たない。保留中は流さない）
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
@@ -36,6 +38,7 @@ import yaml
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import continuation
 import judgment
 import learn
 import ops
@@ -63,6 +66,8 @@ DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai �
 # 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
 BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22:25,03:15")
 BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
+CONFLICT_FIX = ENV.get("SUPERVISOR_CONFLICT_FIX", "1") == "1"   # 衝突した工場の PR に、既定ブランチを取り込んで衝突を解くジョブを head ごとに 1 回積む。0 で止める
+CI_FIX = ENV.get("SUPERVISOR_CI_FIX", "1") == "1"   # CI が落ちた工場の PR に、同じ担当の続きのジョブを積む（PR ごとに CONTINUE_MAX 回まで。ADR 0017）。0 で止める
 LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -207,12 +212,15 @@ def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None):
     cur.execute("select name, payload from events where name in ('pr.ci_failed','pr.ci_passed','pr.conflicted') "
                 "and payload->>'pr_url'=%s and payload->>'head_sha'=%s", (p["url"], sha))
     seen = {r["name"]: r["payload"] for r in cur.fetchall()}
+    if ("pr.conflicted" in seen or mergeable_state == "dirty" or "pr.ci_failed" in seen) and continuation.pending(cur, p["url"], sha):
+        return   # 工場の続きのジョブが直している最中。人には回さない（ADR 0017）
+    tried = continuation.attempts(cur, p["url"], "ci_failed")
     if "pr.conflicted" in seen or mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
         stoppage.open_stoppage(cur, key, "ticket", "工場の PR が main と衝突している。検査と judge に進めない",
-                               waiting_for="builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
+                               waiting_for="工場の衝突の解消が通らなかった。builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
     elif "pr.ci_failed" in seen:
         stoppage.open_stoppage(cur, key, "ticket", f"工場の PR の CI が落ちた（{', '.join(seen['pr.ci_failed'].get('failed') or [])}）。検査と judge に進めない",
-                               waiting_for="builder が直すか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
+                               waiting_for=f"工場の続きのジョブ（{tried} 回）でも通らなかった。builder が直すか、差し戻す" if tried else "builder が直すか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
     elif "pr.ci_passed" in seen:
         stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った（衝突も解けた）", closed_by="supervisor")
 
@@ -226,6 +234,34 @@ def waiting_for_human(cur, url: str) -> bool:
     cur.execute("select payload->>'table' as t from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (url,))
     d = cur.fetchone()
     return bool(d and d["t"] == "human_approve")
+
+
+def conflict_step(cur, p: dict, pr: dict):
+    """工場の PR が既定ブランチと衝突したら（同時に流した PR どうしの CHANGELOG など）、その PR のブランチで衝突を解く
+    続きのジョブを head ごとに 1 回積む。ワーカーは既定ブランチをマージコミットで取り込み、履歴は書き換えない。
+    解けなかったら次の head は来ないので、同じ head では二度積まず、番人のマージ待ちの停止に任せる"""
+    if not CONFLICT_FIX or (pr["head"].get("repo") or {}).get("full_name") != p["repo"]:
+        return   # フォークの PR は触らない
+    jid = continuation.enqueue(cur, repo=p["repo"], pr_number=p["number"], pr_url=p["url"], branch=pr["head"]["ref"],
+                               head_sha=pr["head"]["sha"], reason="conflict", by="supervisor")
+    if isinstance(jid, int):
+        log("conflict fix enqueued", p["url"], "job", jid)
+
+
+def ci_fix_step(cur, p: dict, pr: dict):
+    """工場の PR の CI が落ちたら（PR の見張りの pr.ci_failed）、同じ担当の続きのジョブを積んで直させる（ADR 0017）。
+    同じ PR で CONTINUE_MAX 回まで。超えたら ci_failure_step が停止を開いて人へ回す"""
+    if not CI_FIX or (pr["head"].get("repo") or {}).get("full_name") != p["repo"]:
+        return
+    sha = pr["head"]["sha"]
+    cur.execute("select payload from events where name='pr.ci_failed' and payload->>'pr_url'=%s and payload->>'head_sha'=%s limit 1", (p["url"], sha))
+    ev = cur.fetchone()
+    if not ev:
+        return
+    jid = continuation.enqueue(cur, repo=p["repo"], pr_number=p["number"], pr_url=p["url"], branch=pr["head"]["ref"], head_sha=sha,
+                               reason="ci_failed", by="supervisor", signal={"head_sha": sha, "failed": ev["payload"].get("failed") or []})
+    if isinstance(jid, int):
+        log("ci fix enqueued", p["url"], "job", jid)
 
 
 def merge_step(cur, rules: dict, manifests: dict):
@@ -250,6 +286,11 @@ def merge_step(cur, rules: dict, manifests: dict):
                        f"pr.closed_unmerged:{p['url']}")
             continue
         if not pr.get("draft"):
+            # 衝突と CI 落ちは、まず同じ担当の続きのジョブで直す（ADR 0016・0017）。直せない・上限に達したときだけ停止（ci:）を開いて人へ
+            if pr.get("mergeable_state") == "dirty":
+                conflict_step(cur, p, pr)
+            else:
+                ci_fix_step(cur, p, pr)
             ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"))
         if not waiting_for_human(cur, p["url"]):
             open_count += 1
@@ -315,8 +356,10 @@ def inspector_approved(cur, pr_url: str, sha: str) -> tuple[bool, str]:
         return False, "判定中"
     if "escalate" in verdicts and stoppage.open_keys(cur, f"judge:{pr_url}"):
         return False, "judge が人に回した判断の待ち"
+    if continuation.pending(cur, pr_url, sha, "review_fix"):
+        return False, "採用した指摘を同じ担当が直している（ADR 0017）"
     n_adopt = sum(1 for v in verdicts if v == "adopt")
-    return True, f"judge が {len(verdicts)} 件を裁いた（採用 {n_adopt}。採用した指摘は差し戻しで直す）"
+    return True, f"judge が {len(verdicts)} 件を裁いた（採用 {n_adopt}。採用した指摘は続きのジョブか差し戻しで直す）"
 
 
 def enqueue_inspect(cur, p: dict, sha: str):

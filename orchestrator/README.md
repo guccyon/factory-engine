@@ -38,12 +38,32 @@ docker compose logs -f dispatcher
 ```bash
 docker compose exec dispatcher factoryctl list          # 進行中と直近 1 日
 docker compose exec dispatcher factoryctl stop 12       # 停止（コンテナを kill）
-docker compose exec dispatcher factoryctl rerun 12      # 同じ Issue で attempt+1 を投入
+docker compose exec dispatcher factoryctl rerun 12      # 同じ Issue で attempt+1 を投入（最初から作り直す）
+docker compose exec dispatcher factoryctl rerun 12 --continue   # 途中終了のドラフト PR のブランチから続ける（ADR 0016）
 docker compose exec dispatcher factoryctl enqueue guccyon/rally 3   # ラベルを使わずに投入
 docker compose exec dispatcher factoryctl events 12     # そのジョブのイベント
 docker compose exec dispatcher factoryctl drain --wait 3000   # ラインを一時停止して、入れ替えてよくなるまで待つ（ADR 0020）
 docker compose exec dispatcher factoryctl resume        # ラインを再開
 ```
+
+## 続きのジョブと引き継ぎのボリューム（ADR 0016・0017）
+
+工場の PR に合図が来たら、同じチケットの実装役を続きから動かし、同じブランチに push する。人に回すのは、直せなかったときと上限に達したときだけ。
+
+| 合図 | 積む役 | 上限 | 直せなかったら |
+|---|---|---|---|
+| 衝突（mergeable_state=dirty） | supervisor | head ごとに 1 回 | 停止 `ci:` |
+| CI 落ち（PR の見張りの `pr.ci_failed`） | supervisor | PR ごとに `CONTINUE_MAX` 回（既定 2） | 停止 `ci:` |
+| 検査役がマージ前に採用した指摘（本文だけの指摘を除く） | dispatcher（judge の後） | PR ごとに `CONTINUE_MAX` 回 | 差し戻しの Issue（ADR 0006） |
+
+実装役の作業の文脈は、チケットごとの Docker のボリューム `factory-ticket-<owner>-<repo>-<issue>` に残る（ワーカーの `/handoff`）。
+
+```bash
+docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine cat /h/ticket.json   # ジョブの履歴・ブランチ・PR
+docker run --rm -v factory-ticket-guccyon-rally-249:/h alpine ls -R /h/jobs        # ジョブごとの報告・仮決め・合図・差分
+```
+
+`agent/` の下はエージェントの会話の記録（Claude Code の `--resume` に使う近道）で、なくても続きは作れる。PR がマージか閉じられたら、後片付け（ADR 0021）が 5 分ごとにボリュームをそのまま tar.gz にしてオブジェクトストアの `tickets/<repo>/<issue>/handoff-<日時>.tar.gz` に置き（`handoff.archived`）、ボリュームを消す。ラインとは別の糸で動き、PR には何も足さない（`TIDY_ENABLED=0` で止める）。置けないまま `HANDOFF_KEEP_DAYS` 日（既定 7）たったボリュームは dispatcher が消す。`/handoff` を持たない古いワーカーのイメージでは、ボリュームなしで続ける（ラインは止めない）。
 
 ## 工場の入れ替え（ADR 0020）
 
