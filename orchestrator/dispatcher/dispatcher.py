@@ -451,9 +451,13 @@ def run_job(job: dict, reattaching: bool = False):
                 # clarify: 確定した Request を残す。往復回数と問いの回答待ちを Trust / Flow の計測に
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Request',%s,%s,'clarify',%s)",
                             (corr, job_id, Jsonb({"repo": repo, "issue": issue, "status": result.get("status"), "requester": result.get("requester"),
-                                                  "rounds": result.get("rounds"), **(result.get("request") or {})})))
+                                                  "rounds": result.get("rounds"), "converged": result.get("converged"),
+                                                  "intent_match": result.get("intent_match"), **(result.get("request") or {})})))
+                # converged（確定・往復 3 回以内・意図と一致）は P4 の完了条件の物差し。roadmap.yaml の clarify_3_rounds が読む
                 record_event(cur, "request.clarified" if state == "succeeded" else "request.unresolved", corr, job_id,
-                             {"rounds": result.get("rounds"), "requester": result.get("requester"), "cost_usd": result.get("cost_usd")})
+                             {"rounds": result.get("rounds"), "requester": result.get("requester"), "cost_usd": result.get("cost_usd"),
+                              "converged": result.get("converged"), "converge_rounds": result.get("converge_rounds"),
+                              "intent_match": result.get("intent_match"), "missed": result.get("missed")})
                 swap_label(repo, issue, [LABELS["running"]], ["factory:clarified" if state == "succeeded" else LABELS["failed"]])
             elif state == "succeeded":
                 cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload, blob_key) values ('PR',%s,%s,'implement',%s,%s)",

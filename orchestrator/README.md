@@ -105,7 +105,10 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 - dispatcher が Request（raw）を artifacts に残し、clarify のジョブを積む。ワーカーは `worker/clarify.sh` で動く（リポジトリはクローンしない）
 - 問い手（tier-judge）が足りない項目を 1 つずつ Issue のコメントで聞き、ペルソナ（tier-small）が答える。最大 3 往復
 - 4 項目が埋まれば Request（clarified）を artifacts に残してラベルを `factory:clarified` に。埋まらなければ failed（unresolved）
-- events に `request.received` / `request.clarified` / `request.unresolved`（往復回数）。triage と Deliver への接続は P4
+- 確定したら、採点役（`clarify.grader`、tier-judge）が確定した要求と架空の要求者の隠れた意図を比べる。問い手が推測で埋めて確定にしたものを見分けるため。本物の要求者（隠れた意図がない）は採点しない
+- events に `request.received` / `request.clarified` / `request.unresolved`（往復回数、`converged`、`intent_match`、食い違った項目 `missed`）。`converged` は「確定・往復 3 回以内・意図と一致」で、P4 の完了条件の物差し（`definitions/roadmap.yaml` の `clarify_3_rounds`。ペルソナごとの最新の結果で 8 人以上）
+- ペルソナは 10 人（CS・サクセス・マーケ・営業・経営・本部の運営・コーチ担当）。前半 5 人は数字を知りたい問い、後半 5 人は経営の問いと画面や機能への要望。全員を一巡させるのは `scripts/clarify-bench.sh guccyon/rally`（1 人ずつ要求の Issue を起票する。ペルソナを足したらワーカーのイメージを作り直す）
+- triage と Deliver への接続は P4
 
 ## 操業停止の記録と番人（ADR 0005）
 
