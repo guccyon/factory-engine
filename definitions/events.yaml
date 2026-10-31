@@ -107,6 +107,10 @@ events:
     source: control_plane
     required: [pr_url, head_sha]
     note: "検証の起動（ADR 0004）。head ごとに 1 回。結果は gate.evaluated（mode=shadow）"
+  supervisor.conflict_fix_enqueued:
+    source: control_plane
+    required: [pr_url, head_sha, continue]
+    note: "工場の PR が既定ブランチと衝突した（mergeable_state=dirty）ので、その PR のブランチで既定ブランチを取り込み衝突を解く implement ジョブ（CONTINUE_REASON=conflict）を積んだ。head ごとに 1 回"
   supervisor.enqueued:
     source: control_plane
     required: [repo, issue, deps]
