@@ -28,6 +28,9 @@ steps:
     tier: tier-judge
   clarify.persona:            # 要求者ペルソナ（架空）
     tier: tier-small
+  clarify.grader:             # 収束の採点役（確定した要求と架空の要求者の隠れた意図を比べる。問い手より弱くしない）
+    tier: tier-judge
+    tools: none
   inspect:                    # L4 の shadow 判定（core-gates/shadow_review.py）
     tier: tier-judge
   judge:                      # 出口の裁き（core-gates/judge.py）
