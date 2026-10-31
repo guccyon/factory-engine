@@ -37,6 +37,7 @@ case "$1" in
   ps) for f in "$d"/containers/*; do [ -f "$f" ] && echo "$(cut -d' ' -f1 "$f") $(basename "$f")"; done; exit 0 ;;
   rm) rm -f "$d/containers/$3"; exit 0 ;;
   wait) [ -f "$d/containers/$2" ] || exit 1; cut -d' ' -f2 "$d/containers/$2" ;;
+  inspect) f="$d/containers/$4"; [ -f "$f" ] || exit 1; st=$(cut -d' ' -f3 "$f"); echo "${st:-running} $(cut -d' ' -f2 "$f")" ;;
   logs) cat "$d/logs/$3" 2>/dev/null; exit 0 ;;
   *) exit 0 ;;
 esac
@@ -63,8 +64,8 @@ def docker(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_DOCKER", str(tmp_path))
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
 
-    def put(name, job_id, exit_code=0, output=""):
-        (tmp_path / "containers" / name).write_text(f"{job_id} {exit_code}")
+    def put(name, job_id, exit_code=0, output="", status="running"):
+        (tmp_path / "containers" / name).write_text(f"{job_id} {exit_code} {status}")
         (tmp_path / "logs" / name).write_text(output)
     put.dir = tmp_path
     return put
@@ -218,3 +219,17 @@ def test_watcher_does_not_notice_line_low_while_draining(cur):
     drain.set_drain(cur, True, "factoryctl", "入れ替え")
     dispatcher.watch_once()
     assert not line_events(cur)
+
+
+def test_recover_requeues_jobs_killed_by_docker_shutdown(cur, docker):
+    killed = job(cur, "o/r#1", state="running", container="factory-job-1")
+    finished = job(cur, "o/r#2", state="running", container="factory-job-2")
+    docker("factory-job-1", killed, exit_code=143, status="exited")   # Docker の再起動で止まった
+    docker("factory-job-2", finished, exit_code=0, status="exited")   # 自分で終わった（結果を読みに行く）
+    resumed = dispatcher.recover()
+    assert [j["id"] for j in resumed] == [finished]
+    cur.execute("select state, error from jobs where id=%s", (killed,))
+    assert dict(cur.fetchone()) == {"state": "failed", "error": "killed_by_shutdown"}
+    cur.execute("select count(*) as n from jobs where enqueued_by='recover'")
+    assert cur.fetchone()["n"] == 1
+    assert not (docker.dir / "containers" / "factory-job-1").exists()
