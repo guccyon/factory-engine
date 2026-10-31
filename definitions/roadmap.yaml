@@ -78,7 +78,8 @@ phases:
       # 完了は「最初に選んだテーマ（4 言葉と伝達・6 工程）で、入力から作用先まで 1 周回り、効き目を測れた」。外向きのテーマ（1・2）は P5 へ
       - { id: taxonomy, ja: "学習の体系（8 テーマ・4 型・承認の線）を定義した", measure: { manual: done } }   # ADR 0023
       - { id: case_analyst, ja: "事例型の分析役が差し戻しと停止をなぜなぜで分析し、記録に残す", measure: { manual: todo } }
-      - { id: knowledge_store, ja: "知見の蓄積（形式・鮮度・矛盾の解消・形骸化の防止）と committee（決定論で担保するかの判断）", measure: { manual: todo } }   # 設計中
+      - { id: knowledge_store, ja: "知見の蓄積（形式・鮮度・矛盾の解消・形骸化の防止）", measure: { manual: todo } }   # ADR 0024。形と検査 #99、rally の置き場 rally #397、変更セットの起票 #100
+      - { id: committee, ja: "知見の委員会（4 役の審査と議決、週 1 の定例、置き場の構造のオーナー）。決定論で担保するかを決め、担保は Issue にしてラインで作る", measure: { manual: todo } }   # ADR 0024 の 4。建設は P3 スレッド、委員会の役割・基準の変更はオーナーの承認
       - { id: theme4_loop, ja: "テーマ 4（言葉と伝達）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: todo } }
       - { id: theme6_loop, ja: "テーマ 6（工程の進め方）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: todo } }
       - { id: rule_adopted, ja: "テーマ 5: 自動生成ルールが shadow を経て採用され、教師信号が減った", measure: { manual: todo } }   # ADR 0013。採用とカナリアの起票は #96

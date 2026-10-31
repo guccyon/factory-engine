@@ -48,5 +48,7 @@ steps:
     mode: agentic
   ui_design_review:           # デザイン検査役（core-gates/ui_design_review.py。案と規範の写しを読むだけ。ADR 0025）
     tier: tier-judge
+  committee_review:           # 知見の委員会の 4 役（core-gates/committee_review.py。材料の写しを読むだけ。ADR 0024）
+    tier: tier-judge
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge

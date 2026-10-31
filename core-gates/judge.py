@@ -119,6 +119,7 @@ def main() -> int:
 - 仮決め（provisional）の各件: adopt（そのままでよい）/ replace（別の案にすべき。replacement に案を書く）/ escalate（渡したものでは決められない。人に回す）
 - 検査の指摘（defects）の各件（rubric に指摘の根拠になった項目の本文がある）: adopt（直すべき欠陥。nit も機械的に直せるなら adopt）/ reject（偽陽性、または差分の外のことで判定できない）/ escalate
 - 各件に 3 層を書く: evidence（根拠: 参照したファイルのパスと見出し、差分の箇所）、interpretation（根拠をどう読んでその結論にしたか）、confidence（0〜1）
+- category が aesthetic（見た目と印象）の仮決めは、オーナーが委任していないので必ず escalate にする（ADR 0025）
 - track_record は類型ごとの過去の一致率（人の採点との一致）。件数が 10 以上で一致率が低い類型は、確信度を下げるか escalate にする
 - mode は attended（人が並走している）か unattended（夜間など全面委任）。unattended でも、権限・秘密情報・決済・破壊的スキーマに関わるものは escalate にする
 - 下の「重さの物差し」で裁く。指摘が仕様（契約・Issue・doc コメント）からのずれでも、利用者に害がなくワーニングにとどまるなら reject。仕様どおりの仮決めでも利用者の不利益になるなら replace で仕様への差し戻しを提案する。利用者の利益・不利益を言い切る根拠が渡したものにないときは escalate

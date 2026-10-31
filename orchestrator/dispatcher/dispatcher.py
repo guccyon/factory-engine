@@ -32,6 +32,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import case
+import committee
 import continuation
 import design
 import design_line
@@ -285,7 +286,7 @@ def run_job(job: dict, reattaching: bool = False):
                 cur.execute("select payload from events where name='job.started' and job_id=%s order by id desc limit 1", (job_id,))
                 prov = ((cur.fetchone() or {}).get("payload") or {}).get("provenance") or {}
                 image = prov.get("worker_image") or WORKER_IMAGE
-            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "ui_design_review"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
+            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_review", "ui_design_review"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             elif kind == "ui_design":   # デザイナー役（ADR 0025）。製品によらず Chromium つきのイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
@@ -300,7 +301,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "ui_design", "ui_design_review") and not reattaching:
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_review", "ui_design", "ui_design_review") and not reattaching:
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
@@ -324,6 +325,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/body_fix.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "body_fix" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/design_review.sh"] if kind == "design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/case_review.sh"] if kind == "case_review" else []),
+                   *(["--entrypoint", "/usr/local/bin/committee_review.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "committee_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design.sh"] if kind == "ui_design" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design_review.sh"] if kind == "ui_design_review" else []),
                    image]
@@ -401,7 +403,7 @@ def run_job(job: dict, reattaching: bool = False):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
-            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "ui_design", "ui_design_review") and result.get("ok"):
+            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_review", "ui_design", "ui_design_review") and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
@@ -467,6 +469,13 @@ def run_job(job: dict, reattaching: bool = False):
                 # 事例型の分析（ADR 0023）: 記録に残すだけ。作用先にもワーカーのプロンプトにも入れない
                 if state == "succeeded":
                     case.record(cur, corr, job_id, judge_inp or {}, result)
+            elif kind == "committee_review":
+                # 知見の委員会（ADR 0024）: 議決を残し、PR にまとめを書く。差し戻しは閉じ、人の判断は承認のラベル、担保は Issue に
+                if state == "succeeded":
+                    try:
+                        committee.record(cur, repo, issue, corr, job_id, result, gh, comment)
+                    except Exception as e:  # noqa: BLE001  議決は PR のブランチに残っている。作用の失敗でラインは止めない
+                        log("committee act failed", result.get("pr_url"), repr(e))
             elif kind in ("ui_design", "ui_design_review"):
                 # デザインの線（ADR 0025）: 案を残して検査役に回す／検査役の判断で 承認・直し・人へ。失敗はタスクを止めて知らせる
                 if state == "succeeded":

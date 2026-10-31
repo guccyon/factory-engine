@@ -9,8 +9,10 @@ import re
 
 from psycopg.types.json import Jsonb
 
-TAXONOMY_VERSION = "v2"   # definitions/judgments.yaml の taxonomy_version
-CATEGORIES = {"ui", "system_interface", "implementation", "error_handling", "data", "scope", "inspection"}
+TAXONOMY_VERSION = "v3"   # definitions/judgments.yaml の taxonomy_version
+CATEGORIES = {"ui", "aesthetic", "system_interface", "implementation", "error_handling", "data", "scope", "inspection"}
+# judge に委任しない類型（definitions/judgments.yaml の delegate_to_judge: false）。judge が何と返しても人へ回す（ADR 0025 の E4）
+HUMAN_ONLY = {"aesthetic"}
 # v1 の類型 id で書かれたとき（古い指示のワーカー）の読み替え。読み替えたことは category_raw に残る
 V1_ALIASES = {"term_boundary": "system_interface", "interface": "system_interface", "design_choice": "implementation", "acceptance": "ui"}
 FIELDS = {"選んだ": "decision", "他の案": "alternatives", "根拠": "evidence", "解釈": "interpretation", "確信度": "confidence", "影響": "impact",
@@ -99,6 +101,13 @@ def current_mode(cur, default: str = "attended", schedule: str = "", tz: str = "
     return (default if default in MODES else "attended"), "default"
 
 
+def delegated_verdict(category: str, verdict: str | None) -> tuple[str | None, bool]:
+    """委任の範囲に合わせた裁き。人だけが決める類型は escalate に替える。返り値は (裁き, 替えたか)"""
+    if category in HUMAN_ONLY and verdict != "escalate":
+        return "escalate", True
+    return verdict, False
+
+
 # ------------------------------------------------------------------ judge の入力（制御プレーンの記録だけから組み立てる）
 def track_record(cur) -> dict:
     """類型ごとの人の採点との一致率（judgment.graded）。類型は採点した記録の今の類型（振り直し後）で数える"""
@@ -131,6 +140,9 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
             idx = v.get("index")
             src = inp["defects"][idx] if isinstance(idx, int) and 0 <= idx < len(inp.get("defects", [])) else {}
             category, question = "inspection", f"{src.get('rubric_id', '?')} {src.get('location', '')}".strip()
+        verdict, forced = delegated_verdict(category, v.get("verdict"))
+        if forced:
+            v = {**v, "verdict": verdict, "replacement": None}
         conf = v.get("confidence")
         conf = max(0.0, min(1.0, float(conf))) if isinstance(conf, (int, float)) else None
         rec = tr.get(category)
@@ -142,7 +154,7 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
-                   "human_grade": None}
+                   "human_grade": None, "forced_escalation": forced}
         cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Judgment',%s,%s,'verify',%s) returning id",
                     (corr, job_id, Jsonb(payload)))
         aid = cur.fetchone()["id"]
