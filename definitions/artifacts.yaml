@@ -72,6 +72,10 @@ types:
     stage: learn
     required: [pr_url, outcome, decision, votes, enforce, added, pushed_sha]
     note: "ADR 0024。知見の委員会の議決。git の committee/D-NNNN.yaml と同じ票を、差し戻し（git に残らない）も含めて制御プレーンに残す"
+  CommitteeWeekly:
+    stage: learn
+    required: [repo, week, facts, report]
+    note: "ADR 0024。知見の委員会の週 1 の定例のまとめ"
   Lesson:
     stage: learn
     required: [teacher_signal, summary, eval_cases, knowledge_stage]   # eval ケース同梱必須。P3 からは signature・confidentiality・source_refs も（definitions/learning.yaml の lesson）

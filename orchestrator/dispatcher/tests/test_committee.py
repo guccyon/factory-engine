@@ -73,3 +73,52 @@ def test_sendback_closes_and_enforce_files_issue(cur):
     assert len(calls) == 1 and calls[0][1] == "repos/o/r/issues" and "K-0002" in calls[0][2]["title"]
     assert calls[0][2]["labels"] == ["factory:planned", "factory:learn"]
     assert committee.approved(cur, other) and not committee.approved(cur, PR)
+
+
+WEEK_RESULT = {"kind": "committee_weekly", "ok": True,
+               "facts": {"items": 3, "cases": 2, "decisions": 2, "stale": [{"id": "K-0001", "confidence": "hypothesis", "review_by": "2026-11-30"}]},
+               "report": {"summary": "今週は 2 件を採用", "contradictions": [{"ids": ["K-0002", "K-0003"], "why": "重複", "proposal": "supersede"}],
+                          "promote": [], "retire": [],
+                          "enforce": [{"ids": ["K-0002"], "why": "繰り返す", "proposal": "lint", "solution_kind": "lint"}],
+                          "structure": {"needed": False, "proposal": ""}}}
+
+
+def test_weekly_record_comments_and_files_once(cur):
+    calls, comments = [], []
+    gh = lambda m, p, b=None: calls.append((m, p, b)) or {"html_url": f"https://github.com/o/r/issues/{90 + len(calls)}"}
+    comment = lambda repo, n, text: comments.append((n, text))
+    assert committee.weekly_record(cur, "o/r", 50, "github:o/r#50", None, WEEK_RESULT, "2026-W45", gh, comment)
+    assert not committee.weekly_record(cur, "o/r", 50, "github:o/r#50", None, WEEK_RESULT, "2026-W45", gh, comment)
+    assert comments[0][0] == 50 and "K-0001" in comments[0][1] and "K-0002, K-0003" in comments[0][1]
+    titles = [c[2]["title"] for c in calls if c[0] == "POST"]
+    assert titles == ["知見の見直し（2026-W45 の定例）", "担保: K-0002 を lint で決定論にする"]
+
+
+def test_weekly_input_takes_the_week(cur):
+    from datetime import datetime, timezone
+
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into events(name, payload) values ('committee.decided', %s)",
+                (Jsonb({"pr_url": "https://github.com/o/r/pull/3", "outcome": "adopt", "decision": "D-0001", "added": [],
+                        "votes": [{"role": "evidence", "vote": "adopt", "reasons": ["長い理由"]}]}),))
+    cur.execute("insert into events(name, payload) values ('committee.decided', %s)", (Jsonb({"pr_url": "https://github.com/x/y/pull/3"}),))
+    inp = committee.weekly_input(cur, "o/r", datetime.now(timezone.utc))
+    assert [d["decision"] for d in inp["decisions"]] == ["D-0001"] and inp["decisions"][0]["votes"] == [{"role": "evidence", "vote": "adopt"}]
+
+
+def test_supervisor_enqueues_weekly_once(cur, monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "COMMITTEE_WEEKLY", True)
+    monkeypatch.setattr(supervisor, "KNOWLEDGE_DEFS", os.path.join(os.path.dirname(__file__), "..", "..", "..", "definitions", "knowledge.yaml"))
+    monkeypatch.setattr(supervisor, "knowledge_root_exists", lambda repo: True)
+    monkeypatch.setattr(supervisor, "gh", lambda m, p, b=None: [] if m == "GET" else {"number": 50})
+    sunday = datetime(2026, 11, 8, 0, 0, tzinfo=timezone.utc)   # JST の日曜 9 時
+    supervisor.committee_weekly_step(cur, sunday)
+    supervisor.committee_weekly_step(cur, sunday)
+    cur.execute("select repo, issue_number, kind from jobs")
+    assert [(r["repo"], r["issue_number"], r["kind"]) for r in cur.fetchall()] == [("o/r", 50, "committee_weekly")]
+    supervisor.committee_weekly_step(cur, datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc))   # 次の週の月曜は時刻前
+    cur.execute("select count(*) as n from jobs")
+    assert cur.fetchone()["n"] == 1

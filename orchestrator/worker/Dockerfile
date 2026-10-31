@@ -32,4 +32,5 @@ COPY --chown=worker:worker ui_design.sh /usr/local/bin/ui_design.sh
 COPY --chown=worker:worker ui_design_review.sh /usr/local/bin/ui_design_review.sh
 # 知見の委員会のジョブ（ADR 0024）
 COPY --chown=worker:worker committee_review.sh /usr/local/bin/committee_review.sh
+COPY --chown=worker:worker committee_weekly.sh /usr/local/bin/committee_weekly.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
