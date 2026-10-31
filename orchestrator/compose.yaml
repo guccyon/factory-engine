@@ -66,6 +66,7 @@ services:
       WATCH_ENABLED: ${WATCH_ENABLED:-1}
       WATCH_IDLE_MIN: ${WATCH_IDLE_MIN:-20}
       WATCH_HEARTBEAT_MIN: ${WATCH_HEARTBEAT_MIN:-30}
+      WATCH_DRAIN_MIN: ${WATCH_DRAIN_MIN:-30}          # ラインの一時停止（ADR 0018）がこの分数続いたら停止 drain: を開く（再開の忘れ）
       NOTIFIER: ${NOTIFIER:-github-issue}
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
       # 来歴（ADR 0007）。上げ直すときに Engine の版（git rev-parse --short HEAD）を入れる。モードは judge（ADR 0006 後半）まで unknown

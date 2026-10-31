@@ -7,7 +7,7 @@ GitHub Issue（factory:implement）
    │ poll 30s / webhook
    ▼
 dispatcher ──claim(SKIP LOCKED)──▶ postgres（jobs / events / artifacts）
-   │ docker run --rm                      ▲
+   │ docker run（--rm なし、ADR 0018）    ▲
    ▼                                      │ 結果・usage・ログの場所
 worker（浅いクローン → claude -p → push → gh pr create）──ログ──▶ objectstore（S3 互換）
 ```
@@ -41,7 +41,36 @@ docker compose exec dispatcher factoryctl stop 12       # 停止（コンテナ�
 docker compose exec dispatcher factoryctl rerun 12      # 同じ Issue で attempt+1 を投入
 docker compose exec dispatcher factoryctl enqueue guccyon/rally 3   # ラベルを使わずに投入
 docker compose exec dispatcher factoryctl events 12     # そのジョブのイベント
+docker compose exec dispatcher factoryctl drain --wait 3000   # ラインを一時停止して、入れ替えてよくなるまで待つ（ADR 0018）
+docker compose exec dispatcher factoryctl resume        # ラインを再開
 ```
+
+## 工場の入れ替え（ADR 0018）
+
+ワーカーのコンテナは dispatcher から独立して動く（`--rm` なし。名前 `factory-job-<id>`、ラベル `factory.job=<id>`）。dispatcher を上げ直すと、
+running のジョブのコンテナにつなぎ直し（`job.reattached`）、出力を最初から読み直して終わりを待ち、いつもどおり記録する。コンテナが残っていないジョブだけ
+`orphaned_by_restart` で積み直す。終わったコンテナは dispatcher が記録を終えてから消す。
+
+入れ替え方は 2 通り:
+
+- **工場のコードだけ**（dispatcher・supervisor・console・shipper、ワーカーのイメージの作り直し）: 一時停止は要らない。実行中のジョブはそのまま続く。出荷の処理中だけは shipper を上げ直さない（`drain status` で見る）
+
+  ```bash
+  git pull && docker compose build && docker compose up -d dispatcher supervisor console
+  ```
+
+- **制御プレーンや Mac ごと**（postgres・オブジェクトストア・Docker・OS の再起動）: ラインを一時停止して、入れ替えてよくなるまで待つ
+
+  ```bash
+  docker compose exec dispatcher factoryctl drain --reason "postgres の入れ替え" --wait 3000   # 入れ替えてよければ終了コード 0
+  # 入れ替える
+  docker compose exec dispatcher factoryctl resume
+  ```
+
+- 一時停止の間、dispatcher は順番待ちを取り出さず、割り込みもしない。ラベルでの投入、supervisor の判定・マージは続く。一時停止は上げ直しをまたいで残り、再開は明示の操作だけ
+- 「入れ替えてよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でないとき（`factoryctl drain status`）
+- 操業コンソールの上の「ライン」のトグルでも同じ操作ができる（API は `POST /api/factory/drain`・`/api/factory/resume`、状態は `GET /api/state` の `factory.line`）
+- 再開を忘れたら、番人が `WATCH_DRAIN_MIN` 分（既定 30）で停止 `drain:` を開く（分類 human）。再開すると閉じる
 
 ## 試験運転（GitHub にも Claude にも触らない）
 
