@@ -254,6 +254,8 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 
 知見の委員会（ADR 0024 の 4）: 変更種別 `knowledge` の工場の PR は、CI を通った後に supervisor が `committee_review` のジョブを PR ごとに 1 回積む（同じ PR の検査が動いている間は次の周回で）。ワーカーの `core-gates/committee_review.py` が、変更の差分・知見の置き場・`specs/` の写しを 4 役（整合・根拠・担保・反対）の別々のエージェントに読ませ、票を決定論で集める（`knowledge.yaml` の `committee.aggregation`）。差し戻し以外は議決 `committee/D-NNNN.yaml` と、下書きを active にした知見を PR のブランチに積む。dispatcher は PR にまとめを書き、sendback は閉じ、human は承認のラベル、enforce は担保の Issue を起票する。変更種別 `knowledge` を自動でマージするのは委員会が採用したときだけ（manifest の表で `knowledge` を auto にしたとき）。`COMMITTEE=0` で止める。
 
+知見の委員会の週 1 の定例（ADR 0024）: supervisor が週 1 回（`knowledge.yaml` の `committee.weekly`、既定は日曜 3 時 JST）、知見の置き場のある製品ごとに固定 Issue（`factory:knowledge-committee`）へ `committee_weekly` のジョブを積む。ワーカーの `core-gates/committee_weekly.py` が、期限切れと数を決定論で出し、議長役のエージェントが矛盾・確かさを上げる・廃止・担保・置き場の構造の候補を出す。dispatcher は固定 Issue にまとめを書き、見直しを 1 本の変更セットの Issue に、担保と構造の変更をそれぞれ Issue にする（1 回に `max_issues` 件まで）。`COMMITTEE_WEEKLY=0` で止める。
+
 ```bash
 docker compose exec dispatcher factoryctl report learning --days 30
 ```

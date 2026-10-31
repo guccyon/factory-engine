@@ -274,6 +274,18 @@ events:
     source: control_plane
     required: [decision, knowledge, solution_kind, issue]
     note: "ADR 0024 の 4・6。委員会が決定論で担保すると決めた知見の担保を、委員会が実装せずに Issue（factory:planned・factory:learn）にした。工場のラインが担保を作り、知見の enforcement.solutions に記録する"
+  supervisor.committee_weekly_enqueued:
+    source: control_plane
+    required: [repo, week, issue, job_id]
+    note: "ADR 0024。supervisor が週 1 回、製品ごとに知見の委員会の定例のジョブ（kind=committee_weekly）を固定 Issue（factory:knowledge-committee）に積んだ。dedupe は repo と ISO 週"
+  committee.weekly_reviewed:
+    source: control_plane
+    required: [repo, week, facts, report]
+    note: "ADR 0024。委員会の定例のまとめ（決定論の数・期限切れと、議長役の矛盾・確かさを上げる・廃止・担保・構造の候補）。固定 Issue にコメントし、artifacts の CommitteeWeekly にも残す"
+  committee.weekly_filed:
+    source: control_plane
+    required: [repo, week, key, issue]
+    note: "ADR 0024。定例で決めた見直し（1 本の変更セット）・担保・構造の変更を、委員会が実装せずに Issue（factory:planned・factory:learn）にした。1 回に knowledge.yaml の committee.weekly.max_issues 件まで"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]

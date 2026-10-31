@@ -41,7 +41,7 @@ ADR 0023 で、学習の対象を 8 テーマに分け、事例型の分析役�
 1. 定義・検査・本 ADR（#99、済み）
 2. 製品に置き場を作り、CI で `knowledge_check.py` を走らせる（製品の CI は Engine の固定した版のこのファイルだけを取る。rally #397、済み）
 3. 事例の分析の結果から、知見の変更セットの PR を工場のラインが作る流れ（supervisor の `knowledge_issue_step` が Issue を起票し、implement ジョブが PR を書く。PR は変更種別 `knowledge` で、4 ができるまでは人の承認）
-4. 委員会の 4 役の審査と議決の記録、週 1 の定例（出来事ごとの審査は supervisor の `enqueue_committee` とワーカーの `core-gates/committee_review.py`。議決の集め方は `definitions/knowledge.yaml` の `committee.aggregation`。週 1 の定例は続きで）
+4. 委員会の 4 役の審査と議決の記録、週 1 の定例（出来事ごとの審査は supervisor の `enqueue_committee` とワーカーの `core-gates/committee_review.py`。議決の集め方は `definitions/knowledge.yaml` の `committee.aggregation`。週 1 の定例は supervisor の `committee_weekly_step` とワーカーの `core-gates/committee_weekly.py`。日時と上限は `knowledge.yaml` の `committee.weekly`）
 5. 制限付きの保管先（制御プレーンの DB。管理者だけ）
 6. エージェントに知見を渡す経路（オーナーの承認）
 

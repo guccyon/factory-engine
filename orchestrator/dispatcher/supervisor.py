@@ -82,6 +82,8 @@ CASE_REVIEW = ENV.get("CASE_REVIEW", "1") == "1"   # 事例型の分析役（ADR
 CASE_REVIEW_DEFS = ENV.get("LEARNING_TAXONOMY", "/definitions/learning_taxonomy.yaml")   # 事例型の分析役の数値（per_day）
 KNOWLEDGE_ISSUES = ENV.get("KNOWLEDGE_ISSUES", "1") == "1"   # 事例の分析から、知見の変更セットの Issue を起票する（ADR 0024 の 3）。0 で止める
 COMMITTEE = ENV.get("COMMITTEE", "1") == "1"   # 知見の変更セットの PR を委員会の 4 役に審査させる（ADR 0024 の 4）。0 で止める（人の承認だけになる）
+COMMITTEE_WEEKLY = ENV.get("COMMITTEE_WEEKLY", "1") == "1"   # 知見の委員会の週 1 の定例（ADR 0024）。0 で止める
+KNOWLEDGE_DEFS = ENV.get("KNOWLEDGE_DEFINITIONS", "/definitions/knowledge.yaml")
 KNOWLEDGE_ISSUES_PER_DAY = int(ENV.get("KNOWLEDGE_ISSUES_PER_DAY", "2"))   # 委員会ができるまでは知見の PR は人の承認（knowledge 種別）なので少なく
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
@@ -776,6 +778,43 @@ def design_review_step(cur, now: datetime | None = None):
         log("design review enqueued", repo, week, "job", jid)
 
 
+def committee_weekly_step(cur, now: datetime | None = None):
+    """週 1 回、製品ごとに知見の委員会の定例のジョブを積む（ADR 0024）。固定 Issue に積み、まとめと起票は dispatcher が行う"""
+    if not COMMITTEE_WEEKLY or DRY_RUN:
+        return
+    now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
+    try:
+        with open(KNOWLEDGE_DEFS, encoding="utf-8") as f:
+            weekly = ((yaml.safe_load(f) or {}).get("committee") or {}).get("weekly") or {}
+    except OSError:
+        return
+    if not design_review_due(now, {"weekday": weekly.get("weekday", "sunday"), "hour": weekly.get("hour", 3)}):
+        return
+    week = design.week_of(now)
+    for repo in REPOS:
+        key = f"supervisor.committee_weekly:{repo}:{week}"
+        cur.execute("select 1 from events where dedupe_key=%s", (key,))
+        if cur.fetchone() or not knowledge_root_exists(repo):
+            continue
+        try:
+            issue = committee.weekly_issue(gh, repo, weekly.get("issue_label", committee.WEEKLY_LABEL))
+        except Exception as e:  # noqa: BLE001  次の周回でやり直す
+            log("committee weekly issue failed", repo, repr(e))
+            continue
+        corr = f"github:{repo}#{issue}"
+        inp = committee.weekly_input(cur, repo, now)
+        try:
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','committee_weekly') returning id",
+                        (corr, repo, issue))
+        except psycopg.errors.UniqueViolation:
+            continue
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (corr, jid, Jsonb({"by": "supervisor", "kind": "committee_weekly", "week": week, "max_issues": weekly.get("max_issues", 4), "input": inp})))
+        record(cur, "supervisor.committee_weekly_enqueued", corr, {"repo": repo, "week": week, "issue": issue, "job_id": jid}, key)
+        log("committee weekly enqueued", repo, week, "job", jid)
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         record(cur, "supervisor.heartbeat", None, {"repos": REPOS})
@@ -790,6 +829,7 @@ def tick():
         case_review_step(cur)
         knowledge_issue_step(cur)
         design_review_step(cur)
+        committee_weekly_step(cur)
 
 
 def main():

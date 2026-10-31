@@ -77,6 +77,12 @@ committee:
   meetings:
     per_event: "変更セットの PR の決定論の検査が緑になったら持ち込む"
     weekly: "その週の議決、決定論化の候補、期限切れ・矛盾の候補、置き場の構造をまとめて見直す"
+  weekly:                        # 週 1 の定例（core-gates/committee_weekly.py）。2026-10-31 仮置き
+    weekday: sunday              # JST。設計の診断（土曜）と重ならないように
+    hour: 3                      # この時（JST）を過ぎたら、その週（ISO 週）に 1 回
+    issue_label: "factory:knowledge-committee"   # 製品ごとの固定 Issue。週ごとのまとめをコメントで足す
+    structure_review_over: 150   # 置き場の直下の知見のファイルがこれを超えたら、構造の見直しを議題に出す
+    max_issues: 4                # 1 回の定例で起票する Issue の上限（見直しの変更セット 1 本＋担保＋構造）
   implements: false              # 委員会は実装しない。担保や改善は Issue にして工場のラインで作る
 
 # 個人情報（2026-10-31 オーナー: git に一切置かない。抽象化で切る）
