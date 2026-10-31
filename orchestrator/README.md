@@ -111,11 +111,23 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 - ペルソナは 10 人（CS・サクセス・マーケ・営業・経営・本部の運営・コーチ担当）。前半 5 人は数字を知りたい問い、後半 5 人は経営の問いと画面や機能への要望。全員を一巡させるのは `scripts/clarify-bench.sh guccyon/rally`（1 人ずつ要求の Issue を起票する。ペルソナを足したらワーカーのイメージを作り直す）
 - triage と Deliver への接続は P4
 
+## プランナー（ADR 0025・0026。着手判定と経路）
+
+チケットの入口。役の一覧・よくある並び・決まりは `definitions/planner.yaml`。
+
+- Issue に `factory:plan` を付けると、dispatcher が `plan` のジョブに積む。プランナー（`worker/plan.sh` → `core-gates/plan.py`、tier-small）が、Issue の本文とコメント、製品の `specs/`（デザインシステムの有無）と `.factory-config/knowledge/`（プロダクトの既定）を読み、着手判定と経路を返す。読むだけで、何も書き換えない
+- 経路は型から選ばず、タスクに合わせて「どの役をどの順で通すか」の並び（`steps`）として組む。役は `design_system`（デザインシステムのデザイナー）・`ui_design`（プロダクトデザイナー）・`implement`（実装役）。よくある並び（実装だけ、画面 → 実装、デザインシステム → 画面 → 実装、デザインシステムだけ）は例で、縛りではない。役ごとに focus（何をさせるか）・why・effort（手間の見込み）を書く
+- 指示役は最初の役のラベル（`factory:design-system`・`factory:design`・`factory:planned`）で配る。`factory:design-system` はデザインシステムのデザイナー役ができるまでラベルのまま待つ
+- 決定論で当てるのは安全のための最小限（guards）だけ: デザインシステムがなく進め方の指定もないのにプロダクトデザイナーへ回す並びは問いに替える、確信度が低い・往復を使い切った・問いがない・経路が空なら人へ（`factory:plan-human`）。よくある例との食い違い（小さな改修にデザイナー、新しい画面にデザイナーなし、実装の後のデザイン）は印（advisories）を付けるだけで経路は変えない
+- 着手できないときは、理由と選択肢つきの問いを Issue のコメントに書いて `factory:needs-info`。問いのコメントより後に返事が付くと、dispatcher の周回が判定し直しを積む（問いは 2 回まで）。Gen1 は建設者がオーナーの代理で答える
+- 判断の根拠は後で見返せるように残す: artifacts の `Plan` に 3 層（根拠・解釈・確信度）、役ごとの理由、とらなかった並びと理由、当てた決まりと印、入力の版（Engine と製品のコミット、定義とプロンプトの版）。events の `plan.decided`（経路・手間・費用）・`plan.asked`・`plan.answered`。`factoryctl plan list` / `plan show owner/repo#123` で見る
+- 今の入口（`factory:planned`・`factory:implement`・`factory:design`）はそのまま使える。新しいチケットは `factory:plan` から入れる
+
 ## デザインの線（ADR 0025。デザイナー役とデザイン検査役）
 
 画面を含むタスクは、実装の前に画面の要素と振る舞い（UXSpec）と案を決める。数値と観点は `definitions/ui_design.yaml`。
 
-- タスク（Issue）に `factory:planned` の代わりに `factory:design` を付ける（プランナーができるまでは人か建設者が付ける）
+- タスク（Issue）に `factory:design` を付ける（プランナーが経路 `ui_design` で付けるか、人か建設者が付ける）
 - dispatcher が `ui_design` のジョブに積む。デザイナー役（`worker/ui_design.sh` → `core-gates/ui_design.py`、`factory-worker:design` で動く）が、製品の `specs/design/`（デザインシステム）・用語集・今の画面を読み、UXSpec と 2〜3 案の静的 HTML を書いて Chromium で撮る（外への通信は止める）。案のファイルは `design/<job_id>/` に置き、UXSpec は artifacts（`UXSpec`）に残す
 - 続けてデザイン検査役（`ui_design_review` → `core-gates/ui_design_review.py`）が、別の文脈で案の画像・HTML・製品の `specs/` を見て、受け入れ条件・状態・デザインシステム・文言・アクセシビリティ・案の違いの観点で 承認／直し／人へ を返す。判断は judge と同じ 3 層（根拠・解釈・確信度）で `DesignVerdict` に残す
 - 人へ回す条件はエージェントの答えにかかわらず決定論で当てる: 新しい画面、ブランドと印象に効く画面、確信度 0.7 未満、直しを 1 回使った後の直し。must の指摘が残る案は承認しない
