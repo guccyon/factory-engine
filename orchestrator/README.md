@@ -233,6 +233,8 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 
 事例型の分析役（ADR 0023）: supervisor が 1 日に数件（`definitions/learning_taxonomy.yaml` の per_day）、差し戻し（後片付けが会話の記録を保存した後）と 60 分以上の停止（予算・一時停止を除く）を選び、`case_review` のジョブを積む。dispatcher は起こすときに後片付けのアーカイブからセッションの抜粋（エージェントの文とツールの名前だけ。秘密情報に見える文字列は伏せる）を入力に足す。結果（観点ごとのなぜなぜ・真因・テーマごとの学びの候補）は events の `case.analyzed` と artifacts の `CaseAnalysis` に残すだけ。`CASE_REVIEW=0` で止める。
 
+知見の変更セット（ADR 0024 の 3）: supervisor が `case.analyzed` のうち最初に回すテーマ（`learning_taxonomy.yaml` の `status: first`、いまは 4 と 6）の学びがあるものを、製品の Issue（`factory:planned`・`factory:learn`）にする。本文の個人情報・環境の名前に見える形は伏せる。工場の implement ジョブが事例記録 `cases/C-NNNN.md` と知見の下書き（`status: draft`・`confidence: hypothesis`）を 1 本の PR に書き、`knowledge_check.py --index` で `INDEX.md` を作り直す。PR は変更種別 `knowledge`（`change_type_rules.yaml`）で、委員会ができるまでは manifest に無い種別として人の承認に倒れる。1 日に `KNOWLEDGE_ISSUES_PER_DAY`（既定 2）件まで。`KNOWLEDGE_ISSUES=0` で止める。置き場（`.factory-config/knowledge/README.md`）の無い製品には起票しない。
+
 ```bash
 docker compose exec dispatcher factoryctl report learning --days 30
 ```

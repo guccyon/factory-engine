@@ -79,6 +79,8 @@ LEARN_RULE_TRANSITIONS = ENV.get("LEARN_RULE_TRANSITIONS", "1") == "1"   # overl
 OVERLAY_RULES_DIR = ".factory-config/overlay/rules"
 CASE_REVIEW = ENV.get("CASE_REVIEW", "1") == "1"   # 事例型の分析役（ADR 0023）。差し戻しと長い停止を 1 日に数件、なぜなぜで分析する。0 で止める
 CASE_REVIEW_DEFS = ENV.get("LEARNING_TAXONOMY", "/definitions/learning_taxonomy.yaml")   # 事例型の分析役の数値（per_day）
+KNOWLEDGE_ISSUES = ENV.get("KNOWLEDGE_ISSUES", "1") == "1"   # 事例の分析から、知見の変更セットの Issue を起票する（ADR 0024 の 3）。0 で止める
+KNOWLEDGE_ISSUES_PER_DAY = int(ENV.get("KNOWLEDGE_ISSUES_PER_DAY", "2"))   # 委員会ができるまでは知見の PR は人の承認（knowledge 種別）なので少なく
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -661,6 +663,52 @@ def case_review_step(cur, now: datetime | None = None):
         log("case review enqueued", inc["key"], "job", jid)
 
 
+def knowledge_root_exists(repo: str) -> bool:
+    try:
+        gh("GET", f"repos/{repo}/contents/{case.KNOWLEDGE_ROOT}/README.md")
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
+
+
+def knowledge_issue_step(cur, now: datetime | None = None):
+    """事例の分析（case.analyzed）のうち、最初に回すテーマの学びがあるものを、知見の変更セットの Issue にする（ADR 0024 の 3）。
+    工場の implement ジョブが事例記録と知見の下書き（draft・hypothesis）を 1 本の PR に書く。PR は change_type_rules の knowledge 種別"""
+    if not KNOWLEDGE_ISSUES or DRY_RUN:
+        return
+    now = now or datetime.now(timezone.utc)
+    day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
+    cur.execute("select count(*) as n from events where name='knowledge.case_filed' and payload->>'day'=%s", (day,))
+    room = KNOWLEDGE_ISSUES_PER_DAY - cur.fetchone()["n"]
+    if room <= 0:
+        return
+    try:
+        with open(CASE_REVIEW_DEFS, encoding="utf-8") as f:
+            themes = case.first_themes(yaml.safe_load(f) or {})
+    except OSError:
+        return
+    roots: dict[str, bool] = {}
+    for a in case.pending_knowledge(cur, themes, room):
+        m = re.match(r"github:([^#]+)#\d+$", a.get("ticket") or "")
+        repo = m.group(1) if m and m.group(1) in REPOS else REPOS[0]
+        if repo not in roots:
+            roots[repo] = knowledge_root_exists(repo)
+        if not roots[repo]:
+            continue
+        title, body = case.knowledge_issue(a, themes)
+        try:
+            issue = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})
+        except Exception as e:  # noqa: BLE001  次の周回でやり直す
+            log("knowledge issue failed", a["incident"], repr(e))
+            continue
+        record(cur, "knowledge.case_filed", f"github:{repo}#{issue['number']}",
+               {"incident": a["incident"], "analysis_event": a["event_id"], "themes": sorted({x["theme"] for x in a["learnings"]}),
+                "learnings": len(a["learnings"]), "issue": issue["html_url"], "day": day}, f"knowledge.case_filed:{a['incident']}")
+        log("knowledge issue filed", a["incident"], issue["html_url"])
+
+
 def design_review_due(now: datetime, schedule: dict) -> bool:
     """その週（ISO 週）の指定の曜日・時（JST）を過ぎたか。過ぎていれば週末まで拾う"""
     wd = WEEKDAYS.index(schedule.get("weekday", "saturday"))
@@ -714,6 +762,7 @@ def tick():
         learn_step(cur)
         rule_transition_step(cur)
         case_review_step(cur)
+        knowledge_issue_step(cur)
         design_review_step(cur)
 
 

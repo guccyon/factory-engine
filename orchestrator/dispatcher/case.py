@@ -170,3 +170,89 @@ def record(cur, corr: str, job_id: int, inp: dict, result: dict) -> bool:
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('CaseAnalysis',%s,%s,'case_review',%s)",
                 (corr, job_id, Jsonb(payload)))
     return True
+
+
+# ------------------------------------------------------------------ 知見の変更セットの Issue（ADR 0024 の 3）
+KNOWLEDGE_ROOT = ".factory-config/knowledge"
+# Issue は公開のリポジトリに立つ。分析の文に紛れた個人情報・環境の名前に見える形は伏せる（守りの本体は変更セットの CI と委員会の根拠の担当）
+PII_RES = [re.compile(p) for p in (
+    r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", r"\b\d{1,3}(?:\.\d{1,3}){3}\b", r"\b[\w\-]+\.local\b",
+    r"\b0\d{1,4}-\d{1,4}-\d{3,4}\b", r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")]
+
+
+def scrub(text: str) -> str:
+    text = mask(text or "")
+    for r in PII_RES:
+        text = r.sub("[伏せた]", text)
+    return text
+
+
+def first_themes(tax: dict) -> dict[int, str]:
+    """最初に回すテーマ（learning_taxonomy.yaml の status: first）。{id: 名前}"""
+    return {t["id"]: t.get("ja", "") for t in tax.get("themes", []) if t.get("status") == "first"}
+
+
+def pending_knowledge(cur, themes: dict[int, str], limit: int) -> list[dict]:
+    """まだ知見の Issue にしていない分析で、最初に回すテーマの学びがあるもの（古い順）"""
+    cur.execute("""select a.id, a.correlation_id as corr, a.payload from events a
+                    where a.name='case.analyzed'
+                      and not exists (select 1 from events f where f.name='knowledge.case_filed' and f.payload->>'incident'=a.payload->>'incident')
+                    order by a.id""")
+    out = []
+    for r in cur.fetchall():
+        ls = [x for x in (r["payload"].get("learnings") or []) if x.get("theme") in themes]
+        if ls:
+            out.append({"event_id": r["id"], "corr": r["corr"], **r["payload"], "learnings": ls})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def knowledge_issue(a: dict, themes: dict[int, str]) -> tuple[str, str]:
+    """事例の分析 1 件から、事例記録と知見の下書きを 1 本の変更セットの PR にする Issue"""
+    summary = scrub(a.get("summary", "")).strip()
+    head = summary.splitlines()[0][:60] if summary else a.get("incident", "")
+    title = f"知見: 事例の記録と知見の下書きを足す（{head}）"
+    kind = {"sendback": "差し戻し", "stoppage": "停止"}.get(a.get("kind"), a.get("kind", ""))
+    causes = "\n".join(f"- {scrub(c)}" for c in a.get("root_causes") or []) or "- （なし）"
+    views = []
+    for v in a.get("viewpoints") or []:
+        if v.get("applies") is False:
+            continue
+        whys = "\n".join(f"  {i}. なぜ: {scrub(w)}" for i, w in enumerate(v.get("whys") or [], 1))
+        views.append(f"- {v.get('viewpoint', '')}（確からしさ {v.get('confidence', '-')}）\n{whys}\n  - 真因: {scrub(v.get('root_cause', ''))}")
+    learns = "\n".join(f"{i}. テーマ {x['theme']}（{themes.get(x['theme'], '')}）: {scrub(x.get('statement', ''))}\n"
+                       f"   - 作用先の候補: {x.get('target', '')} / 提案: {scrub(x.get('proposal', ''))} / 繰り返しそう: {'はい' if x.get('recurring') else 'いいえ'}"
+                       for i, x in enumerate(a.get("learnings") or [], 1))
+    body = f"""事例型の分析役（ADR 0023）が {kind} の出来事を分析した結果を、知見の置き場（`{KNOWLEDGE_ROOT}/`、ADR 0024）に足してください。
+
+## 出来事
+- 種類: {kind}
+- 分析の記録: 制御プレーンの events `case.analyzed`（id {a.get('event_id')}）
+
+## 要約
+{summary or '（なし）'}
+
+## 観点ごとのなぜなぜ
+{chr(10).join(views) or '- （なし）'}
+
+## 真因
+{causes}
+
+## 学びの候補
+{learns}
+
+## やること（1 本の PR）
+1. `{KNOWLEDGE_ROOT}/README.md` を読み、置き場の決まりに従う
+2. 事例記録 `{KNOWLEDGE_ROOT}/cases/C-NNNN.md` を 1 つ足す（番号は空いている次の番号）。出来事・観点ごとのなぜなぜ・真因・学びを書く
+3. 学び 1 つにつき知見 `{KNOWLEDGE_ROOT}/K-NNNN.yaml` を 1 つ足す。`status: draft`、`confidence: hypothesis`、`verified_at` は今日、`review_by` は 30 日以内、`evidence` に `case:C-NNNN`、`theme` は上の番号、`kind` は中身に合うもの（なぜなぜの結論なら causal）
+4. 既存の知見（`K-*.yaml`）を全部読み、新しい知見と重なる・矛盾するものの扱い（keep・amend・supersede・retire・recheck）を決める。置き換えるときは supersedes と superseded_by を両方に書き、古い方を superseded にする。ファイルは消さない
+5. `python3 /work/engine/core-gates/knowledge_check.py --repo . --index` で `INDEX.md` を作り直し、`python3 /work/engine/core-gates/knowledge_check.py --repo .` が通ることを確かめる
+6. PR の本文に、足した知見と、既存の知見ごとの扱いと理由を並べる
+
+## 守ること
+- **個人情報は書かない**。利用者・人を指す情報（氏名・連絡先・利用者 ID・本文の引用など）は抽象化して切る（「生徒 A さん」ではなく「予約の確定待ちの生徒」）
+- 学びの提案（作用先への変更）はこの PR では実装しない。知見として残すだけにする
+- `{KNOWLEDGE_ROOT}/` の外のファイルは変えない
+"""
+    return title, body

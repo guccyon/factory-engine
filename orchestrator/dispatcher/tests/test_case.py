@@ -133,3 +133,92 @@ def test_supervisor_enqueues_up_to_per_day_and_record_is_once(cur, monkeypatch):
     cur.execute("select payload from artifacts where type='CaseAnalysis'")
     p = cur.fetchone()["payload"]
     assert p["incident"] == f"sendback:{PR}" and p["learnings"][0]["theme"] == 4 and p["had_session"] is False
+
+
+# ------------------------------------------------------------------ 知見の変更セットの Issue（ADR 0024 の 3）
+def analyzed(cur, incident, learnings, ticket="github:o/r#5"):
+    ev(cur, "case.analyzed", f"case:{incident}", {
+        "incident": incident, "kind": "sendback", "ticket": ticket, "summary": "仕様の言葉が役割の間でずれた\n二行目",
+        "viewpoints": [{"viewpoint": "communication", "applies": True, "whys": ["受け入れ条件の語が違った", "用語集を引かなかった"],
+                        "root_cause": "用語集を引く手順がない", "confidence": "mid"},
+                       {"viewpoint": "spec", "applies": False, "whys": [], "root_cause": "", "confidence": "low"}],
+        "root_causes": ["用語集を引く手順がない（連絡は someone@example.com）"], "learnings": learnings, "had_session": True})
+
+
+def L(theme, statement="学び"):
+    return {"theme": theme, "statement": statement, "target": "term_alignment", "proposal": "用語集を引く", "recurring": True}
+
+
+def fake_gh(calls, exists=True):
+    import urllib.error
+
+    def gh(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            if not exists:
+                raise urllib.error.HTTPError(path, 404, "nf", {}, None)
+            return {"name": "README.md"}
+        return {"number": 40 + len(calls), "html_url": f"https://github.com/o/r/issues/{40 + len(calls)}"}
+    return gh
+
+
+def test_pending_knowledge_keeps_first_themes_only(cur):
+    import yaml
+    themes = case.first_themes(yaml.safe_load(open(TAX, encoding="utf-8")))
+    assert set(themes) == {4, 6}
+    analyzed(cur, "sendback:a", [L(4), L(2)])
+    analyzed(cur, "sendback:b", [L(1)])          # 最初に回すテーマの学びがない分析は起票しない
+    analyzed(cur, "stoppage:c", [L(6)])
+    got = case.pending_knowledge(cur, themes, 5)
+    assert [a["incident"] for a in got] == ["sendback:a", "stoppage:c"]
+    assert [x["theme"] for x in got[0]["learnings"]] == [4]
+
+
+def test_knowledge_issue_body_scrubs_personal_data():
+    a = {"incident": "sendback:x", "kind": "sendback", "event_id": 9, "summary": "生徒の連絡先 a.b@example.com が 192.168.0.3 の build.local に出た",
+         "viewpoints": [{"viewpoint": "process", "applies": True, "whys": ["電話 090-1234-5678"], "root_cause": "r", "confidence": "high"}],
+         "root_causes": ["token=abcdef123"], "learnings": [L(6, "id 123e4567-e89b-12d3-a456-426614174000 の予約")]}
+    title, body = case.knowledge_issue(a, {6: "工程の進め方"})
+    for leaked in ("a.b@example.com", "192.168.0.3", "build.local", "090-1234-5678", "abcdef123", "123e4567-e89b"):
+        assert leaked not in title + body
+    assert "status: draft" in body and "knowledge_check.py" in body and "テーマ 6（工程の進め方）" in body
+
+
+def test_supervisor_files_knowledge_issues_up_to_per_day_once(cur, monkeypatch):
+    calls = []
+    monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "KNOWLEDGE_ISSUES", True)
+    monkeypatch.setattr(supervisor, "KNOWLEDGE_ISSUES_PER_DAY", 2)
+    monkeypatch.setattr(supervisor, "CASE_REVIEW_DEFS", TAX)
+    monkeypatch.setattr(supervisor, "gh", fake_gh(calls))
+    for i in range(3):
+        analyzed(cur, f"sendback:{i}", [L(4)])
+    supervisor.knowledge_issue_step(cur)
+    supervisor.knowledge_issue_step(cur)   # 1 日の上限に達したので積まない
+    posts = [c for c in calls if c[0] == "POST"]
+    assert len(posts) == 2 and posts[0][1] == "repos/o/r/issues"
+    assert posts[0][2]["labels"] == ["factory:planned", "factory:learn"]
+    cur.execute("select payload from events where name='knowledge.case_filed' order by id")
+    assert [r["payload"]["incident"] for r in cur.fetchall()] == ["sendback:0", "sendback:1"]
+
+
+def test_supervisor_skips_repo_without_knowledge_root(cur, monkeypatch):
+    calls = []
+    monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "KNOWLEDGE_ISSUES", True)
+    monkeypatch.setattr(supervisor, "CASE_REVIEW_DEFS", TAX)
+    monkeypatch.setattr(supervisor, "gh", fake_gh(calls, exists=False))
+    analyzed(cur, "sendback:z", [L(4)])
+    supervisor.knowledge_issue_step(cur)
+    assert not [c for c in calls if c[0] == "POST"]
+
+
+def test_knowledge_paths_are_their_own_change_type():
+    import yaml
+    rules = yaml.safe_load(open(os.path.join(os.path.dirname(TAX), "change_type_rules.yaml"), encoding="utf-8"))
+    files = [{"filename": ".factory-config/knowledge/K-0001.yaml"}, {"filename": ".factory-config/knowledge/INDEX.md"}]
+    assert supervisor.classify(files, rules) == ["knowledge"]
+    d = supervisor.decide(["knowledge"], {"autonomy": {"matrix": {"factory_rule": {"merge": "auto"}}}})
+    assert d["table"] == "human_approve"   # 委員会ができるまでは、manifest に無い種別として人の承認に倒れる
