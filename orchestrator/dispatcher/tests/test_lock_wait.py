@@ -139,3 +139,19 @@ def test_rerun_of_a_plain_job_stays_plain(cur):
     factoryctl.main(["factoryctl", "rerun", str(jid)])
     cur.execute("select id from jobs where id > %s", (jid,))
     assert continuation.carry_over(cur, cur.fetchone()["id"]) == {}
+
+
+def test_rerun_of_a_piped_job_carries_its_input(cur):
+    # 本文の追記（body_fix）など、入力を job.enqueued の input で受け取るジョブは、積み直しでも同じ入力で走る（pr_url が無くて落ちない）
+    inp = {"pr_url": PR_URL, "defects": [{"rubric_id": "R2"}]}
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, state, error) "
+                "values (%s,%s,429,'judge','tier-small','body_fix','failed','exit 1') returning id", (f"github:{REPO}#{ISSUE}", REPO))
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (f"github:{REPO}#{ISSUE}", jid, Jsonb({"by": "judge", "kind": "body_fix", "input": inp})))
+    factoryctl.main(["factoryctl", "rerun", str(jid)])
+    cur.execute("select id, kind from jobs where id > %s", (jid,))
+    new = cur.fetchone()
+    assert new["kind"] == "body_fix"
+    cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s", (new["id"],))
+    assert cur.fetchone()["inp"] == inp
