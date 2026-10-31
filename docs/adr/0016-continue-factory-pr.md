@@ -1,7 +1,7 @@
-# ADR 0015: 工場の PR を続きから仕上げる（途中終了の続き・衝突の解消）
+# ADR 0016: 工場の PR を続きから仕上げる（途中終了の続き・衝突の解消）
 
 - 状態: 提案（工場のプロセスの変更なのでオーナーの承認を得てからマージする）
-- 関係: ADR 0004（supervisor）、ADR 0014（検査役の承認でマージ）、`orchestrator/worker/entrypoint.sh`、ケイパビリティ台帳 A9・A11
+- 関係: ADR 0004（supervisor）、ADR 0014（検査役の承認でマージ）、ADR 0015（PR の見張り。衝突は停止 ci: として開く）、`orchestrator/worker/entrypoint.sh`、ケイパビリティ台帳 A9・A11
 
 ## 文脈
 

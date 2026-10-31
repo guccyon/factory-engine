@@ -34,12 +34,25 @@ events:
     source: github_pr
     required: [pr_id, sha, committed_at]
   pr.review_submitted:
-    source: github_pr
-    required: [pr_id, submitted_at, state]            # state: approved | changes_requested | commented
+    source: pr_events
+    required: [pr_id, submitted_at, state]            # state: approved | changes_requested | commented。ADR 0015 から PR の見張りが発行（pr_url, head_sha, review_id, author, source も入る）
     note: "P0 の現行運用では別エージェントのレビューは Issue コメント（本文に「レビュー」）として付くので、pr.review_comment も同じ扱いにする"
   pr.review_comment:
     source: github_pr
     required: [pr_id, created_at, is_review_round]     # is_review_round: 本文がレビューの印（REVIEW_MARKER）に一致
+  # PR の見張り（ADR 0015）が発行する。source は poll | webhook。dedupe は PR と head（レビューは review_id）ごと
+  pr.head_updated:
+    source: pr_events
+    required: [pr_url, pr_id, head_sha, source, draft]
+  pr.ci_failed:
+    source: pr_events
+    required: [pr_url, pr_id, head_sha, source, failed]   # failed: 落ちたチェックの名前
+  pr.ci_passed:
+    source: pr_events
+    required: [pr_url, pr_id, head_sha, source, checks]
+  pr.conflicted:
+    source: pr_events
+    required: [pr_url, pr_id, head_sha, source]
   pr.merged:
     source: github_pr
     required: [pr_id, merged_at, merge_commit, files]  # files: {path, status, additions}
