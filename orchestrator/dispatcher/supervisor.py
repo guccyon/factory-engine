@@ -200,17 +200,32 @@ def factory_prs(cur) -> list[dict]:
     return out
 
 
-def ci_failure_step(cur, p: dict, sha: str):
-    """工場の PR の CI が落ちたら停止として開く（検査・judge は CI が通るまで積まないので、黙って止まらないように）。
+def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None):
+    """工場の PR の CI が落ちた・衝突しているなら停止として開く（検査・judge は CI が通るまで積まないので、黙って止まらないように）。
     次の head で CI が通れば閉じる。PR が閉じても閉じる"""
+    key = f"ci:{p['url']}"
+    if mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
+        stoppage.open_stoppage(cur, key, "ticket", "工場の PR が main と衝突している。検査と judge に進めない",
+                               waiting_for="builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
+        return
     runs = (gh("GET", f"repos/{p['repo']}/commits/{sha}/check-runs?per_page=50") or {}).get("check_runs", [])
     failed = sorted({r["name"] for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled")})
-    key = f"ci:{p['url']}"
     if failed:
         stoppage.open_stoppage(cur, key, "ticket", f"工場の PR の CI が落ちた（{', '.join(failed)}）。検査と judge に進めない",
                                waiting_for="builder が直すか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
     elif runs and all(r.get("status") == "completed" for r in runs):
-        stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った", closed_by="supervisor")
+        stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った（衝突も解けた）", closed_by="supervisor")
+
+
+def waiting_for_human(cur, url: str) -> bool:
+    """人を待っている PR か（judge が人に回した、差し戻しを流さなかった、CI 落ち・衝突、表が承認を求めた）。
+    同時に流す件数の枠には数えない。承認待ちをラインのクリティカルパスにしない（2026-10-31 オーナー）"""
+    for prefix in ("judge:", "sendback:", "ci:"):
+        if stoppage.open_keys(cur, f"{prefix}{url}"):
+            return True
+    cur.execute("select payload->>'table' as t from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (url,))
+    d = cur.fetchone()
+    return bool(d and d["t"] == "human_approve")
 
 
 def merge_step(cur, rules: dict, manifests: dict):
@@ -234,9 +249,10 @@ def merge_step(cur, rules: dict, manifests: dict):
                 record(cur, "pr.closed_unmerged", p["corr"], {"pr_url": p["url"], "closed_at": pr["closed_at"], "decided": (d or {}).get("payload")},
                        f"pr.closed_unmerged:{p['url']}")
             continue
-        open_count += 1
         if not pr.get("draft"):
-            ci_failure_step(cur, p, pr["head"]["sha"])
+            ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"))
+        if not waiting_for_human(cur, p["url"]):
+            open_count += 1
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
             continue   # CI 待ち・衝突・ドラフト（途中終了）は表を引くまでもない
         sha = pr["head"]["sha"]
@@ -267,7 +283,7 @@ def merge_step(cur, rules: dict, manifests: dict):
         gh("PUT", f"repos/{p['repo']}/pulls/{p['number']}/merge", {"merge_method": "squash", "sha": sha})
         record(cur, "supervisor.merged", p["corr"], {"pr_url": p["url"], "head_sha": sha, "basis": basis}, f"supervisor.merged:{p['url']}")
         log("merged", p["url"], basis)
-        open_count -= 1
+        open_count = max(0, open_count - 1)
     return open_count
 
 
