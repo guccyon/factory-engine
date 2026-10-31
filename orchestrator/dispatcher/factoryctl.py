@@ -3,7 +3,7 @@
 
   docker compose exec dispatcher factoryctl list [--all]
   docker compose exec dispatcher factoryctl stop <job_id>
-  docker compose exec dispatcher factoryctl rerun <job_id> [--continue]   # --continue: 途中終了のドラフト PR のブランチから続ける
+  docker compose exec dispatcher factoryctl rerun <job_id> [--continue]   # 続きのジョブは続きとして積み直す。--continue: 途中終了のドラフト PR のブランチから続ける
   docker compose exec dispatcher factoryctl enqueue <repo> <issue> [--tier tier-small]
   docker compose exec dispatcher factoryctl events <job_id>
 
@@ -61,6 +61,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import continuation
 import design_line
 import drain
 import judgment
@@ -370,12 +371,16 @@ def main(argv):
         j = cur.fetchone()
         if not j:
             print("no such job"); return 1
-        cont = None
-        if "--continue" in argv:   # 途中終了のドラフト PR のブランチから続ける（最初からやり直さない）
+        # 続きのジョブ（衝突・CI 落ち・指摘・途中終了）は、続ける先（工場のブランチと PR）と合図の中身を引き継いで続きとして積み直す。
+        # 引き継がないと最初からの実装になり、別のブランチで PR をもう 1 本作ってしまう
+        carried = continuation.carry_over(cur, job_id) if j["kind"] == "implement" else {}
+        cont = carried.get("continue")
+        if "--continue" in argv and not cont:   # 途中終了のドラフト PR のブランチから続ける（最初からやり直さない）
             res = j["result"] or {}
             if j["kind"] != "implement" or not res.get("pr_number"):
                 print("--continue needs an implement job that left a PR"); return 1
             cont = {"branch": f"factory/issue-{j['issue_number']}-job-{job_id}", "pr_number": int(res["pr_number"]), "reason": "incomplete"}
+            carried = {"continue": cont}
         try:
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,'rerun',%s,%s,%s,%s) returning id",
@@ -385,9 +390,9 @@ def main(argv):
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
-                    (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **({"continue": cont} if cont else {}),
+                    (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **carried,
                                                                                **design_input(cur, job_id, j["kind"])})))
-        print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] if cont else ''})")
+        print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] + ' (' + cont['reason'] + ')' if cont else ''})")
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
         tier = argv[argv.index("--tier") + 1] if "--tier" in argv else os.environ.get("MODEL_TIER", "tier-large")
