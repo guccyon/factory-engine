@@ -230,6 +230,14 @@ events:
     source: control_plane
     required: [rule, from, to, why, issue, stats]
     note: "ADR 0013 の 6。supervisor が judge の裁きから overlay のルールの次の状態（shadow → adopted、カナリアで adopted → shadow）を判定し、state を書き換える Issue（factory:planned）を起票した。dedupe はルール・行き先・状態に入った時刻ごと"
+  case.enqueued:
+    source: control_plane
+    required: [incident, kind, ticket, job_id, day]
+    note: "ADR 0023。supervisor が事例型の分析のジョブ（kind=case_review）を積んだ。incident は sendback:<PR の URL> か stoppage:<停止の key>。1 日に learning_taxonomy.yaml の per_day 件まで。dedupe は出来事ごと"
+  case.analyzed:
+    source: control_plane
+    required: [incident, kind, ticket, summary, viewpoints, root_causes, learnings, had_session]
+    note: "ADR 0023。事例型の分析の結果（観点ごとのなぜなぜ・真因・テーマごとの学びの候補）。記録だけで、作用先にもワーカーのプロンプトにも入れない。同じ中身を artifacts の CaseAnalysis に残す。dedupe は出来事ごと"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]

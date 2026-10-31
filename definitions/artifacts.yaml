@@ -60,6 +60,10 @@ types:
     stage: [operate, routine]
     required: [repo, week, sha, summary, strengths, findings, checked]
     note: "ADR 0022。週 1 回の設計の診断の所見（エージェントがコードを読んで書く）。人が読むためのもので、ワーカーのプロンプトにも learn の入力にも入れない"
+  CaseAnalysis:
+    stage: learn
+    required: [incident, kind, ticket, summary, viewpoints, root_causes, learnings, had_session]
+    note: "ADR 0023。事例型の分析役が 1 件の出来事（差し戻し・停止）を観点ごとになぜなぜで掘った結果。知見の置き場と committee が決まるまで記録だけ"
   Lesson:
     stage: learn
     required: [teacher_signal, summary, eval_cases, knowledge_stage]   # eval ケース同梱必須。P3 からは signature・confidentiality・source_refs も（definitions/learning.yaml の lesson）
