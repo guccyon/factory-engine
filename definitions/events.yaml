@@ -87,6 +87,14 @@ events:
     source: control_plane
     required: [key, closed_by]
     note: "remedy（その場の手当て）、prevention（再発防止）、ended_at を任意で持つ"
+  watcher.line_low:
+    source: control_plane
+    required: [planned, ready, low_below]
+    note: "投入待ちの段（planned で保留でないチケット）が WATCH_LINE_LOW_BELOW を切った。停止ではない知らせ。line_ok が出るまで 1 度だけ。停止の Issue にコメントする"
+  watcher.line_ok:
+    source: control_plane
+    required: [planned, ready]
+    note: "line_low のあと段が積み足され、下限以上に戻った"
   supervisor.heartbeat:
     source: control_plane
     required: []
