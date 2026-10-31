@@ -5,7 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker-cli dock
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY dispatcher.py ghapi.py factoryctl.py stoppage.py supervisor.py judgment.py ops.py console.py ship.py learn.py pr_events.py continuation.py design.py tidy.py drain.py reattach.py case.py committee.py design_line.py choice.py review_page.py ./
+# 1 ファイルずつ並べると、新しいモジュール（planner.py・choice.py）を書き忘れて起動時に落ちるので、まとめて写す（Dockerfile.shipper と同じ）
+COPY *.py ./
 RUN ln -s /app/factoryctl.py /usr/local/bin/factoryctl && chmod +x /app/factoryctl.py
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "dispatcher.py"]

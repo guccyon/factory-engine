@@ -30,6 +30,8 @@ COPY --chown=worker:worker case_review.sh /usr/local/bin/case_review.sh
 # デザイナー役とデザイン検査役のジョブ（ADR 0025）。デザイナー役は Chromium つきの Dockerfile.design で動く
 COPY --chown=worker:worker ui_design.sh /usr/local/bin/ui_design.sh
 COPY --chown=worker:worker ui_design_review.sh /usr/local/bin/ui_design_review.sh
+# プランナーのジョブ（ADR 0025・0026。着手判定と経路の振り分け）
+COPY --chown=worker:worker plan.sh /usr/local/bin/plan.sh
 # 知見の委員会のジョブ（ADR 0024）
 COPY --chown=worker:worker committee_review.sh /usr/local/bin/committee_review.sh
 COPY --chown=worker:worker committee_weekly.sh /usr/local/bin/committee_weekly.sh
