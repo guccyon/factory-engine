@@ -41,6 +41,7 @@ PORT = int(ENV.get("CONSOLE_PORT", "8790"))
 ALLOWED_HOSTS = {h.strip() for h in ENV.get("CONSOLE_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()}
 OPERATOR = ENV.get("CONSOLE_OPERATOR", "builder")
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
+LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 段の残りがこれを切ると赤く出す（番人の知らせと同じ値。dispatcher.py）
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
 TOKEN = secrets.token_urlsafe(24)   # 起動ごとに変わる。画面を開き直せば新しいものが入る
@@ -134,11 +135,14 @@ def snapshot(cur) -> dict:
         items.append(item("done", job_id=r["job_id"], ref=(r["correlation_id"] or ":").split(":", 1)[1], title=r["title"] or "",
                           at=iso(r["occurred_at"]), note=f"失敗（{r['error']}）", failed=True))
     running = sum(1 for i in items if i["stage"] == "running")
+    cur.execute("select count(*) as n from tickets where state='planned' and not held")
+    planned = cur.fetchone()["n"]
     return {
         "releases": releases(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": MAX_PARALLEL,
-                    "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur)},
+                    "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
+                    "planned": planned, "line_low_below": LINE_LOW_BELOW},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
         "items": items,
     }
@@ -341,6 +345,7 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
   `<span class="stat">作業中 <b>${f.running} / ${f.max_parallel}</b></span>`,
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
+  `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="投入待ちの段（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">段の残り <b>${f.planned}</b></span>`,
   lineView(f.line),
   f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" ");
  document.getElementById("ship").innerHTML=shipView(s.releases||[]);

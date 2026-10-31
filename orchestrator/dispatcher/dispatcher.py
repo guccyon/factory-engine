@@ -72,6 +72,7 @@ STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジ�
 LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
 DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
+LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちの段（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
@@ -705,6 +706,32 @@ def budget_paused(cur) -> dict | None:
     return cur.fetchone()
 
 
+def line_supply(cur) -> dict:
+    """ラインの段の残り。投入待ち（planned で保留でない）と、そのうち依存が片付いてすぐ流せる数"""
+    cur.execute("select count(*) as planned, count(*) filter (where cardinality(waiting_on) = 0) as ready "
+                "from tickets where state='planned' and not held")
+    r = cur.fetchone()
+    return {"planned": r["planned"], "ready": r["ready"], "low_below": LINE_LOW_BELOW,
+            "low": LINE_LOW_BELOW > 0 and r["planned"] < LINE_LOW_BELOW}
+
+
+def line_low_step(cur, draining) -> None:
+    """段の残りが少なくなったら 1 度だけ知らせ、積み足されたら戻ったと記録する。停止ではない（ラインはまだ流れている）ので
+    stoppages には開かない。プランナー（P4）ができるまで、建設者が段を積む合図にする（2026-10-31）"""
+    if draining:
+        return
+    sup = line_supply(cur)
+    cur.execute("select name from events where name in ('watcher.line_low','watcher.line_ok') order by id desc limit 1")
+    last = cur.fetchone()
+    is_low = bool(last and last["name"] == "watcher.line_low")
+    if sup["low"] and not is_low:
+        record_event(cur, "watcher.line_low", None, None, {"planned": sup["planned"], "ready": sup["ready"], "low_below": LINE_LOW_BELOW})
+        stoppage.post_notice(f"**段の残りが少なくなりました**: 投入待ち {sup['planned']} 件（{LINE_LOW_BELOW} 件を切った）。"
+                             "次の段を `factory:planned` で積んでください。積まないとラインが空になります。", cur)
+    elif not sup["low"] and is_low:
+        record_event(cur, "watcher.line_ok", None, None, {"planned": sup["planned"], "ready": sup["ready"]})
+
+
 def watch_once():
     with db() as conn, conn.cursor() as cur:
         # 番人が見始めた時点。これより前のジョブの失敗は遡って開かない（過去分は builder が手で記録している）
@@ -751,6 +778,9 @@ def watch_once():
         elif not draining:
             for k in drain_open:
                 stoppage.close_stoppage(cur, k, remedy="ラインを再開した")
+
+        # 1c) 段の残りが少ない（停止の手前の知らせ）
+        line_low_step(cur, draining)
 
         # 2) supervisor の heartbeat（1 度でも来てから有効）
         cur.execute("select max(occurred_at) as last, now() - max(occurred_at) > make_interval(mins => %s) as stale "

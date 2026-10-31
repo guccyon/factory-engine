@@ -126,6 +126,17 @@ def _body(cur) -> str:
     return head + "\n".join(tbl)
 
 
+def post_notice(text: str, cur=None):
+    """停止ではない知らせ（段の残りが少ないなど）を、停止と同じ Issue にコメントする。本文の停止の一覧は変えない"""
+    try:
+        if NOTIFIER == "github-issue" and STATUS_REPO and not ENV.get("WORKER_DRY_RUN"):
+            _gh("POST", f"repos/{STATUS_REPO}/issues/{_status_issue()}/comments", {"body": text})
+        else:
+            _log("notice", text)
+    except Exception as e:  # noqa: BLE001  通知の失敗でラインを止めない
+        _log("notice failed", repr(e))
+
+
 def notify(kind: str, s: dict, cur=None):
     try:
         if NOTIFIER == "github-issue" and STATUS_REPO and not ENV.get("WORKER_DRY_RUN"):

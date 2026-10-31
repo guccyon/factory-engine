@@ -187,3 +187,34 @@ def test_run_job_reattaching_records_result_without_restarting(cur, docker, monk
     calls = (docker.dir / "calls").read_text()
     assert "run " not in calls   # コンテナを起動し直さない
     assert not (docker.dir / "containers" / "factory-job-x").exists()   # 記録の後に片付ける
+
+
+def ticket(cur, ref, state="planned", held=False, waiting=()):
+    cur.execute("insert into tickets(source, source_ref, repo, state, held, waiting_on) values ('github', %s, 'o/r', %s, %s, %s)",
+                (ref, state, held, list(waiting)))
+
+
+def line_events(cur):
+    cur.execute("select name, payload from events where name like 'watcher.line_%%' order by id")
+    return cur.fetchall()
+
+
+def test_watcher_notices_line_low_once_and_recovers(cur):
+    ticket(cur, "o/r#1", waiting=["o/r#0"])
+    ticket(cur, "o/r#2", held=True)          # 保留は数えない
+    ticket(cur, "o/r#3", state="active")     # 実装に回ったものは数えない
+    dispatcher.watch_once()
+    dispatcher.watch_once()                  # 2 回目は知らせない
+    ev = line_events(cur)
+    assert [e["name"] for e in ev] == ["watcher.line_low"]
+    assert ev[0]["payload"] == {"planned": 1, "ready": 0, "low_below": 2}
+    assert not stoppage.open_keys(cur, "")   # 停止としては開かない
+    ticket(cur, "o/r#4")
+    dispatcher.watch_once()
+    assert [e["name"] for e in line_events(cur)] == ["watcher.line_low", "watcher.line_ok"]
+
+
+def test_watcher_does_not_notice_line_low_while_draining(cur):
+    drain.set_drain(cur, True, "factoryctl", "入れ替え")
+    dispatcher.watch_once()
+    assert not line_events(cur)
