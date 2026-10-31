@@ -42,6 +42,12 @@
   factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
   factoryctl report judgments [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 類型・モード別の件数、確信度、一致率、差し戻し、類型の見直しの候補
 
+デザインの線（ADR 0025）。画面を含むタスク（factory:design）の案を人が選ぶ。操業コンソールの選択の画面（P4-7）と同じ操作:
+  factoryctl design list                                   # 人の選択を待っているタスク（検査役の推す案と、人へ回した理由）
+  factoryctl design show <owner/repo#123>                  # そのタスクの最新の UXSpec と検査役の判断（3 層）
+  factoryctl design pick <owner/repo#123> <案> [--by ..] [--note ..]   # 案を選ぶ。dispatcher が次の周回で Issue に UXSpec を足して投入待ちに戻す
+  docker compose exec -T dispatcher factoryctl design export <owner/repo#123> > design.tar   # 案のファイル（HTML・PNG）を tar で取り出す
+
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
 """
@@ -55,12 +61,88 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import design_line
 import drain
 import judgment
 import learn
 import ops
 import ship
 import stoppage
+
+
+def design_input(cur, job_id: int, kind: str) -> dict:
+    """デザインの線のジョブを積み直すときは、前の入力（直しの指摘・検査する案）を引き継ぐ"""
+    if kind not in ("ui_design", "ui_design_review"):
+        return {}
+    cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
+    inp = (cur.fetchone() or {}).get("inp")
+    return {"input": inp} if inp else {}
+
+
+def split_ref(ref: str) -> tuple[str, int]:
+    repo, _, n = ref.partition("#")
+    if not repo or not n.isdigit():
+        raise ValueError("owner/repo#123 の形で渡す")
+    return repo, int(n)
+
+
+def design_cmd(cur, argv) -> int:
+    sub = argv[2] if len(argv) > 2 else "list"
+    if sub == "list":
+        cur.execute("select w.occurred_at, w.payload from events w where w.name='ui_design.awaiting_choice' and not exists ("
+                    "select 1 from events c where c.name='ui_design.chosen' and c.payload->>'design_artifact_id' = w.payload->>'design_artifact_id') "
+                    "order by w.id")
+        for r in cur.fetchall():
+            p = r["payload"]
+            why = "、".join(design_line.REASON_JA.get(x, x) for x in p.get("reasons") or [])
+            print(f"{p['repo']}#{p['issue']} 案 {p.get('design_artifact_id')} 推す={p.get('recommended')} {r['occurred_at']:%m-%d %H:%M} {why}")
+        return 0
+    try:
+        repo, issue = split_ref(argv[3] if len(argv) > 3 else "")
+    except ValueError as e:
+        print(e); return 2
+    if sub == "pick":
+        try:
+            c = design_line.choose(cur, repo, issue, argv[4], opt(argv, "--by", "builder"), opt(argv, "--note", ""))
+        except (ValueError, IndexError) as e:
+            print(e); return 1
+        print(f"選んだ: {repo}#{issue} 案 {c['variant']}（検査役の推す案と{'一致' if c['agree'] else '不一致'}）。dispatcher が次の周回で Issue に反映する")
+        return 0
+    cur.execute("select id from artifacts where type='UXSpec' and payload->>'repo'=%s and (payload->>'issue')::int=%s order by id desc limit 1", (repo, issue))
+    r = cur.fetchone()
+    if not r:
+        print("このタスクの案はない"); return 1
+    d = design_line.load_design(cur, r["id"])
+    if sub == "export":   # 標準出力に tar（docker compose exec -T で取り出す）
+        import io
+        import tarfile
+        from minio import Minio
+        e = os.environ
+        st = Minio(e["OBJECTSTORE_ENDPOINT"], access_key=e["OBJECTSTORE_ACCESS_KEY"], secret_key=e["OBJECTSTORE_SECRET_KEY"], secure=False)
+        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as tar:
+            for name, key in (d.get("files") or {}).items():
+                obj = st.get_object(e.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
+                try:
+                    data = obj.read()
+                finally:
+                    obj.close()
+                    obj.release_conn()
+                info = tarfile.TarInfo(f"{repo.replace('/', '_')}-{issue}-{d['id']}/{name}")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        return 0
+    import yaml
+    print(yaml.safe_dump(d.get("uxspec") or {}, allow_unicode=True, sort_keys=False))
+    cur.execute("select payload from artifacts where type='DesignVerdict' and (payload->>'design_artifact_id')::int=%s order by id desc limit 1", (d["id"],))
+    v = (cur.fetchone() or {}).get("payload")
+    if v:
+        print(f"# 検査役: {v.get('decision')}（検査役の答え {v.get('inspector_decision')}、推す案 {v.get('chosen_variant')}、確信度 {(v.get('score') or {}).get('self_reported')}）")
+        print(f"# 解釈: {v.get('interpretation')}")
+        for x in v.get("evidence") or []:
+            print(f"# 根拠: {x}")
+        for f in v.get("findings") or []:
+            print(f"# 指摘 [{f.get('severity')}] {f.get('viewpoint')} / {f.get('variant')}: {f.get('evidence')} → {f.get('fix')}")
+    return 0
 
 
 def opt(argv, name, default=None):
@@ -303,7 +385,8 @@ def main(argv):
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
-                    (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **({"continue": cont} if cont else {})})))
+                    (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **({"continue": cont} if cont else {}),
+                                                                               **design_input(cur, job_id, j["kind"])})))
         print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] if cont else ''})")
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
@@ -419,6 +502,8 @@ def main(argv):
                 p = r["payload"]
                 conf = (p.get("score") or {}).get("self_reported")
                 print(f"{r['id']:>5} {p.get('stage', ''):<11} {p.get('category', ''):<13} {p.get('verdict') or '':<9} conf={conf} {p.get('mode', '')} {(p.get('question') or '')[:60]}")
+    elif cmd == "design":
+        return design_cmd(cur, argv)
     elif cmd == "release" and len(argv) > 4 and argv[2] == "create":
         return release_create(cur, argv)
     elif cmd == "release" and len(argv) > 3 and argv[2] in ("ship", "approve", "rollback"):

@@ -43,6 +43,11 @@ steps:
     tier: tier-judge
   case_review:                # 事例型の分析役（core-gates/case_review.py。出来事の記録を読むだけ。ADR 0023）
     tier: tier-judge
+  ui_design:                  # デザイナー役（core-gates/ui_design.py。UXSpec と案のモックを書く。ADR 0025）
+    tier: tier-large
+    mode: agentic
+  ui_design_review:           # デザイン検査役（core-gates/ui_design_review.py。案と規範の写しを読むだけ。ADR 0025）
+    tier: tier-judge
   committee_review:           # 知見の委員会の 4 役（core-gates/committee_review.py。材料の写しを読むだけ。ADR 0024）
     tier: tier-judge
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）

@@ -1,0 +1,10 @@
+# デザイナー役のワーカー（ADR 0025。P4-6）: ベースの worker に、案のモックを撮るヘッドレスの Chromium と同梱の書体を足す。
+# 工場の環境は Web フォントを読めないので、日本語の書体（Noto CJK）はイメージに入れる。モックは外部の資源を読まない。
+# docker build -f Dockerfile.design -t factory-worker:design .   （先に factory-worker:p0 を作る）
+FROM factory-worker:p0
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends chromium fonts-noto-cjk fonts-noto-color-emoji \
+ && rm -rf /var/lib/apt/lists/*
+ENV CHROMIUM_BIN=/usr/bin/chromium
+USER worker
+WORKDIR /work
