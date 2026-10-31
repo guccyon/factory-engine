@@ -56,6 +56,10 @@ types:
     stage: learn
     required: [day, window_days, signals, clusters]
     note: "ADR 0013。教師信号を signature で束ねたもの（決定的）。clusters の 1 つが learn ジョブの入力になり、Lesson を 1 つ書く"
+  HumanChoice:
+    stage: [design, govern]
+    required: [kind, status, question, options, recommended, subject]
+    note: "ADR 0025 の P4-7。人に選んでもらう依頼（画面の案・抜き取り）。status: open | chosen | returned。options は 1〜4 件で、画像はオブジェクトストアの choices/ の下（image_key）"
   DesignReview:
     stage: [operate, routine]
     required: [repo, week, sha, summary, strengths, findings, checked]

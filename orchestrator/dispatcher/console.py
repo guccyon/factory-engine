@@ -11,6 +11,10 @@
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
+  POST /api/choices/<id>/choose           {"option", "reason"?} 人の選択（画面の案・抜き取り。ADR 0025）
+  POST /api/choices/<id>/return           {"reason"} どの案も選ばず作り手に戻す
+  POST /api/choices/<id>/flag             {"note", "option"?} 違和感の印（教師信号 taste_flag）
+  GET  /api/choices/<id>/image/<option>   案の画像（オブジェクトストアの choices/ の下から中継する）
 - 出荷の操作は events に依頼を書くだけで、docker を動かすのは shipper（このサービスに docker のソケットは渡さない）
 - 操作は ops.py を通り、dispatcher・supervisor・factoryctl と同じ振る舞いになる。誰が操作したかは events に残す
 - 外部のサービス・CDN に依存しない（閉じた網・オンプレミスで動かせるように）。GitHub にも触らない（制御プレーンだけを読む）
@@ -30,6 +34,7 @@ from urllib.parse import parse_qs, urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+import choice
 import drain
 import judgment
 import ops
@@ -46,7 +51,17 @@ JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
 TOKEN = secrets.token_urlsafe(24)   # 起動ごとに変わる。画面を開き直せば新しいものが入る
 HOST_AGENT_FRESH_SEC = 600   # これより長く keep-awake.sh から連絡がなければ、ホストの見張りは居ないとみなす（トグルを出さない）
-host_agent: dict = {}         # keep-awake.sh の最後の連絡（プロセスの中だけ。再起動しても次の問い合わせで戻る）
+host_agent: dict = {}
+_store = None
+
+
+def store():
+    """案の画像を読むオブジェクトストア。設定がなければ None（画像なしで選択の画面は動く）"""
+    global _store
+    if _store is None and ENV.get("OBJECTSTORE_ENDPOINT"):
+        from minio import Minio
+        _store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV.get("OBJECTSTORE_ACCESS_KEY"), secret_key=ENV.get("OBJECTSTORE_SECRET_KEY"), secure=False)
+    return _store         # keep-awake.sh の最後の連絡（プロセスの中だけ。再起動しても次の問い合わせで戻る）
 PR_STAGE_EVENTS = ("supervisor.merge_decided", "gate.evaluated", "supervisor.judge_enqueued", "judgment.judged", "supervisor.inspector_approved")
 
 
@@ -214,6 +229,17 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         if not isinstance(body.get("prevent_sleep"), bool):
             return 400, {"error": "prevent_sleep（true か false）が要る"}
         return 200, {"prevent_sleep": ops.set_keep_awake(cur, body["prevent_sleep"], by, reason)}
+    m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag)", path)
+    if m:
+        aid, what = int(m.group(1)), m.group(2)
+        if what == "choose":
+            ok, msg = choice.choose(cur, aid, str(body.get("option") or ""), by, reason)
+        elif what == "return":
+            ok, msg = choice.return_to_maker(cur, aid, by, reason)
+        else:
+            opt = body.get("option")
+            ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, str(opt) if opt else None)
+        return (200, {"message": msg}) if ok else (404 if msg.startswith("no such") else 409, {"error": msg})
     m = re.fullmatch(r"/api/jobs/(\d+)/stop", path)
     if m:
         before = ops.stop_job(cur, int(m.group(1)), by, reason)
@@ -244,10 +270,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"error": "host not allowed"})
         if self.path == "/api/state":
             with db() as conn, conn.cursor() as cur:
-                return self._json(200, snapshot(cur))
+                return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur)})
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
         url = urlsplit(self.path)
+        m = re.fullmatch(r"/api/choices/(\d+)/image/([A-Za-z0-9_-]{1,20})", url.path)
+        if m:
+            return self._choice_image(int(m.group(1)), m.group(2))
         if url.path == "/api/host/keep-awake":   # ホストの keep-awake.sh から。読むだけで工場の状態は変えない（合言葉は要らない）
             q = parse_qs(url.query)
             host_agent.update(seen=datetime.now(timezone.utc), factory_running=q.get("factory", [""])[0] == "running")
@@ -256,6 +285,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             return self._json(200, {"ok": True})
         self._json(404, {"error": "not found"})
+
+    def _choice_image(self, aid: int, option_id: str):
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("select payload from artifacts where id=%s and type='HumanChoice'", (aid,))
+            row = cur.fetchone()
+        opt = next((o for o in (row["payload"]["options"] if row else []) if o["id"] == option_id), None)
+        key = (opt or {}).get("image_key")
+        if not key or not key.startswith(choice.IMAGE_PREFIX) or store() is None:
+            return self._json(404, {"error": "no image"})
+        obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
+        try:
+            data = obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+        self._send(200, data, "image/png" if key.endswith(".png") else "application/octet-stream")
 
     def do_POST(self):  # noqa: N802
         if not self._host_ok():
@@ -297,11 +342,15 @@ h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;bo
 button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stops{padding:0 16px}#stops div{margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
 #ship{padding:0 16px}.rel{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
 .rel .env b{font-size:15px}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}
+#choices{padding:0 16px}.ch{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:var(--card)}
+.opts{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin:8px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:8px}
+.opt.rec{border-color:var(--ok)}.opt img{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}.ch input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(360px,100%)}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 </style></head><body>
 <header><h1>工場の操業コンソール</h1><span id="hdr"></span></header>
 <section id="stops"></section>
 <section id="ship"></section>
+<section id="choices"></section>
 <main id="lanes"></main><div id="msg"></div>
 <script>
 const TOKEN="__TOKEN__";
@@ -329,6 +378,13 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`}
  const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
+const KIND={design_variants:"画面の案の選択",taste_sample:"抜き取り"};
+function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
+ const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
+  <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
+  <div class="acts"><button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
+ return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
+  <div class="opts">${opts}</div><div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div></div>`}).join("")}
 function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||"")];
  if(i.job_id)meta.push(`ジョブ ${i.job_id}${i.kind&&i.kind!=="implement"?"（"+esc(i.kind)+"）":""}${i.attempt>1?" 試行"+i.attempt:""}`);
  if(i.rank)meta.push(`${i.rank} 番目`);if(i.held)meta.push("保留中");
@@ -349,6 +405,7 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   lineView(f.line),
   f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" ");
  document.getElementById("ship").innerHTML=shipView(s.releases||[]);
+ const ce=document.getElementById("choices"),typing=ce.contains(document.activeElement);if(!typing)ce.innerHTML=choicesView(s.choices||[]);
  document.getElementById("stops").innerHTML=f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("");
  document.getElementById("lanes").innerHTML=LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
   return `<section class="lane"><h2><span>${n}</span><span>${xs.length}</span></h2>${xs.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")}
@@ -356,6 +413,10 @@ document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")re
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c,note=(document.getElementById("note-"+id)||{}).value||"";
+ if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});
+ if(b.dataset.ch==="flag"){if(!note.trim())return toast("違和感の一言を入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
+ if(!note.trim())return toast("戻す理由を一言入れてください");post(`/api/choices/${id}/return`,{reason:note})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b)return;
  if(b.dataset.a==="stop"){if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと止める";setTimeout(()=>{b.classList.remove("armed");b.textContent="止める"},4000);return}
   return post(`/api/jobs/${b.dataset.j}/stop`,{})}
