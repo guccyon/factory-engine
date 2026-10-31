@@ -261,7 +261,7 @@ events:
   ui_design.handed_off:
     source: control_plane
     required: [repo, issue, design_artifact_id, variant, decided_by, gaps_issue]
-    note: "ADR 0025。決まった案の UXSpec を Issue の本文に足し、factory:planned に戻した。足りない部品があれば別の段を起票して依存にした（gaps_issue）。dedupe は案ごと"
+    note: "ADR 0025。決まった案の UXSpec を Issue の本文に足し、factory:planned に戻した。足りない部品があれば別のタスクを起票して依存にした（gaps_issue）。dedupe は案ごと"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]

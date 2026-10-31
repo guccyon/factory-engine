@@ -10,7 +10,7 @@
      human:   factory:design-choice を付けて Issue に案の一覧を書く。人は factoryctl design pick（P4-7 で選択の画面）で選ぶ
   → 人の選択（ui_design.chosen）は poll の周回で apply_choices が Issue に反映する
 
-デザインシステムに足りない部品（design_system_gaps）は、画面に直書きさせずに別の段（Issue）にして、画面の段の依存にする。
+デザインシステムに足りない部品（design_system_gaps）は、画面に直書きさせずに別のタスク（Issue）にして、画面のタスクの依存にする。
 判断は judge と同じ 3 層（根拠・解釈・確信度）で DesignVerdict に残し、人の選択と検査役の推す案の一致を ui_design.chosen に残す。
 """
 from __future__ import annotations
@@ -198,7 +198,7 @@ def apply_choices(cur, gh, comment, get=None) -> int:
 
 # ------------------------------------------------------------------ 実装の線へ渡す
 def handoff(cur, gh, comment, repo: str, issue: int, corr: str, d: dict, variant: str, decided_by: str, verdict_id, get=None):
-    """決まった案の UXSpec を Issue の本文に足し、足りない部品の段を切って依存にし、factory:planned へ。同じ案は 1 度だけ"""
+    """決まった案の UXSpec を Issue の本文に足し、足りない部品のタスクを切って依存にし、factory:planned へ。同じ案は 1 度だけ"""
     cur.execute("select 1 from events where dedupe_key=%s", (f"ui_design.handed_off:{d.get('id')}",))
     if cur.fetchone():
         return
@@ -222,7 +222,7 @@ def handoff(cur, gh, comment, repo: str, issue: int, corr: str, d: dict, variant
                 (corr, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": verdict_id, "variant": variant,
                               "decided_by": decided_by, "gaps_issue": gaps_issue}), f"ui_design.handed_off:{d.get('id')}"))
     comment(repo, issue, f"画面の設計が決まりました（案 `{variant}`、{DECIDED_JA.get(decided_by, decided_by)}）。UXSpec を本文に足して、投入待ち（{AFTER_LABEL}）に戻しました。"
-                         + (f"\nデザインシステムに足りない部品は #{gaps_issue} で先に足します（この段の依存）。" if gaps_issue else ""))
+                         + (f"\nデザインシステムに足りない部品は #{gaps_issue} で先に足します（このタスクの依存）。" if gaps_issue else ""))
 
 
 def swap(gh, repo: str, issue: int, remove: list[str], add: list[str]):
@@ -252,7 +252,7 @@ def issue_section(issue: int, spec: dict, variant: str, decided_by: str, gaps_is
              f"デザインの線で決まった案 `{variant}`（{DECIDED_JA.get(decided_by, decided_by)}）。画面の要素・振る舞い・状態はこの UXSpec に合わせて実装する（ADR 0025）。",
              f"同じ PR で、この UXSpec を `specs/ux/issue-{issue}.yaml` に置く。見た目の細部は後から直してよい。"]
     if gaps_issue:
-        lines += ["デザインシステムに足りない部品は別の段で足す。画面に直書きしない。", f"依存: #{gaps_issue}"]
+        lines += ["デザインシステムに足りない部品は別のタスクで足す。画面に直書きしない。", f"依存: #{gaps_issue}"]
     lines += ["", "```yaml", text.rstrip(), "```"]
     if html and len(html) <= MAX_HTML_INLINE:
         lines += ["", "<details><summary>案のモック（静的 HTML。見た目の参考）</summary>", "", "```html", html.rstrip(), "```", "", "</details>"]
@@ -296,11 +296,11 @@ def choice_comment(d: dict, v: dict, reasons: list[str]) -> str:
                       "### 案", *_variants_lines(d), "",
                       f"推す理由（デザイナー役）: {spec.get('recommended_reason') or '（なし）'}", "",
                       "案の画像は操業コンソールの選択の画面か `factoryctl design export` で見られます。",
-                      f"選ぶ: `factoryctl design pick {d.get('repo')}#{d.get('issue')} <案>`。選ぶまでこの段は流れず、ほかの段は流れます。", "",
+                      f"選ぶ: `factoryctl design pick {d.get('repo')}#{d.get('issue')} <案>`。選ぶまでこのタスクは流れず、ほかのタスクは流れます。", "",
                       "---", "_デザイン検査役（ADR 0025）_"])
 
 
 def revise_comment(v: dict, jid: int | None) -> str:
     fx = [f"- [{f.get('severity')}] {f.get('viewpoint')} / 案 {f.get('variant')}: {f.get('evidence')}" for f in v.get("findings") or []]
-    head = f"デザイン検査役が直しを求めました。デザイナー役に戻します（ジョブ {jid}）。" if jid else "デザイン検査役が直しを求めましたが、ジョブを積めませんでした（同じ段のジョブが動いている）。"
+    head = f"デザイン検査役が直しを求めました。デザイナー役に戻します（ジョブ {jid}）。" if jid else "デザイン検査役が直しを求めましたが、ジョブを積めませんでした（同じタスクのジョブが動いている）。"
     return "\n".join([head, "", *fx[:12], "", "---", "_デザイン検査役（ADR 0025）_"])

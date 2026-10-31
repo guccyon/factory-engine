@@ -113,13 +113,13 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 
 ## デザインの線（ADR 0025。デザイナー役とデザイン検査役）
 
-画面を含む段は、実装の前に画面の要素と振る舞い（UXSpec）と案を決める。数値と観点は `definitions/ui_design.yaml`。
+画面を含むタスクは、実装の前に画面の要素と振る舞い（UXSpec）と案を決める。数値と観点は `definitions/ui_design.yaml`。
 
-- 段（Issue）に `factory:planned` の代わりに `factory:design` を付ける（プランナーができるまでは人か建設者が付ける）
+- タスク（Issue）に `factory:planned` の代わりに `factory:design` を付ける（プランナーができるまでは人か建設者が付ける）
 - dispatcher が `ui_design` のジョブに積む。デザイナー役（`worker/ui_design.sh` → `core-gates/ui_design.py`、`factory-worker:design` で動く）が、製品の `specs/design/`（デザインシステム）・用語集・今の画面を読み、UXSpec と 2〜3 案の静的 HTML を書いて Chromium で撮る（外への通信は止める）。案のファイルは `design/<job_id>/` に置き、UXSpec は artifacts（`UXSpec`）に残す
 - 続けてデザイン検査役（`ui_design_review` → `core-gates/ui_design_review.py`）が、別の文脈で案の画像・HTML・製品の `specs/` を見て、受け入れ条件・状態・デザインシステム・文言・アクセシビリティ・案の違いの観点で 承認／直し／人へ を返す。判断は judge と同じ 3 層（根拠・解釈・確信度）で `DesignVerdict` に残す
 - 人へ回す条件はエージェントの答えにかかわらず決定論で当てる: 新しい画面、ブランドと印象に効く画面、確信度 0.7 未満、直しを 1 回使った後の直し。must の指摘が残る案は承認しない
-- 承認: 決まった案の UXSpec（とモックの HTML）を Issue の本文の節に足し、`factory:planned` に戻す。実装役は同じ PR で `specs/ux/issue-<番号>.yaml` に置く。デザインシステムに足りない部品（`design_system_gaps`）は別の段を起票して依存にする（画面に直書きさせない）
+- 承認: 決まった案の UXSpec（とモックの HTML）を Issue の本文の節に足し、`factory:planned` に戻す。実装役は同じ PR で `specs/ux/issue-<番号>.yaml` に置く。デザインシステムに足りない部品（`design_system_gaps`）は別のタスクを起票して依存にする（画面に直書きさせない）
 - 直し: 指摘と前の UXSpec を渡してデザイナー役を 1 回だけ積み直す
 - 人へ: `factory:design-choice` を付け、Issue に案と推す案を書く。人は `factoryctl design list` / `show` / `export`（案のファイルを tar で）で見て、`factoryctl design pick owner/repo#123 <案>` で選ぶ。dispatcher が次の周回で Issue に反映する。検査役の推す案との一致を `ui_design.chosen` の `agree` に残す（委任を広げる判断の材料）。操業コンソールの選択の画面は P4-7
 

@@ -42,9 +42,9 @@
   factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
   factoryctl report judgments [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 類型・モード別の件数、確信度、一致率、差し戻し、類型の見直しの候補
 
-デザインの線（ADR 0025）。画面を含む段（factory:design）の案を人が選ぶ。操業コンソールの選択の画面（P4-7）と同じ操作:
-  factoryctl design list                                   # 人の選択を待っている段（検査役の推す案と、人へ回した理由）
-  factoryctl design show <owner/repo#123>                  # その段の最新の UXSpec と検査役の判断（3 層）
+デザインの線（ADR 0025）。画面を含むタスク（factory:design）の案を人が選ぶ。操業コンソールの選択の画面（P4-7）と同じ操作:
+  factoryctl design list                                   # 人の選択を待っているタスク（検査役の推す案と、人へ回した理由）
+  factoryctl design show <owner/repo#123>                  # そのタスクの最新の UXSpec と検査役の判断（3 層）
   factoryctl design pick <owner/repo#123> <案> [--by ..] [--note ..]   # 案を選ぶ。dispatcher が次の周回で Issue に UXSpec を足して投入待ちに戻す
   docker compose exec -T dispatcher factoryctl design export <owner/repo#123> > design.tar   # 案のファイル（HTML・PNG）を tar で取り出す
 
@@ -111,7 +111,7 @@ def design_cmd(cur, argv) -> int:
     cur.execute("select id from artifacts where type='UXSpec' and payload->>'repo'=%s and (payload->>'issue')::int=%s order by id desc limit 1", (repo, issue))
     r = cur.fetchone()
     if not r:
-        print("この段の案はない"); return 1
+        print("このタスクの案はない"); return 1
     d = design_line.load_design(cur, r["id"])
     if sub == "export":   # 標準出力に tar（docker compose exec -T で取り出す）
         import io

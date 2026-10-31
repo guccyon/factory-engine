@@ -59,7 +59,7 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?claude setup-token の値 (.env)}
       WORKER_IMAGE: factory-worker:p0
       WORKER_IMAGES: ${WORKER_IMAGES:-}      # リポジトリごとの上書き（例: guccyon/rally=factory-worker:rust）
-      # デザインの線（ADR 0025）。factory:design の段をデザイナー役（Chromium つきのイメージ）とデザイン検査役に通す
+      # デザインの線（ADR 0025）。factory:design のタスクをデザイナー役（Chromium つきのイメージ）とデザイン検査役に通す
       DESIGN_LABEL: ${DESIGN_LABEL:-factory:design}
       UI_DESIGN_IMAGE: ${UI_DESIGN_IMAGE:-factory-worker:design}
       JOB_DB_ENABLED: ${JOB_DB_ENABLED:-1}     # ジョブごとに job_<id> の DB を作ってワーカーに DATABASE_URL で渡す

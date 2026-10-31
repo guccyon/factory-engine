@@ -107,7 +107,7 @@ def test_review_input_carries_files(cur):
     assert inp["round"] == 1 and inp["uxspec"]["recommended"] == "a"
     assert base64.b64decode(inp["files"]["a.png"]) == b"png" and set(inp["files"]) == {"a.html", "a.png", "b.html"}
     assert dl.enqueue(cur, REPO, ISSUE, CORR, "ui_design_review", "tier-judge", {"design_artifact_id": aid})
-    assert dl.enqueue(cur, REPO, ISSUE, CORR, "ui_design_review", "tier-judge", {}) is None   # 同じ段のジョブは 1 本
+    assert dl.enqueue(cur, REPO, ISSUE, CORR, "ui_design_review", "tier-judge", {}) is None   # 同じタスクのジョブは 1 本
 
 
 @needs_db

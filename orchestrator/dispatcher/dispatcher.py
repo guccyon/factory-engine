@@ -48,7 +48,7 @@ DATABASE_URL = ENV["DATABASE_URL"]
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
 TRIGGER_LABEL = ENV.get("TRIGGER_LABEL", "factory:implement")
 REQUEST_LABEL = ENV.get("REQUEST_LABEL", "factory:request")   # intake: 要求者の曖昧な要求を clarify にかける（T20）
-DESIGN_LABEL = ENV.get("DESIGN_LABEL", design_line.TRIGGER_LABEL)   # 画面を含む段: 実装の前にデザインの線を通す（ADR 0025）
+DESIGN_LABEL = ENV.get("DESIGN_LABEL", design_line.TRIGGER_LABEL)   # 画面を含むタスク: 実装の前にデザインの線を通す（ADR 0025）
 TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify", DESIGN_LABEL: "ui_design"}
 TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "要求を確かめる質問をこの Issue に書きます（最大 3 往復）",
               "ui_design": "実装の前に、画面の要素と振る舞い（UXSpec）と案のモックを作り、デザイン検査役に見せます"}
@@ -468,7 +468,7 @@ def run_job(job: dict, reattaching: bool = False):
                 if state == "succeeded":
                     case.record(cur, corr, job_id, judge_inp or {}, result)
             elif kind in ("ui_design", "ui_design_review"):
-                # デザインの線（ADR 0025）: 案を残して検査役に回す／検査役の判断で 承認・直し・人へ。失敗は段を止めて知らせる
+                # デザインの線（ADR 0025）: 案を残して検査役に回す／検査役の判断で 承認・直し・人へ。失敗はタスクを止めて知らせる
                 if state == "succeeded":
                     try:
                         if kind == "ui_design":
@@ -480,7 +480,7 @@ def run_job(job: dict, reattaching: bool = False):
                             mode, _ = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))
                             vid = design_line.record_review(cur, repo, issue, corr, job_id, judge_inp or {}, result, mode)
                             design_line.act_on_review(cur, repo, issue, corr, job_id, judge_inp or {}, result, vid, gh, comment, MODEL_TIER, store_get)
-                    except Exception as e:  # noqa: BLE001  記録は残っている。段は止めて人に知らせる
+                    except Exception as e:  # noqa: BLE001  記録は残っている。タスクは止めて人に知らせる
                         log("design line act failed", job_id, repr(e))
                         swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                         comment(repo, issue, f"ジョブ {job_id}（{kind}）の後処理に失敗しました（{repr(e)[:300]}）。`factoryctl rerun {job_id}` で再実行できます。")

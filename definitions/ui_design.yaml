@@ -1,6 +1,6 @@
 # デザイナー役とデザイン検査役（ADR 0025。P4-6・P4-10）
 #
-# 画面を含む段は、実装の前にデザインの線を通る:
+# 画面を含むタスクは、実装の前にデザインの線を通る:
 #   Issue に factory:design → デザイナー役（ui_design）: UXSpec と 2〜3 案のモック（静的 HTML）とキャプチャ
 #   → デザイン検査役（ui_design_review）: 承認／直し（1 回まで）／人へ
 #   → 承認か人の選択のあと、UXSpec を Issue の本文に足して factory:planned（依存を見て supervisor が実装に回す）
@@ -10,9 +10,9 @@ schema_version: "0.1"
 status: draft
 
 labels:
-  trigger: factory:design            # 画面を含む段。人かプランナーが付ける（factory:planned の代わり）
+  trigger: factory:design            # 画面を含むタスク。人かプランナーが付ける（factory:planned の代わり）
   choice: factory:design-choice      # 人の選択待ち（factoryctl design pick か、操業コンソールの選択の画面 P4-7）
-  after: factory:planned             # デザインが決まった段は投入待ちへ
+  after: factory:planned             # デザインが決まったタスクは投入待ちへ
 
 designer:
   max_turns: 40
@@ -23,7 +23,7 @@ designer:
   max_file_bytes: 2000000                           # 1 ファイル（HTML・PNG）の上限。超えた案は捨てる
   rules:
     - "案はデザインシステム（製品の specs/design/）の部品と画面の型だけで組む。トークン外の色・余白・部品を直書きしない"
-    - "足りない部品は design_system_gaps に書く（画面の段とは別に、デザインシステムに部品を足す段を切る）"
+    - "足りない部品は design_system_gaps に書く（画面のタスクとは別に、デザインシステムに部品を足すタスクを切る）"
     - "デザインシステムがまだない製品では、今の画面の見た目（apps/ のコード）を写し、そのことを design_system_constraints に書く"
     - "画面の要素と振る舞い（操作・状態・遷移）は必ず決める。見た目の細部は後追いでよい（ADR 0025 の E1）"
     - "状態（読み込み中・空・失敗・送信中・確認・権限がないとき）のうち、その画面に起きるものを states に全部書く"
