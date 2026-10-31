@@ -38,6 +38,7 @@ import yaml
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import case
 import continuation
 import design
 import judgment
@@ -76,6 +77,8 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 LEARN_RULE_ISSUES = ENV.get("LEARN_RULE_ISSUES", "1") == "1"   # Retrospective の束からルール化の Issue を 1 日 1 本まで起票する（ADR 0013 の 3）。0 で止める
 LEARN_RULE_TRANSITIONS = ENV.get("LEARN_RULE_TRANSITIONS", "1") == "1"   # overlay のルールの shadow → adopted と、カナリアで戻すのを自動で起票する（ADR 0013 の 6）。0 で止める
 OVERLAY_RULES_DIR = ".factory-config/overlay/rules"
+CASE_REVIEW = ENV.get("CASE_REVIEW", "1") == "1"   # 事例型の分析役（ADR 0023）。差し戻しと長い停止を 1 日に数件、なぜなぜで分析する。0 で止める
+CASE_REVIEW_DEFS = ENV.get("LEARNING_TAXONOMY", "/definitions/learning_taxonomy.yaml")   # 事例型の分析役の数値（per_day）
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -625,6 +628,39 @@ def rule_transition_step(cur, now: datetime | None = None):
             log("rule transition filed", repo, r["id"], r["state"], "->", t["to"], issue["html_url"])
 
 
+def case_review_step(cur, now: datetime | None = None):
+    """1 日 1 回、分析する出来事を選んで事例型の分析のジョブを積む（ADR 0023）。入力は制御プレーンの記録だけで組み立てる。
+    セッションの抜粋は dispatcher がジョブを起こすときに足す。予算の枠を使い切っているときは積まない"""
+    if not CASE_REVIEW or DRY_RUN:
+        return
+    now = now or datetime.now(timezone.utc)
+    day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
+    cur.execute("select count(*) as n from events where name='case.enqueued' and payload->>'day'=%s", (day,))
+    try:
+        per_day = int((yaml.safe_load(open(CASE_REVIEW_DEFS, encoding="utf-8")).get("case_review") or {}).get("per_day", 3))
+    except OSError:
+        return
+    room = per_day - cur.fetchone()["n"]
+    if room <= 0 or over_budget(cur):
+        return
+    for inc in case.pick_incidents(cur, now, room):
+        m = re.match(r"github:([^#]+)#(\d+)$", inc.get("corr") or "")
+        repo, issue = (m.group(1), int(m.group(2))) if m else (REPOS[0], 0)   # チケットのない停止（ラインが空など）は最初の製品に付ける
+        corr = f"case:{inc['key']}"
+        inp = case.build_input(cur, inc)
+        try:
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','case_review') returning id",
+                        (corr, repo, issue))
+        except psycopg.errors.UniqueViolation:
+            continue
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (corr, jid, Jsonb({"by": "supervisor", "kind": "case_review", "input": inp})))
+        record(cur, "case.enqueued", corr, {"incident": inc["key"], "kind": inc["kind"], "ticket": inc.get("corr"), "job_id": jid, "day": day},
+               f"case.enqueued:{inc['key']}")
+        log("case review enqueued", inc["key"], "job", jid)
+
+
 def design_review_due(now: datetime, schedule: dict) -> bool:
     """その週（ISO 週）の指定の曜日・時（JST）を過ぎたか。過ぎていれば週末まで拾う"""
     wd = WEEKDAYS.index(schedule.get("weekday", "saturday"))
@@ -677,6 +713,7 @@ def tick():
         release_train_step(cur)
         learn_step(cur)
         rule_transition_step(cur)
+        case_review_step(cur)
         design_review_step(cur)
 
 
