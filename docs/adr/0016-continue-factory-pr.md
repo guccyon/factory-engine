@@ -16,7 +16,7 @@
 
 1. **続きのジョブ**: implement のジョブに「続ける先」（工場のブランチ名・PR 番号・理由 incomplete | conflict）を持たせる。続ける先は `job.enqueued` の payload に置き、dispatcher が形（`factory/issue-<Issue 番号>-job-<n>` と数字の PR 番号）を確かめてからワーカーに環境変数で渡す。ワーカーも同じ形を確かめる
 2. **ワーカー**: 続ける先があれば、新しいブランチと PR を作らず、そのブランチを取り出して既定ブランチをマージコミットで取り込む（履歴は書き換えない。force push しない）。衝突したら印を残したままエージェントに渡し、両方の意図を残して解かせる（CHANGELOG の追記どうしは両方残す）。印が残っていたら push せず失敗にする。push したら PR の本文に「## 続きのジョブ」または「## 既定ブランチの取り込みと衝突の解消」の節を足す。途中終了の続きが仕上がったら、未完了の印を外し `Refs` を `Closes` に直してドラフトを外す
-3. **途中終了の続き**: `factoryctl rerun <job> --continue` で、前のジョブのドラフト PR のブランチから続ける。`--continue` のない rerun は今までどおり最初から作り直す
+3. **途中終了の続き**: `factoryctl rerun <job> --continue` で、前のジョブのドラフト PR のブランチから続ける。`--continue` のない rerun は今までどおり最初から作り直す。（2026-10-31 追記）続きのジョブ（衝突・CI 落ち・指摘・途中終了）の rerun は、`--continue` の有無によらず、続ける先と合図の中身を引き継いで続きとして積み直す。続きのジョブは同じチケットの錠が空くまで積み直して待つ（`LOCK_WAIT_MAX_SEC`、既定 30 分。超えたら `lock_held_timeout` で停止として開く）
 4. **衝突の解消**: supervisor は、工場の PR（工場のブランチで、同じリポジトリのもの）が `mergeable_state=dirty` になったら、head ごとに 1 回だけ衝突の解消のジョブを積む（`continue.enqueued`、reason=conflict。ADR 0017 で CI 落ち・検査の指摘と同じ記録にそろえた）。解けずに head が変わらなければ二度は積まず、番人のマージ待ちの停止に任せる。`SUPERVISOR_CONFLICT_FIX=0` で止める
 5. 新しい head は CI → 検査 → 判定 → 検査役の承認（ADR 0014）をもう一度通る
 

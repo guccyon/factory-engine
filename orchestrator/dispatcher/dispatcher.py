@@ -236,9 +236,30 @@ def poll_loop():
 
 
 # ------------------------------------------------------------------ ワーカーの実行
-FOLLOWUP_KINDS = ("body_fix",)
-CONTINUE_JA = {"incomplete": "途中終了の続き", "conflict": "衝突の解消", "ci_failed": "CI 落ちの直し", "review_fix": "検査の指摘の直し"}   # 同じ PR の別ジョブ（judge）の中から積まれる種類
+FOLLOWUP_KINDS = ("body_fix",)   # 同じ PR の別ジョブ（judge）の中から積まれる種類
+CONTINUE_JA = {"incomplete": "途中終了の続き", "conflict": "衝突の解消", "ci_failed": "CI 落ちの直し", "review_fix": "検査の指摘の直し"}
 LOCK_RETRY_SEC = 10
+LOCK_WAIT_MAX_SEC = int(ENV.get("LOCK_WAIT_MAX_SEC", "1800"))   # 錠が空くのを待つ上限。超えたら lock_held_timeout で失敗にし、番人が停止として開く。値は仮置き
+
+
+def waits_for_lock(cur, job: dict) -> bool:
+    """錠が取れなかったとき、失敗にせず積み直して待つジョブか。
+    本文の追記（judge が錠を放す数秒前に拾われる）と、続きのジョブ（衝突・CI 落ち・指摘・途中終了。同じチケットの前のジョブが
+    状態を書いた後の後処理の間まだ錠を握っている）。続きのジョブは同じ head に 1 回しか積まれないので、ここで落とすと誰も積み直さない"""
+    kind = job.get("kind") or "implement"
+    if kind in FOLLOWUP_KINDS:
+        return True
+    if kind != "implement":
+        return False
+    cur.execute("select 1 from events where name='job.enqueued' and job_id=%s and payload ? 'continue' limit 1", (job["id"],))
+    return cur.fetchone() is not None
+
+
+def lock_waited_sec(cur, job_id: int) -> float:
+    """このジョブが錠を待って積み直された最初の時点からの秒数。まだ待っていなければ 0"""
+    cur.execute("select extract(epoch from now() - min(occurred_at)) as sec from events "
+                "where name='job.requeued' and job_id=%s and payload->>'reason'='advisory_lock_held'", (job_id,))
+    return float((cur.fetchone() or {}).get("sec") or 0)
 
 def run_job(job: dict, reattaching: bool = False):
     """ジョブのコンテナを起動して、終わるまで出力を受け、結果を記録する。
@@ -248,14 +269,18 @@ def run_job(job: dict, reattaching: bool = False):
     with db() as conn, conn.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (lock_key,))
         if not cur.fetchone()["ok"]:   # 二重実行の抑止 2 段目
-            if (job.get("kind") or "implement") in FOLLOWUP_KINDS:
-                # judge が後処理の中で積んだ本文の追記は、judge が錠を放す数秒前に拾われることがある。失敗にせず積み直す
+            waits = waits_for_lock(cur, job)
+            if waits and lock_waited_sec(cur, job_id) < LOCK_WAIT_MAX_SEC:
                 time.sleep(LOCK_RETRY_SEC)
                 cur.execute("update jobs set state='queued', started_at=null where id=%s and state='running'", (job_id,))
                 record_event(cur, "job.requeued", corr, job_id, {"reason": "advisory_lock_held"})
                 return
-            cur.execute("update jobs set state='failed', finished_at=now(), error='lock_held' where id=%s", (job_id,))
+            # 待つジョブが上限まで待った: 黙って落とさず、番人が停止として開く error にする（lock_held は自動で回復する扱い）
+            err = "lock_held_timeout" if waits else "lock_held"
+            cur.execute("update jobs set state='failed', finished_at=now(), error=%s where id=%s", (err, job_id))
             record_event(cur, "job.rejected", corr, job_id, {"reason": "advisory_lock_held"})
+            if waits:
+                record_event(cur, "job.finished", corr, job_id, {"state": "failed", "error": err, "waited_sec": int(lock_waited_sec(cur, job_id))})
             return
         kind = job.get("kind") or "implement"
         try:
@@ -289,6 +314,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i"] if signaled else []),
                    *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
+                   "-e", f"JOB_DEADLINE={int(time.time()) + JOB_TIMEOUT}",   # 打ち切りの時刻（epoch 秒）。ワーカーはエージェントをこれより前に止め、後処理の時間を残す
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
@@ -710,10 +736,12 @@ def classify_failure(p: dict) -> tuple[str, str, str] | None:
         return None
     if p.get("usage_limited"):
         return "budget", "契約の使用量上限でジョブが止まった", "使用量上限のリセット後の rerun"
+    if err == "lock_held_timeout":
+        return "factory-bug", f"続きのジョブが同じチケットの錠を {LOCK_WAIT_MAX_SEC // 60} 分待っても取れなかった", "錠を握っているジョブの調査と rerun"
     if err == "timeout":
         return "budget", f"時間の上限（{JOB_TIMEOUT // 60} 分）で打ち切られた", "チケットの分割か rerun"
     if err.startswith("incomplete"):
-        return "budget", "ターン上限で途中終了した（ドラフト PR）", "建設者の仕上げか rerun"
+        return "budget", "ターンか時間の上限で途中終了した（ドラフト PR）", "建設者の仕上げか rerun"
     if err == "unresolved_after_max_rounds":
         return "ticket", "要求が質問の上限まで往復しても確定しなかった", "要求者か建設者の判断"
     return "factory-bug", "ジョブが失敗した（未分類。人が分類を直す）", "原因の調査と rerun"

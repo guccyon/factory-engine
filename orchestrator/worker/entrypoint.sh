@@ -194,11 +194,20 @@ ${BODY}
 EOF
 )
 
+# エージェントの時間は打ち切り（JOB_DEADLINE）の POST_RESERVE_SEC 秒前まで。dispatcher の打ち切りはコンテナごと止めるので、
+# エージェントが上限の直前に終わると push も PR 作成もできず作業が消える（2026-10-31 ジョブ 574）。先に止めれば途中終了のドラフト PR として残る
+AGENT_TIMEOUT=()
+if [ -n "${JOB_DEADLINE:-}" ]; then
+  REMAIN=$(( JOB_DEADLINE - $(date +%s) - ${POST_RESERVE_SEC:-300} ))
+  [ "${REMAIN}" -lt 60 ] && REMAIN=60
+  AGENT_TIMEOUT=(timeout --kill-after=20 "${REMAIN}")   # 時間切れの終了コードは 124（途中終了として扱う）
+  echo "[worker] agent time limit ${REMAIN}s (reserve ${POST_RESERVE_SEC:-300}s for push and PR)"
+fi
 set +e
-CLAUDE_OUT=$("${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" ${HANDOFF_DIR:+--state-dir "${HANDOFF_DIR}/agent"} <<<"${PROMPT}" 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
+CLAUDE_OUT=$("${AGENT_TIMEOUT[@]}" "${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" ${HANDOFF_DIR:+--state-dir "${HANDOFF_DIR}/agent"} <<<"${PROMPT}" 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
 CLAUDE_RC=$?
 set -e
-echo "[worker] claude exit=${CLAUDE_RC}"
+echo "[worker] claude exit=${CLAUDE_RC} at=$(date -u +%H:%M:%S)"
 sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
 SUMMARY=$(jq -r '.output // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | tail -80)   # 「## 知見」も PR 本文に残す（人と検査官が読めるように。Lesson にも別に記録する）
 LESSONS_JSON=$(jq -r '.output // ""' <<<"${CLAUDE_OUT}" 2>/dev/null | awk 'f{print} /^## 知見/{f=1}' | sed -nE 's/^[-*] *//p' | jq -R . | jq -sc .)
@@ -209,7 +218,7 @@ USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
 COST=$(jq -r '.cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 TURNS=$(jq -r '.num_turns // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 RESUMED=$(jq -r '.resumed // false' <<<"${CLAUDE_OUT}" 2>/dev/null || echo false)
-echo "[worker] agent resumed=${RESUMED}"
+echo "[worker] agent resumed=${RESUMED} at=$(date -u +%H:%M:%S)"
 
 MERGING=""
 [ -f .git/MERGE_HEAD ] && MERGING="1"   # 衝突のない取り込みはコミット済みなので、ここに来るのは衝突を解いた途中の取り込みだけ

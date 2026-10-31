@@ -38,7 +38,7 @@ docker compose logs -f dispatcher
 ```bash
 docker compose exec dispatcher factoryctl list          # 進行中と直近 1 日
 docker compose exec dispatcher factoryctl stop 12       # 停止（コンテナを kill）
-docker compose exec dispatcher factoryctl rerun 12      # 同じ Issue で attempt+1 を投入（最初から作り直す）
+docker compose exec dispatcher factoryctl rerun 12      # 同じ Issue で attempt+1 を投入（最初から作り直す。続きのジョブは続きとして積み直す）
 docker compose exec dispatcher factoryctl rerun 12 --continue   # 途中終了のドラフト PR のブランチから続ける（ADR 0016）
 docker compose exec dispatcher factoryctl enqueue guccyon/rally 3   # ラベルを使わずに投入
 docker compose exec dispatcher factoryctl events 12     # そのジョブのイベント
