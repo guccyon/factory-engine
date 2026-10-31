@@ -134,7 +134,7 @@ def test_gaps_become_a_dependency(cur):
     gh = GH()
     review(cur, gh, aid, "approve", store)
     created = [b for m, p, b in gh.calls if m == "POST" and p == "repos/o/r/issues"]
-    assert len(created) == 1 and "一覧の空の表示" in created[0]["body"] and created[0]["labels"] == ["factory:planned"]
+    assert len(created) == 1 and "一覧の空の表示" in created[0]["body"] and created[0]["labels"] == ["factory:design-system"]
     assert "依存: #9" in gh.body
 
 
