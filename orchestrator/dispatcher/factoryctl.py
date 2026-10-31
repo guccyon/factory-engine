@@ -13,6 +13,11 @@
   factoryctl hold <ticket> [--reason ..]          # 順番待ちから一時的に外す
   factoryctl resume <ticket>
 
+工場の入れ替え（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
+  factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
+  factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
+  factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
+
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
   factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--woken-by pr_event|watcher|schedule|human] [--quiet]   # --quiet は通知しない（過去分の取り込み）。--woken-by は builder を起こしたもの（D8）
@@ -43,12 +48,14 @@ Learn ループ（ADR 0013）:
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import drain
 import judgment
 import learn
 import ops
@@ -249,6 +256,20 @@ def find_ticket(cur, ref: str):
     return cur.fetchone()
 
 
+def drain_report(cur) -> int:
+    st = drain.status(cur)
+    if not st["draining"]:
+        print("一時停止していない（ラインは流れている）")
+        return 1
+    print(f"一時停止中（{st['since']} から、{st['by']}: {st['reason'] or '理由なし'}）")
+    for j in st["running"]:
+        print(f"  実行中のジョブ {j['id']} {j['kind']} {j['repo']}#{j['issue_number']}（{j['elapsed_sec'] // 60} 分）")
+    for e in st["shipping"]:
+        print(f"  処理中の出荷 {e['name']} {e['release_id']}")
+    print("入れ替えてよい" if st["ready"] else "まだ入れ替えない（上の終わりを待つ）")
+    return 0 if st["ready"] else 3
+
+
 def main(argv):
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
@@ -305,6 +326,21 @@ def main(argv):
             hold = " 保留" if t["held"] else ""
             wait = f" 依存待ち {' '.join(t['waiting_on'])}" if t["waiting_on"] else ""
             print(f"{t['id']:>4} {ops.level_of(t['priority'])}({t['priority']}) {t['state']:<7} {t['source_ref']} {t['title'][:40]}{hold}{wait} {t['jobs'] or ''}")
+    elif cmd == "drain":
+        if len(argv) > 2 and argv[2] == "status":
+            return drain_report(cur)
+        changed = drain.set_drain(cur, True, "factoryctl", opt(argv, "--reason", ""))
+        print("ラインを一時停止にした（順番待ちを取り出さない）" if changed else "すでに一時停止中")
+        wait = opt(argv, "--wait")
+        if wait is None:
+            return drain_report(cur)
+        until = time.time() + int(wait)
+        while not drain.status(cur)["ready"] and time.time() < until:
+            time.sleep(5)
+        return drain_report(cur)
+    elif cmd == "resume" and (len(argv) < 3 or argv[2].startswith("--")):
+        changed = drain.set_drain(cur, False, "factoryctl", opt(argv, "--reason", ""))
+        print("ラインを再開した" if changed else "一時停止していない")
     elif cmd in ("priority", "hold", "resume"):
         t = find_ticket(cur, argv[2]) if len(argv) > 2 else None
         if not t:

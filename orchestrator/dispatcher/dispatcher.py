@@ -32,9 +32,11 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import continuation
+import drain
 import judgment
 import ops
 import pr_events
+import reattach
 import stoppage
 import tidy
 
@@ -68,6 +70,7 @@ HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の he
 STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジョブの出力がこの分数止まったら停止（完了まで定期的に見る。2026-10-31 オーナー）
 LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
+DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
@@ -234,7 +237,9 @@ FOLLOWUP_KINDS = ("body_fix",)
 CONTINUE_JA = {"incomplete": "途中終了の続き", "conflict": "衝突の解消", "ci_failed": "CI 落ちの直し", "review_fix": "検査の指摘の直し"}   # 同じ PR の別ジョブ（judge）の中から積まれる種類
 LOCK_RETRY_SEC = 10
 
-def run_job(job: dict):
+def run_job(job: dict, reattaching: bool = False):
+    """ジョブのコンテナを起動して、終わるまで出力を受け、結果を記録する。
+    reattaching は dispatcher の上げ直しで、動いている（終わっている）コンテナにつなぎ直すとき（ADR 0020）。起動の前の準備はしない"""
     job_id, repo, issue, corr = job["id"], job["repo"], job["issue_number"], job["correlation_id"]
     lock_key = f"{repo}#{issue}"
     with db() as conn, conn.cursor() as cur:
@@ -251,18 +256,23 @@ def run_job(job: dict):
             return
         kind = job.get("kind") or "implement"
         try:
-            if kind in ("inspect", "judge", "body_fix"):   # 検査・judge・本文の追記のジョブ（ADR 0004 / 0006）。issue_number は PR の番号。ラベルは結果を見て付ける
+            if reattaching:   # 起動は前の dispatcher が済ませた。来歴は job.started に残っている
+                cur.execute("select payload from events where name='job.started' and job_id=%s order by id desc limit 1", (job_id,))
+                prov = ((cur.fetchone() or {}).get("payload") or {}).get("provenance") or {}
+                image = prov.get("worker_image") or WORKER_IMAGE
+            elif kind in ("inspect", "judge", "body_fix"):   # 検査・judge・本文の追記のジョブ（ADR 0004 / 0006）。issue_number は PR の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             else:
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = image_for(repo, issue)
-            prov = provenance(repo, image)
-            prov["model_tier"] = job["model_tier"] or MODEL_TIER
-            prov["mode"], prov["mode_basis"] = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))   # 製造を始めた時点のモード（制御プレーンの切り替え > 時間帯 > 既定）
-            record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
-            name = f"factory-job-{job_id}"
+            if not reattaching:
+                prov = provenance(repo, image)
+                prov["model_tier"] = job["model_tier"] or MODEL_TIER
+                prov["mode"], prov["mode_basis"] = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))   # 製造を始めた時点のモード（制御プレーンの切り替え > 時間帯 > 既定）
+                record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
+            name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix"):
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix") and not reattaching:
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
@@ -270,7 +280,8 @@ def run_job(job: dict):
             cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突・CI 落ち・検査の指摘）
             signaled = bool(cont and cont["reason"] in continuation.SIGNALED)   # 合図の中身（CI のチェック名・指摘）を標準入力で渡す
             volume = continuation.volume_name(repo, issue) if kind == "implement" and continuation.HANDOFF_ENABLED else None   # チケットの引き継ぎのボリューム
-            cmd = ["docker", "run", "--rm", "--name", name,
+            # --rm を付けない。dispatcher が落ちてもコンテナは動き続け、終わった後も出力と終了コードを残す。片付けは記録の後（ADR 0020）
+            cmd = ["docker", "run", "--name", name, "--label", f"{reattach.JOB_LABEL}={job_id}",
                    *(["-v", f"{volume}:/handoff", "-e", "HANDOFF_DIR=/handoff"] if volume else []),
                    *(["-i"] if signaled else []),
                    *(["--network", JOB_DB_NETWORK, "-e", f"DATABASE_URL={job_db_url}"] if job_db_url else []),
@@ -289,14 +300,19 @@ def run_job(job: dict):
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
-            piped = kind in ("judge", "body_fix") or signaled
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            if piped:
-                proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
-                proc.stdin.close()
-            cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))
+            if reattaching:
+                proc = reattach.Attached(name)
+                record_event(cur, "job.reattached", corr, job_id, {"container": name})
+                log(f"job {job_id} reattached to {name}")
+            else:
+                cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
+                piped = kind in ("judge", "body_fix") or signaled
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if piped:
+                    proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
+                    proc.stdin.close()
             lines: list[str] = []
-            deadline = time.time() + JOB_TIMEOUT
+            deadline = (job["started_at"].timestamp() if reattaching and job.get("started_at") else time.time()) + JOB_TIMEOUT
             cancelled = False
             LAST_OUTPUT[job_id] = time.time()
             while True:
@@ -440,6 +456,7 @@ def run_job(job: dict):
             cur.execute("update jobs set state='failed', finished_at=now(), error=%s where id=%s and state='running'", (repr(e)[:500], job_id))
             record_event(cur, "job.finished", corr, job_id, {"state": "failed", "error": repr(e)[:500]})
         finally:
+            reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0020）
             if JOB_DB_ENABLED:
                 try:
                     cur.execute(f'drop database if exists "job_{job_id}" with (force)')   # ワーカーの状態を残さない
@@ -470,7 +487,8 @@ def requeue_preempted(cur, job: dict, preempted_for: int, cost_usd):
 
 def ops_once():
     with db() as conn, conn.cursor() as cur:
-        for victim, urgent in ops.preempt_victims(cur, MAX_PARALLEL):
+        # ラインの一時停止中は割り込まない（止めても次を流せない。ADR 0020）
+        for victim, urgent in ([] if drain.active(cur) else ops.preempt_victims(cur, MAX_PARALLEL)):
             ops.stop_job(cur, victim["id"], "dispatcher", f"緊急のジョブ {urgent['id']} を先に流す", preempted_for=urgent["id"])
             log(f"preempt job {victim['id']} (priority {victim['priority']}) for job {urgent['id']} (priority {urgent['priority']})")
         # 止める印が付いた作業中のジョブのコンテナを止める（コンソール・factoryctl・割り込みの共通の出口）
@@ -488,13 +506,27 @@ def ops_loop():
         time.sleep(OPS_INTERVAL)
 
 
-def run_loop():
+def run_loop(reattached: list[dict] | None = None):
     sem = threading.BoundedSemaphore(MAX_PARALLEL)
+    for j in reattached or []:   # 上げ直す前から動いているジョブ（ADR 0020）。枠を数えるため、ほかより先に枠を取る
+        got = sem.acquire(blocking=False)   # 上限を下げて上げ直したときは枠を超えて流れる（つなぎ直しは捨てない）
+
+        def _resume(j=j, got=got):
+            try:
+                run_job(j, reattaching=True)
+            finally:
+                if got:
+                    sem.release()
+        threading.Thread(target=_resume, daemon=True).start()
     while True:
         sem.acquire()
         job = None
         try:
             with db() as conn, conn.cursor() as cur:
+                if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。実行中のジョブはそのまま流す
+                    sem.release()
+                    time.sleep(3)
+                    continue
                 cur.execute("select * from claim_job()")   # (claim_job()).* は列ごとに関数が呼ばれるので使わない
                 row = cur.fetchone()
                 job = row if row and row.get("id") else None
@@ -667,13 +699,25 @@ def watch_once():
                     "from jobs", (IDLE_MIN,))
         j = cur.fetchone()
         idle_open = stoppage.open_keys(cur, "idle:")
+        draining = drain.state(cur)
         if j["r"] == 0 and j["q"] == 0:
-            if not idle_open and j["last"] and j["long_idle"]:
+            if not idle_open and not draining and j["last"] and j["long_idle"]:   # 一時停止中は drain: で知らせる
                 stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "idle", "ラインが空（実行中・投入可能のジョブがない）",
                                        waiting_for="次の Ticket（factory:implement / factory:request のラベル）か、承認待ちの PR の判断", started_at=j["last"])
         else:
             for k in idle_open:
                 stoppage.close_stoppage(cur, k, remedy="ジョブが投入された")
+
+        # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 入れ替えの後の再開を忘れていないか
+        drain_open = stoppage.open_keys(cur, "drain:")
+        if draining and draining["minutes"] >= DRAIN_MIN:
+            if not drain_open:
+                stoppage.open_stoppage(cur, f"drain:{draining['since']:%Y%m%dT%H%M%S}", "human",
+                                       f"ラインが一時停止のまま {DRAIN_MIN} 分（{draining['by']}: {draining['reason'] or '理由なし'}）",
+                                       waiting_for="工場の入れ替えと再開（factoryctl resume か操業コンソール）", started_at=draining["since"])
+        elif not draining:
+            for k in drain_open:
+                stoppage.close_stoppage(cur, k, remedy="ラインを再開した")
 
         # 2) supervisor の heartbeat（1 度でも来てから有効）
         cur.execute("select max(occurred_at) as last, now() - max(occurred_at) > make_interval(mins => %s) as stale "
@@ -823,14 +867,20 @@ class Hook(BaseHTTPRequestHandler):
         pass
 
 
-def recover():
-    """dispatcher の再起動で取り残された running ジョブを片付ける。
-    ワーカーは最初からやり直せる（冪等）ので、コンテナを止めて failed にし、attempt+1 で再投入する。"""
+def recover() -> list[dict]:
+    """dispatcher の再起動で取り残された running ジョブを片付ける（ADR 0020）。
+    コンテナが残っていれば（動いていても終わっていても）つなぎ直すジョブとして返す。run_loop が枠を取ってから run_job(reattaching=True) で続ける。
+    コンテナが残っていなければ、ワーカーは最初からやり直せる（冪等）ので failed にし、attempt+1 で再投入する。
+    記録を終えたのに残っているコンテナ（記録の後、片付けの前に落ちた）は消す。"""
+    containers = reattach.job_containers()
+    resume: list[dict] = []
     with db() as conn, conn.cursor() as cur:
-        cur.execute("select id, repo, issue_number, attempt, container_id, correlation_id, kind, ticket_id, priority from jobs where state='running'")
+        cur.execute("select * from jobs where state='running' order by id")
         for j in cur.fetchall():
-            if j["container_id"]:
-                subprocess.run(["docker", "kill", j["container_id"]], capture_output=True)
+            name = j["container_id"]
+            if name and (j["id"] in containers or reattach.exists(name)):
+                resume.append(j)
+                continue
             cur.execute("update jobs set state='failed', finished_at=now(), error='orphaned_by_restart' where id=%s", (j["id"],))
             record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": "orphaned_by_restart"})
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
@@ -840,12 +890,18 @@ def recover():
             record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"],
                                                                          **continuation.carry_over(cur, j["id"])})   # 続ける先と入力を引き継ぐ
             log(f"recovered job {j['id']} -> re-enqueued as {new_id}")
+        running = {j["id"] for j in resume}
+        for jid, name in containers.items():
+            if jid not in running:
+                reattach.remove(name)
+                log(f"removed leftover container {name}")
+    return resume
 
 
 def main():
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
-    recover()
+    reattached = recover()
     if not store.bucket_exists(BUCKET):
         store.make_bucket(BUCKET)
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
@@ -860,7 +916,7 @@ def main():
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         log("webhook listening")
-    run_loop()
+    run_loop(reattached)
 
 
 if __name__ == "__main__":

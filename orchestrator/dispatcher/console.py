@@ -8,6 +8,7 @@
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
+  POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
 - 出荷の操作は events に依頼を書くだけで、docker を動かすのは shipper（このサービスに docker のソケットは渡さない）
@@ -29,6 +30,7 @@ from urllib.parse import parse_qs, urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+import drain
 import judgment
 import ops
 import ship
@@ -136,7 +138,7 @@ def snapshot(cur) -> dict:
         "releases": releases(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": MAX_PARALLEL,
-                    "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur)},
+                    "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur)},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
         "items": items,
     }
@@ -201,6 +203,9 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             return 400, {"error": "env は staging か prod"}
         ok, msg = ship.request_rollback(cur, repo, env, by, "console")
         return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path in ("/api/factory/drain", "/api/factory/resume"):
+        drain.set_drain(cur, path.endswith("/drain"), by, reason)
+        return 200, {"line": drain.status(cur)}
     if path == "/api/host/keep-awake":
         if not isinstance(body.get("prevent_sleep"), bool):
             return 400, {"error": "prevent_sleep（true か false）が要る"}
@@ -327,6 +332,8 @@ function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||""
  if(i.waiting_on&&i.waiting_on.length)meta.push("待っている: "+i.waiting_on.map(esc).join(" "));
  if(i.note)meta.push(esc(i.note));
  return `<div class="it ${lv}${i.held?" held":""}"><div class="t">${i.priority!=null?`<span class="badge ${lv}">${esc(lv)}</span>`:""}${esc(i.title||"（題名なし）")}</div><div class="m">${meta.filter(Boolean).join(" · ")}</div>${acts(i)}</div>`}
+function lineView(l){if(!l)return"";const w=[l.running.length?`実行中 ${l.running.length} 件の終わり待ち`:"",l.shipping.length?`出荷 ${l.shipping.length} 件の処理待ち`:""].filter(Boolean).join("・");
+ return `<label class="stat sw ${l.draining&&!l.ready?"bad":""}" title="オフにすると順番待ちを取り出さない（実行中のジョブは最後まで流す）。工場の入れ替えのとき">ライン <input type="checkbox" role="switch" id="line" ${l.draining?"":"checked"}><b class="${l.draining?"":"on"}">${l.draining?(l.ready?"一時停止中（入れ替えてよい）":"一時停止中（"+w+"）"):"流している"}</b></label>`}
 async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
  levels=s.levels;const f=s.factory;const hb=f.heartbeat_age_sec;
  document.getElementById("hdr").innerHTML=[
@@ -334,12 +341,13 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
   `<span class="stat">作業中 <b>${f.running} / ${f.max_parallel}</b></span>`,
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
+  lineView(f.line),
   f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" ");
  document.getElementById("ship").innerHTML=shipView(s.releases||[]);
  document.getElementById("stops").innerHTML=f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("");
  document.getElementById("lanes").innerHTML=LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
   return `<section class="lane"><h2><span>${n}</span><span>${xs.length}</span></h2>${xs.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")}
-document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
+document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.id==="line")return post(t.checked?"/api/factory/resume":"/api/factory/drain",{reason:"操業コンソール"});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
