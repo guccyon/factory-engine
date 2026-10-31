@@ -1,49 +1,78 @@
 """プランナーの判定を残し、経路どおりに配る（ADR 0025 のプランナーの節、ADR 0026 の着手判定）。
 
   Issue に factory:plan → plan のジョブ（core-gates/plan.py）→ ここで:
-    ready:    Plan を残し、経路のラベルを付ける（implement → factory:planned、ui_design → factory:design、
-              design_system → factory:design-system）。以後は今の線（supervisor の投入、デザインの線）がラベルどおりに配る
+    ready:    Plan を残し、経路（役の並び）の最初の役のラベルを付ける（design_system → factory:design-system、
+              ui_design → factory:design、implement → factory:planned）。以後は今の線（デザインの線、supervisor の投入）が配る。
+              残りの役は Plan の steps にあり、前の役が終わったときに次の役へ渡す
     ask:      理由と選択肢つきの問いを Issue のコメントに書き、factory:needs-info。返信が付いたら poll_answers が判定し直しを積む
     escalate: factory:plan-human を付けて人に回す
 
-状態（判定・問い・返事）は制御プレーンの artifacts（Plan）と events（plan.*）に置く（ADR 0020）。
+判断の根拠（3 層・とらなかった経路・入力の版・当てた guard と印）は Plan と plan.decided に残し、経路ごとの結果と突き合わせて
+後で見返す（factoryctl plan show）。状態は制御プレーンの artifacts（Plan）と events（plan.*）に置く（ADR 0020）。
 定義は definitions/planner.yaml。
 """
 from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
-# definitions/planner.yaml の labels・routes・asking と同じ値（dispatcher のコンテナには definitions/ がないので写す。食い違いはテストで見る）
+# definitions/planner.yaml の labels・roles・asking と同じ値（dispatcher のコンテナには definitions/ がないので写す。食い違いはテストで見る）
 TRIGGER_LABEL, NEEDS_INFO_LABEL, ESCALATE_LABEL = "factory:plan", "factory:needs-info", "factory:plan-human"
-ROUTE_LABELS = {"implement": "factory:planned", "ui_design": "factory:design", "design_system": "factory:design-system"}
-ROUTE_JA = {"implement": "実装役へ直行", "ui_design": "画面のデザイナー", "design_system": "デザインシステムのデザイナー"}
+ROLE_LABELS = {"design_system": "factory:design-system", "ui_design": "factory:design", "implement": "factory:planned"}
+ROLE_JA = {"design_system": "デザインシステムのデザイナー", "ui_design": "画面のデザイナー", "implement": "実装役"}
 MAX_ROUNDS = 2
 MARKER = "<!-- factory:plan-questions -->"
 RUNNING_LABEL, QUEUED_LABEL = "factory:running", "factory:queued"
-ROUTE_NOTE = {"design_system": "デザインシステムのデザイナー役ができるまでは、このラベルのまま待ちます。"}
-NOTE_JA = {"small_change_direct": "小さな改修なのでデザイナーを通さない", "system_scale": "デザインシステムそのものの変更",
-           "screen_needs_design": "新しい画面・作り直しなのでデザインを通す", "no_design_system": "デザインシステムがなく、進め方の指定がない",
-           "low_confidence": "プランナーの確信度が低い", "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった"}
+ROLE_NOTE = {"design_system": "デザインシステムのデザイナー役ができるまでは、このラベルのまま待ちます。"}
+GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方の指定がない", "low_confidence": "プランナーの確信度が低い",
+            "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった"}
+ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
+               "design_after_implement": "実装の後にデザインの役がある"}
+
+
+def _ja(ids: list[str]) -> str:
+    return "、".join(GUARD_JA.get(i) or ADVISORY_JA.get(i) or i for i in ids)
+
+
+def path_ja(steps: list[str]) -> str:
+    return " → ".join(ROLE_JA.get(r, r) for r in steps) or "（なし）"
 
 
 def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> int:
+    """判定 1 回分を残す。後で経路ごとの結果と突き合わせて見返せるよう、根拠と入力の版をそのまま持つ"""
     p = result.get("plan") or {}
     payload = {"repo": repo, "issue": issue, "round": int(result.get("round") or 1), "decision": result.get("decision"),
-               "route": result.get("route"), "design_scale": p.get("design_scale"), "notes": result.get("notes") or [],
+               "steps": result.get("steps") or [], "step_details": p.get("steps") or [], "alternatives": p.get("alternatives") or [],
+               "design_scale": p.get("design_scale"), "design_direction_given": p.get("design_direction_given"),
+               "guards": result.get("guards") or [], "advisories": result.get("advisories") or [],
                "summary": p.get("summary"), "questions": p.get("questions") or [], "facts": result.get("facts") or {},
                "evidence": p.get("evidence") or [], "interpretation": p.get("interpretation"), "confidence": p.get("confidence"),
-               "model": result.get("model"), "cost_usd": result.get("cost_usd")}
+               "agent_ready": p.get("ready"), "versions": result.get("versions") or {},
+               "model": result.get("model"), "cost_usd": result.get("cost_usd"), "num_turns": result.get("num_turns")}
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Plan',%s,%s,'plan',%s) returning id",
                 (corr, job_id, Jsonb(payload)))
     pid = cur.fetchone()["id"]
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.decided',%s,%s,%s)",
                 (corr, job_id, Jsonb({"plan_id": pid, "repo": repo, "issue": issue, "round": payload["round"], "decision": payload["decision"],
-                                      "route": payload["route"], "design_scale": payload["design_scale"], "notes": payload["notes"],
-                                      "confidence": payload["confidence"], "cost_usd": payload["cost_usd"]})))
+                                      "steps": payload["steps"], "efforts": [s.get("effort") for s in payload["step_details"] if isinstance(s, dict)],
+                                      "design_scale": payload["design_scale"], "guards": payload["guards"], "advisories": payload["advisories"],
+                                      "alternatives": len(payload["alternatives"]), "confidence": payload["confidence"],
+                                      "versions": payload["versions"], "model": payload["model"], "cost_usd": payload["cost_usd"]})))
     return pid
 
 
-def questions_comment(plan_id: int, round_: int, max_rounds: int, summary: str, questions: list[dict], notes: list[str]) -> str:
+def rationale(p: dict, steps: list[str]) -> list[str]:
+    """Issue に書く根拠（役ごとの理由と、とらなかった経路）"""
+    lines = []
+    for st in p.get("steps") or []:
+        if isinstance(st, dict) and st.get("role") in steps:
+            lines.append(f"- {ROLE_JA.get(st['role'], st['role'])}（{st.get('effort') or '-'}）: {st.get('focus') or ''}。{st.get('why') or ''}")
+    alts = [a for a in p.get("alternatives") or [] if isinstance(a, dict)]
+    if alts:
+        lines += ["", "とらなかった経路:"] + [f"- {path_ja(a.get('steps') or [])}: {a.get('why_not') or ''}" for a in alts]
+    return lines
+
+
+def questions_comment(plan_id: int, round_: int, max_rounds: int, summary: str, questions: list[dict], guards: list[str]) -> str:
     lines = [MARKER, f"**プランナーからの質問（{round_}/{max_rounds}）**", "", "このチケットは、次の点が決まると着手できます。"
              "返事はこの Issue にコメントで書いてください（選択肢の番号か、言葉で）。", ""]
     for i, q in enumerate(questions, 1):
@@ -53,32 +82,42 @@ def questions_comment(plan_id: int, round_: int, max_rounds: int, summary: str, 
             lines.append(f"   - {chr(ord('a') + j)}. {o}{'（推奨）' if j == rec else ''}")
     if summary:
         lines += ["", f"読み取った内容: {summary}"]
-    if notes:
-        lines += ["", "当てはめた決まり: " + "、".join(NOTE_JA.get(n, n) for n in notes)]
+    if guards:
+        lines += ["", "当てはめた決まり: " + _ja(guards)]
     lines += ["", f"<sub>Plan {plan_id}</sub>"]
     return "\n".join(lines)
 
 
 def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result: dict, swap_label, comment):
-    decision, route = result.get("decision"), result.get("route")
-    p, notes = result.get("plan") or {}, result.get("notes") or []
-    if decision == "ready" and route in ROUTE_LABELS:
-        swap_label(repo, issue, [RUNNING_LABEL], [ROUTE_LABELS[route]])
-        why = "（" + "、".join(NOTE_JA.get(n, n) for n in notes) + "）" if notes else ""
-        comment(repo, issue, f"プランナー（ジョブ {job_id}）: 着手できます。経路は **{ROUTE_JA[route]}**{why}。"
-                             f"{ROUTE_NOTE.get(route, '')}\n\n{p.get('summary') or ''}\n\n<sub>Plan {plan_id}</sub>")
+    decision, steps = result.get("decision"), [r for r in result.get("steps") or [] if r in ROLE_LABELS]
+    p, guards, marks = result.get("plan") or {}, result.get("guards") or [], result.get("advisories") or []
+    if decision == "ready" and steps:
+        first = steps[0]
+        swap_label(repo, issue, [RUNNING_LABEL], [ROLE_LABELS[first]])
+        body = [f"プランナー（ジョブ {job_id}）: 着手できます。経路は **{path_ja(steps)}** です。{ROLE_NOTE.get(first, '')}", "",
+                p.get("summary") or "", ""] + rationale(p, steps)
+        if marks:
+            body += ["", "見返すための印: " + _ja(marks)]
+        comment(repo, issue, "\n".join(body + ["", f"<sub>Plan {plan_id}</sub>"]))
         return
     if decision == "ask":
         round_ = int(result.get("round") or 1)
-        comment(repo, issue, questions_comment(plan_id, round_, MAX_ROUNDS, p.get("summary") or "", p.get("questions") or [], notes))
+        comment(repo, issue, questions_comment(plan_id, round_, MAX_ROUNDS, p.get("summary") or "", p.get("questions") or [], guards))
         swap_label(repo, issue, [RUNNING_LABEL], [NEEDS_INFO_LABEL])
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.asked',%s,%s,%s)",
                     (corr, job_id, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "round": round_, "questions": len(p.get("questions") or [])})))
         return
     swap_label(repo, issue, [RUNNING_LABEL], [ESCALATE_LABEL])
-    comment(repo, issue, f"プランナー（ジョブ {job_id}）: 着手の判定を人にお願いします（{'、'.join(NOTE_JA.get(n, n) for n in notes) or '判定できなかった'}）。"
-                         f"決まったら、経路のラベル（{'・'.join(ROUTE_LABELS.values())}）を付けるか、本文を直して `{TRIGGER_LABEL}` を付け直してください。"
+    comment(repo, issue, f"プランナー（ジョブ {job_id}）: 着手の判定を人にお願いします（{_ja(guards) or '判定できなかった'}）。"
+                         f"プランナーの見立ては {path_ja(steps)} です。決まったら、最初の役のラベル（{'・'.join(ROLE_LABELS.values())}）を付けるか、"
+                         f"本文を直して `{TRIGGER_LABEL}` を付け直してください。"
                          f"\n\n{p.get('summary') or ''}\n\n<sub>Plan {plan_id}</sub>")
+
+
+def plans(cur, corr: str) -> list[dict]:
+    """1 件のチケットの判定の履歴（古い順）。factoryctl plan show が読む"""
+    cur.execute("select id, job_id, created_at, payload from artifacts where type='Plan' and correlation_id=%s order by id", (corr,))
+    return [{"id": r["id"], "job_id": r["job_id"], "created_at": r["created_at"], **r["payload"]} for r in cur.fetchall()]
 
 
 def answered(comments: list[dict]) -> bool:

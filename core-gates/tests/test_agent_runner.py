@@ -19,12 +19,13 @@ ar = importlib.util.module_from_spec(spec)
 sys.modules["agent_runner"] = ar   # dataclass が自分のモジュールを引くため
 spec.loader.exec_module(ar)
 
-# 受け取った引数を記録し、--json-schema があれば structured_output を返す偽の claude
+# 受け取った引数と標準入力（プロンプト）を記録し、--json-schema があれば structured_output を返す偽の claude
 FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
+stdin = sys.stdin.read()
 with open(os.environ["FAKE_LOG"], "a") as f:
-    f.write(json.dumps(args) + "\\n")
+    f.write(json.dumps(args + ["STDIN:" + stdin]) + "\\n")
 if os.environ.get("FAKE_FAIL_ONCE") and not os.path.exists(os.environ["FAKE_FAIL_ONCE"]):
     open(os.environ["FAKE_FAIL_ONCE"], "w").close()
     sys.exit(1)
@@ -109,6 +110,13 @@ class RunTest(unittest.TestCase):
         self.assertEqual(args[args.index("--model") + 1], "claude-opus-5-5")
         self.assertIn("--tools", args)          # judge は tools: none
         self.assertIn("--json-schema", args)
+        self.assertEqual(args[-1], "STDIN:問い")
+        self.assertNotIn("問い", args[:-1])
+
+    def test_long_prompt_does_not_hit_argument_limit(self):
+        # 引数に載せると OS の上限（Argument list too long）に当たる長さ。標準入力なら通る
+        r = ar.run("judge", "差分" * 200_000, schema={"type": "object"})
+        self.assertEqual(r.output, {"ok": True})
 
     def test_oneshot_text_keeps_default_tools(self):
         r = ar.run("clarify.persona", "答えて")
@@ -131,7 +139,8 @@ class RunTest(unittest.TestCase):
         self.assertEqual((out["output"], out["cost_usd"], out["num_turns"], out["model"]), ("こんにちは", 0.25, 2, "claude-sonnet-5-5"))
         args = self.calls()[0]
         self.assertIn("--dangerously-skip-permissions", args)
-        self.assertEqual(args[args.index("-p") + 1], "作業して")
+        self.assertEqual(args[-1], "STDIN:作業して")   # プロンプトは標準入力で渡す
+        self.assertNotIn("作業して", args[:-1])
 
     def test_state_dir_saves_and_resumes_session(self):
         home, state = Path(self.tmp.name) / "home", Path(self.tmp.name) / "handoff" / "agent"

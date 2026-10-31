@@ -218,6 +218,12 @@ USAGE=$(jq -c '.usage // {}' <<<"${CLAUDE_OUT}" 2>/dev/null || echo '{}')
 COST=$(jq -r '.cost_usd // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 TURNS=$(jq -r '.num_turns // 0' <<<"${CLAUDE_OUT}" 2>/dev/null || echo 0)
 RESUMED=$(jq -r '.resumed // false' <<<"${CLAUDE_OUT}" 2>/dev/null || echo false)
+# 時間切れ（exit=124）などで出力が空だと jq は何も出さずに 0 で終わるので、上の || に頼らず既定値を入れる。
+# 空のままだと最後の jq（--argjson usage・tonumber）が落ち、途中終了がジョブの失敗として記録されて続きが積まれない
+[ -z "${USAGE}" ] && USAGE='{}'
+[ -z "${COST}" ] && COST=0
+[ -z "${TURNS}" ] && TURNS=0
+[ -z "${RESUMED}" ] && RESUMED=false
 echo "[worker] agent resumed=${RESUMED} at=$(date -u +%H:%M:%S)"
 
 MERGING=""

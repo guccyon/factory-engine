@@ -22,10 +22,10 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import ghapi
 import psycopg
 from minio import Minio
 from psycopg.rows import dict_row
@@ -105,13 +105,7 @@ def db():
 
 # ------------------------------------------------------------------ GitHub（REST、標準ライブラリのみ）
 def gh(method: str, path: str, body: dict | None = None):
-    req = urllib.request.Request(f"https://api.github.com/{path}", method=method,
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json",
-                                          "Content-Type": "application/json", "User-Agent": "factory-dispatcher"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = r.read()
-        return json.loads(data) if data else None
+    return ghapi.request(method, path, body, user_agent="factory-dispatcher", token=GH_TOKEN)   # GET は ETag で条件付き（上限に数えない 304）
 
 
 def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):

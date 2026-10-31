@@ -29,5 +29,5 @@ if [ "${RC}" -ne 0 ] || [ ! -s /work/plan.json ]; then
   echo "FACTORY_RESULT:$(jq -nc --arg rc "${RC}" '{kind:"plan", ok:false, exit:($rc|tonumber)}')"
   exit 1
 fi
-echo "FACTORY_RESULT:$(jq -c '{kind:"plan", ok:true, decision, route, notes, round, facts, plan, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model, num_turns}' /work/plan.json)"
+echo "FACTORY_RESULT:$(jq -c '{kind:"plan", ok:true, decision, steps, guards, advisories, round, facts, versions, plan, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model, num_turns}' /work/plan.json)"
 exit 0

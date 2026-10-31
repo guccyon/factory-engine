@@ -48,6 +48,10 @@
   factoryctl design pick <owner/repo#123> <案> [--by ..] [--note ..]   # 案を選ぶ。dispatcher が次の周回で Issue に UXSpec を足して投入待ちに戻す
   docker compose exec -T dispatcher factoryctl design export <owner/repo#123> > design.tar   # 案のファイル（HTML・PNG）を tar で取り出す
 
+プランナー（ADR 0025・0026）。判定の根拠を後で見返す:
+  factoryctl plan list [--days 7]                          # 最近の判定（経路・当てた決まり・印・確信度・費用）
+  factoryctl plan show <owner/repo#123>                    # そのチケットの判定の履歴（役ごとの理由、とらなかった経路、根拠・解釈、入力の版）
+
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
 """
@@ -68,13 +72,19 @@ import drain
 import judgment
 import learn
 import ops
+import planner
 import ship
 import stoppage
 
 
-def design_input(cur, job_id: int, kind: str) -> dict:
-    """デザインの線とプランナーのジョブを積み直すときは、前の入力（直しの指摘・検査する案・判定の回数）を引き継ぐ"""
-    if kind not in ("ui_design", "ui_design_review", "plan"):
+# 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
+# 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan")
+
+
+def carried_input(cur, job_id: int, kind: str) -> dict:
+    """入力を受け取る種類のジョブを積み直すときは、前の入力（PR・指摘・検査する案など）を引き継ぐ"""
+    if kind not in PIPED_KINDS:
         return {}
     cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
     inp = (cur.fetchone() or {}).get("inp")
@@ -86,6 +96,37 @@ def split_ref(ref: str) -> tuple[str, int]:
     if not repo or not n.isdigit():
         raise ValueError("owner/repo#123 の形で渡す")
     return repo, int(n)
+
+
+def plan_cmd(cur, argv) -> int:
+    sub = argv[2] if len(argv) > 2 else "list"
+    if sub == "show" and len(argv) > 3:
+        repo, n = split_ref(argv[3])
+        rows = planner.plans(cur, f"github:{repo}#{n}")
+        if not rows:
+            print("no plan"); return 1
+        for p in rows:
+            print(f"## Plan {p['id']}（job {p['job_id']}、{p['created_at']:%Y-%m-%d %H:%M}、{p.get('round')} 回目）: {p.get('decision')}  {planner.path_ja(p.get('steps') or [])}")
+            print(f"確信度 {p.get('confidence')}  大きさ {p.get('design_scale')}  決まり {p.get('guards') or []}  印 {p.get('advisories') or []}  費用 ${p.get('cost_usd') or 0}")
+            print(f"要約: {p.get('summary') or ''}")
+            for line in planner.rationale(p, p.get("steps") or []):
+                print(line)
+            print("根拠:")
+            for e in p.get("evidence") or []:
+                print(f"- {e}")
+            print(f"解釈: {p.get('interpretation') or ''}")
+            for q in p.get("questions") or []:
+                print(f"問い: {q.get('question')} {q.get('options')}")
+            print(f"入力の版: {json.dumps(p.get('versions') or {}, ensure_ascii=False)}\n")
+        return 0
+    days = int(opt(argv, "--days", "7"))
+    cur.execute("select correlation_id, payload, created_at from artifacts where type='Plan' and created_at > now() - make_interval(days => %s) "
+                "order by id desc limit 100", (days,))
+    for r in cur.fetchall():
+        p = r["payload"]
+        print(f"{r['created_at']:%m-%d %H:%M} {p.get('repo')}#{p.get('issue')} {p.get('decision'):<8} {planner.path_ja(p.get('steps') or [])}"
+              f"  conf={p.get('confidence')} guards={p.get('guards') or []} marks={p.get('advisories') or []} ${p.get('cost_usd') or 0}")
+    return 0
 
 
 def design_cmd(cur, argv) -> int:
@@ -395,7 +436,7 @@ def main(argv):
         new_id = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
                     (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **carried,
-                                                                               **design_input(cur, job_id, j["kind"])})))
+                                                                               **carried_input(cur, job_id, j["kind"])})))
         print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] + ' (' + cont['reason'] + ')' if cont else ''})")
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
@@ -513,6 +554,8 @@ def main(argv):
                 print(f"{r['id']:>5} {p.get('stage', ''):<11} {p.get('category', ''):<13} {p.get('verdict') or '':<9} conf={conf} {p.get('mode', '')} {(p.get('question') or '')[:60]}")
     elif cmd == "design":
         return design_cmd(cur, argv)
+    elif cmd == "plan":
+        return plan_cmd(cur, argv)
     elif cmd == "release" and len(argv) > 4 and argv[2] == "create":
         return release_create(cur, argv)
     elif cmd == "release" and len(argv) > 3 and argv[2] in ("ship", "approve", "rollback"):

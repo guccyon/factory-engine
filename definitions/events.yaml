@@ -296,8 +296,8 @@ events:
     note: "ADR 0022。設計の診断の所見。dispatcher が記録し、固定 Issue の本文（ページのスナップショット付き）を書き換える。人が読むためのもので、ワーカーのプロンプトには入れない。dedupe は design.reviewed:<repo>:<ISO 週>。同じ中身を artifacts の DesignReview に残す"
   plan.decided:
     source: control_plane
-    required: [plan_id, repo, issue, round, decision, route, design_scale, notes, confidence, cost_usd]
-    note: "ADR 0025・0026。プランナーが 1 件のチケットを判定した（ready は経路のラベルを付けた）。振り分けごとの費用と時間の計測の起点"
+    required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]
+    note: "ADR 0025・0026。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
   plan.asked:
     source: control_plane
     required: [plan_id, repo, issue, round, questions]
