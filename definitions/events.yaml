@@ -238,6 +238,10 @@ events:
     source: control_plane
     required: [incident, kind, ticket, summary, viewpoints, root_causes, learnings, had_session]
     note: "ADR 0023。事例型の分析の結果（観点ごとのなぜなぜ・真因・テーマごとの学びの候補）。記録だけで、作用先にもワーカーのプロンプトにも入れない。同じ中身を artifacts の CaseAnalysis に残す。dedupe は出来事ごと"
+  knowledge.case_filed:
+    source: control_plane
+    required: [incident, analysis_event, themes, learnings, issue, day]
+    note: "ADR 0024 の 3。supervisor が事例の分析（case.analyzed）のうち最初に回すテーマ（learning_taxonomy.yaml の status: first）の学びがあるものを、知見の変更セットの Issue（factory:planned・factory:learn）にした。工場の implement ジョブが事例記録と知見の下書きを 1 本の PR に書く。1 日に KNOWLEDGE_ISSUES_PER_DAY 件まで。dedupe は出来事ごと"
   supervisor.design_review_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]

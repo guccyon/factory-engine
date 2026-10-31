@@ -14,6 +14,8 @@ rules:
     paths: [".factory-config/manifest.yaml", ".factory-config/base/**"]
   - type: factory_rule
     paths: [".factory-config/overlay/**", ".factory-config/evals/**"]
+  - type: knowledge                  # 知見の変更セット（ADR 0024）。委員会ができるまでは manifest に無い種別として人の承認に倒れる
+    paths: [".factory-config/knowledge/**"]
   - type: always:secrets_iam
     paths: [".github/rulesets/**", "**/.env", "**/.env.*", "**/CODEOWNERS"]
   - type: always:secrets_iam          # CI の定義は、権限・秘密情報に触れる行があるときだけ（rally #74 のジョブ追加は通常の変更）
