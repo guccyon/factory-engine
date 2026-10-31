@@ -1,0 +1,129 @@
+# 学習の体系（ADR 0023）。事業部が学ぶ対象を 8 テーマに分け、テーマごとに入力・学び方・出力・作用先・承認の線を置く。
+# 正本の検討資料: 学習の体系（叩き台、2026-10-31）。決定は 2026-10-31 オーナー（決めどころ 5 点）。
+# 今の Learn ループ（learning.yaml、ADR 0013）は、テーマ 5「成果物の品質」×「反復型」の 1 マス。
+# 知見の蓄積方法（形式・鮮度・矛盾の解消・形骸化の防止）と、決定論で担保するかを決める committee は設計中。決まるまで、学びの結果は記録だけ残し、作用先に取り込まない。
+
+schema_version: "0.1"
+status: adopted   # 2026-10-31 オーナー: 「この 8 テーマで進める」
+
+# 学び方の 4 型。どの型も「一次記録 → 1 件の整理 → 原因 → 複数件に共通するパターン → 作用先の形の知識 → 効き目の確認」を通る。重みのある段が違う
+learning_types:
+  trend:
+    ja: 傾向型
+    center: "集計 → 普段との違い → 仮説 → 小さく試す"
+    llm: "仮説と改善案を言葉にする。集計はしない"
+    effect: "試す前後の指標"
+  case:
+    ja: 事例型
+    center: "1 件をなぜなぜで多面的に掘り、真因に届くまで繰り返す"
+    llm: "記録を読んで「なぜ」を立てる。観点ごとに分けて掘り、突き合わせる"
+    effect: "同じ真因の再発がないこと"
+  repetition:
+    ja: 反復型
+    center: "束ねる → 回数で固める → shadow → 採用"
+    llm: "束の中身をルールの文にする"
+    effect: "採用前後の同じ指摘の率"
+  calibration:
+    ja: 校正型
+    center: "人とのずれを集める → 例と閾値を直す"
+    llm: "ずれの理由の候補を出し、人が選ぶ"
+    effect: "人との一致率"
+
+# 作用先ごとの承認の線（2026-10-31 オーナー: 「表の案で」）
+approval:
+  improvement_ticket: { ja: "改善のチケット・提案を起こす", by: auto, note: "ラインの配分の上限内。出荷するかは今までどおり人" }
+  inspection_rule:    { ja: "検査ルール", by: auto, note: "ADR 0013（採用まで自動）" }
+  term_alignment:     { ja: "用語を既存の定義に寄せる（表記揺れの解消）", by: auto, note: "用語集にすでにある語に統一するだけ" }
+  term_definition:    { ja: "用語・業務ルールの新しい定義", by: human, note: "specs/ は正本。推測で定義を作らない" }
+  monitoring_runbook: { ja: "監視・手順書", by: auto, note: "本番の設定変更を伴うものは人" }
+  role_line_engine:   { ja: "役割への指示・ラインの設定・Engine", by: human, note: "工場のプロセス変更" }
+  blueprint:          { ja: "Blueprint の好み・自動で決めてよい範囲", by: human, note: "憲法レベル" }
+
+themes:
+  - id: 1
+    key: user_experience
+    ja: 利用者の体験
+    direction: outward
+    inputs: [行動ログ, 利用統計, 表示したエラー, 問い合わせ]
+    types: [trend]
+    outputs: [改善の提案とその仮説・予測]
+    targets: [improvement_ticket]
+    status: todo   # 発生源は合成の利用者で先に作る（決めどころ 3）。完了条件は P5
+  - id: 2
+    key: reliability
+    ja: 信頼性と性能
+    direction: outward
+    inputs: [SLI, 障害, アラート]
+    types: [trend, case]
+    outputs: [是正, 予防（監視・手順書・検査ルール）, 振り返りの記録]
+    targets: [improvement_ticket, monitoring_runbook, inspection_rule]
+    status: todo
+  - id: 3
+    key: domain
+    ja: ドメインの理解
+    direction: outward
+    inputs: [仕様についての人の訂正, 問いへの答え, 覆った仮決め, 利用のされ方]
+    types: [case, repetition]
+    outputs: [業務ルール・不変条件・用語の定義の追加や修正の案]
+    targets: [term_definition]
+    status: todo
+  - id: 4
+    key: communication
+    ja: 役割間の言葉と伝達
+    direction: inward
+    inputs: [セッションログ（後片付けが保存）, 役割ごとの成果物, 差し戻しの理由]
+    types: [case]
+    outputs: [用語の統一, 引き継ぎの書式の改訂]
+    targets: [term_alignment, term_definition, role_line_engine]
+    status: first   # P3 で最初に回す（決めどころ 2）
+  - id: 5
+    key: artifact_quality
+    ja: 成果物の品質
+    direction: inward
+    inputs: [検査の指摘, 判定の記録, 定期診断, revert・書き直し]
+    types: [repetition, trend]
+    outputs: [検査ルール, 下限, 改善チケット, 実装役への参考例]
+    targets: [inspection_rule, improvement_ticket]
+    status: running   # ADR 0013 の Learn ループ
+  - id: 6
+    key: process
+    ja: 工程の進め方
+    direction: inward
+    inputs: [停止の記録, リードタイム, 差し戻し回数, 途中終了, 費用, 見積と実績]
+    types: [trend, case]
+    outputs: [チケットの分け方の基準, ラインの設定, Engine の改善案]
+    targets: [role_line_engine]
+    status: first
+  - id: 7
+    key: judgment
+    ja: 判断の精度
+    direction: inward
+    inputs: [人の採点・不同意, Golden Set, 判定役と検査役の一致率]
+    types: [calibration]
+    outputs: [判断の類型の分け直し, 閾値, 判定の例]
+    targets: [role_line_engine]
+    status: recording
+  - id: 8
+    key: human_intent
+    ja: 人の意図と好み
+    direction: human
+    inputs: [承認と却下, 言葉遣いの指摘, 抜き取りの違和感, 要望の出し方]
+    types: [calibration]
+    outputs: [好みと判断の傾向の記録, 人に聞かずに決めてよい範囲の提案]
+    targets: [blueprint]
+    status: manual
+
+# 事例型の分析役（ADR 0023）。1 件の出来事を観点ごとになぜなぜで掘る。結果は記録（events の case.analyzed と artifacts の CaseAnalysis）だけ
+case_review:
+  viewpoints:
+    spec:          { ja: 仕様, question: "入口の情報（チケット・仕様・specs/）は足りていたか。足りなかったなら、何が、なぜ" }
+    communication: { ja: 伝達, question: "役割（実装役・検査役・判定役・指示役）の間で、同じものを同じ言葉で呼び、渡すべき情報を渡していたか" }
+    inspection:    { ja: 検査, question: "なぜマージ前（検査・CI）で止められなかったか。止めたなら、なぜもっと前で止まらなかったか" }
+    process:       { ja: 工程, question: "チケットの分け方・順番・依存・並列・上限・待ちは妥当だったか" }
+  max_whys: 5
+  incidents:
+    sendback:  { ja: 差し戻し, source: "events sendback.filed（後片付けが会話の記録を保存した後）", themes: [4, 5, 6] }
+    stoppage:  { ja: 停止, source: "stoppages（閉じたもの、60 分以上。予算と一時停止は除く）", themes: [6] }
+  per_day: 3          # 1 日に積む分析の数（仮置き）
+  tier: tier-judge
+  max_turns: 40
