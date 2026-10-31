@@ -33,6 +33,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+import ghapi
 import psycopg
 import yaml
 from psycopg.rows import dict_row
@@ -99,13 +100,7 @@ def db():
 
 
 def gh(method: str, path: str, body: dict | None = None):
-    req = urllib.request.Request(f"https://api.github.com/{path}", method=method,
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json",
-                                          "Content-Type": "application/json", "User-Agent": "factory-supervisor"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = r.read()
-        return json.loads(data) if data else None
+    return ghapi.request(method, path, body, user_agent="factory-supervisor", token=GH_TOKEN)   # GET は ETag で条件付き（上限に数えない 304）
 
 
 def record(cur, name: str, corr: str | None, payload: dict, dedupe_key: str | None = None) -> bool:
