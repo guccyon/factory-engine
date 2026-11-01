@@ -32,7 +32,7 @@ SCHEMA = {
             "replacement": {"type": "string"},
             "confidence": {"type": "number"},
             "evidence": {"type": "string"}, "interpretation": {"type": "string"}, "impact": {"type": "string"},
-            "precedent": {"type": "string"}},
+            "precedent": {"type": "string", "description": "aesthetic を adopt にするときは必須。沿っている既存の部品・画面のファイルのパスと箇所、または UXSpec のファイルと項目"}},
             "required": ["artifact_id", "verdict", "confidence", "evidence", "interpretation"]}},
         "defects": {"type": "array", "items": {"type": "object", "properties": {
             "index": {"type": "integer"},
@@ -121,7 +121,8 @@ def main() -> int:
 - 検査の指摘（defects）の各件（rubric に指摘の根拠になった項目の本文がある）: adopt（直すべき欠陥。nit も機械的に直せるなら adopt）/ reject（偽陽性、または差分の外のことで判定できない）/ escalate
 - 各件に 3 層を書く: evidence（根拠: 参照したファイルのパスと見出し、差分の箇所）、interpretation（根拠をどう読んでその結論にしたか）、confidence（0〜1）
 - category が aesthetic（見た目と印象）の仮決めは、製品の既存の見た目か UXSpec にそのまま沿っているときだけ adopt にしてよい。
-  そのときは precedent に、沿っている先（既存の部品・画面のファイルのパスと箇所、または UXSpec のファイルと項目）を書く。
+  そのときは必ず precedent に、沿っている先（既存の部品・画面のファイルのパスと箇所、または UXSpec のファイルと項目）を書く。
+  evidence に書いただけでは足りない。precedent が空の adopt は、工場が機械的に人へ回す
   新しい見た目（既存にない色・書体・部品の形）、ブランドや印象に効くもの、既存と UXSpec が食い違うもの、案を替えるべきもの（replace）は escalate にする（ADR 0025）
 - track_record は類型ごとの過去の一致率（人の採点との一致）。件数が 10 以上で一致率が低い類型は、確信度を下げるか escalate にする
 - mode は attended（人が並走している）か unattended（夜間など全面委任）。unattended でも、権限・秘密情報・決済・破壊的スキーマに関わるものは escalate にする
