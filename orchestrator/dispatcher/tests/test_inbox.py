@@ -106,9 +106,9 @@ def test_collects_stoppages_and_choices(cur):
     assert set(xs) == {"stoppage:merge:12", "stoppage:drain:20261101T000000", f"choice:{aid}"}
     assert xs["stoppage:merge:12"]["url"] == "https://github.com/o/r/pull/12" and xs["stoppage:merge:12"]["who"] == "owner"
     assert xs["stoppage:drain:20261101T000000"]["who"] == "builder"
-    assert xs[f"choice:{aid}"]["who"] == "design_chief" and xs[f"choice:{aid}"]["url"] == f"/#choice-{aid}"
+    assert xs[f"choice:{aid}"]["who"] == "po" and xs[f"choice:{aid}"]["url"] == f"/#choice-{aid}"
     v = inbox.view(cur)
-    assert v["count"] == 3 and v["by_who"] == {"owner": 1, "builder": 1, "design_chief": 1}
+    assert v["count"] == 3 and v["by_who"] == {"owner": 1, "builder": 1, "po": 1}
     assert all("announced" not in i for i in v["items"])
 
 
@@ -165,3 +165,9 @@ def test_design_choice_defers_to_review_page(cur):
     inbox.request(cur, "design_review:ux-9", "review_page", "po", "画面 9 のレビュー", url="/review/ux-9")
     xs = inbox.items(cur)
     assert {i["key"] for i in xs} == {"task:design_review:ux-9", f"choice:{other}"} and all("uxspec" not in i for i in xs)
+    # 見た目の案はデザインのチーフ宛て。体験のレビュー依頼では隠れず、見た目の依頼（design_look:<id>）があるときだけ任せる
+    look = choice.request(cur, "design_look", "github:o/r#9", "q", opts, subject={"repo": "o/r", "ticket": "9", "uxspec": "ux-9"})
+    xs = {i["key"]: i for i in inbox.items(cur)}
+    assert xs[f"choice:{look}"]["who"] == "design_chief"
+    inbox.request(cur, "design_look:ux-9", "review_page", "design_chief", "画面 9 の見た目", url="/review/ux-9")
+    assert f"choice:{look}" not in {i["key"] for i in inbox.items(cur)}
