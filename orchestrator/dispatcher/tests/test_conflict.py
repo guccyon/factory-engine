@@ -71,3 +71,18 @@ def test_active_job_on_issue_blocks(cur):
     cur.execute("insert into jobs(correlation_id, repo, issue_number, state) values (%s,%s,249,'running')", (f"github:{REPO}#249", REPO))
     supervisor.conflict_step(cur, P, pr())
     assert [r for r in enqueued(cur)] == []
+
+
+def test_waits_while_human_decision_pending(cur):
+    # 人の判断待ち（ラベル・judge の停止）の間は解かない。待ちが外れたら、その時点の head で 1 回だけ解く（11-01 rally #505）
+    ops.upsert_ticket(cur, "github", f"{REPO}#249", REPO, title="D61", priority=70)
+    labeled = {**pr(), "labels": [{"name": "factory:needs-judgment"}]}
+    supervisor.conflict_step(cur, P, labeled)
+    assert enqueued(cur) == []
+    import stoppage
+    stoppage.open_stoppage(cur, f"judge:{P['url']}", "human", "judge が人に回した", correlation_id=P["corr"], detected_by="supervisor")
+    supervisor.conflict_step(cur, P, pr(sha="def"))
+    assert enqueued(cur) == []
+    stoppage.close_stoppage(cur, f"judge:{P['url']}", remedy="人が判断した", closed_by="supervisor")
+    supervisor.conflict_step(cur, P, pr(sha="def"))
+    assert len(enqueued(cur)) == 1
