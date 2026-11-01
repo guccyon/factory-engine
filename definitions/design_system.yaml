@@ -7,7 +7,10 @@
 #              → 人の選択（HumanChoice の concept_tone。ブランドに効くので必ず人。ADR 0025 の E2）
 #     spec:    選ばれた案（またはいまのデザインシステム）から、デザインガイドラインの必須の節を specs/design/ のファイルとして書く。
 #              いまのデザインシステムへの追加（部品・基準）は、変わるファイルだけを書く
+#              部品ごとに状態別の見本（components.yaml の preview）も書き、正本から組み立てたカタログ（core-gates/design_catalog.py）を撮って確かめる。
+#              デザインシステムはカタログとセットが基本（2026-11-01 オーナー）。カタログは正本から決定論で組み立てるので、正本と別には持たない
 #              → Issue の本文に足して factory:planned（実装役がファイルを置き、両アプリのテーマと部品をトークンに合わせる。PR は今の検査と judge を通る）
+#                カタログはオブジェクトストアの design/<job>/catalog.html・.png に置き、動くプロトタイプの配り口（prototype.py の囲い）で見せる
 # 値と本文は製品の specs/design/、何を基準化するかの骨組みは definitions/design_guideline.yaml。
 # 数値は仮置き（2026-11-01。運用しながら直す）。
 
@@ -24,7 +27,7 @@ designer:
   concepts: {min: 2, max: 3}
   viewport: [390, 844]                # 見本の画面（利用者が見るアプリの代表の 1 枚）
   max_file_bytes: 2000000             # 見本の 1 ファイル（HTML・PNG）の上限
-  max_spec_chars: 45000               # spec のファイルの合計（Issue の本文に入れるので GitHub の上限より小さく）
+  max_spec_chars: 55000               # spec のファイルの合計（Issue の本文に入れるので GitHub の上限 65536 字より小さく。カタログの見本を含む）
   rules:
     - "製品の目的・利用者・今の画面（apps/）・用語集・知見を読んでから考える。案は製品の利用者と場面から出す"
     - "コンセプトの案どうしは、印象の方向（誰にどう感じてほしいか）が違うものにする。色違いだけの案は作らない"
@@ -36,6 +39,7 @@ designer:
     - "コントラストは WCAG 2.2 AA を満たす組み合わせだけをトークンにする"
     - "いまのデザインシステムに足すときは、既存の名前と値を壊さない。変えるときは理由を governance の変更の記録に書く"
     - "用語は specs/glossary.yaml の語を使う"
+    - "デザインシステムはカタログとセットで作る。部品ごとに状態別の見本を実際の文言で書き、組み立てたカタログを撮って見て確かめる"
 
 concept:
   required: [product_understanding, concepts, recommended, recommended_reason]

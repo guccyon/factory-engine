@@ -30,9 +30,15 @@ def concepts(**kw):
     return s
 
 
+COMPONENTS = {"section": "components", "components": [
+    {"id": "button", "ja": "ボタン", "use": "操作を 1 つ実行する",
+     "preview": [{"label": "primary", "html": '<button style="background:var(--color-primary)">予約する</button>'}]}]}
+
+
 def full_spec():
     files = {f: yaml.safe_dump({"section": sec}, allow_unicode=True) for f, sec in DEFS["spec"]["files"].items()}
     files["tokens.yaml"] = yaml.safe_dump(TOKENS)
+    files["components.yaml"] = yaml.safe_dump(COMPONENTS, allow_unicode=True)
     return files
 
 
@@ -60,7 +66,7 @@ def test_validate_concepts(tmp_path):
 def test_validate_spec():
     assert ds.validate_spec(full_spec(), DEFS, delta=False) == []
     assert ds.validate_spec({}, DEFS, delta=True) == ["out/spec/ にファイルがない"]
-    part = {"components.yaml": "button: {}\n"}
+    part = {"components.yaml": yaml.safe_dump(COMPONENTS, allow_unicode=True)}
     assert ds.validate_spec(part, DEFS, delta=True) == []              # 追加は変わるファイルだけでよい
     errs = "\n".join(ds.validate_spec(part, DEFS, delta=False))
     assert "principles.yaml がない" in errs and "tokens.yaml がない" in errs
@@ -123,8 +129,24 @@ def test_run_spec_returns_files(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_runner, "run_agentic", fake)
     repo = tmp_path / "product"
     repo.mkdir()
+    monkeypatch.setattr(ui_design, "capture", lambda html, png, size, chromium=None: png.write_bytes(b"\x89PNG") or True)
     rep = ds.run(repo, {"title": "t"}, {"phase": "spec", "concept": concept()}, tmp_path / "out", DEFS)
     assert rep["ok"] and rep["phase"] == "spec" and rep["delta"] is False and set(rep["spec_files"]) == set(DEFS["spec"]["files"])
+    assert rep["files"] == ["catalog.html", "catalog.png"]                # カタログはデザインシステムとセット
+    assert "予約する" in (tmp_path / "out" / "catalog.html").read_text()
+
+
+def test_spec_without_previews_is_sent_back():
+    files = full_spec()
+    files["components.yaml"] = yaml.safe_dump({"components": [{"id": "button"}]})
+    assert "button: preview" in "\n".join(ds.validate_spec(files, DEFS, delta=False))
+    files["components.yaml"] = yaml.safe_dump({"components": [{"id": "button", "preview": [{"label": "x", "html": "<b onclick=\"x()\">a</b>"}]}]})
+    assert "イベント属性" in "\n".join(ds.validate_spec(files, DEFS, delta=True))
+
+
+def test_spec_prompt_asks_for_the_catalog():
+    p = ds.prompt(DEFS, {"title": "t"}, {"concept": concept()}, "spec", False, False)
+    assert "カタログ" in p and "design_catalog.py" in p and "--color-<名前>" in p
 
 
 def test_check_cli(tmp_path):

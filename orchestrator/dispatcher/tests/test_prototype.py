@@ -16,14 +16,18 @@ OBJECTS = {"design/9/a.html": b'<a href="a-confirm.html">send</a>', "design/9/a-
            "design/9/base.css": b"p{}", "design/9/a.png": b"\x89PNG", "other/9/evil.html": b"x"}
 
 
+CATALOG = {"catalog.html": "design/12/catalog.html", "catalog.png": "design/12/catalog.png"}
+OBJECTS.update({"design/12/catalog.html": b"<h1>catalog</h1>", "design/12/catalog.png": b"\x89PNG"})
+
+
 class FakeCur:
-    """artifacts の UXSpec 9 の files だけを返す"""
+    """artifacts の UXSpec 9 の files と、DesignSystemSpec 10 の catalog だけを返す"""
     def __init__(self):
         self.row = None
 
     def execute(self, sql, args):
-        name, aid = args
-        self.row = {"key": FILES.get(name)} if aid == 9 else None
+        name, _, aid = args
+        self.row = {"key": FILES.get(name)} if aid == 9 else {"key": CATALOG.get(name)} if aid == 10 else None
 
     def fetchone(self):
         return self.row
@@ -85,3 +89,11 @@ def test_review_page_links_to_the_prototype_only_when_built():
     assert 'href="http://localhost:8791/p/9/a.html"' in page and 'rel="noopener noreferrer"' in page and "<iframe" not in page
     assert "動くプロトタイプを開く" not in rp.render(ctx, "tok")                                   # 配り口がない
     assert "動くプロトタイプを開く" not in rp.render({**ctx, "design": {**ctx["design"], "uxspec": {**spec, "prototype": False}}}, "tok", "http://x")
+
+
+def test_design_system_catalog_is_served_in_the_same_sandbox(server):
+    """デザインシステムのカタログ（DesignSystemSpec の catalog）も同じ囲いで配る。catalog に載っていないものは出さない"""
+    status, headers, body = get(server, "/p/10/catalog.html")
+    assert status == 200 and body == b"<h1>catalog</h1>" and "sandbox allow-scripts" in headers["Content-Security-Policy"]
+    assert get(server, "/p/10/catalog.png")[0] == 200
+    assert get(server, "/p/10/a.html")[0] == 404

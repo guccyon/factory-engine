@@ -5,7 +5,8 @@
              factory:design-choice。ブランドに効くので必ず人（ADR 0025 の E2）
     人の選択: 選ばれたら spec の段を積む。「どれも違う」なら人の一言を付けて concept を積み直す（apply_choices。dispatcher の周回）
     spec:    デザインシステムの正本のファイルを残し（DesignSystemSpec）、Issue の本文に足して factory:planned（実装役がファイルを置き、
-             両アプリのテーマと部品をトークンに合わせる。PR は今の検査と judge を通る）
+             両アプリのテーマと部品をトークンに合わせる。PR は今の検査と judge を通る）。正本から組み立てたカタログ（catalog.html・.png）は
+             オブジェクトストアに置き、DesignSystemSpec の catalog に残して、prototype.py の囲いで配る（Issue のコメントに入り口）
 
 状態は制御プレーンの artifacts と events（design_system.*）に置く（ADR 0020）。
 """
@@ -24,6 +25,7 @@ SPEC_DIR = "specs/design"
 KIND = "concept_tone"
 MARK, MARK_END = "<!-- factory:design-system -->", "<!-- /factory:design-system -->"
 MODEL_TIER = "tier-large"
+CATALOG_FILES = ("catalog.html", "catalog.png")   # 正本から組み立てたカタログ（core-gates/design_catalog.py）
 
 
 def enqueue(cur, repo: str, issue: int, corr: str, inp: dict, attempt: int = 1) -> int | None:
@@ -115,10 +117,12 @@ def apply_choices(cur, swap_label, comment) -> int:
 
 
 # ------------------------------------------------------------------ spec: 正本を実装役へ渡す
-def record_spec(cur, repo: str, issue: int, corr: str, job_id: int, result: dict, inp: dict) -> int:
+def record_spec(cur, repo: str, issue: int, corr: str, job_id: int, result: dict, inp: dict, catalog: dict[str, str] | None = None) -> int:
+    """正本のファイルと、カタログ（名前 → オブジェクトストアのキー。prototype.py が配る）を残す"""
     files = {k: v for k, v in (result.get("spec_files") or {}).items() if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\.yaml$", k)}
+    catalog = {k: v for k, v in (catalog or {}).items() if k in CATALOG_FILES and v.startswith("design/")}
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('DesignSystemSpec',%s,%s,'design_system',%s) returning id",
-                (corr, job_id, Jsonb({"repo": repo, "issue": issue, "delta": bool(result.get("delta")), "files": files,
+                (corr, job_id, Jsonb({"repo": repo, "issue": issue, "delta": bool(result.get("delta")), "files": files, "catalog": catalog,
                                       "concept_id": (inp.get("concept") or {}).get("id"), "cost_usd": result.get("cost_usd"), "model": result.get("model")})))
     return cur.fetchone()["id"]
 
@@ -156,4 +160,8 @@ def handoff(cur, gh, swap_label, comment, repo: str, issue: int, corr: str, spec
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('design_system.handed_off',%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (corr, Jsonb({"repo": repo, "issue": issue, "spec_artifact_id": spec_id, "files": sorted(d.get("files") or {}), "delta": bool(d.get("delta"))}),
                  f"design_system.handed_off:{spec_id}"))
-    comment(repo, issue, f"デザインシステムの正本（{len(d.get('files') or {})} ファイル）を本文に足して、投入待ち（{AFTER_LABEL}）にしました。実装役が `{SPEC_DIR}/` に置き、アプリのテーマを合わせます。")
+    cat = ""
+    if "catalog.html" in (d.get("catalog") or {}):
+        import prototype
+        cat = f"\n\nカタログ（トークンと部品の見本）: {prototype.url(spec_id, 'catalog')}（操業コンソールと同じ端末で開けます）"
+    comment(repo, issue, f"デザインシステムの正本（{len(d.get('files') or {})} ファイル）を本文に足して、投入待ち（{AFTER_LABEL}）にしました。実装役が `{SPEC_DIR}/` に置き、アプリのテーマを合わせます。" + cat)
