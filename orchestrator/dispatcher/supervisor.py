@@ -388,7 +388,10 @@ def enqueue_inspect(cur, p: dict, sha: str):
         cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','inspect') returning id",
                     (p["corr"], p["repo"], p["number"]))
     except psycopg.errors.UniqueViolation:
-        return   # 同じ PR の検査がすでに積まれている
+        # 同じ PR のジョブ（judge・委員会など）がまだ動いている。次の周回で積み直せるよう記録を消す（judge_step と同じ）。
+        # 消さないと、この head の検査は二度と積まれず、検査役の承認が「検査待ち」のまま止まる（rally #458）
+        cur.execute("delete from events where dedupe_key=%s", (f"supervisor.inspect:{p['url']}@{sha}",))
+        return
     jid = cur.fetchone()["id"]
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
                 (p["corr"], jid, Jsonb({"by": "supervisor", "kind": "inspect", "pr_url": p["url"], "head_sha": sha})))
