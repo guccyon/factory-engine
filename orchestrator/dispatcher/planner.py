@@ -66,7 +66,7 @@ def rationale(p: dict, steps: list[str]) -> list[str]:
     lines = []
     for st in p.get("steps") or []:
         if isinstance(st, dict) and st.get("role") in steps:
-            lines.append(f"- {ROLE_JA.get(st['role'], st['role'])}（{st.get('effort') or '-'}）: {st.get('focus') or ''}。{st.get('why') or ''}")
+            lines.append(f"- {ROLE_JA.get(st['role'], st['role'])}（{st.get('effort') or '-'}）: {(st.get('focus') or '').rstrip('。')}。{st.get('why') or ''}")
     alts = [a for a in p.get("alternatives") or [] if isinstance(a, dict)]
     if alts:
         lines += ["", "とらなかった経路:"] + [f"- {path_ja(a.get('steps') or [])}: {a.get('why_not') or ''}" for a in alts]

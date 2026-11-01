@@ -141,7 +141,7 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
             "prompt": PROMPT_VERSION}
 
 
-PROMPT_VERSION = "2"   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "3"   # 問いの文を変えたら上げる（判断の入力の版として残す）
 
 
 def prompt(defs: dict, f: dict, round_: int) -> str:
