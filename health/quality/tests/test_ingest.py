@@ -108,6 +108,7 @@ def test_ingest_and_daily_report(monkeypatch):
     cc = status_report.change_cost(conn)
     assert len(cc) == 1 and cc[0]["level"] == "medium" and cc[0]["n"] == 1            # スキーマ 2 点
     assert round(cc[0]["lead_time_hours"]) == 10 and cc[0]["cost_usd"] == 3.5 and cc[0]["jobs"] == 2 and cc[0]["sendbacks"] == 1
+    json.dumps(cc)                                                                     # スナップショットに入れるので JSON にできること（Decimal を残さない）
     qt = status_report.quality_trend(conn)
     assert [h["day"] for h in qt["o/r"]] == ["2026-10-30", "2026-10-31"]
     text = "\n".join(status_report.fmt_quality(qt) + status_report.fmt_change_cost(cc))
