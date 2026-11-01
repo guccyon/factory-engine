@@ -43,3 +43,26 @@ def test_parse_provisional_accepts_aesthetic():
     text = "### aesthetic: 見出しの書体\n- 選んだ: 明朝\n- 確信度: 0.4\n"
     [item] = judgment.parse_provisional(text)
     assert item["category"] == "aesthetic"
+
+
+# 2026-11-02 改訂: 要素レベル（level=element）は、前例か定石があれば replace も含めて確信度 0.5 以上で judge が決める
+@pytest.mark.parametrize("verdict", ["adopt", "replace"])
+def test_element_level_is_delegated_with_lower_bar(verdict):
+    assert judgment.delegated_verdict("aesthetic", verdict, 0.6, "既存の数値の列と同じ右寄せ（UI の定石）", "element") == (verdict, False)
+
+
+@pytest.mark.parametrize("verdict,conf,precedent", [
+    ("adopt", 0.4, "定石: 既存の部品を使い回す"),   # 要素レベルの下限未満
+    ("replace", None, "定石"),                     # 確信度がない
+    ("adopt", 0.9, ""),                            # 沿う先が空
+    (None, 0.9, "定石"),                           # 裁きがない
+])
+def test_element_level_outside_delegation_is_escalated(verdict, conf, precedent):
+    assert judgment.delegated_verdict("aesthetic", verdict, conf, precedent, "element") == ("escalate", True)
+
+
+@pytest.mark.parametrize("level", ["experience", None])
+def test_experience_level_keeps_previous_rule(level):
+    assert judgment.delegated_verdict("aesthetic", "adopt", 0.6, "UXSpec の colors", level) == ("escalate", True)
+    assert judgment.delegated_verdict("aesthetic", "replace", 0.95, "UXSpec の colors", level) == ("escalate", True)
+    assert judgment.delegated_verdict("aesthetic", "adopt", 0.85, "UXSpec の colors", level) == ("adopt", False)

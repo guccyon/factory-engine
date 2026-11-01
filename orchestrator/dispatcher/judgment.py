@@ -14,6 +14,11 @@ CATEGORIES = {"ui", "aesthetic", "system_interface", "implementation", "error_ha
 # judge に条件付きで委任する類型（definitions/judgments.yaml の delegate_to_judge: precedent）。ADR 0025 の E4（2026-11-01 改訂）:
 # 既存の見た目か UXSpec にそのまま沿う（precedent がある）adopt で、確信度が下限以上のときだけ judge が決める。それ以外は人へ回す
 PRECEDENT_ONLY = {"aesthetic": 0.8}
+# 2026-11-02 改訂（オーナー決定）: 要素レベル（level=element。部品 1 つの色・アイコン・揃え・余白・置き場所など、
+# 前例か UI の定石に揃えるもの）は、案を替える裁き（replace）も含めて judge が決めてよい。確信度の下限を下げる。
+# 体験が変わるもの（level=experience、または level の書かれていないもの）は今までどおり
+ELEMENT_LEVEL_MIN = {"aesthetic": 0.5}
+LEVELS = ("element", "experience")
 # v1 の類型 id で書かれたとき（古い指示のワーカー）の読み替え。読み替えたことは category_raw に残る
 V1_ALIASES = {"term_boundary": "system_interface", "interface": "system_interface", "design_choice": "implementation", "acceptance": "ui"}
 FIELDS = {"選んだ": "decision", "他の案": "alternatives", "根拠": "evidence", "解釈": "interpretation", "確信度": "confidence", "影響": "impact",
@@ -102,11 +107,17 @@ def current_mode(cur, default: str = "attended", schedule: str = "", tz: str = "
     return (default if default in MODES else "attended"), "default"
 
 
-def delegated_verdict(category: str, verdict: str | None, confidence=None, precedent: str | None = None) -> tuple[str | None, bool]:
-    """委任の範囲に合わせた裁き。条件付きの類型で条件を満たさない裁きは escalate に替える。返り値は (裁き, 替えたか)"""
+def delegated_verdict(category: str, verdict: str | None, confidence=None, precedent: str | None = None,
+                      level: str | None = None) -> tuple[str | None, bool]:
+    """委任の範囲に合わせた裁き。条件付きの類型で条件を満たさない裁きは escalate に替える。返り値は (裁き, 替えたか)。
+    要素レベル（level=element）は adopt・replace のどちらも、沿う先（前例か UI の定石）があり確信度が要素レベルの下限以上なら judge が決める"""
     if category in PRECEDENT_ONLY and verdict != "escalate":
-        ok = (verdict == "adopt" and bool((precedent or "").strip())
-              and isinstance(confidence, (int, float)) and confidence >= PRECEDENT_ONLY[category])
+        has_precedent = bool((precedent or "").strip())
+        conf_ok = isinstance(confidence, (int, float))
+        if level == "element" and category in ELEMENT_LEVEL_MIN:
+            ok = verdict in ("adopt", "replace") and has_precedent and conf_ok and confidence >= ELEMENT_LEVEL_MIN[category]
+        else:
+            ok = verdict == "adopt" and has_precedent and conf_ok and confidence >= PRECEDENT_ONLY[category]
         if not ok:
             return "escalate", True
     return verdict, False
@@ -158,7 +169,8 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
             idx = v.get("index")
             src = inp["defects"][idx] if isinstance(idx, int) and 0 <= idx < len(inp.get("defects", [])) else {}
             category, question = "inspection", f"{src.get('rubric_id', '?')} {src.get('location', '')}".strip()
-        verdict, forced = delegated_verdict(category, v.get("verdict"), v.get("confidence"), v.get("precedent"))
+        level = v.get("level") if v.get("level") in LEVELS else None
+        verdict, forced = delegated_verdict(category, v.get("verdict"), v.get("confidence"), v.get("precedent"), level)
         if forced:
             v = {**v, "verdict": verdict, "replacement": None}
         carried = decided.get(_key(category, question)) if kind == "provisional" and v.get("verdict") == "escalate" else None
@@ -171,7 +183,7 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
         payload = {"stage": "judged", "category": category, "taxonomy_version": TAXONOMY_VERSION, "question": question,
                    "verdict": v.get("verdict"), "decision": v.get("replacement") or (src.get("decision") if kind == "provisional" else v.get("verdict")),
                    "evidence": (v.get("evidence") or "")[:MAX_LEN], "interpretation": (v.get("interpretation") or "")[:MAX_LEN],
-                   "impact": (v.get("impact") or "")[:MAX_LEN], "precedent": (v.get("precedent") or "")[:MAX_LEN] or None,
+                   "impact": (v.get("impact") or "")[:MAX_LEN], "precedent": (v.get("precedent") or "")[:MAX_LEN] or None, "level": level,
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
