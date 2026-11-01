@@ -65,6 +65,7 @@ services:
       JOB_DB_ENABLED: ${JOB_DB_ENABLED:-1}     # ジョブごとに job_<id> の DB を作ってワーカーに DATABASE_URL で渡す
       JOB_DB_NETWORK: factory_default
       WORKER_DRY_RUN: ${WORKER_DRY_RUN:-}
+      WORKER_CARGO_BUILD_JOBS: ${WORKER_CARGO_BUILD_JOBS:-}   # ワーカーの cargo の並列度（空なら cargo の既定。同時 3 本なら コア数÷3 が目安）
       # 番人（ADR 0005）。閾値は仮置き。通知は 1 経路（github-issue: STATUS_REPO の工場状況 Issue / log: ログだけ）
       WATCH_ENABLED: ${WATCH_ENABLED:-1}
       WATCH_IDLE_MIN: ${WATCH_IDLE_MIN:-20}

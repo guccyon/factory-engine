@@ -152,22 +152,44 @@ def _heartbeat_out():
     return sys.stderr
 
 
+HEARTBEAT_CPU_SEC = float(os.environ.get("AGENT_HEARTBEAT_CPU_SEC", "5"))
+
+
+def _cpu_mark() -> float:
+    """このコンテナ（PID 名前空間）の全プロセスが使った CPU 秒（utime+stime と、回収済みの子の cutime+cstime）。
+    読めなければ 0（合図は会話の記録だけで出す）"""
+    tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    total = 0
+    for d in Path("/proc").glob("[0-9]*"):
+        try:
+            fields = (d / "stat").read_text().rsplit(")", 1)[1].split()
+            total += sum(int(x) for x in fields[11:15])   # utime stime cutime cstime（stat の 14〜17 番目）
+        except (OSError, IndexError, ValueError):
+            continue
+    return total / tick
+
+
 class _Heartbeat:
     """実装の作業中、会話の記録が進んでいる間だけ stderr に 1 行ずつ出す。
     `--output-format json` は終わるまで何も出さないので、dispatcher の滞りの検知（出力が WATCH_STALL_MIN 分止まる）が
-    長い実装を止まったと誤って知らせていた（2026-11-01、rally #497〜#502）。記録が進んでいないときは出さないので、本当の滞りは検知される"""
+    長い実装を止まったと誤って知らせていた（2026-11-01、rally #497〜#502）。会話の記録が進んだか、コンテナの中で CPU を
+HEARTBEAT_CPU_SEC 秒以上使ったときだけ出す。どちらもなければ出さないので、本当の滞り（応答待ちで固まる等）は検知される"""
 
     def __init__(self, interval: float = HEARTBEAT_SEC):
         self.interval, self.stop = interval, threading.Event()
         self.last = _transcript_mark()
+        self.cpu = _cpu_mark()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
         while not self.stop.wait(self.interval):
-            mark = _transcript_mark()
+            mark, cpu = _transcript_mark(), _cpu_mark()
             if mark > self.last:
-                self.last = mark
                 print("[agent_runner] working (session transcript advanced)", file=_heartbeat_out(), flush=True)
+            elif cpu - self.cpu >= HEARTBEAT_CPU_SEC:
+                # 1 つの長いコマンド（cargo test など）の間は記録が進まない。CPU を使っていれば作業中とみなす（2026-11-01、job 1291）
+                print(f"[agent_runner] working (tools used {cpu - self.cpu:.0f}s CPU)", file=_heartbeat_out(), flush=True)
+            self.last, self.cpu = mark, cpu
 
     def __enter__(self):
         self.thread.start()
