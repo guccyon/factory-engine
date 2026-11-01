@@ -138,3 +138,10 @@ def test_inspect_enqueue_retries_when_another_job_holds_the_pr(cur, monkeypatch)
     supervisor.enqueue_inspect(cur, P, "abc")
     cur.execute("select count(*) as n from jobs where kind='inspect'")
     assert cur.fetchone()["n"] == 1
+
+
+def test_pr_sent_to_human_by_committee_does_not_take_a_slot(cur):
+    # 委員会が人に回した知見の PR は、同時に流す件数の枠に数えない（人待ちでラインを止めない）
+    assert not supervisor.waiting_for_human(cur, PR)
+    committee.record(cur, "o/r", 12, f"committee:{PR}", None, result("human"), lambda m, p, b=None: {}, lambda repo, n, text: None)
+    assert supervisor.waiting_for_human(cur, PR)
