@@ -61,46 +61,65 @@ def load(cur, aid: int) -> dict | None:
     d = {"id": r["id"], "corr": r["correlation_id"], "created_at": r["created_at"], **r["payload"]}
     cur.execute("select id, payload from artifacts where type='DesignVerdict' and (payload->>'design_artifact_id')::bigint=%s order by id desc limit 1", (aid,))
     v = cur.fetchone()
-    cur.execute("select id, payload from artifacts where type='HumanChoice' and payload->>'kind'='design_variants' "
-                "and payload->'subject'->>'uxspec'=%s order by id desc limit 1", (str(aid),))
-    c = cur.fetchone()
+    choices = {}
+    for kind in ("design_variants", "design_look"):   # 体験（プロダクトオーナー）と見た目（デザインのチーフ）。ADR 0026 の決定 4・6
+        cur.execute("select id, payload from artifacts where type='HumanChoice' and payload->>'kind'=%s "
+                    "and payload->'subject'->>'uxspec'=%s order by id desc limit 1", (kind, str(aid)))
+        c = cur.fetchone()
+        choices[kind] = {"id": c["id"], **c["payload"]} if c else None
     cur.execute("select payload from events where dedupe_key=%s", (f"ui_design.handed_off:{aid}",))
     h = cur.fetchone()
+    cur.execute("select payload from events where dedupe_key=%s", (f"ui_design.look_chosen:{aid}",))
+    lk = cur.fetchone()
     return {"design": d, "verdict": {"id": v["id"], **v["payload"]} if v else None,
-            "choice": {"id": c["id"], **c["payload"]} if c else None, "handed_off": h["payload"] if h else None}
+            "choice": choices["design_variants"], "look_choice": choices["design_look"],
+            "handed_off": h["payload"] if h else None, "look_chosen": lk["payload"] if lk else None}
+
+
+def _open(c) -> bool:
+    return bool(c and c.get("status") == "open" and c.get("id") is not None)
 
 
 def status(ctx: dict) -> str:
+    # 体験が引き渡し済みなら体験の選択は締め切り（factoryctl 経由で選ばれた場合も）
+    flow_open = _open(ctx.get("choice")) and not ctx.get("handed_off")
+    if flow_open or _open(ctx.get("look_choice")):
+        return "open"
     if ctx.get("handed_off"):
         return "decided"
-    c = ctx.get("choice")
-    if c and c.get("status") == "open":
-        return "open"
-    if c and c.get("status") == "returned":
+    if any((ctx.get(k) or {}).get("status") == "returned" for k in ("choice", "look_choice")):
         return "returned"
     return "reviewing"
 
 
 # ------------------------------------------------------------------ 組み立て（純粋）
 def render(ctx: dict, token: str) -> str:
-    d, v, c, h = ctx["design"], ctx.get("verdict") or {}, ctx.get("choice") or {}, ctx.get("handed_off")
+    d, v, h = ctx["design"], ctx.get("verdict") or {}, ctx.get("handed_off")
+    c, lc = ctx.get("choice") or {}, ctx.get("look_choice") or {}
     spec = d.get("uxspec") or {}
     st = status(ctx)
-    actionable = st == "open" and c.get("id") is not None
-    rec = v.get("chosen_variant") or spec.get("recommended")
+    flow_open, look_open = _open(c) and not h, _open(lc)
+    actionable = flow_open or look_open
+    flow_vs = [x for x in spec.get("variants") or [] if isinstance(x, dict) and x.get("axis", "flow") == "flow"]
+    look_vs = [x for x in spec.get("variants") or [] if isinstance(x, dict) and x.get("axis") == "look"]
+    rec = v.get("chosen_variant") if v.get("chosen_variant") in [str(x.get("id")) for x in flow_vs] else spec.get("recommended")
+    look = (ctx.get("look_chosen") or {}).get("variant")
     files = d.get("files") or {}
     title = f"{d.get('repo')}#{d.get('issue')} の画面の設計"
 
     reasons = "、".join(REASON_JA.get(x, x) for x in v.get("human_reasons") or [])
-    head = [f'<p class="m">{esc(d.get("repo"))}#{esc(d.get("issue"))} · 案 {len(spec.get("variants") or [])} つ · {esc(d.get("round") or 1)} 回目の案</p>',
+    head = [f'<p class="m">{esc(d.get("repo"))}#{esc(d.get("issue"))} · 体験の案 {len(flow_vs)} つ · {esc(d.get("round") or 1)} 回目の案</p>',
             f"<h1>{esc(title)}</h1>",
             f'<p><span class="pill {st}">{STATUS_JA[st]}</span>'
             + (f' 人に回った理由: {esc(reasons)}' if reasons and st == "open" else "")
-            + (f' 決まった案: <b>{esc(h.get("variant"))}</b>（{"人が選んだ" if h.get("decided_by") == "human" else "デザイン検査役が承認"}）' if h else "")
+            + (f' 体験の案: <b>{esc(h.get("variant"))}</b>（{"人が承認" if h.get("decided_by") == "human" else "デザイン検査役が承認"}、実装に渡した）' if h else "")
+            + (f' 見た目の案: <b>{esc(look)}</b>（デザインのチーフが選んだ）' if look else (f' 見た目は仮に <b>{esc(h.get("look"))}</b>' if h and h.get("look") else ""))
             + "</p>"]
-    if actionable:
-        head.append('<p class="m">判断のしかた: 案を見比べて「この案で承認」を押すと実装に流れます。どれも違うときは一言を書いて「直しを頼む」。'
-                    '気になる点は「違和感」で残せます（工場の学習に使います）。</p>')
+    if flow_open:
+        head.append('<p class="m">プロダクトオーナーへ: 体験の案（流れ・要素・振る舞い）を見比べて「この案で承認」を押すと実装に流れます。'
+                    'どれも違うときは一言を書いて「直しを頼む」。気になる点は「違和感」で残せます（工場の学習に使います）。</p>')
+    if look_open:
+        head.append('<p class="m">デザインのチーフへ: 見た目の案から 1 つ選んでください。実装は推す見た目で先に進んでいて、違う見た目を選ぶと合わせるタスクが切られます。</p>')
 
     prd = spec.get("prd") or {}
     prd_html = "<dl>" + "".join(f"<dt>{esc(PRD_JA.get(k, k))}</dt><dd>{fmt(x)}</dd>" for k, x in prd.items()) + "</dl>" if isinstance(prd, dict) else fmt(prd)
@@ -110,17 +129,23 @@ def render(ctx: dict, token: str) -> str:
         f'<li><span class="m">{esc(s.get("from") or "")}</span> → <b>{esc(s.get("action") or "")}</b> → {esc(s.get("to") or "")}</li>'
         if isinstance(s, dict) else f"<li>{fmt(s)}</li>" for s in flow) + "</ol>" if isinstance(flow, list) else fmt(flow)
 
-    cards = []
-    for x in spec.get("variants") or []:
-        xid = str(x.get("id"))
-        png = f"{xid}.png"
-        img = (f'<a href="{esc(IMAGE_PATH.format(aid=d["id"], name=png))}" target="_blank" rel="noopener">'
-               f'<img src="{esc(IMAGE_PATH.format(aid=d["id"], name=png))}" alt="案 {esc(xid)}"></a>') if png in files else '<p class="m">（画像なし）</p>'
-        acts = (f'<div class="acts"><button class="go" data-a="choose" data-o="{esc(xid)}">この案で承認</button>'
-                f'<button data-a="flag" data-o="{esc(xid)}">違和感</button></div>') if actionable else ""
-        badge = ' <span class="pill rec">推奨</span>' if xid == rec else ""
-        cards.append(f'<article class="var{" rec" if xid == rec else ""}"><h3>{esc(xid)}. {esc(x.get("name") or "")}{badge}</h3>'
-                     f'<p>{esc(x.get("tradeoff") or "")}</p><p class="m">{esc(x.get("viewport") or "mobile")}</p>{img}{acts}</article>')
+    def cards(vs, recommended, choice_id, label):
+        out = []
+        for x in vs:
+            xid = str(x.get("id"))
+            png = f"{xid}.png"
+            img = (f'<a href="{esc(IMAGE_PATH.format(aid=d["id"], name=png))}" target="_blank" rel="noopener">'
+                   f'<img src="{esc(IMAGE_PATH.format(aid=d["id"], name=png))}" alt="案 {esc(xid)}"></a>') if png in files else '<p class="m">（画像なし）</p>'
+            acts = (f'<div class="acts"><button class="go" data-a="choose" data-c="{choice_id}" data-o="{esc(xid)}">{label}</button>'
+                    f'<button data-a="flag" data-c="{choice_id}" data-o="{esc(xid)}">違和感</button></div>') if choice_id else ""
+            badge = ' <span class="pill rec">推奨</span>' if xid == recommended else ""
+            out.append(f'<article class="var{" rec" if xid == recommended else ""}"><h3>{esc(xid)}. {esc(x.get("name") or "")}{badge}</h3>'
+                       f'<p>{esc(x.get("tradeoff") or "")}</p><p class="m">{esc(x.get("viewport") or "mobile")}</p>{img}{acts}</article>')
+        return f'<div class="vars">{"".join(out) or "<p class=m>（なし）</p>"}</div>'
+
+    flow_cards = cards(flow_vs, rec, c.get("id") if flow_open else None, "この案で承認")
+    look_cards = cards(look_vs, spec.get("recommended_look"), lc.get("id") if look_open else None, "この見た目にする") if look_vs else ""
+    back_id = c.get("id") if flow_open else (lc.get("id") if look_open else None)
 
     why = spec.get("rationale") or {}
     why_html = fmt(why) if not isinstance(why, dict) else (
@@ -150,9 +175,12 @@ def render(ctx: dict, token: str) -> str:
     sections = [
         ("PRD の要約", prd_html),
         ("ユーザーフロー", flow_html),
-        ("案", f'<div class="vars">{"".join(cards) or "<p class=m>（なし）</p>"}</div>'
-               + (f'<div class="acts back"><input id="note" maxlength="300" placeholder="一言（直しの中身・違和感の理由。直しを頼むときは必須）">'
-                  f'<button data-a="return">どれも違う（直しを頼む）</button></div>' if actionable else "")),
+        ("体験の案（プロダクトオーナーが判断）", flow_cards),
+        *([("見た目の案（デザインのチーフが選ぶ）", look_cards
+            + (f'<p class="m">推す理由（デザイナー役）: {esc(spec.get("recommended_look_reason"))}</p>' if spec.get("recommended_look_reason") else ""))]
+          if look_cards else []),
+        *([("一言・直し", f'<div class="acts back"><input id="note" maxlength="300" placeholder="一言（直しの中身・違和感の理由。直しを頼むときは必須）">'
+                         f'<button data-a="return" data-c="{back_id}">どれも違う（直しを頼む）</button></div>')] if actionable else []),
         ("設計の理由", why_html),
         ("画面定義書", "".join(screens) or '<p class="m">（なし）</p>'),
         ("状態", fmt(spec.get("states"))),
@@ -161,7 +189,7 @@ def render(ctx: dict, token: str) -> str:
         ("デザイン検査役の判断", verdict_html),
     ]
     body = "".join(f"<section><h2>{esc(n)}</h2>{x}</section>" for n, x in sections)
-    script = SCRIPT.replace("__CHOICE__", json.dumps(c.get("id") if actionable else None)).replace("__TOKEN__", json.dumps(token))
+    script = SCRIPT.replace("__TOKEN__", json.dumps(token))
     return (f'<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{esc(title)}</title><style>{STYLE}</style></head><body><main>{''.join(head)}{body}</main>"
             f'<div id="msg" role="status"></div><script>{script}</script></body></html>')
@@ -186,14 +214,14 @@ dl{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:2px 12px}dt{c
 #msg{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;display:none}
 """
 
-SCRIPT = """
-const CHOICE=__CHOICE__,TOKEN=__TOKEN__;
+SCRIPT = r"""
+const TOKEN=__TOKEN__;
 function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",4000)}
 async function post(path,body){try{const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body)});
  const j=await r.json();if(!r.ok)return toast(j.error||"できませんでした");toast(j.message||"受け付けました");setTimeout(()=>location.reload(),1200)}catch(e){toast("送れませんでした")}}
-document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b||CHOICE===null)return;
- const note=(document.getElementById("note")||{}).value||"";
- if(b.dataset.a==="choose")return post(`/api/choices/${CHOICE}/choose`,{option:b.dataset.o,reason:note});
- if(b.dataset.a==="flag"){if(!note.trim())return toast("違和感の一言を下の欄に入れてください");return post(`/api/choices/${CHOICE}/flag`,{option:b.dataset.o,note})}
- if(!note.trim())return toast("直しの中身を一言入れてください");post(`/api/choices/${CHOICE}/return`,{reason:note})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b||!/^\d+$/.test(b.dataset.c||""))return;
+ const id=b.dataset.c,note=(document.getElementById("note")||{}).value||"";
+ if(b.dataset.a==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});
+ if(b.dataset.a==="flag"){if(!note.trim())return toast("違和感の一言を下の欄に入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
+ if(!note.trim())return toast("直しの中身を一言入れてください");post(`/api/choices/${id}/return`,{reason:note})});
 """

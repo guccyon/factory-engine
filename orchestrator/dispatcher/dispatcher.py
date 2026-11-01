@@ -265,6 +265,7 @@ def poll_loop():
             try:   # 人が選んだ画面の案を Issue に反映する（factoryctl design pick・選択の画面。ADR 0025）
                 with db() as conn, conn.cursor() as cur:
                     design_line.apply_choices(cur, gh, comment, store_get)
+                    design_line.apply_looks(cur, gh, comment)   # 実装に渡した後に選ばれた見た目（ADR 0026 の決定 4）
             except Exception as e:  # noqa: BLE001
                 log("design choice apply failed", repr(e))
         time.sleep(POLL_INTERVAL)

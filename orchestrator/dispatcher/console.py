@@ -241,11 +241,12 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         aid, what = int(m.group(1)), m.group(2)
         c = choice.get(cur, aid)
         sub = (c or {}).get("subject") or {}
-        design = bool(c and c.get("kind") == "design_variants" and c.get("status") == "open" and sub.get("repo") and str(sub.get("ticket", "")).isdigit())
+        design = bool(c and c.get("kind") in ("design_variants", "design_look") and c.get("status") == "open" and sub.get("repo") and str(sub.get("ticket", "")).isdigit())
         if what == "choose":
-            if design:   # デザインの線に渡す（Issue への反映は dispatcher の周回。ADR 0025）
+            if design:   # デザインの線に渡す（Issue への反映は dispatcher の周回。体験は ADR 0025、見た目は ADR 0026 の決定 4）
+                pick = design_line.choose if c["kind"] == "design_variants" else design_line.choose_look
                 try:
-                    design_line.choose(cur, sub["repo"], int(sub["ticket"]), str(body.get("option") or ""), by, reason)
+                    pick(cur, sub["repo"], int(sub["ticket"]), str(body.get("option") or ""), by, reason)
                 except ValueError as e:
                     return 409, {"error": str(e)}
             ok, msg = choice.choose(cur, aid, str(body.get("option") or ""), by, reason)
@@ -434,9 +435,9 @@ const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
   return `<li><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div></li>`}).join("")}</ul></div>`}
-const KIND={design_variants:"画面の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り"};
+const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
- if(c.kind==="design_variants"&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
+ if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
   <div class="acts"><button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");

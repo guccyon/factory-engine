@@ -42,7 +42,7 @@ def test_validate_reports_breakage(tmp_path):
     bad = spec(recommended="z", brand_impact="yes", variants=[{"id": "../x", "name": "", "tradeoff": "t", "viewport": "tv"}] * 4)
     bad.pop("states")
     errs = "\n".join(ud.validate(bad, DEFS, tmp_path))
-    for part in ("states がない", "brand_impact", "variants は 1〜3 案", "id は英数字", "name がない", "viewport", "重なっている", "recommended"):
+    for part in ("states がない", "brand_impact", "体験の案（axis: flow）は 1〜3 案", "id は英数字", "name がない", "viewport", "重なっている", "recommended"):
         assert part in errs
     assert ud.validate("x", DEFS) == ["uxspec.yaml が対応表（mapping）になっていない"]
     assert "out/b.html がない" in ud.validate(spec(), DEFS, tmp_path)
@@ -123,3 +123,16 @@ def test_prompt_asks_for_the_screen_definition_sections():
     for k in DEFS["package"]["screen_sections"]:
         assert f"     - {k}: " in text
     assert "prd: PRD の要約" in text and "rationale: 設計の理由" in text
+
+
+def test_look_variants_only_with_brand_impact(tmp_path):
+    vs = [{"id": "a", "name": "確認の段", "tradeoff": "t"}, {"id": "b", "name": "並べる", "tradeoff": "t"},
+          {"id": "l1", "axis": "look", "name": "落ち着いた", "tradeoff": "t"}, {"id": "l2", "axis": "look", "name": "明るい", "tradeoff": "t"}]
+    for v in vs:
+        (tmp_path / f"{v['id']}.html").write_text("<p>x</p>", encoding="utf-8")
+    assert ud.validate(spec(variants=vs, brand_impact=True, recommended_look="l1"), DEFS, tmp_path) == []
+    errs = "\n".join(ud.validate(spec(variants=vs, brand_impact=False, recommended_look="a", recommended="l1"), DEFS, tmp_path))
+    for part in ("brand_impact が true のときだけ", "recommended_look が", "recommended が体験の案"):
+        assert part in errs
+    one_look = vs[:2] + vs[2:3]
+    assert any("見た目の案（axis: look）は作るなら" in e for e in ud.validate(spec(variants=one_look, brand_impact=True, recommended_look="l1"), DEFS, tmp_path))

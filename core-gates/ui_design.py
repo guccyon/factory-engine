@@ -63,9 +63,22 @@ def validate(spec, defs: dict, out_dir: Path | None = None) -> list[str]:
             errs.append(f"{k} が一覧になっていない（なければ []）")
     variants = spec.get("variants")
     vd = defs["designer"]
-    if not isinstance(variants, list) or not (vd["variants"]["small_change_min"] <= len(variants) <= vd["variants"]["max"]):
-        errs.append(f"variants は {vd['variants']['small_change_min']}〜{vd['variants']['max']} 案")
-        variants = variants if isinstance(variants, list) else []
+    if not isinstance(variants, list):
+        errs.append("variants が一覧になっていない")
+        variants = []
+    flow = [v for v in variants if isinstance(v, dict) and v.get("axis", "flow") == "flow"]
+    look = [v for v in variants if isinstance(v, dict) and v.get("axis") == "look"]
+    if not (vd["variants"]["small_change_min"] <= len(flow) <= vd["variants"]["max"]):
+        errs.append(f"体験の案（axis: flow）は {vd['variants']['small_change_min']}〜{vd['variants']['max']} 案")
+    lv = vd.get("look_variants") or {"min": 2, "max": 3}
+    if look and not (lv["min"] <= len(look) <= lv["max"]):
+        errs.append(f"見た目の案（axis: look）は作るなら {lv['min']}〜{lv['max']} 案")
+    if look and spec.get("brand_impact") is not True:
+        errs.append("見た目の案（axis: look）は brand_impact が true のときだけ作る")
+    if look and spec.get("recommended_look") not in [str(v.get("id")) for v in look]:
+        errs.append("recommended_look が見た目の案の id のどれでもない")
+    if any(isinstance(v, dict) and v.get("axis", "flow") not in ("flow", "look") for v in variants):
+        errs.append("variants の axis は flow か look")
     ids = []
     for i, v in enumerate(variants):
         if not isinstance(v, dict):
@@ -84,8 +97,8 @@ def validate(spec, defs: dict, out_dir: Path | None = None) -> list[str]:
             errs.append(f"out/{vid}.html がない")
     if len(set(ids)) != len(ids):
         errs.append("variants の id が重なっている")
-    if ids and spec.get("recommended") not in ids:
-        errs.append("recommended が variants の id のどれでもない")
+    if ids and spec.get("recommended") not in [str(v.get("id")) for v in flow]:
+        errs.append("recommended が体験の案（axis: flow）の id のどれでもない")
     return errs
 
 
@@ -179,15 +192,17 @@ def prompt(defs: dict, issue: dict, inp: dict) -> str:
    - states: その画面に起きる状態の一覧（読み込み中・空・失敗・送信中・確認・権限がないときなど）
    - design_system_constraints: デザインシステムの何に従ったか、正本がなくて写したものは何か
    - design_system_gaps: 足りなかった部品（なければ []）。画面に直書きせず、ここに書く
-   - variants: 案ごとに id（英数字・-・_ の 32 字まで。例 a, b, c）、name（案の名前）、tradeoff（得るものと失うもの 1 文）、
+   - variants: 案ごとに id（英数字・-・_ の 32 字まで。例 a, b, c）、axis（flow＝体験の案、look＝見た目の案。省くと flow）、name（案の名前）、tradeoff（得るものと失うもの 1 文）、
      viewport（{' / '.join(d['viewports'])}）、必要なら height（縦に長い画面を撮る高さ、300〜4000）
-   - recommended: 推す案の id と、その理由を recommended_reason に 1 文
+   - recommended: 推す体験の案の id と、その理由を recommended_reason に 1 文
+   - recommended_look: 見た目の案を作ったときだけ、推す見た目の案の id（理由は recommended_look_reason に 1 文）
    - brand_impact: 利用者（生徒・コーチ）が見る画面で、色・書体・写真など印象に効く見た目を決める案なら true。管理画面の流れだけなら false
    - rationale: 設計の理由。{why}
    - open_questions: {pk.get('open_questions', '')}（なければ []）
    - judgments: 決めたことのうち判断が要ったもの（kind は ui・aesthetic・system_interface・error_handling・scope、question、note）
    - notes: 補足（任意）
-2. 案ごとのモック out/<id>.html（{d['variants']['min']}〜{d['variants']['max']} 案。既存の画面に要素を 1 つ足す程度の小さな変更は 1 案でよい）
+2. 案ごとのモック out/<id>.html（体験の案 {d['variants']['min']}〜{d['variants']['max']} 案。既存の画面に要素を 1 つ足す程度の小さな変更は 1 案でよい。
+   brand_impact のときは、推す体験の案の見た目だけを変えた見た目の案を {(d.get('look_variants') or {}).get('min', 2)}〜{(d.get('look_variants') or {}).get('max', 3)} 案足す）
    共通の見た目は out/ に CSS ファイルを置いて相対パスで読む。画面の大きさは {vps}
    代表の状態（ふつうに中身がある状態）を描き、ほかの状態は同じ HTML の下に小さく並べてよい
 
