@@ -726,12 +726,17 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     labels = [f"factory:judged:{mode}"]
     if summary["min_confidence"] is not None and summary["min_confidence"] < LOW_CONFIDENCE:
         labels.append("factory:confidence:low")
+    remove = []
     if summary["escalated"]:
         labels.append("factory:needs-judgment")
         stoppage.open_stoppage(cur, f"judge:{pr_url}", "human", f"judge が {len(summary['escalated'])} 件を人に回した",
                                waiting_for="人の判断（PR の factory:needs-judgment）", correlation_id=corr, job_id=job_id, detected_by="supervisor")
+    else:
+        # 裁き直して人に回すものが無くなった（決まりの変更・直しのあと）。前の裁きの印と停止を外し、マージへ進める
+        remove.append("factory:needs-judgment")
+        stoppage.close_stoppage(cur, f"judge:{pr_url}", remedy="裁き直しで人に回すものが無くなった", closed_by="supervisor")
     try:
-        swap_label(repo, pr_number, [], labels)
+        swap_label(repo, pr_number, remove, labels)
     except Exception as e:  # noqa: BLE001
         log("judge label failed", pr_url, repr(e))
     # overlay の shadow のルールの指摘は、judge が裁いた記録（的中率の材料）だけ残し、差し戻さない（ADR 0013）
