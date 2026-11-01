@@ -3,7 +3,7 @@
 デザインシステムの部品で組んだ 2〜3 案の静的 HTML のモックを作らせ、ヘッドレスの Chromium で撮る。
 
 - エージェントは作業ディレクトリ（一時）で動く。製品のチェックアウトは product/ に置き、読むだけにさせる
-- 成果物は out/uxspec.yaml（デザインのパッケージ: PRD の要約・ユーザーフロー・画面定義書・設計の理由。ADR 0026）と out/<案>.html（共通の CSS は out/*.css）。撮った画像は out/<案>.png
+- 成果物は out/uxspec.yaml（UI のレビュー依頼: 概要・背景・変更点・項目定義・振る舞い・推す理由。ADR 0026）と out/<案>.html・out/<案>-<コマ>.html（共通の CSS は out/*.css）。撮った画像は同名の .png
 - UXSpec の形を決定論で確かめ、崩れていれば 1 回だけ同じ会話で直させる
 - 検査（承認／直し／人へ）は別の文脈のデザイン検査役（core-gates/ui_design_review.py）。自分の案を自分で採点させない
 
@@ -95,11 +95,44 @@ def validate(spec, defs: dict, out_dir: Path | None = None) -> list[str]:
             errs.append(f"variants[{i}].viewport は {' / '.join(vd['viewports'])} のどれか")
         if out_dir is not None and NAME_RE.match(vid) and not (out_dir / f"{vid}.html").is_file():
             errs.append(f"out/{vid}.html がない")
+        errs += frame_errors(v, i, vd.get("frames_max", 8), out_dir)
     if len(set(ids)) != len(ids):
         errs.append("variants の id が重なっている")
     if ids and spec.get("recommended") not in [str(v.get("id")) for v in flow]:
         errs.append("recommended が体験の案（axis: flow）の id のどれでもない")
     return errs
+
+
+def frame_name(vid, fid) -> str:
+    return f"{vid}-{fid}"
+
+
+def frame_errors(v: dict, i: int, limit: int, out_dir: Path | None) -> list[str]:
+    """案のコマ（画面の流れ・状態ごとのカンプ）。ファイルは out/<案 id>-<コマ id>.html"""
+    frames = v.get("frames")
+    if frames is None:
+        return []
+    if not isinstance(frames, list):
+        return [f"variants[{i}].frames が一覧になっていない（なければ省く）"]
+    errs = [f"variants[{i}].frames は {limit} コマまで"] if len(frames) > limit else []
+    seen = set()
+    for j, f in enumerate(frames):
+        if not (isinstance(f, dict) and f.get("id") and f.get("caption")):
+            errs.append(f"variants[{i}].frames[{j}] に id と caption（何をした後の画面か）がない")
+            continue
+        name = frame_name(v.get("id", ""), f["id"])
+        if not NAME_RE.match(name):
+            errs.append(f"variants[{i}].frames[{j}]: 案 id とコマ id をつないだ {name} が英数字・-・_ の 32 字までになっていない（ファイル名になる）")
+        elif name in seen:
+            errs.append(f"variants[{i}].frames の id が重なっている")
+        elif out_dir is not None and not (out_dir / f"{name}.html").is_file():
+            errs.append(f"out/{name}.html がない")
+        seen.add(name)
+    return errs
+
+
+def _rows(v, key: str) -> bool:
+    return isinstance(v, list) and all(isinstance(r, dict) and r.get(key) for r in v)
 
 
 def package_errors(spec: dict) -> list[str]:
@@ -116,9 +149,20 @@ def package_errors(spec: dict) -> list[str]:
         errs.append("rationale に why（なぜこの案を推すか）がない")
     if isinstance(why, dict) and "rejected" in why and not isinstance(why["rejected"], list):
         errs.append("rationale.rejected が一覧になっていない（なければ []）")
+    if "summary" in spec and not (isinstance(spec["summary"], str) and spec["summary"].strip()):
+        errs.append("summary（概要: 何の画面を、どうするか）が空")
+    ch = spec.get("changes")
+    if "changes" in spec and not (_rows(ch, "screen") and ch and all(r.get("kind") in ("new", "changed") and r.get("after") for r in ch)):
+        errs.append("changes が変更点（screen・kind: new か changed・after）の一覧になっていない")
     for i, s in enumerate(spec.get("screens") or []):
-        if isinstance(s, dict) and "transitions" in s and not isinstance(s["transitions"], (dict, list)):
+        if not isinstance(s, dict):
+            continue
+        if "transitions" in s and not isinstance(s["transitions"], (dict, list)):
             errs.append(f"screens[{i}].transitions が entries・exits の対応表か一覧になっていない")
+        if "elements" in s and not _rows(s["elements"], "name"):
+            errs.append(f"screens[{i}].elements が項目定義の表（行ごとに name・component・content・source・required）になっていない")
+        if "behaviors" in s and not (_rows(s["behaviors"], "action") and all(r.get("result") for r in s["behaviors"])):
+            errs.append(f"screens[{i}].behaviors が振る舞いの表（行ごとに target・action・condition・result）になっていない")
     return errs
 
 
@@ -144,6 +188,10 @@ def capture_all(spec: dict, out_dir: Path, defs: dict, chromium: str = CHROMIUM)
         h = int(v["height"]) if isinstance(v.get("height"), int) and 300 <= v["height"] <= 4000 else h
         if not capture(out_dir / f"{v['id']}.html", out_dir / f"{v['id']}.png", (w, h), chromium):
             failed.append(v["id"])
+        for f in v.get("frames") or []:   # コマは撮れなくても案は活かす（レビューページは画像なしと出す）
+            name = frame_name(v["id"], f["id"])
+            if not capture(out_dir / f"{name}.html", out_dir / f"{name}.png", (w, h), chromium):
+                print(f"[ui_design] frame {name} not captured", file=sys.stderr)
     return failed
 
 
@@ -172,7 +220,7 @@ def prompt(defs: dict, issue: dict, inp: dict) -> str:
 {fx}
 """
     pk = defs.get("package") or {}
-    sections = "\n".join(f"     - {k}: {v}" for k, v in (pk.get("screen_sections") or {}).items())
+    sections = "\n".join(f"     - {k}: {v}" for k, v in (pk.get("screen") or {}).items())
     prd = "、".join(f"{k}（{v}）" for k, v in (pk.get("prd") or {}).items())
     why = "、".join(f"{k}（{v}）" for k, v in (pk.get("rationale") or {}).items())
     return f"""あなたは仮想開発事業部のプロダクトデザイナー役です。画面を含むタスク 1 本について、実装の前に画面の要素と振る舞いを決め、案のモックを作ります。
@@ -184,16 +232,20 @@ def prompt(defs: dict, issue: dict, inp: dict) -> str:
 {redo}
 作るもの:
 1. out/uxspec.yaml（UXSpec）。項目:
+   人（プロダクトオーナー・デザインのチーフ）へのレビュー依頼として読まれます。コードの PR の説明と同じく、上から読めば判断できるように書いてください
    - ticket: "{issue.get('repo')}#{issue.get('number')}"
-   - prd: PRD の要約。{prd}
+   - summary: {pk.get('summary', '')}
+   - prd: 背景（PRD の要約）。{prd}
+   - changes: {pk.get('changes', '')}
    - user_flow: {pk.get('user_flow', '')}
-   - screens: 画面ごとの画面定義書。new（今ない画面なら true）と次の節:
+   - screens: 画面ごとに new（今ない画面なら true）と次の項目:
 {sections}
    - states: その画面に起きる状態の一覧（読み込み中・空・失敗・送信中・確認・権限がないときなど）
    - design_system_constraints: デザインシステムの何に従ったか、正本がなくて写したものは何か
    - design_system_gaps: 足りなかった部品（なければ []）。画面に直書きせず、ここに書く
    - variants: 案ごとに id（英数字・-・_ の 32 字まで。例 a, b, c）、axis（flow＝体験の案、look＝見た目の案。省くと flow）、name（案の名前）、tradeoff（得るものと失うもの 1 文）、
-     viewport（{' / '.join(d['viewports'])}）、必要なら height（縦に長い画面を撮る高さ、300〜4000）
+     viewport（{' / '.join(d['viewports'])}）、必要なら height（縦に長い画面を撮る高さ、300〜4000）、
+     frames（{pk.get('frames', '')}。コマ id は英数字で短く。モックは out/<案 id>-<コマ id>.html。{d.get('frames_max', 8)} コマまで）
    - recommended: 推す体験の案の id と、その理由を recommended_reason に 1 文
    - recommended_look: 見た目の案を作ったときだけ、推す見た目の案の id（理由は recommended_look_reason に 1 文）
    - brand_impact: 利用者（生徒・コーチ）が見る画面で、色・書体・写真など印象に効く見た目を決める案なら true。管理画面の流れだけなら false
@@ -204,7 +256,7 @@ def prompt(defs: dict, issue: dict, inp: dict) -> str:
 2. 案ごとのモック out/<id>.html（体験の案 {d['variants']['min']}〜{d['variants']['max']} 案。既存の画面に要素を 1 つ足す程度の小さな変更は 1 案でよい。
    brand_impact のときは、推す体験の案の見た目だけを変えた見た目の案を {(d.get('look_variants') or {}).get('min', 2)}〜{(d.get('look_variants') or {}).get('max', 3)} 案足す）
    共通の見た目は out/ に CSS ファイルを置いて相対パスで読む。画面の大きさは {vps}
-   代表の状態（ふつうに中身がある状態）を描き、ほかの状態は同じ HTML の下に小さく並べてよい
+   案の HTML は代表の状態（ふつうに中身がある状態）を描く。続く画面とほかの状態は、推す体験の案の frames のコマとして別の HTML に描く
 
 決まり:
 {rules}

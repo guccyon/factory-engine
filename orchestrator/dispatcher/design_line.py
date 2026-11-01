@@ -133,8 +133,19 @@ def record_draft(cur, repo: str, issue: int, corr: str, job_id: int, result: dic
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('ui_design.drafted',%s,%s,%s)",
                 (corr, job_id, Jsonb({"repo": repo, "issue": issue, "artifact_id": aid, "round": payload["round"],
                                       "variants": [v.get("id") for v in spec.get("variants") or []], "recommended": spec.get("recommended"),
-                                      "gaps": len(payload["design_system_gaps"]), "cost_usd": result.get("cost_usd")})))
+                                      "gaps": len(payload["design_system_gaps"]), "cost_usd": result.get("cost_usd"),
+                                      **material_size(spec, result)})))
     return aid
+
+
+def material_size(spec: dict, result: dict) -> dict:
+    """レビュー依頼の材料を足した分の費用を後で見比べるための数（2026-11-01 オーナー: 画面の流れ・動くプロトタイプは
+    トークン効率を見て続けるか外すかを決める）。コマの数・プロトタイプの有無と、その回の費用・ターン・トークンを並べる"""
+    vs = [v for v in spec.get("variants") or [] if isinstance(v, dict)]
+    usage = result.get("usage") or {}
+    return {"frames": sum(len(v.get("frames") or []) for v in vs if isinstance(v.get("frames"), list)),
+            "prototype": bool(spec.get("prototype")), "num_turns": result.get("num_turns"),
+            "tokens": {k: usage[k] for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if k in usage}}
 
 
 def enqueue(cur, repo: str, issue: int, corr: str, kind: str, model_tier: str, inp: dict, attempt: int = 1) -> int | None:

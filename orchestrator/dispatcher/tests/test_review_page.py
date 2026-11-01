@@ -12,22 +12,25 @@ import review_page as rp  # noqa: E402
 
 URL = os.environ.get("TEST_DATABASE_URL")
 REPO, ISSUE, CORR = "o/r", 5, "github:o/r#5"
-SPEC = {"ticket": "o/r#5",
+SPEC = {"ticket": "o/r#5", "summary": "本部のお知らせに送る前の確認を足す",
+        "changes": [{"screen": "send", "kind": "new", "after": "題と本文を書いて確認してから送る"}],
         "prd": {"goal": "本部が生徒に一斉にお知らせを届けたい", "success": "誤送信なく届く", "scope": "送信と確認", "source": "o/r#5"},
         "user_flow": [{"from": "お知らせ一覧", "action": "新規作成", "to": "送信画面"}, {"from": "送信画面", "action": "送る", "to": "確認"}],
         "rationale": {"why": "取り消せない操作なので確認を挟む", "rejected": [{"idea": "即送信", "reason": "誤送信に弱い"}],
                       "requirement_map": [{"requirement": "誤送信を防ぐ", "how": "確認の段"}]},
         "screens": [{"id": "send", "purpose": "お知らせを送る", "new": True, "transitions": {"entries": ["一覧"], "exits": ["送信後は一覧へ"]},
-                     "elements": ["題", "本文"], "behaviors": ["送る前に確認を挟む"],
+                     "elements": [{"name": "題", "component": "TextField", "required": True, "note": "40 字まで"}, "本文"],
+                     "behaviors": [{"target": "送信", "action": "押す", "condition": "題が空でない", "result": "確認の段を出す"}],
                      "microinteractions": [{"trigger": "送る", "rules": "二重押しを防ぐ", "feedback": "送信中の表示", "loops": "なし"}]}],
         "states": ["読み込み中", "失敗"], "design_system_constraints": ["specs/design/ の部品"], "design_system_gaps": [],
         "open_questions": ["予約送信は次の版"], "brand_impact": False, "recommended": "a", "recommended_reason": "誤送信に強い",
-        "variants": [{"id": "a", "name": "確認の段", "tradeoff": "1 回余計に押す", "viewport": "desktop"},
+        "variants": [{"id": "a", "name": "確認の段", "tradeoff": "1 回余計に押す", "viewport": "desktop",
+                      "frames": [{"id": "confirm", "caption": "送るを押した後", "state": "確認"}, {"id": "err", "caption": "<b>失敗</b>"}]},
                      {"id": "b", "name": "<script>alert(1)</script>", "tradeoff": "届く姿が見える"}]}
 
 
 def ctx(choice_status="open", handed_off=None):
-    return {"design": {"id": 7, "repo": REPO, "issue": ISSUE, "round": 1, "uxspec": SPEC, "files": {"a.png": "design/1/a.png", "a.html": "design/1/a.html"}},
+    return {"design": {"id": 7, "repo": REPO, "issue": ISSUE, "round": 1, "uxspec": SPEC, "files": {"a.png": "design/1/a.png", "a.html": "design/1/a.html", "a-confirm.png": "design/1/a-confirm.png"}},
             "verdict": {"id": 8, "inspector_decision": "human", "chosen_variant": "a", "score": {"self_reported": 0.75}, "human_reasons": ["new_screen"],
                         "interpretation": "新しい画面", "findings": [{"severity": "must", "viewpoint": "states", "variant": "b", "evidence": "空がない", "fix": "足す"}]},
             "choice": {"id": 3, "status": choice_status}, "handed_off": handed_off}
@@ -36,11 +39,12 @@ def ctx(choice_status="open", handed_off=None):
 # ------------------------------------------------------------------ 描画（DB なし）
 def test_render_shows_the_package_and_actions_when_open():
     page = rp.render(ctx(), "tok")
-    for text in ("本部が生徒に一斉にお知らせを届けたい", "お知らせ一覧", "取り消せない操作なので確認を挟む", "即送信", "7 マイクロインタラクション",
-                 "3 画面遷移", "予約送信は次の版", "判断待ち", "新しい画面", "この案で承認", "直しを頼む", "/review/7/image/a.png"):
+    for text in ("本部が生徒に一斉にお知らせを届けたい", "お知らせ一覧", "取り消せない操作なので確認を挟む", "即送信", "マイクロインタラクション",
+                 "画面遷移", "本部のお知らせに送る前の確認を足す", "新しい画面", "題と本文を書いて確認してから送る", "TextField", "40 字まで",
+                 "題が空でない", "確認の段を出す", "/review/7/image/a-confirm.png", "送るを押した後", "&lt;b&gt;失敗&lt;/b&gt;", "（画像なし）", "予約送信は次の版", "判断待ち", "新しい画面", "この案で承認", "直しを頼む", "/review/7/image/a.png"):
         assert text in page, text
-    assert 'data-a="choose" data-c="3" data-o="a"' in page and '"tok"' in page and "体験の案（プロダクトオーナーが判断）" in page
-    assert "見た目の案（デザインのチーフが選ぶ）" not in page
+    assert 'data-a="choose" data-c="3" data-o="a"' in page and '"tok"' in page and "体験の案（プロダクトオーナー）" in page
+    assert "見た目の案（デザインのチーフ）" not in page
     assert "a.html" not in page   # 案の HTML はこの origin では開かない
 
 
@@ -213,7 +217,7 @@ def test_brand_only_hands_off_now_and_asks_the_chief_for_the_look(cur, monkeypat
     ctx = rp.load(cur, aid)
     assert ctx["choice"] is None and ctx["look_choice"]["status"] == "open" and rp.status(ctx) == "open"
     page = rp.render(ctx, "tok")
-    assert "見た目の案（デザインのチーフが選ぶ）" in page and "この見た目にする" in page and "この案で承認" not in page
+    assert "見た目の案（デザインのチーフ）" in page and "この見た目にする" in page and "この案で承認" not in page
     # 推す見た目と違う案を選ぶと、UXSpec を差し替えて合わせるタスクを切る
     dl.choose_look(cur, REPO, ISSUE, "l2", "console:test")
     assert fake.open == {}
@@ -247,3 +251,10 @@ def test_return_closes_both_requests(cur, monkeypatch):
     dl.return_to_designer(cur, REPO, ISSUE, CORR, "どれも違う", "tier-large")
     ctx = rp.load(cur, aid)
     assert fake.open == {} and ctx["choice"]["status"] == "returned" and ctx["look_choice"]["status"] == "returned"
+
+
+def test_material_size_is_logged_for_cost_tracking():
+    """画面の流れ（コマ）・プロトタイプを足した分の費用を後で見比べられるよう、drafted の事象に数を残す"""
+    m = dl.material_size(SPEC, {"num_turns": 31, "usage": {"input_tokens": 10, "output_tokens": 5, "server_tool_use": {}}})
+    assert m == {"frames": 2, "prototype": False, "num_turns": 31, "tokens": {"input_tokens": 10, "output_tokens": 5}}
+    assert dl.material_size({}, {})["frames"] == 0

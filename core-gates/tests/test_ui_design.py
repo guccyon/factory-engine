@@ -17,13 +17,15 @@ CHROME = os.environ.get("CHROMIUM_BIN") or shutil.which("chromium") or next(
 
 
 def spec(**kw):
-    s = {"ticket": "o/r#5",
+    s = {"ticket": "o/r#5", "summary": "本部のお知らせ送信に、送る前の確認を足す",
+         "changes": [{"screen": "hq-announcements", "kind": "changed", "before": "押すとすぐ送る", "after": "確認の段を挟む"}],
          "prd": {"goal": "本部が生徒に一斉にお知らせを届けたい", "success": "誤送信なく届く", "scope": "送信と確認", "source": "o/r#5"},
          "user_flow": [{"from": "お知らせ一覧", "action": "新規作成", "to": "hq-announcements"}],
          "rationale": {"why": "取り消せない操作なので確認を挟む", "rejected": [{"idea": "即送信", "reason": "誤送信に弱い"}]},
          "screens": [{"id": "hq-announcements", "purpose": "お知らせを送る", "new": False,
                       "transitions": {"entries": ["お知らせ一覧"], "exits": ["送信後は一覧へ"]},
-                      "elements": ["題", "本文"], "behaviors": ["送る前に確認を挟む"]}],
+                      "elements": [{"name": "題", "component": "TextField", "required": True}, {"name": "本文", "component": "TextArea"}],
+                      "behaviors": [{"target": "送信", "action": "押す", "result": "確認の段を出す"}]}],
          "states": ["読み込み中", "0 件", "失敗"], "design_system_constraints": ["specs/design/ の部品だけ"],
          "design_system_gaps": [], "brand_impact": False, "recommended": "a",
          "variants": [{"id": "a", "name": "確認の段", "tradeoff": "誤送信に強い", "viewport": "desktop"},
@@ -118,11 +120,37 @@ def test_package_is_required_and_checked(tmp_path):
     assert "screens[0] に transitions がない" in ud.validate(no_tr, DEFS, tmp_path)
 
 
-def test_prompt_asks_for_the_screen_definition_sections():
+def test_review_request_needs_summary_changes_and_tables(tmp_path):
+    """レビュー依頼の本文（概要・変更点）と、項目定義・振る舞いの表（2026-11-01 の見直し）"""
+    for v in ("a", "b"):
+        (tmp_path / f"{v}.html").write_text("<p>x</p>", encoding="utf-8")
+    bare = {k: v for k, v in spec().items() if k not in ("summary", "changes")}
+    assert {"summary がない", "changes がない"} <= set(ud.validate(bare, DEFS, tmp_path))
+    loose = spec(summary=" ", changes=[{"screen": "s", "kind": "moved"}],
+                 screens=[{"id": "s", "purpose": "p", "new": True, "transitions": {}, "elements": ["題"], "behaviors": ["送る"]}])
+    errs = "\n".join(ud.validate(loose, DEFS, tmp_path))
+    for part in ("summary（概要", "changes が変更点", "elements が項目定義の表", "behaviors が振る舞いの表"):
+        assert part in errs
+
+
+def test_frames_are_checked_and_captured_as_files(tmp_path):
+    vs = [{"id": "a", "name": "確認の段", "tradeoff": "t", "frames": [{"id": "confirm", "caption": "送信を押した後"}, {"id": "empty", "caption": "0 件"}]},
+          {"id": "b", "name": "並べる", "tradeoff": "t"}]
+    for n in ("a", "b", "a-confirm"):
+        (tmp_path / f"{n}.html").write_text("<p>x</p>", encoding="utf-8")
+    assert ud.validate(spec(variants=vs), DEFS, tmp_path) == ["out/a-empty.html がない"]
+    bad = [{**vs[0], "frames": [{"id": "x" * 40, "caption": "c"}, {"id": "y"}] + [{"id": f"f{i}", "caption": "c"} for i in range(8)]}, vs[1]]
+    errs = "\n".join(ud.validate(spec(variants=bad), DEFS))
+    for part in ("8 コマまで", "32 字まで", "id と caption"):
+        assert part in errs
+
+
+def test_prompt_asks_for_the_review_request():
     text = ud.prompt(DEFS, {"repo": "o/r", "number": 5}, {})
-    for k in DEFS["package"]["screen_sections"]:
+    for k in DEFS["package"]["screen"]:
         assert f"     - {k}: " in text
-    assert "prd: PRD の要約" in text and "rationale: 設計の理由" in text
+    for part in ("summary: 概要", "prd: 背景", "changes: 変更点", "frames（画面の流れ", "PR の説明"):
+        assert part in text
 
 
 def test_look_variants_only_with_brand_impact(tmp_path):

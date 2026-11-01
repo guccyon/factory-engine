@@ -1,6 +1,7 @@
 """デザインのレビューページ（ADR 0026 の決定 3・5）。
 
-デザイナー役のデザインのパッケージ（PRD の要約・ユーザーフロー・画面定義書・案・設計の理由）と、デザイン検査役の判断を 1 枚にまとめ、
+デザイナー役の UI のレビュー依頼（コードの PR の説明と同じ型: 概要・背景・変更点・判断してほしいこと・画面の流れ・項目定義と振る舞い・迷った点）と、
+デザイン検査役の判断を 1 枚にまとめ、
 判断する人（プロダクトオーナー・デザインのチーフ）がそこで承認・直し・違和感を返せるようにする。操業コンソールが /review/<UXSpec の id> で配る。
 
 - 組み立ては純粋な関数（render）。読むのは制御プレーン（artifacts・events）だけで、GitHub には触らない（load）
@@ -20,9 +21,12 @@ DECISION_JA = {"approve": "承認", "revise": "直し", "human": "人へ"}
 REASON_JA = {"new_screen": "新しい画面", "brand_impact": "ブランドと印象に効く画面", "low_confidence": "検査役の確信度が低い",
              "revisions_exhausted": "直しを 1 回使った後も直しが要る", "inspector": "検査役が人の判断が要るとした"}
 PRD_JA = {"goal": "誰が何を達成したいか", "success": "達成した状態", "scope": "範囲", "source": "出どころ"}
-SECTION_JA = {"purpose": "1 目的", "route": "0 ルート", "audience": "0 誰が見るか", "transitions": "3 画面遷移", "elements": "4 レイアウトと要素",
-              "states": "5 状態", "behaviors": "6 操作と振る舞い", "microinteractions": "7 マイクロインタラクション", "copy": "8 文言",
-              "accessibility": "9 アクセシビリティ", "analytics": "10 計測", "contract_needs": "11 契約への要求"}
+SECTION_JA = {"purpose": "目的", "route": "ルート", "audience": "誰が見るか", "transitions": "画面遷移", "states": "状態",
+              "microinteractions": "マイクロインタラクション", "copy": "文言", "accessibility": "アクセシビリティ", "analytics": "計測",
+              "contract_needs": "契約への要求"}
+ELEMENT_COLS = (("name", "項目"), ("component", "部品"), ("content", "中身"), ("source", "データの出どころ"), ("required", "必須"), ("note", "備考"))
+BEHAVIOR_COLS = (("target", "どこを"), ("action", "操作"), ("condition", "条件"), ("result", "結果"))
+CHANGE_JA = {"new": "新しい画面", "changed": "変える"}
 MAX_DEPTH = 5
 
 
@@ -49,6 +53,24 @@ def fmt(v, depth: int = 0) -> str:
     if isinstance(v, dict):
         return "<dl>" + "".join(f"<dt>{esc(k)}</dt><dd>{fmt(x, depth + 1)}</dd>" for k, x in v.items()) + "</dl>"
     return esc(v)
+
+
+def table(rows, cols, labels: dict | None = None) -> str:
+    """表の形の項目（項目定義・振る舞い・変更点など）。行が対応表でないとき・知らない列は、そのまま読めるように残す"""
+    if not isinstance(rows, list) or not rows:
+        return fmt(rows)
+    labels = labels or {}
+    keys = [k for k, _ in cols]
+    extra = sorted({k for r in rows if isinstance(r, dict) for k in r if k not in keys})
+    head = "".join(f"<th>{esc(n)}</th>" for _, n in cols) + "".join(f"<th>{esc(k)}</th>" for k in extra)
+    body = []
+    for r in rows:
+        if not isinstance(r, dict):
+            body.append(f'<tr><td colspan="{len(cols) + len(extra)}">{fmt(r)}</td></tr>')
+            continue
+        body.append("<tr>" + "".join(f"<td>{esc(labels[k].get(r.get(k), r.get(k))) if k in labels and k in r else fmt(r.get(k)) if k in r else ''}</td>"
+                                     for k in keys + extra) + "</tr>")
+    return f'<div class="tw"><table class="grid"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
 # ------------------------------------------------------------------ 読む（制御プレーン）
@@ -110,6 +132,7 @@ def render(ctx: dict, token: str) -> str:
     reasons = "、".join(REASON_JA.get(x, x) for x in v.get("human_reasons") or [])
     head = [f'<p class="m">{esc(d.get("repo"))}#{esc(d.get("issue"))} · 体験の案 {len(flow_vs)} つ · {esc(d.get("round") or 1)} 回目の案</p>',
             f"<h1>{esc(title)}</h1>",
+            *([f'<p class="lead">{esc(spec.get("summary"))}</p>'] if spec.get("summary") else []),
             f'<p><span class="pill {st}">{STATUS_JA[st]}</span>'
             + (f' 人に回った理由: {esc(reasons)}' if reasons and st == "open" else "")
             + (f' 体験の案: <b>{esc(h.get("variant"))}</b>（{"人が承認" if h.get("decided_by") == "human" else "デザイン検査役が承認"}、実装に渡した）' if h else "")
@@ -123,46 +146,66 @@ def render(ctx: dict, token: str) -> str:
 
     prd = spec.get("prd") or {}
     prd_html = "<dl>" + "".join(f"<dt>{esc(PRD_JA.get(k, k))}</dt><dd>{fmt(x)}</dd>" for k, x in prd.items()) + "</dl>" if isinstance(prd, dict) else fmt(prd)
+    changes_html = table(spec.get("changes"), (("screen", "画面"), ("kind", "種類"), ("before", "今"), ("after", "変えた後")), {"kind": CHANGE_JA})
 
     flow = spec.get("user_flow") or []
     flow_html = '<ol class="flow">' + "".join(
         f'<li><span class="m">{esc(s.get("from") or "")}</span> → <b>{esc(s.get("action") or "")}</b> → {esc(s.get("to") or "")}</li>'
         if isinstance(s, dict) else f"<li>{fmt(s)}</li>" for s in flow) + "</ol>" if isinstance(flow, list) else fmt(flow)
 
+    def img(name, alt):
+        src = esc(IMAGE_PATH.format(aid=d["id"], name=name))
+        return (f'<a href="{src}" target="_blank" rel="noopener"><img src="{src}" alt="{esc(alt)}" loading="lazy"></a>'
+                if name in files else '<p class="m">（画像なし）</p>')
+
     def cards(vs, recommended, choice_id, label):
         out = []
         for x in vs:
             xid = str(x.get("id"))
-            png = f"{xid}.png"
-            img = (f'<a href="{esc(IMAGE_PATH.format(aid=d["id"], name=png))}" target="_blank" rel="noopener">'
-                   f'<img src="{esc(IMAGE_PATH.format(aid=d["id"], name=png))}" alt="案 {esc(xid)}"></a>') if png in files else '<p class="m">（画像なし）</p>'
             acts = (f'<div class="acts"><button class="go" data-a="choose" data-c="{choice_id}" data-o="{esc(xid)}">{label}</button>'
                     f'<button data-a="flag" data-c="{choice_id}" data-o="{esc(xid)}">違和感</button></div>') if choice_id else ""
             badge = ' <span class="pill rec">推奨</span>' if xid == recommended else ""
+            nf = len([f for f in x.get("frames") or [] if isinstance(f, dict)])
             out.append(f'<article class="var{" rec" if xid == recommended else ""}"><h3>{esc(xid)}. {esc(x.get("name") or "")}{badge}</h3>'
-                       f'<p>{esc(x.get("tradeoff") or "")}</p><p class="m">{esc(x.get("viewport") or "mobile")}</p>{img}{acts}</article>')
+                       f'<p>{esc(x.get("tradeoff") or "")}</p><p class="m">{esc(x.get("viewport") or "mobile")}'
+                       f'{f" · 画面の流れ {nf} コマ（下）" if nf else ""}</p>{img(f"{xid}.png", f"案 {xid}")}{acts}</article>')
         return f'<div class="vars">{"".join(out) or "<p class=m>（なし）</p>"}</div>'
+
+    def strip(x):
+        frames = [f for f in x.get("frames") or [] if isinstance(f, dict) and f.get("id")]
+        if not frames:
+            return ""
+        xid = str(x.get("id"))
+        cells = [f'<figure>{img(f"{xid}.png", f"案 {xid}")}<figcaption>{esc(xid)}. 案の画面</figcaption></figure>']
+        cells += [f'<figure>{img(f"{xid}-{f.get("id")}.png", str(f.get("caption") or ""))}<figcaption>{esc(f.get("caption") or "")}'
+                  + "".join(f' <span class="m">{esc(f.get(k))}</span>' for k in ("screen", "state") if f.get(k)) + "</figcaption></figure>"
+                  for f in frames]
+        return f'<h3>案 {esc(xid)}. {esc(x.get("name") or "")}</h3><div class="strip">{"".join(cells)}</div>'
 
     flow_cards = cards(flow_vs, rec, c.get("id") if flow_open else None, "この案で承認")
     look_cards = cards(look_vs, spec.get("recommended_look"), lc.get("id") if look_open else None, "この見た目にする") if look_vs else ""
     back_id = c.get("id") if flow_open else (lc.get("id") if look_open else None)
+    strips = "".join(strip(x) for x in sorted(flow_vs, key=lambda x: str(x.get("id")) != rec))
 
     why = spec.get("rationale") or {}
     why_html = fmt(why) if not isinstance(why, dict) else (
-        f"<p>{fmt(why.get('why'))}</p>"
-        + (f"<h3>検討してとらなかった案</h3>{fmt(why.get('rejected'))}" if why.get("rejected") else "")
-        + (f"<h3>要求との対応</h3>{fmt(why.get('requirement_map'))}" if why.get("requirement_map") else "")
-        + (f'<p class="m">推す理由（デザイナー役）: {esc(spec.get("recommended_reason"))}</p>' if spec.get("recommended_reason") else ""))
+        f"<p><b>推す理由</b>: {fmt(why.get('why'))}</p>"
+        + (f'<p class="m">デザイナー役の一言: {esc(spec.get("recommended_reason"))}</p>' if spec.get("recommended_reason") else "")
+        + (f"<h3>要求との対応</h3>{table(why.get('requirement_map'), (('requirement', '要求'), ('how', '画面のどこで満たすか')))}" if why.get("requirement_map") else "")
+        + (f"<h3>検討してとらなかった案</h3>{table(why.get('rejected'), (('idea', '案'), ('reason', 'とらなかった理由')))}" if why.get("rejected") else ""))
 
     screens = []
     for s in spec.get("screens") or []:
         if not isinstance(s, dict):
             continue
         rows = "".join(f"<tr><th>{esc(SECTION_JA.get(k, k))}</th><td>{fmt(s.get(k))}</td></tr>" for k in SECTION_JA if k in s)
-        extra = "".join(f"<tr><th>{esc(k)}</th><td>{fmt(x)}</td></tr>" for k, x in s.items() if k not in SECTION_JA and k not in ("id", "new"))
+        extra = "".join(f"<tr><th>{esc(k)}</th><td>{fmt(x)}</td></tr>" for k, x in s.items()
+                        if k not in SECTION_JA and k not in ("id", "new", "elements", "behaviors"))
         new = ' <span class="pill open">新しい画面</span>' if s.get("new") else ""
         screens.append(f'<section class="scr"><h3>{esc(s.get("id"))}{new}</h3>'
-                       f'<div class="tw"><table>{rows}{extra}</table></div></section>')
+                       f'<h4>項目定義</h4>{table(s.get("elements"), ELEMENT_COLS)}'
+                       f'<h4>振る舞い</h4>{table(s.get("behaviors"), BEHAVIOR_COLS)}'
+                       f'<h4>そのほか</h4><div class="tw"><table class="kv">{rows}{extra}</table></div></section>')
 
     findings = v.get("findings") or []
     verdict_html = (f'<p>判断: <b>{esc(DECISION_JA.get(v.get("inspector_decision"), v.get("inspector_decision") or "（なし）"))}</b>'
@@ -172,21 +215,22 @@ def render(ctx: dict, token: str) -> str:
                                                    f'{esc(f.get("viewpoint"))} / 案 {esc(f.get("variant"))}: {esc(f.get("evidence"))} → {esc(f.get("fix"))}</li>'
                                                    for f in findings) + "</ul>" if findings else "")) if v else '<p class="m">まだ検査していない</p>'
 
+    # 並びはコードの PR の説明と同じく「上から読めば判断できる」順（2026-11-01 の見直し）
     sections = [
-        ("PRD の要約", prd_html),
-        ("ユーザーフロー", flow_html),
-        ("体験の案（プロダクトオーナーが判断）", flow_cards),
-        *([("見た目の案（デザインのチーフが選ぶ）", look_cards
+        ("背景", prd_html),
+        ("変更点", changes_html),
+        ("判断してほしいこと: 体験の案（プロダクトオーナー）", flow_cards + why_html),
+        *([("判断してほしいこと: 見た目の案（デザインのチーフ）", look_cards
             + (f'<p class="m">推す理由（デザイナー役）: {esc(spec.get("recommended_look_reason"))}</p>' if spec.get("recommended_look_reason") else ""))]
           if look_cards else []),
         *([("一言・直し", f'<div class="acts back"><input id="note" maxlength="300" placeholder="一言（直しの中身・違和感の理由。直しを頼むときは必須）">'
                          f'<button data-a="return" data-c="{back_id}">どれも違う（直しを頼む）</button></div>')] if actionable else []),
-        ("設計の理由", why_html),
-        ("画面定義書", "".join(screens) or '<p class="m">（なし）</p>'),
+        ("画面の流れ", flow_html + (strips or '<p class="m">（コマなし。案の画面だけ）</p>')),
+        ("項目定義と振る舞い", "".join(screens) or '<p class="m">（なし）</p>'),
         ("状態", fmt(spec.get("states"))),
+        ("迷った点と未決", fmt(spec.get("open_questions"))),
         ("デザインシステム", f"<h3>従ったもの</h3>{fmt(spec.get('design_system_constraints'))}<h3>足りない部品</h3>{fmt(spec.get('design_system_gaps'))}"),
-        ("未決と仮決め", fmt(spec.get("open_questions"))),
-        ("デザイン検査役の判断", verdict_html),
+        ("デザイン検査役が確かめたこと", verdict_html),
     ]
     body = "".join(f"<section><h2>{esc(n)}</h2>{x}</section>" for n, x in sections)
     script = SCRIPT.replace("__TOKEN__", json.dumps(token))
@@ -209,7 +253,10 @@ h3{font-size:15px;margin:12px 0 6px}p{margin:0 0 6px}.m{color:var(--sub);font-si
 button{font:inherit;font-size:14px;padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}button.go{background:var(--ok);border-color:var(--ok);color:#fff;font-weight:700}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.flow{margin:0;padding-left:1.4em}
 .scr{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}.tw{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{width:11em;color:var(--sub);font-weight:700;white-space:nowrap}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--sub);font-weight:700;white-space:nowrap}
+.kv th{width:11em}.grid thead th{border-bottom:2px solid var(--line)}h4{font-size:14px;margin:12px 0 4px;color:var(--sub)}.lead{font-size:17px}
+.strip{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;margin-bottom:12px}.strip figure{flex:0 0 min(78%,300px);margin:0}
+.strip img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:4px}figcaption{font-size:13px;margin-top:4px}
 dl{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:2px 12px}dt{color:var(--sub)}dd{margin:0;min-width:0}ul{margin:0;padding-left:1.2em}
 #msg{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;display:none}
 """
