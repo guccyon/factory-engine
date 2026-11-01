@@ -217,7 +217,7 @@ def factory_prs(cur) -> list[dict]:
     return out
 
 
-def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None):
+def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None, pr: dict | None = None):
     """工場の PR の CI が落ちた・衝突しているなら停止として開く（検査・judge は CI が通るまで積まないので、黙って止まらないように）。
     事実は PR の見張り（pr_events、ADR 0015）が発行したイベントから読む。GitHub には問い合わせない。次の head で CI が通れば閉じる。PR が閉じても閉じる"""
     key = f"ci:{p['url']}"
@@ -227,6 +227,10 @@ def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None):
     if ("pr.conflicted" in seen or mergeable_state == "dirty" or "pr.ci_failed" in seen) and continuation.pending(cur, p["url"], sha):
         return   # 工場の続きのジョブが直している最中。人には回さない（ADR 0017）
     tried = continuation.attempts(cur, p["url"], "ci_failed")
+    if ("pr.conflicted" in seen or mergeable_state == "dirty") and pr is not None and awaiting_decision(cur, p["url"], pr):
+        # 人の判断待ちの間は衝突を解かない（conflict_step）。解けなかった扱いの停止は開かず、開いていれば閉じる（判断が付けば解く）
+        stoppage.close_stoppage(cur, key, remedy="人の判断待ち。判断が付いたら衝突を解く", closed_by="supervisor")
+        return
     if "pr.conflicted" in seen or mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
         stoppage.open_stoppage(cur, key, "ticket", "工場の PR が main と衝突している。検査と judge に進めない",
                                waiting_for="工場の衝突の解消が通らなかった。builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
@@ -326,7 +330,7 @@ def merge_step(cur, rules: dict, manifests: dict):
                 conflict_step(cur, p, pr)
             else:
                 ci_fix_step(cur, p, pr)
-            ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"))
+            ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"), pr)
         if not waiting_for_human(cur, p["url"]):
             open_count += 1
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
