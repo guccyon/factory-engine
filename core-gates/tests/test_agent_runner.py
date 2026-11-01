@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -176,6 +177,58 @@ class RunTest(unittest.TestCase):
     def test_cli_rejects_oneshot_step_for_exec(self):
         p = subprocess.run([sys.executable, str(RUNNER), "exec", "judge"], input="x", capture_output=True, text=True)
         self.assertEqual(p.returncode, 2)
+
+
+class HeartbeatTest(unittest.TestCase):
+    """会話の記録が進んでいる間だけ stderr に出し、進んでいなければ黙る（滞りの誤検知の防止）"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._home = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmp.name
+        self.proj = Path(self.tmp.name) / ".claude" / "projects" / "-work-repo"
+        self.proj.mkdir(parents=True)
+
+    def tearDown(self):
+        os.environ["HOME"] = self._home or ""
+        self.tmp.cleanup()
+
+    def _beats(self, advance: bool) -> int:
+        import contextlib
+        import io
+        f = self.proj / "s-1.jsonl"
+        f.write_text("{}\n")
+        os.utime(f, (1, 1))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with ar._Heartbeat(interval=0.05):
+                for i in range(4):
+                    if advance:
+                        os.utime(f, (100 + i, 100 + i))
+                    time.sleep(0.08)
+        return err.getvalue().count("[agent_runner] working")
+
+    def test_prints_while_transcript_advances(self):
+        self.assertGreaterEqual(self._beats(advance=True), 1)
+
+    def test_silent_when_transcript_does_not_advance(self):
+        self.assertEqual(self._beats(advance=False), 0)
+
+    def test_writes_to_given_fd(self):
+        r, w = os.pipe()
+        os.environ["AGENT_HEARTBEAT_FD"] = str(w)
+        try:
+            f = self.proj / "s-1.jsonl"
+            f.write_text("{}\n")
+            os.utime(f, (1, 1))
+            with ar._Heartbeat(interval=0.05):
+                os.utime(f, (100, 100))
+                time.sleep(0.12)
+        finally:
+            os.environ.pop("AGENT_HEARTBEAT_FD", None)
+            os.close(w)
+        with os.fdopen(r) as rf:
+            self.assertIn("[agent_runner] working", rf.read())
 
 
 if __name__ == "__main__":
