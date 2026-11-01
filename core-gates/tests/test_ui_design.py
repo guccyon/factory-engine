@@ -18,7 +18,11 @@ CHROME = os.environ.get("CHROMIUM_BIN") or shutil.which("chromium") or next(
 
 def spec(**kw):
     s = {"ticket": "o/r#5",
+         "prd": {"goal": "本部が生徒に一斉にお知らせを届けたい", "success": "誤送信なく届く", "scope": "送信と確認", "source": "o/r#5"},
+         "user_flow": [{"from": "お知らせ一覧", "action": "新規作成", "to": "hq-announcements"}],
+         "rationale": {"why": "取り消せない操作なので確認を挟む", "rejected": [{"idea": "即送信", "reason": "誤送信に弱い"}]},
          "screens": [{"id": "hq-announcements", "purpose": "お知らせを送る", "new": False,
+                      "transitions": {"entries": ["お知らせ一覧"], "exits": ["送信後は一覧へ"]},
                       "elements": ["題", "本文"], "behaviors": ["送る前に確認を挟む"]}],
          "states": ["読み込み中", "0 件", "失敗"], "design_system_constraints": ["specs/design/ の部品だけ"],
          "design_system_gaps": [], "brand_impact": False, "recommended": "a",
@@ -98,3 +102,24 @@ def test_main_check(tmp_path, capsys):
     for v in ("a", "b"):
         (tmp_path / f"{v}.html").write_text("x", encoding="utf-8")
     assert ud.main(["--check", str(p)]) == 0 and capsys.readouterr().out.strip().endswith("ok")
+
+
+def test_package_is_required_and_checked(tmp_path):
+    for v in ("a", "b"):
+        (tmp_path / f"{v}.html").write_text("<p>x</p>", encoding="utf-8")
+    bare = {k: v for k, v in spec().items() if k not in ("prd", "user_flow", "rationale")}
+    errs = ud.validate(bare, DEFS, tmp_path)
+    assert {"prd がない", "user_flow がない", "rationale がない"} <= set(errs)
+    broken = spec(prd={"goal": "x"}, user_flow=[{"from": "a"}], rationale={"why": "", "rejected": "なし"})
+    errs = ud.validate(broken, DEFS, tmp_path)
+    assert any(e.startswith("prd に goal") for e in errs) and any(e.startswith("user_flow が") for e in errs)
+    assert any(e.startswith("rationale に why") for e in errs) and any(e.startswith("rationale.rejected") for e in errs)
+    no_tr = spec(screens=[{"id": "s", "purpose": "p", "new": True, "elements": [], "behaviors": []}])
+    assert "screens[0] に transitions がない" in ud.validate(no_tr, DEFS, tmp_path)
+
+
+def test_prompt_asks_for_the_screen_definition_sections():
+    text = ud.prompt(DEFS, {"repo": "o/r", "number": 5}, {})
+    for k in DEFS["package"]["screen_sections"]:
+        assert f"     - {k}: " in text
+    assert "prd: PRD の要約" in text and "rationale: 設計の理由" in text
