@@ -238,11 +238,14 @@ def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None):
 
 
 def waiting_for_human(cur, url: str) -> bool:
-    """人を待っている PR か（judge が人に回した、差し戻しを流さなかった、CI 落ち・衝突、表が承認を求めた）。
-    同時に流す件数の枠には数えない。承認待ちをラインのクリティカルパスにしない（2026-10-31 オーナー）"""
+    """人を待っている PR か（judge が人に回した、差し戻しを流さなかった、CI 落ち・衝突、表が承認を求めた、知見の委員会が人に回した）。
+    同時に流す件数の枠には数えない。承認待ちをラインのクリティカルパスにしない（2026-10-31 オーナー、11-01 に委員会の分を足した）"""
     for prefix in ("judge:", "sendback:", "ci:"):
         if stoppage.open_keys(cur, f"{prefix}{url}"):
             return True
+    d = committee.decided(cur, url)
+    if d and d.get("outcome") == "human":
+        return True
     cur.execute("select payload->>'table' as t from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (url,))
     d = cur.fetchone()
     return bool(d and d["t"] == "human_approve")
