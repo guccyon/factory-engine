@@ -32,6 +32,7 @@ designer:
     - "モックは外部の資源を読まない（Web フォント・CDN・画像の URL を使わない。書体は同梱のものを font-family で指定するだけ）"
     - "案は 2 つの軸に分ける。体験の案（axis: flow）は流れ・情報の優先順位・密度が違う案で、プロダクトオーナーが選ぶ。色違いだけの案は体験の案にしない"
     - "brand_impact が true のときだけ、推す体験の案（recommended）に見た目だけを変えた案（axis: look。色・書体・角丸・写真の扱いなど、トークンの差し替え）を足し、推す見た目の案を recommended_look に書く。見た目の案はデザインのチーフが選ぶ"
+    - "動くプロトタイプにするときは、つなぐのは out/ の中の HTML どうしの相対リンクだけ。スクリプトは HTML の中に書く小さなもの（開閉・タブの切り替え・入力の検証の見せ方）に限り、通信・ストレージ・外の資源は使わない（配り口が止める）"
     - "用語は specs/glossary.yaml の語を使う"
     - "人が判断できる材料にする: コードの PR の説明と同じく、概要・背景・変更点・推す理由・迷った点を書き、カンプ・項目定義・振る舞い・画面の流れを添える。画像 1 枚だけを出さない（ADR 0026）"
 
@@ -62,6 +63,7 @@ package:
     elements: "項目定義: 表の行ごとに name（項目名）・component（デザインシステムの部品）・content（表示する中身）・source（データの出どころ）・required（必須か）・note（並び順・文字数・書式など）"
     behaviors: "振る舞い: 表の行ごとに target（どの項目）・action（操作）・condition（条件）・result（結果: 遷移・API・表示の変化。エラー文言も）。二重押し・取り消し・入力の検証を含める"
     more: "補足（任意。あるものだけ）: microinteractions（きっかけ・ルール・フィードバック・繰り返し）、copy（文言。用語は glossary）、accessibility、analytics（specs/analytics/events.yaml の id）、contract_needs（必要な API と項目）"
+  prototype: "動くプロトタイプ: 推す体験の案の HTML とコマの HTML を、ボタン・リンクの相対リンク（例 href=\"a-confirm.html\"）でつなぎ、触って遷移をたどれるようにしたら true。入り口は <推す案>.html"
   frames: "画面の流れ（プロトタイプの画像版）: 推す体験の案に、案の画面に続く画面と、主な状態（空・エラー・送信中など）をコマとして足す。コマごとに id・caption（何をした後の画面か）・screen・state"
   open_questions: "迷った点と未決: 決めきれなかった点と仮の値。レビューで特に見てほしいこと"
 

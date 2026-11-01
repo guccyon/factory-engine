@@ -115,7 +115,7 @@ def status(ctx: dict) -> str:
 
 
 # ------------------------------------------------------------------ 組み立て（純粋）
-def render(ctx: dict, token: str) -> str:
+def render(ctx: dict, token: str, prototype_base: str = "") -> str:
     d, v, h = ctx["design"], ctx.get("verdict") or {}, ctx.get("handed_off")
     c, lc = ctx.get("choice") or {}, ctx.get("look_choice") or {}
     spec = d.get("uxspec") or {}
@@ -215,6 +215,13 @@ def render(ctx: dict, token: str) -> str:
                                                    f'{esc(f.get("viewpoint"))} / 案 {esc(f.get("variant"))}: {esc(f.get("evidence"))} → {esc(f.get("fix"))}</li>'
                                                    for f in findings) + "</ul>" if findings else "")) if v else '<p class="m">まだ検査していない</p>'
 
+    # 動くプロトタイプは別のオリジンの囲いの中で開く（prototype.py）。このページには埋め込まない
+    proto_html = ""
+    if prototype_base and spec.get("prototype") and rec and f"{rec}.html" in files:
+        href = f"{prototype_base.rstrip('/')}/p/{int(d['id'])}/{rec}.html"
+        proto_html = (f'<p><a class="btn" href="{esc(href)}" target="_blank" rel="noopener noreferrer">動くプロトタイプを開く（案 {esc(rec)}）</a> '
+                      '<span class="m">別のタブで開きます。画面のリンクやボタンで遷移をたどれます</span></p>')
+
     # 並びはコードの PR の説明と同じく「上から読めば判断できる」順（2026-11-01 の見直し）
     sections = [
         ("背景", prd_html),
@@ -225,7 +232,7 @@ def render(ctx: dict, token: str) -> str:
           if look_cards else []),
         *([("一言・直し", f'<div class="acts back"><input id="note" maxlength="300" placeholder="一言（直しの中身・違和感の理由。直しを頼むときは必須）">'
                          f'<button data-a="return" data-c="{back_id}">どれも違う（直しを頼む）</button></div>')] if actionable else []),
-        ("画面の流れ", flow_html + (strips or '<p class="m">（コマなし。案の画面だけ）</p>')),
+        ("画面の流れ", proto_html + flow_html + (strips or '<p class="m">（コマなし。案の画面だけ）</p>')),
         ("項目定義と振る舞い", "".join(screens) or '<p class="m">（なし）</p>'),
         ("状態", fmt(spec.get("states"))),
         ("迷った点と未決", fmt(spec.get("open_questions"))),
@@ -255,6 +262,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.flow{ma
 .scr{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}.tw{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--sub);font-weight:700;white-space:nowrap}
 .kv th{width:11em}.grid thead th{border-bottom:2px solid var(--line)}h4{font-size:14px;margin:12px 0 4px;color:var(--sub)}.lead{font-size:17px}
+a.btn{display:inline-block;padding:6px 12px;border-radius:6px;background:var(--accent);color:#fff;font-weight:700;text-decoration:none}
 .strip{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;margin-bottom:12px}.strip figure{flex:0 0 min(78%,300px);margin:0}
 .strip img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:4px}figcaption{font-size:13px;margin-top:4px}
 dl{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:2px 12px}dt{color:var(--sub)}dd{margin:0;min-width:0}ul{margin:0;padding-left:1.2em}

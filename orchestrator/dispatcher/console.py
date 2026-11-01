@@ -43,6 +43,7 @@ import drain
 import inbox
 import judgment
 import ops
+import prototype
 import review_page
 import ship
 
@@ -56,10 +57,23 @@ MODEL_TIER = ENV.get("MODEL_TIER", "tier-large")   # 人が案を戻したとき
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 段の残りがこれを切ると赤く出す（番人の知らせと同じ値。dispatcher.py）
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
+PROTOTYPE_ON = ENV.get("PROTOTYPE_PORT", "") not in ("", "0")   # 動くプロトタイプの配り口（別ポート。prototype.py）。未設定なら出さない
 TOKEN = secrets.token_urlsafe(24)   # 起動ごとに変わる。画面を開き直せば新しいものが入る
 HOST_AGENT_FRESH_SEC = 600   # これより長く keep-awake.sh から連絡がなければ、ホストの見張りは居ないとみなす（トグルを出さない）
 host_agent: dict = {}
 _store = None
+
+
+def read_design(key: str) -> bytes | None:
+    """オブジェクトストアの design/ の下を読む（レビューページの画像と動くプロトタイプ）"""
+    if not key or not key.startswith("design/") or ".." in key or store() is None:
+        return None
+    obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
+    try:
+        return obj.read()
+    finally:
+        obj.close()
+        obj.release_conn()
 
 
 def store():
@@ -304,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 ctx = review_page.load(cur, int(m.group(1)))
             if not ctx:
                 return self._json(404, {"error": "no such design"})
-            return self._send(200, review_page.render(ctx, TOKEN).encode(), "text/html; charset=utf-8")
+            return self._send(200, review_page.render(ctx, TOKEN, prototype.PUBLIC_URL if PROTOTYPE_ON else "").encode(), "text/html; charset=utf-8")
         m = re.fullmatch(r"/review/(\d+)/image/([A-Za-z0-9][A-Za-z0-9_-]{0,31}\.png)", url.path)
         if m:
             return self._review_image(int(m.group(1)), m.group(2))
@@ -338,15 +352,9 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn, conn.cursor() as cur:
             cur.execute("select payload->'files'->>%s as key from artifacts where id=%s and type='UXSpec'", (name, aid))
             row = cur.fetchone()
-        key = (row or {}).get("key")
-        if not key or not key.startswith("design/") or ".." in key or store() is None:
+        data = read_design((row or {}).get("key"))
+        if data is None:
             return self._json(404, {"error": "no image"})
-        obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
-        try:
-            data = obj.read()
-        finally:
-            obj.close()
-            obj.release_conn()
         self._send(200, data, "image/png")
 
     def do_POST(self):  # noqa: N802
@@ -489,6 +497,9 @@ load();setInterval(load,10000);
 
 
 def main():
+    if PROTOTYPE_ON:
+        prototype.serve(db, read_design, ALLOWED_HOSTS)
+        print(f"prototype up: port={prototype.PORT}", flush=True)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"console up: port={PORT} allowed_hosts={sorted(ALLOWED_HOSTS)}", flush=True)
     srv.serve_forever()
