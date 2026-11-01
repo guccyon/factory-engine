@@ -29,6 +29,8 @@ from pathlib import Path
 
 import yaml
 
+import design_catalog
+
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("DESIGN_SYSTEM_DEFINITIONS") or HERE.parent / "definitions" / "design_system.yaml")
 GUIDELINE = HERE.parent / "definitions" / "design_guideline.yaml"
@@ -110,6 +112,11 @@ def validate_spec(files: dict[str, str], defs: dict, delta: bool) -> list[str]:
             errs += [f"tokens.yaml に {k} がない" for k in s["tokens_required"] if k not in data]
     if not delta:   # オンボーディングは必須の節を全部
         errs += [f"{f} がない（{sec}）" for f, sec in s["files"].items() if f not in files]
+    if "components.yaml" in files:   # カタログの見本（部品ごとの preview）はデザインシステムとセット（2026-11-01 オーナー）
+        try:
+            errs += design_catalog.validate_previews(yaml.safe_load(files["components.yaml"]))
+        except yaml.YAMLError:
+            pass
     total = sum(len(t) for t in files.values())
     if total > defs["designer"]["max_spec_chars"]:
         errs.append(f"spec の合計が {total} 字で、上限 {defs['designer']['max_spec_chars']} 字を超える。説明を削って値と基準に絞る")
@@ -166,6 +173,9 @@ def prompt(defs: dict, issue: dict, inp: dict, phase: str, delta: bool, ds_exist
 文は日本語の平易な文で。識別子はそのまま。
 """
     chosen = yaml.safe_dump(inp.get("concept") or {}, allow_unicode=True, sort_keys=False) if inp.get("concept") else "（指定なし。いまの specs/design/ を土台にする）"
+    catalog_vars = ("tokens.yaml の color.roles の <名前> → --color-<名前>（_ は -）、color.status の <状態>.<名前> → --color-<状態>-<名前>、"
+                    "spacing.scale_px の <段> → --space-<段>、shape.radius_px の <段> → --radius-<段>、typography.families の <名前> → --font-<名前>")
+    chromium = os.environ.get("CHROMIUM_BIN", "chromium")
     files = "\n".join(f"   - {f}: {sec}" for f, sec in defs["spec"]["files"].items())
     scope = ("いまのデザインシステムへの追加・変更です。変わるファイルだけを書く（既存のファイルは product/specs/design/ から写して直す）。"
              if delta else "オンボーディングです。下のファイルを全部書く。")
@@ -182,9 +192,39 @@ def prompt(defs: dict, issue: dict, inp: dict, phase: str, delta: bool, ds_exist
 デザインガイドラインの必須の節（Engine の definitions/design_guideline.yaml。何を基準化するか）:
 {guideline_outline()}
 
+カタログ（デザインシステムとセットで作る。人と実装役とプロダクトデザイナー役が、部品の見た目をここで確かめる）:
+- components.yaml の components[] の部品ごとに preview を書く。preview は状態ごとの見本の一覧で、1 つが {{label: 状態の名前, html: 見本の HTML 片}}
+  （例: primary・押下・読み込み中・disabled・誤り。部品の states にある代表的なものを 2〜5 つ。見本の数は全部で {design_catalog.MAX_PREVIEWS} 個まで）
+- 見本は実際の文言で描く（「予約する」「10/28（水）12:00」など。ダミーの文字にしない）
+- 色・余白・角丸・書体はトークンの CSS 変数だけで書く。変数の名前: {catalog_vars}
+  書体の段は class="type-<段の名前>"。部品の共通の見た目は components.yaml の preview_css（任意の CSS 文字列）に書いてよい
+- 見本に script・iframe・link・イベント属性（onclick など）・外の URL・@import は使えない
+- `python3 {HERE / 'design_catalog.py'} out/spec out/catalog.html` でカタログを組み立て、
+  `{chromium} --headless --no-sandbox --hide-scrollbars --window-size=1200,<高さ> --screenshot=out/catalog.png out/catalog.html` で撮って、
+  画像を見て崩れ（はみ出し・重なり・読めない色の組み合わせ・トークンと違う見た目）がないか確かめて直す
+
 書き終えたら `python3 {HERE / 'design_system.py'} --check-spec out/spec{' --delta' if delta else ''}` で形を確かめ、崩れがなくなるまで直してください。
 文は日本語の平易な文で。識別子はそのまま。
 """
+
+
+def catalog_files(repo_dir: Path, files: dict[str, str]) -> dict[str, str]:
+    """カタログを組み立てる元。追加・変更（delta）のときは、いまの正本に変わるファイルを重ねる"""
+    return {**read_spec(repo_dir / "specs" / "design"), **files}
+
+
+def emit_catalog(repo_dir: Path, files: dict[str, str], out_dir: Path, chromium: str) -> list[str]:
+    """カタログの HTML と画像を out_dir に置き、dispatcher に渡すファイル名を返す。撮れなくても HTML は渡す"""
+    import ui_design
+    src = catalog_files(repo_dir, files)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for p in out_dir.glob("catalog.*"):
+        p.unlink()
+    (out_dir / "catalog.html").write_text(design_catalog.build(src), encoding="utf-8")
+    names = ["catalog.html"]
+    if ui_design.capture(out_dir / "catalog.html", out_dir / "catalog.png", (1200, design_catalog.catalog_height(src)), chromium):
+        names.append("catalog.png")
+    return names
 
 
 # ------------------------------------------------------------------ 本体
@@ -245,7 +285,9 @@ def run(repo_dir: Path, issue: dict, inp: dict, out_dir: Path, defs: dict, chrom
     if errs:
         return {**base, "ok": False, "errors": errs}
     if phase == "spec":
-        return {**base, "ok": True, "spec_files": files}
+        import ui_design
+        names = emit_catalog(repo_dir, files, out_dir, chromium or ui_design.CHROMIUM)
+        return {**base, "ok": True, "spec_files": files, "files": names}
     w, h = defs["designer"]["viewport"]
     failed = [c["id"] for c in spec["concepts"]
               if not ui_design.capture(out_dir / f"{c['id']}.html", out_dir / f"{c['id']}.png", (w, h), chromium or ui_design.CHROMIUM)]

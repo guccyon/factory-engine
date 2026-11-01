@@ -5,7 +5,7 @@ HTML はエージェントの出力で、外部の入力と同じに扱う。操
 
 - 応答の CSP に sandbox（allow-scripts だけ）を付ける。文書は不透明なオリジンになり、Cookie・ストレージ・コンソールの API に届かない
 - 通信は止める（connect-src・form-action 'none'）。読めるのは同じ配り口の CSS・画像だけ。外の資源も読まない（CORP は付けない: 不透明なオリジンからの CSS・画像の読み込みが止まるため）
-- 配るのは、その UXSpec の files に載っていて、オブジェクトストアの design/ の下にある .html・.css・.png だけ。名前は英数字・-・_ に限る
+- 配るのは、その UXSpec の files（デザインシステムのカタログは DesignSystemSpec の catalog）に載っていて、オブジェクトストアの design/ の下にある .html・.css・.png だけ。名前は英数字・-・_ に限る
 - GET だけ。ホスト名は操業コンソールと同じ許可リストで確かめる（DNS リバインディングよけ）
 - 費用はデザイナー役の回の記録（ui_design.drafted の prototype）で見て、続けるか外すかをオーナーが決める
 """
@@ -48,8 +48,9 @@ def headers(origin: str) -> dict[str, str]:
 
 
 def lookup(cur, aid: int, name: str) -> str | None:
-    """その UXSpec の files に載っている、design/ の下のキー"""
-    cur.execute("select payload->'files'->>%s as key from artifacts where id=%s and type='UXSpec'", (name, aid))
+    """その UXSpec の files か、DesignSystemSpec の catalog（デザインシステムのカタログ）に載っている、design/ の下のキー"""
+    cur.execute("select case when type='UXSpec' then payload->'files'->>%s else payload->'catalog'->>%s end as key "
+                "from artifacts where id=%s and type in ('UXSpec','DesignSystemSpec')", (name, name, aid))
     row = cur.fetchone()
     key = (row or {}).get("key")
     return key if key and key.startswith("design/") and ".." not in key else None

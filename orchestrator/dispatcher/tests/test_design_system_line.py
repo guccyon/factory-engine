@@ -122,13 +122,16 @@ def test_spec_is_handed_to_implement_once(cur):
     c = Calls()
     jid = job(cur)
     sid = dsl.record_spec(cur, REPO, ISSUE, CORR, jid, {"spec_files": {"tokens.yaml": "color: {}\n", "../x.yaml": "a"}, "delta": False, "cost_usd": 0.9},
-                          {"concept": {"id": "calm"}})
+                          {"concept": {"id": "calm"}}, {"catalog.html": f"design/{jid}/catalog.html", "evil.html": "design/1/evil.html"})
     dsl.handoff(cur, c.gh, c.swap, c.comment, REPO, ISSUE, CORR, sid)
     dsl.handoff(cur, c.gh, c.swap, c.comment, REPO, ISSUE, CORR, sid)
     assert len(c.patched) == 1 and c.body.startswith("## 受け入れ条件") and "specs/design/tokens.yaml" in c.body and "../x.yaml" not in c.body
     assert c.labels == [(ISSUE, ("factory:running", "factory:design-system"), ("factory:planned",))]
     cur.execute("select payload from events where name='design_system.handed_off'")
     assert cur.fetchone()["payload"]["files"] == ["tokens.yaml"]
+    cur.execute("select payload from artifacts where id=%s", (sid,))
+    assert cur.fetchone()["payload"]["catalog"] == {"catalog.html": f"design/{jid}/catalog.html"}   # カタログの名前だけ
+    assert f"/p/{sid}/catalog.html" in c.comments[-1]                                             # Issue にカタログの入り口
 
 
 @needs_db

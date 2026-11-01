@@ -553,7 +553,8 @@ def run_job(job: dict, reattaching: bool = False):
                             aid = design_system_line.record_concepts(cur, repo, issue, corr, job_id, result, keys)
                             design_system_line.request_choice(cur, repo, issue, corr, job_id, aid, result, keys, swap_label, comment)
                         else:
-                            sid = design_system_line.record_spec(cur, repo, issue, corr, job_id, result, judge_inp or {})
+                            keys = design_line.store_files(store_put, job_id, design_files)   # カタログ（catalog.html・.png）
+                            sid = design_system_line.record_spec(cur, repo, issue, corr, job_id, result, judge_inp or {}, keys)
                             design_system_line.handoff(cur, gh, swap_label, comment, repo, issue, corr, sid)
                     except Exception as e:  # noqa: BLE001  記録は残っている。タスクは止めて人に知らせる
                         log("design system act failed", job_id, repr(e))
