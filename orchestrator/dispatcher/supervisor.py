@@ -251,12 +251,32 @@ def waiting_for_human(cur, url: str) -> bool:
     return bool(d and d["t"] == "human_approve")
 
 
+def awaiting_decision(cur, url: str, pr: dict) -> bool:
+    """人の判断を待っている PR か（judge が人に回した・差し戻しを流さなかった・委員会が人に回した・表が承認を求めた、
+    または factory:needs-judgment のラベルが付いている）。CI 落ち・衝突の停止（ci:）は含めない（工場が自分で直す対象）"""
+    if any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []):
+        return True
+    for prefix in ("judge:", "sendback:"):
+        if stoppage.open_keys(cur, f"{prefix}{url}"):
+            return True
+    d = committee.decided(cur, url)
+    if d and d.get("outcome") == "human":
+        return True
+    cur.execute("select payload->>'table' as t from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s order by id desc limit 1", (url,))
+    d = cur.fetchone()
+    return bool(d and d["t"] == "human_approve")
+
+
 def conflict_step(cur, p: dict, pr: dict):
     """工場の PR が既定ブランチと衝突したら（同時に流した PR どうしの CHANGELOG など）、その PR のブランチで衝突を解く
     続きのジョブを head ごとに 1 回積む。ワーカーは既定ブランチをマージコミットで取り込み、履歴は書き換えない。
     解けなかったら次の head は来ないので、同じ head では二度積まず、番人のマージ待ちの停止に任せる"""
     if not CONFLICT_FIX or (pr["head"].get("repo") or {}).get("full_name") != p["repo"]:
         return   # フォークの PR は触らない
+    if awaiting_decision(cur, p["url"], pr):
+        # 人の判断待ちの間は解かない。main が動くたびに解き直して費用がかさむ（11-01 rally #505、約 3 時間で 6 回・$36）。
+        # 判断が付いて待ちが外れたら、その時点の head で 1 回だけ解く
+        return
     jid = continuation.enqueue(cur, repo=p["repo"], pr_number=p["number"], pr_url=p["url"], branch=pr["head"]["ref"],
                                head_sha=pr["head"]["sha"], reason="conflict", by="supervisor")
     if isinstance(jid, int):
