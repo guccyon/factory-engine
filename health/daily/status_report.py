@@ -491,7 +491,9 @@ def change_cost(conn, weeks: int = 6) -> list[dict]:
         rows = cur.fetchall()
     groups: dict[tuple, list] = {}
     for week, level, lead_h, cost, jobs, sendbacks in rows:
-        groups.setdefault((week, level), []).append((lead_h, cost, jobs, sendbacks))
+        # extract(epoch …) は numeric（psycopg では Decimal）で返る。スナップショットは JSON にするので float にそろえる
+        groups.setdefault((week, level), []).append(
+            (None if lead_h is None else float(lead_h), float(cost), int(jobs), int(sendbacks)))
     def med(xs):
         xs = sorted(x for x in xs if x is not None)
         return xs[len(xs) // 2] if xs else None
