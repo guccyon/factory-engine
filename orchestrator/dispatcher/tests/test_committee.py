@@ -122,3 +122,19 @@ def test_supervisor_enqueues_weekly_once(cur, monkeypatch):
     supervisor.committee_weekly_step(cur, datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc))   # 次の週の月曜は時刻前
     cur.execute("select count(*) as n from jobs")
     assert cur.fetchone()["n"] == 1
+
+
+def test_inspect_enqueue_retries_when_another_job_holds_the_pr(cur, monkeypatch):
+    # 同じ PR の別のジョブ（judge など）が動いている間に検査を積めなくても、次の周回で積み直す（rally #458）
+    monkeypatch.setattr(supervisor, "INSPECT_ENABLED", True)
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values ('github:o/r#5','o/r',12,'supervisor','judge') returning id")
+    busy = cur.fetchone()["id"]
+    supervisor.enqueue_inspect(cur, P, "abc")
+    cur.execute("select count(*) as n from jobs where kind='inspect'")
+    assert cur.fetchone()["n"] == 0
+    cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.inspect:{PR}@abc",))
+    assert cur.fetchone() is None   # 積めなかった記録は残さない
+    cur.execute("update jobs set state='succeeded' where id=%s", (busy,))
+    supervisor.enqueue_inspect(cur, P, "abc")
+    cur.execute("select count(*) as n from jobs where kind='inspect'")
+    assert cur.fetchone()["n"] == 1
