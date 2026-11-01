@@ -28,7 +28,7 @@ def res(decision="ready", steps=("implement",), guards=(), round_=1, questions=(
 # ------------------------------------------------------------------ DB の要らないもの
 def test_constants_match_definitions():
     lb = DEFS["labels"]
-    assert (pn.TRIGGER_LABEL, pn.NEEDS_INFO_LABEL, pn.ESCALATE_LABEL) == (lb["trigger"], lb["needs_info"], lb["escalate"])
+    assert (pn.TRIGGER_LABEL, pn.NEEDS_INFO_LABEL, pn.ESCALATE_LABEL, pn.WAITING_LABEL) == (lb["trigger"], lb["needs_info"], lb["escalate"], lb["waiting"])
     assert pn.ROLE_LABELS == {k: v["label"] for k, v in DEFS["roles"].items()}
     assert pn.ROLE_JA == {k: v["ja"] for k, v in DEFS["roles"].items()}
     assert set(pn.GUARD_JA) == set(DEFS["guards"]) and set(pn.ADVISORY_JA) == set(DEFS["advisories"])
@@ -79,11 +79,19 @@ class Calls:
     def comment(self, repo, n, text):
         self.comments.append(text)
 
+    child_state = "open"
+    created = None
+
     def gh(self, method, path, body=None):
         if "labels=" in path:
             return [{"number": ISSUE}, {"number": 6, "pull_request": {}}]
         if path.endswith("/comments?per_page=100"):
             return [{"body": b} for b in self.issue_comments]
+        if method == "POST" and path.endswith("/issues"):
+            self.created = body
+            return {"number": 40}
+        if method == "GET" and path.endswith("/issues/40"):
+            return {"state": self.child_state}
         return {}
 
 
@@ -93,10 +101,10 @@ def job(cur, kind="plan"):
     return cur.fetchone()["id"]
 
 
-def run(cur, c, r):
+def run(cur, c, r, gh=None):
     jid = job(cur)
     pid = pn.record(cur, REPO, ISSUE, CORR, jid, r)
-    pn.act(cur, REPO, ISSUE, CORR, jid, pid, r, c.swap, c.comment)
+    pn.act(cur, REPO, ISSUE, CORR, jid, pid, r, c.swap, c.comment, gh, "お知らせの画面")
     return pid
 
 
@@ -150,3 +158,26 @@ def test_ready_without_known_roles_goes_to_human(cur):
     c = Calls()
     run(cur, c, res(steps=["bogus"]))
     assert c.labels == [(ISSUE, ("factory:running",), ("factory:plan-human",))]
+
+
+@needs_db
+def test_design_system_first_is_split_and_advanced_when_child_closes(cur):
+    c = Calls()
+    run(cur, c, res(steps=["design_system", "ui_design", "implement"]), c.gh)
+    assert c.created["labels"] == ["factory:design-system"] and c.created["title"] == "デザインシステム: お知らせの画面"
+    assert "#5 の経路" in c.created["body"] and "design_system の仕事" in c.created["body"]
+    assert c.labels == [(ISSUE, ("factory:running",), ("factory:waiting-steps",))] and "#40 に切りました" in c.comments[0]
+    assert pn.advance_steps(cur, c.gh, c.swap, c.comment, [REPO]) == 0      # まだ閉じていない
+    c.child_state = "closed"
+    assert pn.advance_steps(cur, c.gh, c.swap, c.comment, [REPO]) == 1
+    assert c.labels[-1] == (ISSUE, ("factory:waiting-steps",), ("factory:design",))
+    assert pn.advance_steps(cur, c.gh, c.swap, c.comment, [REPO]) == 0      # 1 度だけ
+    cur.execute("select payload from events where name='plan.advanced'")
+    assert cur.fetchone()["payload"]["role"] == "ui_design"
+
+
+@needs_db
+def test_design_system_only_stays_on_the_ticket(cur):
+    c = Calls()
+    run(cur, c, res(steps=["design_system"]), c.gh)
+    assert c.created is None and c.labels == [(ISSUE, ("factory:running",), ("factory:design-system",))]

@@ -1,0 +1,56 @@
+# デザインシステムのデザイナー役（ADR 0025 のデザインシステムの決定、ADR 0026。2026-11-01）
+#
+# コンセプト・原則・ガイドラインから、トークン・部品・画面の型まで考える役。プランナーの経路（steps）に design_system が入ると回ってくる。
+#   Issue に factory:design-system → design_system のジョブ（core-gates/design_system.py）
+#     concept: デザインシステムがない製品（オンボーディング）か、チケットがコンセプトの作り直しを求めるとき。
+#              コンセプトとトーン＆マナーの案（2〜3）と、案ごとの見本の画面（静的 HTML とキャプチャ）を作る
+#              → 人の選択（HumanChoice の concept_tone。ブランドに効くので必ず人。ADR 0025 の E2）
+#     spec:    選ばれた案（またはいまのデザインシステム）から、デザインガイドラインの必須の節を specs/design/ のファイルとして書く。
+#              いまのデザインシステムへの追加（部品・基準）は、変わるファイルだけを書く
+#              → Issue の本文に足して factory:planned（実装役がファイルを置き、両アプリのテーマと部品をトークンに合わせる。PR は今の検査と judge を通る）
+# 値と本文は製品の specs/design/、何を基準化するかの骨組みは definitions/design_guideline.yaml。
+# 数値は仮置き（2026-11-01。運用しながら直す）。
+
+schema_version: "0.1"
+status: draft
+
+labels:
+  trigger: factory:design-system     # プランナーが経路の最初の役として付けるか、人か建設者が付ける
+  choice: factory:design-choice      # 人の選択待ち（操業コンソールの「人の選択」）
+  after: factory:planned             # 決まったデザインシステムのファイルを実装役へ
+
+designer:
+  max_turns: 60
+  concepts: {min: 2, max: 3}
+  viewport: [390, 844]                # 見本の画面（利用者が見るアプリの代表の 1 枚）
+  max_file_bytes: 2000000             # 見本の 1 ファイル（HTML・PNG）の上限
+  max_spec_chars: 45000               # spec のファイルの合計（Issue の本文に入れるので GitHub の上限より小さく）
+  rules:
+    - "製品の目的・利用者・今の画面（apps/）・用語集・知見を読んでから考える。案は製品の利用者と場面から出す"
+    - "コンセプトの案どうしは、印象の方向（誰にどう感じてほしいか）が違うものにする。色違いだけの案は作らない"
+    - "案ごとに、ムード（形容詞 3〜5 個とその反対語）、言葉づかいの声と調子、写真・アイコンの扱い、トークンの方向（色・書体・角丸・余白の性格）を書く"
+    - "見本の画面は、案のトークンで今の代表の画面を描き直したもの。中身と流れは変えない（見た目の軸だけを比べられるように）"
+    - "見本は外部の資源を読まない（Web フォント・CDN・画像の URL を使わない。書体は同梱の Noto Sans CJK / Noto Serif CJK を font-family で指定するだけ）"
+    - "spec は definitions/design_guideline.yaml の required_at_onboarding の節を全部埋める。値は具体的に（色はコード、大きさは数字）"
+    - "基準は rule_format（level・statement・why・check）で書く。must は少なく、マージを止めてよいものだけ"
+    - "コントラストは WCAG 2.2 AA を満たす組み合わせだけをトークンにする"
+    - "いまのデザインシステムに足すときは、既存の名前と値を壊さない。変えるときは理由を governance の変更の記録に書く"
+    - "用語は specs/glossary.yaml の語を使う"
+
+concept:
+  required: [product_understanding, concepts, recommended, recommended_reason]
+  concept_required: [id, name, impression, mood_words, anti_words, voice_tone, imagery, tokens, tradeoff]
+  tokens_required: [color, typography, shape, spacing]
+
+spec:
+  dir: specs/design                   # 製品の置き場（正本）
+  files:                              # オンボーディングで必ず書くファイル（design_guideline.yaml の節と対応）
+    principles.yaml: principles
+    concept_tone.yaml: concept_tone
+    tokens.yaml: foundations
+    components.yaml: components
+    patterns.yaml: patterns
+    content.yaml: content
+    accessibility.yaml: accessibility
+    governance.yaml: governance
+  tokens_required: [color, typography, spacing, shape]

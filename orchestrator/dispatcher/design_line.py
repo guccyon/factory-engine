@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover
     inbox = None
 
 TRIGGER_LABEL, CHOICE_LABEL, AFTER_LABEL = "factory:design", "factory:design-choice", "factory:planned"   # definitions/ui_design.yaml の labels
+GAPS_LABEL = "factory:design-system"   # 足りない部品はデザインシステムのデザイナー役に回す（ADR 0026。spec の段で部品を足し、実装役へ）
 RUNNING_LABEL, FAILED_LABEL = "factory:running", "factory:failed"
 MARK, MARK_END = "<!-- factory-uxspec:v1 -->", "<!-- /factory-uxspec -->"
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\.(html|css|png)$")
@@ -270,7 +271,7 @@ def handoff(cur, gh, comment, repo: str, issue: int, corr: str, d: dict, variant
     gaps_issue = None
     if spec.get("design_system_gaps"):
         title, body = gaps_issue_text(repo, issue, spec)
-        gaps_issue = (gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": [AFTER_LABEL]}) or {}).get("number")
+        gaps_issue = (gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": [GAPS_LABEL]}) or {}).get("number")
     html = None
     key = (d.get("files") or {}).get(f"{variant}.html")
     if key and get:
@@ -336,8 +337,8 @@ def replace_section(body: str, section: str) -> str:
 def gaps_issue_text(repo: str, issue: int, spec: dict) -> tuple[str, str]:
     gaps = [g if isinstance(g, str) else json.dumps(g, ensure_ascii=False) for g in spec.get("design_system_gaps") or []]
     title = f"デザインシステムに部品を足す（#{issue} の画面で必要）"
-    body = "\n".join([f"#{issue} の画面の設計で、デザインシステムに足りない部品が見つかりました（デザイナー役、ADR 0025）。",
-                      "画面に直書きせず、先にデザインシステム（`specs/design/` と各アプリのテーマ・部品の実装）に足します。", "",
+    body = "\n".join([f"#{issue} の画面の設計で、デザインシステムに足りない部品が見つかりました（プロダクトデザイナー役、ADR 0025）。",
+                      "画面に直書きせず、先にデザインシステムのデザイナー役が部品を定め（`specs/design/`）、実装役が各アプリのテーマ・部品の実装に足します（ADR 0026）。", "",
                       "## 足す部品", *[f"- {g}" for g in gaps], "",
                       "## 受け入れ条件",
                       "- 部品の一覧（`specs/design/`）に、用途・状態（通常・押下・無効・読み込み中・失敗）・使わない場面を書く",

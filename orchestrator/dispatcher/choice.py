@@ -1,6 +1,6 @@
 """人の選択と違和感の印（ADR 0025 の P4-7）。
 
-デザイン検査役が人に回した案（design_variants）と、内部品質の抜き取り（taste_sample、ADR 0019）を、同じ形で人に見せて受ける。
+デザイン検査役が人に回した案（design_variants）、デザインシステムのデザイナー役のコンセプトの案（concept_tone）と、内部品質の抜き取り（taste_sample、ADR 0019）を、同じ形で人に見せて受ける。
 - 依頼: artifacts の HumanChoice（status: open）と events の choice.requested
 - 選択: choice.made（選んだ案、推奨と一致したか、理由の一言）。デザインの線では、選ばれた案が実装の線の入口になる
 - 戻す: choice.returned（どの案も選ばず、作り手に戻す）
@@ -15,7 +15,7 @@ import re
 
 from psycopg.types.json import Jsonb
 
-KINDS = {"design_variants": "画面の案の選択", "taste_sample": "抜き取り"}
+KINDS = {"design_variants": "画面の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}
 IMAGE_PREFIXES = ("choices/", "design/")
 MAX_OPTIONS, MAX_LEN = 4, 1000
 OPTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,20}$")

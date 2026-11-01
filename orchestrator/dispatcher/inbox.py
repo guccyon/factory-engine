@@ -26,6 +26,7 @@ WHO = {
     "builder": "建設者",
     "requester": "起票者",
 }
+CHOICE_TITLES = {"design_variants": "画面の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}   # choice.KINDS と同じ
 KINDS = {"stoppage": "人の判断待ちの停止", "choice": "人の選択", "release": "本番への出荷", "task": "依頼"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
@@ -109,8 +110,9 @@ def _choices(cur) -> list[dict]:
     for r in cur.fetchall():
         p = r["payload"]
         design = p.get("kind") == "design_variants"
-        out.append({"key": f"choice:{r['id']}", "kind": "choice", "who": "design_chief" if design else "owner",
-                    "title": ("画面の案の選択: " if design else "抜き取り: ") + _clip(p.get("question"), 200),
+        looks = p.get("kind") in ("design_variants", "concept_tone")   # 見た目の判断はデザインのチーフ（Gen1 はオーナー。ADR 0026 の 6）
+        out.append({"key": f"choice:{r['id']}", "kind": "choice", "who": "design_chief" if looks else "owner",
+                    "title": f"{CHOICE_TITLES.get(p.get('kind'), '人の選択')}: " + _clip(p.get("question"), 200),
                     "action": "案を選ぶか、どれも違えば戻す" + (f"（推奨 {p['recommended']}）" if p.get("recommended") else ""),
                     "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1],
                     "uxspec": (p.get("subject") or {}).get("uxspec") if design else None})

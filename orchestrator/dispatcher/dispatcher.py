@@ -36,6 +36,7 @@ import committee
 import continuation
 import design
 import design_line
+import design_system_line
 import planner
 import drain
 import judgment
@@ -53,9 +54,11 @@ TRIGGER_LABEL = ENV.get("TRIGGER_LABEL", "factory:implement")
 REQUEST_LABEL = ENV.get("REQUEST_LABEL", "factory:request")   # intake: 要求者の曖昧な要求を clarify にかける（T20）
 DESIGN_LABEL = ENV.get("DESIGN_LABEL", design_line.TRIGGER_LABEL)   # 画面を含むタスク: 実装の前にデザインの線を通す（ADR 0025）
 PLAN_LABEL = ENV.get("PLAN_LABEL", planner.TRIGGER_LABEL)   # チケットの入口: プランナーが着手判定と経路を決める（ADR 0025・0026）
-TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify", DESIGN_LABEL: "ui_design", PLAN_LABEL: "plan"}
+DESIGN_SYSTEM_LABEL = ENV.get("DESIGN_SYSTEM_LABEL", design_system_line.TRIGGER_LABEL)   # デザインシステムのデザイナー役（ADR 0025・0026）
+TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify", DESIGN_LABEL: "ui_design", PLAN_LABEL: "plan", DESIGN_SYSTEM_LABEL: "design_system"}
 TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "要求を確かめる質問をこの Issue に書きます（最大 3 往復）",
               "ui_design": "実装の前に、画面の要素と振る舞い（UXSpec）と案のモックを作り、デザイン検査役に見せます",
+              "design_system": "デザインシステムのデザイナー役が、コンセプトとトーン＆マナーの案か、デザインシステムの正本を作ります",
               "plan": "着手できるかを判定し、実装役・プロダクトデザイナー・デザインシステムのデザイナーのどれに回すかを決めます"}
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
@@ -251,8 +254,14 @@ def poll_loop():
             try:   # 起票者が問いに返事をしたチケットを、プランナーに判定し直させる（ADR 0026 の 0）
                 with db() as conn, conn.cursor() as cur:
                     planner.poll_answers(cur, gh, swap_label, REPOS, MODEL_TIER)
+                    planner.advance_steps(cur, gh, swap_label, comment, REPOS)
             except Exception as e:  # noqa: BLE001
                 log("plan answers poll failed", repr(e))
+            try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の段を積む（ADR 0025・0026）
+                with db() as conn, conn.cursor() as cur:
+                    design_system_line.apply_choices(cur, swap_label, comment)
+            except Exception as e:  # noqa: BLE001
+                log("design system choice apply failed", repr(e))
             try:   # 人が選んだ画面の案を Issue に反映する（factoryctl design pick・選択の画面。ADR 0025）
                 with db() as conn, conn.cursor() as cur:
                     design_line.apply_choices(cur, gh, comment, store_get)
@@ -319,7 +328,7 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "plan":   # プランナー（ADR 0025・0026）。読むだけなので製品によらず基本のイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = WORKER_IMAGE
-            elif kind == "ui_design":   # デザイナー役（ADR 0025）。製品によらず Chromium つきのイメージ
+            elif kind in ("ui_design", "design_system"):   # デザイナー役（ADR 0025・0026）。製品によらず Chromium つきのイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = UI_DESIGN_IMAGE
             else:
@@ -332,7 +341,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan") and not reattaching:
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system") and not reattaching:
                 dbname = f"job_{job_id}"
                 cur.execute(f'drop database if exists "{dbname}"')
                 cur.execute(f'create database "{dbname}"')
@@ -362,9 +371,10 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design.sh"] if kind == "ui_design" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design_review.sh"] if kind == "ui_design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/plan.sh"] if kind == "plan" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -388,7 +398,7 @@ def run_job(job: dict, reattaching: bool = False):
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
-                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan") or signaled
+                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system") or signaled
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if piped:
                     proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -420,7 +430,7 @@ def run_job(job: dict, reattaching: bool = False):
             preempted_for = cj["preempted_for"] if cancelled else None
             # ログをオブジェクトストアへ（ワーカーには何も残さない）
             blob_key = f"jobs/{job_id}/worker.log"
-            design_files, lines = design_line.extract_files(lines) if kind == "ui_design" else ({}, lines)   # 案のファイルはログに入れず別に置く
+            design_files, lines = design_line.extract_files(lines) if kind in ("ui_design", "design_system") else ({}, lines)   # 案のファイルはログに入れず別に置く
             data = "".join(lines).encode()
             store.put_object(BUCKET, blob_key, io.BytesIO(data), len(data), content_type="text/plain")
             result = None
@@ -437,7 +447,7 @@ def run_job(job: dict, reattaching: bool = False):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
-            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan") and result.get("ok"):
+            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system") and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
@@ -524,7 +534,7 @@ def run_job(job: dict, reattaching: bool = False):
                 if state == "succeeded":
                     try:
                         pid = planner.record(cur, repo, issue, corr, job_id, result)
-                        planner.act(cur, repo, issue, corr, job_id, pid, result, swap_label, comment)
+                        planner.act(cur, repo, issue, corr, job_id, pid, result, swap_label, comment, gh, (gh("GET", f"repos/{repo}/issues/{issue}") or {}).get("title") or "")
                     except Exception as e:  # noqa: BLE001  判定は残っている。タスクは止めて人に知らせる
                         log("plan act failed", job_id, repr(e))
                         swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
@@ -532,6 +542,25 @@ def run_job(job: dict, reattaching: bool = False):
                 else:
                     swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                     comment(repo, issue, f"ジョブ {job_id}（プランナー）は {state}（{err}）。`factoryctl rerun {job_id}` で再実行できます。")
+            elif kind == "design_system":
+                # デザインシステムのデザイナー役（ADR 0025・0026）: concept は案を人の選択に回す、spec は正本を Issue に足して実装役へ
+                if state == "succeeded":
+                    try:
+                        if result.get("phase") == "concept":
+                            keys = design_line.store_files(store_put, job_id, design_files)
+                            aid = design_system_line.record_concepts(cur, repo, issue, corr, job_id, result, keys)
+                            design_system_line.request_choice(cur, repo, issue, corr, job_id, aid, result, keys, swap_label, comment)
+                        else:
+                            sid = design_system_line.record_spec(cur, repo, issue, corr, job_id, result, judge_inp or {})
+                            design_system_line.handoff(cur, gh, swap_label, comment, repo, issue, corr, sid)
+                    except Exception as e:  # noqa: BLE001  記録は残っている。タスクは止めて人に知らせる
+                        log("design system act failed", job_id, repr(e))
+                        swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
+                        comment(repo, issue, f"ジョブ {job_id}（デザインシステムのデザイナー役）の後処理に失敗しました（{repr(e)[:300]}）。`factoryctl rerun {job_id}` で再実行できます。")
+                else:
+                    swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
+                    errs = "\n".join(f"- {x}" for x in ((result or {}).get("errors") or [])[:10])
+                    comment(repo, issue, f"ジョブ {job_id}（デザインシステムのデザイナー役）は {state}（{err}）。`factoryctl rerun {job_id}` で再実行できます。" + (f"\n\n{errs}" if errs else ""))
             elif kind in ("ui_design", "ui_design_review"):
                 # デザインの線（ADR 0025）: 案を残して検査役に回す／検査役の判断で 承認・直し・人へ。失敗はタスクを止めて知らせる
                 if state == "succeeded":

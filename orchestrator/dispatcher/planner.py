@@ -3,7 +3,8 @@
   Issue に factory:plan → plan のジョブ（core-gates/plan.py）→ ここで:
     ready:    Plan を残し、経路（役の並び）の最初の役のラベルを付ける（design_system → factory:design-system、
               ui_design → factory:design、implement → factory:planned）。以後は今の線（デザインの線、supervisor の投入）が配る。
-              残りの役は Plan の steps にあり、前の役が終わったときに次の役へ渡す
+              デザインシステムの仕事の後にほかの役が続く経路は、デザインシステムの仕事を別のチケットに切り（plan.split）、
+              このチケットは factory:waiting-steps で待つ。そのチケットが閉じたら advance_steps が次の役のラベルを付ける
     ask:      理由と選択肢つきの問いを Issue のコメントに書き、factory:needs-info。返信が付いたら poll_answers が判定し直しを積む
     escalate: factory:plan-human を付けて人に回す
 
@@ -22,7 +23,7 @@ ROLE_JA = {"design_system": "デザインシステムのデザイナー", "ui_de
 MAX_ROUNDS = 2
 MARKER = "<!-- factory:plan-questions -->"
 RUNNING_LABEL, QUEUED_LABEL = "factory:running", "factory:queued"
-ROLE_NOTE = {"design_system": "デザインシステムのデザイナー役ができるまでは、このラベルのまま待ちます。"}
+WAITING_LABEL = "factory:waiting-steps"   # 経路の前の役（別のチケット）が終わるのを待っている
 GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方の指定がない", "low_confidence": "プランナーの確信度が低い",
             "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった"}
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
@@ -88,13 +89,30 @@ def questions_comment(plan_id: int, round_: int, max_rounds: int, summary: str, 
     return "\n".join(lines)
 
 
-def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result: dict, swap_label, comment):
+def split_design_system(cur, gh, repo: str, issue: int, corr: str, plan_id: int, title: str, steps: list[str], p: dict) -> int:
+    """デザインシステムの仕事を別のチケットに切る（そのチケットの PR が閉じると、このチケットは経路の次の役へ進む）"""
+    focus = next((st.get("focus") for st in p.get("steps") or [] if isinstance(st, dict) and st.get("role") == "design_system"), "") or ""
+    body = "\n".join([f"#{issue} の経路（{path_ja(steps)}）の最初の役として、プランナーが切ったデザインシステムの仕事です。", "",
+                       f"やること: {focus}", "", f"このチケットが閉じると、#{issue} は {ROLE_JA[steps[1]]} に進みます。", "",
+                       f"<sub>Plan {plan_id}</sub>"])
+    child = (gh("POST", f"repos/{repo}/issues", {"title": f"デザインシステム: {title}"[:200], "body": body, "labels": [ROLE_LABELS["design_system"]]}) or {}).get("number")
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.split',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                (corr, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "child": child, "steps": steps}), f"plan.split:{plan_id}"))
+    return child
+
+
+def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result: dict, swap_label, comment, gh=None, title: str = ""):
     decision, steps = result.get("decision"), [r for r in result.get("steps") or [] if r in ROLE_LABELS]
     p, guards, marks = result.get("plan") or {}, result.get("guards") or [], result.get("advisories") or []
     if decision == "ready" and steps:
-        first = steps[0]
-        swap_label(repo, issue, [RUNNING_LABEL], [ROLE_LABELS[first]])
-        body = [f"プランナー（ジョブ {job_id}）: 着手できます。経路は **{path_ja(steps)}** です。{ROLE_NOTE.get(first, '')}", "",
+        if steps[0] == "design_system" and len(steps) > 1 and gh:   # デザインシステムの仕事は別のチケットにして、このチケットは待つ
+            child = split_design_system(cur, gh, repo, issue, corr, plan_id, title, steps, p)
+            swap_label(repo, issue, [RUNNING_LABEL], [WAITING_LABEL])
+            lead = f"デザインシステムの仕事を #{child} に切りました。#{child} が閉じたら {ROLE_JA[steps[1]]} に進みます。"
+        else:
+            swap_label(repo, issue, [RUNNING_LABEL], [ROLE_LABELS[steps[0]]])
+            lead = ""
+        body = [f"プランナー（ジョブ {job_id}）: 着手できます。経路は **{path_ja(steps)}** です。{lead}", "",
                 p.get("summary") or "", ""] + rationale(p, steps)
         if marks:
             body += ["", "見返すための印: " + _ja(marks)]
@@ -167,5 +185,32 @@ def poll_answers(cur, gh, swap_label, repos: list[str], model_tier: str) -> int:
             cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.answered',%s,%s,%s)",
                         (corr, jid, Jsonb({"repo": repo, "issue": issue, "round": round_})))
             swap_label(repo, issue, [NEEDS_INFO_LABEL], [QUEUED_LABEL])
+            n += 1
+    return n
+
+
+def advance_steps(cur, gh, swap_label, comment, repos: list[str]) -> int:
+    """factory:waiting-steps のチケットで、前の役のチケットが閉じたものを経路の次の役へ進める（dispatcher の周回）"""
+    import urllib.parse
+    n = 0
+    for repo in repos:
+        for it in gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(WAITING_LABEL)}&per_page=50") or []:
+            if "pull_request" in it:
+                continue
+            issue, corr = it["number"], f"github:{repo}#{it['number']}"
+            cur.execute("select payload from events where name='plan.split' and correlation_id=%s order by id desc limit 1", (corr,))
+            r = cur.fetchone()
+            if not r or not r["payload"].get("child"):
+                continue
+            sp = r["payload"]
+            if (gh("GET", f"repos/{repo}/issues/{sp['child']}") or {}).get("state") != "closed":
+                continue
+            nxt = sp["steps"][1]
+            cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.advanced',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
+                        (corr, Jsonb({"plan_id": sp["plan_id"], "repo": repo, "issue": issue, "after": sp["child"], "role": nxt}), f"plan.advanced:{sp['plan_id']}"))
+            if cur.fetchone() is None:
+                continue
+            swap_label(repo, issue, [WAITING_LABEL], [ROLE_LABELS[nxt]])
+            comment(repo, issue, f"#{sp['child']}（デザインシステム）が閉じたので、経路の次の役（{ROLE_JA[nxt]}）に進めました。")
             n += 1
     return n
