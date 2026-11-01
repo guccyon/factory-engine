@@ -204,7 +204,8 @@ if [ -n "${JOB_DEADLINE:-}" ]; then
   echo "[worker] agent time limit ${REMAIN}s (reserve ${POST_RESERVE_SEC:-300}s for push and PR)"
 fi
 set +e
-CLAUDE_OUT=$("${AGENT_TIMEOUT[@]}" "${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" ${HANDOFF_DIR:+--state-dir "${HANDOFF_DIR}/agent"} <<<"${PROMPT}" 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
+# 作業中の合図（会話の記録が進んだら 1 行）は fd 3 からコンテナの出力へ。出力が止まったと誤って知らせないため（2026-11-01）
+CLAUDE_OUT=$(AGENT_HEARTBEAT_FD=3 "${AGENT_TIMEOUT[@]}" "${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" ${HANDOFF_DIR:+--state-dir "${HANDOFF_DIR}/agent"} <<<"${PROMPT}" 3>&2 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
 CLAUDE_RC=$?
 set -e
 echo "[worker] claude exit=${CLAUDE_RC} at=$(date -u +%H:%M:%S)"

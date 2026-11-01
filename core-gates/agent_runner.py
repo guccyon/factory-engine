@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -129,6 +130,54 @@ def _claude_projects() -> Path:
     return Path.home() / ".claude" / "projects"   # Claude Code が会話の記録を置くところ（作業ディレクトリごとのフォルダ）
 
 
+HEARTBEAT_SEC = float(os.environ.get("AGENT_HEARTBEAT_SEC", "120"))
+
+
+def _transcript_mark() -> float:
+    """会話の記録（*.jsonl）のいちばん新しい更新時刻。記録がなければ 0"""
+    try:
+        return max((f.stat().st_mtime for f in _claude_projects().glob("*/*.jsonl")), default=0.0)
+    except OSError:
+        return 0.0
+
+
+def _heartbeat_out():
+    """出し先。AGENT_HEARTBEAT_FD があればその fd（ワーカーは stderr をファイルに逃がすので、コンテナの出力につないだ fd を渡す）"""
+    fd = os.environ.get("AGENT_HEARTBEAT_FD")
+    if fd:
+        try:
+            return open(int(fd), "w", closefd=False)
+        except (OSError, ValueError):
+            pass
+    return sys.stderr
+
+
+class _Heartbeat:
+    """実装の作業中、会話の記録が進んでいる間だけ stderr に 1 行ずつ出す。
+    `--output-format json` は終わるまで何も出さないので、dispatcher の滞りの検知（出力が WATCH_STALL_MIN 分止まる）が
+    長い実装を止まったと誤って知らせていた（2026-11-01、rally #497〜#502）。記録が進んでいないときは出さないので、本当の滞りは検知される"""
+
+    def __init__(self, interval: float = HEARTBEAT_SEC):
+        self.interval, self.stop = interval, threading.Event()
+        self.last = _transcript_mark()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self.stop.wait(self.interval):
+            mark = _transcript_mark()
+            if mark > self.last:
+                self.last = mark
+                print("[agent_runner] working (session transcript advanced)", file=_heartbeat_out(), flush=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join(timeout=5)
+
+
 def _claude_restore(state: Path | None) -> str | None:
     """前のジョブの会話の記録を ~/.claude/projects に戻し、そのセッション id を返す。なければ None"""
     if state is None:
@@ -168,7 +217,8 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
     base = ["claude", "-p", "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions"]
     sid = _claude_restore(state)
     resumed = bool(sid)
-    r = subprocess.run(base + (["--resume", sid] if sid else []), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
+    with _Heartbeat():
+        r = subprocess.run(base + (["--resume", sid] if sid else []), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
     try:
         res = json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -177,7 +227,8 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
         # 記録から再開できなかった（版の違い・記録の破損）。近道をあきらめて新しい会話で続ける（引き継ぎの記録はプロンプトにある）
         print("[agent_runner] resume failed; starting a new session", file=sys.stderr)
         resumed = False
-        r = subprocess.run(base, input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
+        with _Heartbeat():
+            r = subprocess.run(base, input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
         try:
             res = json.loads(r.stdout)
         except json.JSONDecodeError:
