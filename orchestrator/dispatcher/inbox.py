@@ -26,7 +26,7 @@ WHO = {
     "builder": "建設者",
     "requester": "起票者",
 }
-CHOICE_TITLES = {"design_variants": "画面の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}   # choice.KINDS と同じ
+CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}   # choice.KINDS と同じ
 KINDS = {"stoppage": "人の判断待ちの停止", "choice": "人の選択", "release": "本番への出荷", "task": "依頼"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
@@ -109,13 +109,14 @@ def _choices(cur) -> list[dict]:
     out = []
     for r in cur.fetchall():
         p = r["payload"]
-        design = p.get("kind") == "design_variants"
-        looks = p.get("kind") in ("design_variants", "concept_tone")   # 見た目の判断はデザインのチーフ（Gen1 はオーナー。ADR 0026 の 6）
-        out.append({"key": f"choice:{r['id']}", "kind": "choice", "who": "design_chief" if looks else "owner",
+        design = p.get("kind") in ("design_variants", "design_look")
+        # 体験の承認は PO、見た目の判断はデザインのチーフ（ADR 0026 の 4・6。Gen1 はどちらもオーナーが兼ねる）
+        who = "po" if p.get("kind") == "design_variants" else "design_chief" if p.get("kind") in ("design_look", "concept_tone") else "owner"
+        out.append({"key": f"choice:{r['id']}", "kind": "choice", "who": who,
                     "title": f"{CHOICE_TITLES.get(p.get('kind'), '人の選択')}: " + _clip(p.get("question"), 200),
                     "action": "案を選ぶか、どれも違えば戻す" + (f"（推奨 {p['recommended']}）" if p.get("recommended") else ""),
                     "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1],
-                    "uxspec": (p.get("subject") or {}).get("uxspec") if design else None})
+                    "uxspec": (p.get("kind"), (p.get("subject") or {}).get("uxspec")) if design else None})
     return out
 
 
@@ -157,7 +158,9 @@ def items(cur, now: datetime | None = None) -> list[dict]:
             out.append({"key": f"error:{type(e).__name__}", "kind": "error", "who": "builder", "title": "受信トレイの一部を読めなかった",
                         "action": repr(e)[:200], "url": "", "since": None, "ref": ""})
     # 画面の案の選択は、レビューページ（review_page.py）が同じ UXSpec の依頼を積んでいればそちらに任せる（二重に出さない）
-    reviews = {i["key"].removeprefix("task:design_review:") for i in out if i["key"].startswith("task:design_review:")}
+    # 体験の案（design_variants）は task:design_review:<id>、見た目の案（design_look）は task:design_look:<id>
+    prefix = {"task:design_review:": "design_variants", "task:design_look:": "design_look"}
+    reviews = {(k, i["key"].removeprefix(pre)) for i in out for pre, k in prefix.items() if i["key"].startswith(pre)}
     out = [i for i in out if not (i["kind"] == "choice" and i.get("uxspec") and i["uxspec"] in reviews)]
     for i in out:
         i.pop("uxspec", None)

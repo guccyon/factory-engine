@@ -39,7 +39,8 @@ def test_render_shows_the_package_and_actions_when_open():
     for text in ("本部が生徒に一斉にお知らせを届けたい", "お知らせ一覧", "取り消せない操作なので確認を挟む", "即送信", "7 マイクロインタラクション",
                  "3 画面遷移", "予約送信は次の版", "判断待ち", "新しい画面", "この案で承認", "直しを頼む", "/review/7/image/a.png"):
         assert text in page, text
-    assert "const CHOICE=3" in page and '"tok"' in page
+    assert 'data-a="choose" data-c="3" data-o="a"' in page and '"tok"' in page and "体験の案（プロダクトオーナーが判断）" in page
+    assert "見た目の案（デザインのチーフが選ぶ）" not in page
     assert "a.html" not in page   # 案の HTML はこの origin では開かない
 
 
@@ -50,7 +51,7 @@ def test_render_escapes_designer_text():
 
 def test_render_is_read_only_once_decided():
     page = rp.render(ctx("chosen", {"variant": "a", "decided_by": "human"}), "tok")
-    assert "決定済み" in page and "この案で承認" not in page and "const CHOICE=null" in page
+    assert "決定済み" in page and "この案で承認" not in page and "data-c=" not in page
 
 
 def test_fmt_handles_nested_and_empty():
@@ -130,7 +131,7 @@ def test_human_route_puts_the_review_page_in_the_inbox_and_choice_clears_it(cur,
     c = rp.load(cur, aid)
     assert rp.status(c) == "open" and c["choice"]["status"] == "open" and c["verdict"]["inspector_decision"] == "human"
     page = rp.render(c, "tok")
-    assert f"const CHOICE={c['choice']['id']}" in page and "本部が生徒に一斉に" in page
+    assert f'data-c="{c["choice"]["id"]}"' in page and "本部が生徒に一斉に" in page
     dl.choose(cur, REPO, ISSUE, "a", "console:test")
     dl.apply_choices(cur, gh, gh.comment, store.__getitem__)
     assert fake.open == {} and fake.log[-1] == ("resolve", f"design_review:{aid}", "chosen:a")
@@ -156,3 +157,93 @@ def test_without_inbox_the_line_still_works(cur, monkeypatch):
 @needs_db
 def test_load_returns_none_for_unknown(cur):
     assert rp.load(cur, 999) is None
+
+
+# ------------------------------------------------------------------ 体験と見た目を分ける（ADR 0026 の決定 4・6）
+LOOK_SPEC = {**SPEC, "brand_impact": True, "recommended_look": "l1", "recommended_look_reason": "落ち着き",
+             "variants": SPEC["variants"] + [{"id": "l1", "axis": "look", "name": "落ち着いた", "tradeoff": "上質"},
+                                             {"id": "l2", "axis": "look", "name": "明るい", "tradeoff": "親しみ"}]}
+
+
+def test_split_reasons():
+    assert dl.split_reasons(["brand_impact"], LOOK_SPEC) == ([], ["brand_impact"])
+    assert dl.split_reasons(["new_screen", "brand_impact"], LOOK_SPEC) == (["new_screen"], ["brand_impact"])
+    assert dl.split_reasons(["brand_impact"], SPEC) == (["brand_impact"], [])   # 見た目の案がなければ体験の判断として PO へ
+
+
+def look_review(cur, gh, reasons, spec=LOOK_SPEC):
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind, state) values (%s,%s,%s,'test','ui_design','succeeded') returning id",
+                (CORR, REPO, ISSUE))
+    jid = cur.fetchone()["id"]
+    store = {}
+    keys = dl.store_files(lambda k, d, ct: store.__setitem__(k, d), jid, {"a.html": b"<p>a</p>", "l1.png": b"png", "l2.png": b"png"})
+    aid = dl.record_draft(cur, REPO, ISSUE, CORR, jid, {"uxspec": spec, "round": 1}, keys)
+    inp = dl.review_input(cur, store.__getitem__, {"design_artifact_id": aid})
+    res = {"decision": "human", "human_reasons": reasons,
+           "verdict": {"decision": "human", "chosen_variant": "a", "confidence": 0.9, "findings": [], "evidence": [], "interpretation": "i"}}
+    vid = dl.record_review(cur, REPO, ISSUE, CORR, jid, inp, res)
+    dl.act_on_review(cur, REPO, ISSUE, CORR, jid, inp, res, vid, gh, gh.comment, "tier-large", store.__getitem__)
+    return aid
+
+
+class GH2(GH):
+    def __init__(self):
+        super().__init__()
+        self.created = []
+
+    def __call__(self, method, path, body=None):
+        if method == "POST" and path.endswith("/issues"):
+            self.created.append(body)
+            return {"number": 40 + len(self.created)}
+        return super().__call__(method, path, body)
+
+
+@needs_db
+def test_brand_only_hands_off_now_and_asks_the_chief_for_the_look(cur, monkeypatch):
+    fake = FakeInbox()
+    monkeypatch.setattr(dl, "inbox", fake)
+    gh = GH2()
+    aid = look_review(cur, gh, ["brand_impact"])
+    # 体験は検査役の承認で実装へ。見た目は推す案で仮に渡す
+    cur.execute("select payload from events where name='ui_design.handed_off'")
+    h = cur.fetchone()["payload"]
+    assert h["variant"] == "a" and h["look"] == "l1" and h["decided_by"] == "design_inspector" and not h["look_decided"]
+    assert "look:" in gh.body and "id: l1" in gh.body
+    assert fake.open == {f"design_look:{aid}": f"/review/{aid}"} and fake.log[0][2] == "design_chief"
+    ctx = rp.load(cur, aid)
+    assert ctx["choice"] is None and ctx["look_choice"]["status"] == "open" and rp.status(ctx) == "open"
+    page = rp.render(ctx, "tok")
+    assert "見た目の案（デザインのチーフが選ぶ）" in page and "この見た目にする" in page and "この案で承認" not in page
+    # 推す見た目と違う案を選ぶと、UXSpec を差し替えて合わせるタスクを切る
+    dl.choose_look(cur, REPO, ISSUE, "l2", "console:test")
+    assert fake.open == {}
+    assert dl.apply_looks(cur, gh, gh.comment) == 1 and dl.apply_looks(cur, gh, gh.comment) == 0
+    assert "id: l2" in gh.body and gh.created[-1]["title"].endswith("案 l2 に合わせる") and gh.created[-1]["labels"] == ["factory:planned"]
+
+
+@needs_db
+def test_look_chosen_before_experience_rides_the_handoff(cur, monkeypatch):
+    monkeypatch.setattr(dl, "inbox", FakeInbox())
+    gh = GH2()
+    aid = look_review(cur, gh, ["new_screen", "brand_impact"])
+    ctx = rp.load(cur, aid)
+    assert ctx["choice"]["status"] == "open" and ctx["look_choice"]["status"] == "open"
+    with pytest.raises(ValueError):
+        dl.choose(cur, REPO, ISSUE, "l1", "x")   # 見た目の案は体験の選択に使えない
+    dl.choose_look(cur, REPO, ISSUE, "l2", "console:test")
+    dl.choose(cur, REPO, ISSUE, "a", "console:test")
+    dl.apply_choices(cur, gh, gh.comment)
+    cur.execute("select payload from events where name='ui_design.handed_off'")
+    h = cur.fetchone()["payload"]
+    assert h["look"] == "l2" and h["look_decided"] is True
+    assert dl.apply_looks(cur, gh, gh.comment) == 1 and gh.created == []   # 渡した見た目と同じなので、合わせるタスクは要らない
+
+
+@needs_db
+def test_return_closes_both_requests(cur, monkeypatch):
+    fake = FakeInbox()
+    monkeypatch.setattr(dl, "inbox", fake)
+    aid = look_review(cur, GH2(), ["new_screen", "brand_impact"])
+    dl.return_to_designer(cur, REPO, ISSUE, CORR, "どれも違う", "tier-large")
+    ctx = rp.load(cur, aid)
+    assert fake.open == {} and ctx["choice"]["status"] == "returned" and ctx["look_choice"]["status"] == "returned"

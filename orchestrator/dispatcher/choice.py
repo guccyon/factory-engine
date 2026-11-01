@@ -15,7 +15,7 @@ import re
 
 from psycopg.types.json import Jsonb
 
-KINDS = {"design_variants": "画面の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}
+KINDS = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}
 IMAGE_PREFIXES = ("choices/", "design/")
 MAX_OPTIONS, MAX_LEN = 4, 1000
 OPTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,20}$")

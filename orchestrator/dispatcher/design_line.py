@@ -45,27 +45,51 @@ DECIDED_JA = {"design_inspector": "デザイン検査役が承認した", "human
 PUBLIC_URL = os.environ.get("CONSOLE_PUBLIC_URL", "").rstrip("/")   # Issue のコメントに出すレビューページの URL の前半（なければパスだけ）
 
 
-def inbox_key(aid) -> str:
-    return f"design_review:{aid}"
+LOOK_REASONS = {"brand_impact"}   # definitions/ui_design.yaml の inspector.look_reasons。見た目の案があればデザインのチーフが選ぶ
+
+
+def inbox_key(aid, axis: str = "flow") -> str:
+    return f"design_review:{aid}" if axis == "flow" else f"design_look:{aid}"
+
+
+def flow_variants(spec: dict) -> list[dict]:
+    return [v for v in spec.get("variants") or [] if isinstance(v, dict) and v.get("axis", "flow") == "flow"]
+
+
+def look_variants(spec: dict) -> list[dict]:
+    return [v for v in spec.get("variants") or [] if isinstance(v, dict) and v.get("axis") == "look"]
+
+
+def split_reasons(reasons: list[str], spec: dict) -> tuple[list[str], list[str]]:
+    """人へ回した理由を、体験の判断（プロダクトオーナー）と見た目の判断（デザインのチーフ）に分ける（ADR 0026 の決定 4・6）。
+    見た目の理由でも見た目の案がなければ、体験の案の選択としてプロダクトオーナーに回す"""
+    looks = look_variants(spec)
+    chief = [r for r in reasons if r in LOOK_REASONS] if looks else []
+    po = [r for r in reasons if r not in chief]
+    return po, chief
 
 
 def review_link(aid) -> str:
     return PUBLIC_URL + review_page.url(aid)
 
 
-def ask_reviewers(cur, repo: str, issue: int, corr: str, d: dict, reasons: list[str]) -> bool:
-    """判断する人の受信トレイにレビューページを積む（通知・再通知は受信トレイが持つ）。Gen1 は体験も見た目もプロダクトオーナー（オーナー）が見る"""
+def ask_reviewers(cur, repo: str, issue: int, corr: str, d: dict, reasons: list[str], axis: str = "flow") -> bool:
+    """判断する人の受信トレイにレビューページを積む（通知・再通知は受信トレイが持つ）。
+    体験（flow）はプロダクトオーナー、見た目（look）はデザインのチーフ。Gen1 はどちらもオーナー"""
     if inbox is None or not d.get("id"):
         return False
     why = "、".join(REASON_JA.get(x, x) for x in reasons) or "人の判断が要る"
-    return inbox.request(cur, inbox_key(d["id"]), "review_page", "po", f"{repo}#{issue} の画面の設計を判断する（{why}）",
-                         url=review_page.url(d["id"]), action="レビューページで案を承認するか、直しを頼む", correlation_id=corr, by="design_line")
+    if axis == "flow":
+        return inbox.request(cur, inbox_key(d["id"]), "review_page", "po", f"{repo}#{issue} の画面の体験を判断する（{why}）",
+                             url=review_page.url(d["id"]), action="レビューページで体験の案を承認するか、直しを頼む", correlation_id=corr, by="design_line")
+    return inbox.request(cur, inbox_key(d["id"], "look"), "review_page", "design_chief", f"{repo}#{issue} の画面の見た目を選ぶ（{why}）",
+                         url=review_page.url(d["id"]), action="レビューページで見た目の案を選ぶ（実装は先に進んでいる）", correlation_id=corr, by="design_line")
 
 
-def close_review(cur, aid, by: str, outcome: str) -> bool:
+def close_review(cur, aid, by: str, outcome: str, axis: str = "flow") -> bool:
     if inbox is None or not aid:
         return False
-    return inbox.resolve(cur, inbox_key(aid), by, outcome)
+    return inbox.resolve(cur, inbox_key(aid, axis), by, outcome)
 
 
 # ------------------------------------------------------------------ ワーカーの出力
@@ -185,27 +209,46 @@ def act_on_review(cur, repo: str, issue: int, corr: str, job_id: int, inp: dict,
         jid = enqueue(cur, repo, issue, corr, "ui_design", model_tier, nxt, attempt=nxt["round"])
         comment(repo, issue, revise_comment(v, jid))
     else:
-        swap(gh, repo, issue, [RUNNING_LABEL], [CHOICE_LABEL])
-        cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('ui_design.awaiting_choice',%s,%s,%s,%s) "
-                    "on conflict (dedupe_key) do nothing",
-                    (corr, job_id, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": vid,
-                                          "recommended": v.get("chosen_variant"), "reasons": result.get("human_reasons") or []}),
-                     f"ui_design.awaiting_choice:{d.get('id')}"))
-        comment(repo, issue, choice_comment(d, v, result.get("human_reasons") or []))
-        request_choice(cur, repo, issue, corr, job_id, d, v, result.get("human_reasons") or [])
-        ask_reviewers(cur, repo, issue, corr, d, result.get("human_reasons") or [])
+        spec = d.get("uxspec") or {}
+        po, chief = split_reasons(result.get("human_reasons") or [], spec)
+        flow_ids = [str(x.get("id")) for x in flow_variants(spec)]
+        rec = v.get("chosen_variant") if v.get("chosen_variant") in flow_ids else spec.get("recommended")
+        if chief:   # 見た目はデザインのチーフ。体験の承認と並行で、実装を待たせない（ADR 0026 の決定 4）
+            look_ids = [str(x.get("id")) for x in look_variants(spec)]
+            cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('ui_design.awaiting_look',%s,%s,%s,%s) "
+                        "on conflict (dedupe_key) do nothing",
+                        (corr, job_id, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": vid,
+                                              "recommended": spec.get("recommended_look") if spec.get("recommended_look") in look_ids else None,
+                                              "reasons": chief}), f"ui_design.awaiting_look:{d.get('id')}"))
+            request_choice(cur, repo, issue, corr, job_id, d, v, chief, axis="look")
+            ask_reviewers(cur, repo, issue, corr, d, chief, axis="look")
+        if po:
+            swap(gh, repo, issue, [RUNNING_LABEL], [CHOICE_LABEL])
+            cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('ui_design.awaiting_choice',%s,%s,%s,%s) "
+                        "on conflict (dedupe_key) do nothing",
+                        (corr, job_id, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": vid,
+                                              "recommended": rec, "reasons": po}),
+                         f"ui_design.awaiting_choice:{d.get('id')}"))
+            comment(repo, issue, choice_comment(d, v, po, chief))
+            request_choice(cur, repo, issue, corr, job_id, d, v, po)
+            ask_reviewers(cur, repo, issue, corr, d, po)
+        else:   # 体験は検査役の承認で実装へ。見た目だけ人が選ぶ
+            comment(repo, issue, look_comment(d, chief))
+            handoff(cur, gh, comment, repo, issue, corr, d, rec, "design_inspector", vid, get)
 
 
-def request_choice(cur, repo: str, issue: int, corr: str, job_id: int, d: dict, v: dict, reasons: list[str]) -> int | None:
-    """操業コンソールの「人の選択」に案を出す（P4-7、choice.HumanChoice）。同じ UXSpec には 1 度だけ"""
-    if choice.find_open(cur, "design_variants", repo, str(issue)):
+def request_choice(cur, repo: str, issue: int, corr: str, job_id: int, d: dict, v: dict, reasons: list[str], axis: str = "flow") -> int | None:
+    """人の選択（choice.HumanChoice）に案を出す。体験の案は design_variants、見た目の案は design_look。同じ UXSpec には 1 度だけ"""
+    kind = "design_variants" if axis == "flow" else "design_look"
+    if choice.find_open(cur, kind, repo, str(issue)):
         return None
     spec, files = d.get("uxspec") or {}, d.get("files") or {}
+    vs = flow_variants(spec) if axis == "flow" else look_variants(spec)
     options = [{"id": str(x.get("id")), "label": x.get("name") or str(x.get("id")), "note": x.get("tradeoff") or "",
-                "image_key": files.get(f"{x.get('id')}.png")} for x in (spec.get("variants") or [])[:choice.MAX_OPTIONS]]
-    rec = v.get("chosen_variant") or spec.get("recommended")
+                "image_key": files.get(f"{x.get('id')}.png")} for x in vs[:choice.MAX_OPTIONS]]
+    rec = (v.get("chosen_variant") or spec.get("recommended")) if axis == "flow" else spec.get("recommended_look")
     try:
-        return choice.request(cur, "design_variants", corr, f"#{issue} の画面の案", options,
+        return choice.request(cur, kind, corr, f"#{issue} の画面の{'体験' if axis == 'flow' else '見た目'}の案", options,
                               recommended=rec if rec in {o["id"] for o in options} else None,
                               subject={"repo": repo, "ticket": str(issue), "uxspec": str(d.get("id") or "")},
                               context="デザイン検査役が人に回した: " + "、".join(REASON_JA.get(x, x) for x in reasons), job_id=job_id)
@@ -219,6 +262,11 @@ def return_to_designer(cur, repo: str, issue: int, corr: str, reason: str, model
     r = cur.fetchone()
     d = load_design(cur, r["id"]) if r else {}
     close_review(cur, (d or {}).get("id"), "human", "returned")
+    close_review(cur, (d or {}).get("id"), "human", "returned", axis="look")
+    for kind in ("design_variants", "design_look"):   # もう片方の依頼も閉じる（作り直した案で出し直す）
+        aid = choice.find_open(cur, kind, repo, str(issue))
+        if aid:
+            choice.return_to_maker(cur, aid, "design_line", "案を作り直すため閉じた")
     nxt = {"round": int((d or {}).get("round") or 1) + 1, "previous_uxspec": (d or {}).get("uxspec") or {}, "previous_artifact_id": (d or {}).get("id"),
            "findings": [{"severity": "major", "viewpoint": "human", "variant": None, "evidence": reason[:300], "fix": "人の一言に沿って案を作り直す"}]}
     return enqueue(cur, repo, issue, corr, "ui_design", model_tier, nxt, attempt=nxt["round"])
@@ -234,9 +282,9 @@ def choose(cur, repo: str, issue: int, variant: str, by: str, note: str = "") ->
         raise ValueError("人の選択を待っている案がない")
     w = w["payload"]
     d = load_design(cur, int(w["design_artifact_id"])) or {}
-    ids = [str(x.get("id")) for x in (d.get("uxspec") or {}).get("variants") or []]
+    ids = [str(x.get("id")) for x in flow_variants(d.get("uxspec") or {})]
     if variant not in ids:
-        raise ValueError(f"案は {' / '.join(ids)} のどれか")
+        raise ValueError(f"体験の案は {' / '.join(ids)} のどれか")
     payload = {"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": w.get("verdict_id"), "variant": variant,
                "recommended": w.get("recommended"), "agree": variant == w.get("recommended"), "by": by, "note": note}
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('ui_design.chosen',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
@@ -244,6 +292,63 @@ def choose(cur, repo: str, issue: int, variant: str, by: str, note: str = "") ->
     if cur.fetchone() is None:
         raise ValueError("この案はもう選ばれている")
     return payload
+
+
+def choose_look(cur, repo: str, issue: int, variant: str, by: str, note: str = "") -> dict:
+    """デザインのチーフが見た目の案を選んだ（ADR 0026 の決定 4・6）。体験の承認とは別に記録し、反映は apply_looks か handoff"""
+    cur.execute("select payload from events where name='ui_design.awaiting_look' and payload->>'repo'=%s and (payload->>'issue')::int=%s "
+                "order by id desc limit 1", (repo, issue))
+    w = cur.fetchone()
+    if not w:
+        raise ValueError("見た目の選択を待っている案がない")
+    w = w["payload"]
+    d = load_design(cur, int(w["design_artifact_id"])) or {}
+    ids = [str(x.get("id")) for x in look_variants(d.get("uxspec") or {})]
+    if variant not in ids:
+        raise ValueError(f"見た目の案は {' / '.join(ids)} のどれか")
+    payload = {"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": w.get("verdict_id"), "variant": variant,
+               "recommended": w.get("recommended"), "agree": variant == w.get("recommended"), "by": by, "note": note}
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('ui_design.look_chosen',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
+                (d.get("corr"), Jsonb(payload), f"ui_design.look_chosen:{d.get('id')}"))
+    if cur.fetchone() is None:
+        raise ValueError("見た目はもう選ばれている")
+    close_review(cur, d.get("id"), by, f"look:{variant}", axis="look")
+    return payload
+
+
+def chosen_look(cur, aid) -> str | None:
+    cur.execute("select payload->>'variant' as v from events where dedupe_key=%s", (f"ui_design.look_chosen:{aid}",))
+    r = cur.fetchone()
+    return r["v"] if r else None
+
+
+def apply_looks(cur, gh, comment) -> int:
+    """実装に渡した後に見た目が選ばれたものを反映する（dispatcher の poll の周回）。
+    仮に渡した見た目と違えば、Issue の UXSpec を差し替え、見た目を合わせるタスクを切る"""
+    cur.execute("select l.correlation_id, l.payload, h.payload as handed from events l join events h on h.dedupe_key = "
+                "'ui_design.handed_off:' || (l.payload->>'design_artifact_id') where l.name='ui_design.look_chosen' and not exists ("
+                "select 1 from events a where a.dedupe_key = 'ui_design.look_applied:' || (l.payload->>'design_artifact_id')) order by l.id")
+    n = 0
+    for r in cur.fetchall():
+        p, h = r["payload"], r["handed"]
+        d = load_design(cur, int(p["design_artifact_id"]))
+        if not d:
+            continue
+        repo, issue, look = p["repo"], int(p["issue"]), p["variant"]
+        follow = None
+        if look != h.get("look"):
+            it = gh("GET", f"repos/{repo}/issues/{issue}") or {}
+            body = replace_section(it.get("body") or "", issue_section(issue, d.get("uxspec") or {}, h["variant"], h.get("decided_by") or "human",
+                                                                       h.get("gaps_issue"), None, look=look))
+            gh("PATCH", f"repos/{repo}/issues/{issue}", {"body": body})
+            title, fbody = look_issue_text(repo, issue, d.get("uxspec") or {}, h.get("look"), look)
+            follow = (gh("POST", f"repos/{repo}/issues", {"title": title, "body": fbody, "labels": [AFTER_LABEL]}) or {}).get("number")
+            comment(repo, issue, f"デザインのチーフが見た目の案 `{look}` を選びました。UXSpec を差し替え、見た目を合わせるタスク #{follow} を切りました。")
+        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('ui_design.look_applied',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                    (r["correlation_id"], Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "look": look,
+                                                 "provisional": h.get("look"), "followup_issue": follow}), f"ui_design.look_applied:{d.get('id')}"))
+        n += 1
+    return n
 
 
 def apply_choices(cur, gh, comment, get=None) -> int:
@@ -279,13 +384,16 @@ def handoff(cur, gh, comment, repo: str, issue: int, corr: str, d: dict, variant
             html = get(key).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001  モックは参考。読めなくても渡す
             html = None
+    looks = [str(x.get("id")) for x in look_variants(spec)]
+    look = chosen_look(cur, d.get("id")) or (spec.get("recommended_look") if spec.get("recommended_look") in looks else None)
     it = gh("GET", f"repos/{repo}/issues/{issue}") or {}
-    body = replace_section(it.get("body") or "", issue_section(issue, spec, variant, decided_by, gaps_issue, html))
+    body = replace_section(it.get("body") or "", issue_section(issue, spec, variant, decided_by, gaps_issue, html, look=look))
     gh("PATCH", f"repos/{repo}/issues/{issue}", {"body": body})
     swap(gh, repo, issue, [RUNNING_LABEL, CHOICE_LABEL, TRIGGER_LABEL], [AFTER_LABEL])
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('ui_design.handed_off',%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (corr, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": verdict_id, "variant": variant,
-                              "decided_by": decided_by, "gaps_issue": gaps_issue}), f"ui_design.handed_off:{d.get('id')}"))
+                              "decided_by": decided_by, "gaps_issue": gaps_issue, "look": look,
+                              "look_decided": chosen_look(cur, d.get("id")) is not None}), f"ui_design.handed_off:{d.get('id')}"))
     close_review(cur, d.get("id"), decided_by, f"chosen:{variant}")
     comment(repo, issue, f"画面の設計が決まりました（案 `{variant}`、{DECIDED_JA.get(decided_by, decided_by)}）。UXSpec を本文に足して、投入待ち（{AFTER_LABEL}）に戻しました。"
                          + (f"\nデザインシステムに足りない部品は #{gaps_issue} で先に足します（このタスクの依存）。" if gaps_issue else ""))
@@ -305,18 +413,22 @@ def swap(gh, repo: str, issue: int, remove: list[str], add: list[str]):
 
 
 # ------------------------------------------------------------------ 文面（純粋な関数）
-def chosen_spec(spec: dict, variant: str) -> dict:
+def chosen_spec(spec: dict, variant: str, look: str | None = None) -> dict:
     """実装に渡す UXSpec: 決まった案だけを残す（ほかの案は記録に残っている）"""
-    out = {k: v for k, v in spec.items() if k not in ("variants", "recommended", "recommended_reason")}
+    out = {k: v for k, v in spec.items() if k not in ("variants", "recommended", "recommended_reason", "recommended_look", "recommended_look_reason")}
     out["variant"] = next((v for v in spec.get("variants") or [] if str(v.get("id")) == variant), {"id": variant})
+    if look:
+        out["look"] = next((v for v in look_variants(spec) if str(v.get("id")) == look), {"id": look})
     return out
 
 
-def issue_section(issue: int, spec: dict, variant: str, decided_by: str, gaps_issue: int | None, html: str | None) -> str:
-    text = yaml.safe_dump(chosen_spec(spec, variant), allow_unicode=True, sort_keys=False)
+def issue_section(issue: int, spec: dict, variant: str, decided_by: str, gaps_issue: int | None, html: str | None, look: str | None = None) -> str:
+    text = yaml.safe_dump(chosen_spec(spec, variant, look), allow_unicode=True, sort_keys=False)
     lines = [MARK, "## 画面の設計（UXSpec）", "",
              f"デザインの線で決まった案 `{variant}`（{DECIDED_JA.get(decided_by, decided_by)}）。画面の要素・振る舞い・状態はこの UXSpec に合わせて実装する（ADR 0025）。",
              f"同じ PR で、この UXSpec を `specs/ux/issue-{issue}.yaml` に置く。見た目の細部は後から直してよい。"]
+    if look:
+        lines.append(f"見た目は案 `{look}`（look）に合わせる。デザインのチーフが別の見た目を選んだら、合わせるタスクが別に切られる（ADR 0026）。")
     if gaps_issue:
         lines += ["デザインシステムに足りない部品は別のタスクで足す。画面に直書きしない。", f"依存: #{gaps_issue}"]
     lines += ["", "```yaml", text.rstrip(), "```"]
@@ -349,15 +461,36 @@ def gaps_issue_text(repo: str, issue: int, spec: dict) -> tuple[str, str]:
 
 def _variants_lines(d: dict) -> list[str]:
     spec = d.get("uxspec") or {}
-    return [f"- `{v.get('id')}` {v.get('name')}: {v.get('tradeoff')}" for v in spec.get("variants") or []]
+    return [f"- `{v.get('id')}` {v.get('name')}: {v.get('tradeoff')}" for v in flow_variants(spec)]
 
 
-def choice_comment(d: dict, v: dict, reasons: list[str]) -> str:
+def look_issue_text(repo: str, issue: int, spec: dict, before: str | None, after: str) -> tuple[str, str]:
+    lv = next((v for v in look_variants(spec) if str(v.get("id")) == after), {})
+    title = f"#{issue} の画面の見た目を案 {after} に合わせる"
+    body = "\n".join([f"#{issue} の画面は、見た目を仮に案 `{before}` で実装に渡しました。デザインのチーフが見た目の案 `{after}`（{lv.get('name') or ''}）を選んだので合わせます（ADR 0026）。",
+                      "画面の要素と振る舞いは変えません。トークンと部品の差し替えで合わせ、画面に直書きしません。", "",
+                      "## 受け入れ条件",
+                      f"- #{issue} の UXSpec の look（案 `{after}`）の見た目になっている",
+                      "- 要素・振る舞い・状態は #{0} のまま".format(issue),
+                      "- 画面のキャプチャの前後差分で見た目だけが変わっている", "", f"依存: #{issue}"])
+    return title, body
+
+
+def look_comment(d: dict, reasons: list[str]) -> str:
+    why = "、".join(REASON_JA.get(r, r) for r in reasons)
+    return "\n".join([f"## 見た目の案を選んでください（{why}）", "",
+                       "体験（流れ・要素・振る舞い）はデザイン検査役が承認したので、推す見た目の案で先に実装に流します。",
+                       f"見た目の案はレビューページ（{review_link(d.get('id'))}）で選べます。推す案と違う見た目を選んだら、合わせるタスクを別に切ります。", "",
+                       "---", "_デザイン検査役（ADR 0026）_"])
+
+
+def choice_comment(d: dict, v: dict, reasons: list[str], look_reasons: list[str] | None = None) -> str:
     spec = d.get("uxspec") or {}
     why = "、".join(REASON_JA.get(r, r) for r in reasons) or "検査役が人の判断が要るとした"
     note = [f"> {v['human_reason']}"] if v.get("human_reason") else []
     return "\n".join([f"## 画面の案を選んでください（{why}）", "",
-                      f"デザイナー役が {len(spec.get('variants') or [])} 案を作り、デザイン検査役は `{v.get('chosen_variant')}` を推しています（確信度 {v.get('confidence')}）。",
+                      f"デザイナー役が体験の案を {len(flow_variants(spec))} つ作り、デザイン検査役は `{v.get('chosen_variant')}` を推しています（確信度 {v.get('confidence')}）。",
+                      *(["見た目の案はデザインのチーフが別に選びます（体験の承認を待たずに選べます）。"] if look_reasons else []),
                       *note, "",
                       "### 案", *_variants_lines(d), "",
                       f"推す理由（デザイナー役）: {spec.get('recommended_reason') or '（なし）'}", "",

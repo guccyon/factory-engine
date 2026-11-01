@@ -16,7 +16,8 @@ labels:
 
 designer:
   max_turns: 40
-  variants: {min: 2, max: 3, small_change_min: 1}   # 小さな追加（既存の画面に要素を 1 つ足す程度）は 1 案でよい
+  variants: {min: 2, max: 3, small_change_min: 1}   # 体験の案（axis: flow）の数。小さな追加（既存の画面に要素を 1 つ足す程度）は 1 案でよい
+  look_variants: {min: 2, max: 3}                   # 見た目の案（axis: look）の数。brand_impact のときだけ作る（ADR 0026 の決定 4・6）
   viewports:                                        # 案ごとに選ぶ。アプリの種類で決める
     mobile: [390, 844]
     desktop: [1280, 900]
@@ -28,7 +29,8 @@ designer:
     - "画面の要素と振る舞い（操作・状態・遷移）は必ず決める。見た目の細部は後追いでよい（ADR 0025 の E1）"
     - "状態（読み込み中・空・失敗・送信中・確認・権限がないとき）のうち、その画面に起きるものを states に全部書く"
     - "モックは外部の資源を読まない（Web フォント・CDN・画像の URL を使わない。書体は同梱のものを font-family で指定するだけ）"
-    - "案どうしは、選ぶ価値のある違い（流れ・情報の優先順位・密度）にする。色違いだけの案は作らない"
+    - "案は 2 つの軸に分ける。体験の案（axis: flow）は流れ・情報の優先順位・密度が違う案で、プロダクトオーナーが選ぶ。色違いだけの案は体験の案にしない"
+    - "brand_impact が true のときだけ、推す体験の案（recommended）に見た目だけを変えた案（axis: look。色・書体・角丸・写真の扱いなど、トークンの差し替え）を足し、推す見た目の案を recommended_look に書く。見た目の案はデザインのチーフが選ぶ"
     - "用語は specs/glossary.yaml の語を使う"
     - "人が判断できる材料にする: PRD の要約・ユーザーフロー・画面定義書（package.screen_sections の節）・設計の理由を必ず書く。画面だけを出さない（ADR 0026）"
 
@@ -67,6 +69,7 @@ inspector:
   max_turns: 20
   max_revisions: 1                   # 直しは 1 回まで（ADR 0025）。2 回目の「直し」は人へ
   human_below_confidence: 0.7        # 検査役の確信度がこれ未満なら人へ
+  look_reasons: [brand_impact]       # この理由で人へ回したものは、見た目の案があればデザインのチーフが選ぶ。ほかの理由は体験の判断としてプロダクトオーナーへ（ADR 0026 の決定 4・6）
   human_when:                        # 検査役の答えにかかわらず人へ回す（ADR 0025 の E1。決定論で決める）
     new_screen: "新しい画面（UXSpec の screens に new: true がある）"
     brand_impact: "ブランドと印象に効く画面（UXSpec の brand_impact: true。生徒が見る画面の見た目など）"
