@@ -222,3 +222,15 @@ def test_keep_days_cleanup_sees_new_volume_after_removal(cur, monkeypatch):
     saved()   # 同じチケットに新しいボリューム
     assert continuation.cleanup(cur) == 1
     assert calls[0] == ["docker", "volume", "rm", "-f", "factory-ticket-o-r-249"]
+
+
+def test_rejudge_without_escalation_clears_needs_judgment(cur, monkeypatch, fake_gh):
+    swaps = []
+    monkeypatch.setattr(dispatcher, "swap_label", lambda repo, n, remove, add: swaps.append((remove, add)))
+    esc = {**summary(defects=()), "escalated": [{"category": "aesthetic"}]}
+    dispatcher.act_on_judgment(cur, REPO, P["corr"], None, P["url"], esc, "attended")
+    assert "factory:needs-judgment" in swaps[-1][1]
+    assert f"judge:{P['url']}" in stoppage.open_keys(cur, "judge:")
+    dispatcher.act_on_judgment(cur, REPO, P["corr"], None, P["url"], summary(defects=()), "attended")
+    assert swaps[-1][0] == ["factory:needs-judgment"] and "factory:needs-judgment" not in swaps[-1][1]
+    assert f"judge:{P['url']}" not in stoppage.open_keys(cur, "judge:")
