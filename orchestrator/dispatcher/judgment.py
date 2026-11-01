@@ -130,9 +130,23 @@ def judge_input(cur, pr_url: str, mode: str, constraints: str = "") -> dict:
     return {"pr_url": pr_url, "mode": mode, "provisional": prov, "defects": defects, "track_record": track_record(cur), "constraints": constraints}
 
 
+def _key(category, question) -> tuple:
+    return (category or "", " ".join(str(question or "").split()))
+
+
+def human_decided(cur, pr_url: str) -> dict:
+    """同じ PR で人がすでに判断した項目（judged の記録に human_grade がある）。(類型, 問い) → 人の判断"""
+    cur.execute("select payload from artifacts where type='Judgment' and payload->>'stage'='judged' and payload->>'pr_url'=%s "
+                "and payload->'human_grade' is not null and payload->'human_grade' <> 'null'::jsonb order by id", (pr_url,))
+    return {_key(r["payload"].get("category"), r["payload"].get("question")): r["payload"]["human_grade"] for r in cur.fetchall()}
+
+
 def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts: dict, mode: str, mode_basis: str) -> dict:
-    """judge の結果を Judgment（stage=judged）と judgment.judged に残す。返り値は起票・印に使う集計"""
+    """judge の結果を Judgment（stage=judged）と judgment.judged に残す。返り値は起票・印に使う集計。
+    同じ PR で人がすでに判断した項目は、judge が人に回しても回し直さない（衝突の解消などで head が変わるたびに
+    同じ問いが人に戻っていた。11-01 rally #505）。人の判断を引き継いだことを記録に残す"""
     tr = inp.get("track_record", {})
+    decided = human_decided(cur, pr_url)
     by_id = {p["artifact_id"]: p for p in inp.get("provisional", [])}
     adopted_defects, replaced, escalated, confidences = [], [], [], []
     rows = [("provisional", v) for v in verdicts.get("provisional", [])] + [("defect", v) for v in verdicts.get("defects", [])]
@@ -147,6 +161,9 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
         verdict, forced = delegated_verdict(category, v.get("verdict"), v.get("confidence"), v.get("precedent"))
         if forced:
             v = {**v, "verdict": verdict, "replacement": None}
+        carried = decided.get(_key(category, question)) if kind == "provisional" and v.get("verdict") == "escalate" else None
+        if carried:
+            v = {**v, "verdict": "human_decided", "replacement": None}
         conf = v.get("confidence")
         conf = max(0.0, min(1.0, float(conf))) if isinstance(conf, (int, float)) else None
         rec = tr.get(category)
@@ -158,14 +175,14 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
-                   "human_grade": None, "forced_escalation": forced}
+                   "human_grade": None, "forced_escalation": forced, "carried_human_decision": carried}
         cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Judgment',%s,%s,'verify',%s) returning id",
                     (corr, job_id, Jsonb(payload)))
         aid = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('judgment.judged',%s,%s,%s)",
                     (corr, job_id, Jsonb({"artifact_id": aid, "category": category, "verdict": v.get("verdict"), "confidence": conf,
                                           "basis": basis, "mode": mode, "pr_url": pr_url})))
-        if conf is not None:
+        if conf is not None and not carried:   # 人が判断済みの項目は judge の確信度の低さで印を付けない
             confidences.append(conf)
         if v.get("verdict") == "escalate":
             escalated.append({"artifact_id": aid, "category": category, "question": question})
