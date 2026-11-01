@@ -86,3 +86,15 @@ def test_waits_while_human_decision_pending(cur):
     stoppage.close_stoppage(cur, f"judge:{P['url']}", remedy="人が判断した", closed_by="supervisor")
     supervisor.conflict_step(cur, P, pr(sha="def"))
     assert len(enqueued(cur)) == 1
+
+
+def test_no_conflict_stoppage_while_human_decision_pending(cur):
+    # 判断待ちで衝突を解かない間は「解けなかった」停止を開かない。判断が付けば次の周期で解く
+    import stoppage
+    labeled = {**pr(), "labels": [{"name": "factory:needs-judgment"}]}
+    supervisor.ci_failure_step(cur, P, "abc", "dirty", labeled)
+    assert stoppage.open_keys(cur, f"ci:{P['url']}") == []
+    supervisor.ci_failure_step(cur, P, "abc", "dirty", pr())
+    assert stoppage.open_keys(cur, f"ci:{P['url']}") != []
+    supervisor.ci_failure_step(cur, P, "abc", "dirty", labeled)   # 判断待ちに戻れば閉じる
+    assert stoppage.open_keys(cur, f"ci:{P['url']}") == []
