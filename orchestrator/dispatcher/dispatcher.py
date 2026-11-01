@@ -88,6 +88,9 @@ MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマー�
 DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちの段（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
+# 一時的なネットワークの失敗（名前解決・接続）。ワーカーの最初の git clone で落ちることが多い（11-01 job 1350、1640 ほか）
+NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "connection timed out", "temporary failure in name resolution")
+NET_RETRY_MAX = int(ENV.get("NET_RETRY_MAX", "3"))   # 同じチケットで 30 分のうちに自動でやり直す上限
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
@@ -494,6 +497,8 @@ def run_job(job: dict, reattaching: bool = False):
                     log("provisional record failed", job_id, repr(e))
             if preempted_for:
                 requeue_preempted(cur, job, preempted_for, (result or {}).get("cost_usd"))
+            elif state == "failed" and (err or "").startswith("exit=") and net_transient(lines) and requeue_transient(cur, job):
+                pass   # 一時的なネットワークの失敗。同じジョブを積み直した（人の調査に回さない）
             elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
                              {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars")})
@@ -644,6 +649,35 @@ def run_job(job: dict, reattaching: bool = False):
                 except Exception as e:  # noqa: BLE001
                     log("job db drop failed", job_id, repr(e))
             cur.execute("select pg_advisory_unlock(hashtext(%s))", (lock_key,))
+
+
+def net_transient(lines: list[str]) -> bool:
+    """ログの終わりに一時的なネットワークの失敗の印があるか"""
+    return any(m in l.lower() for l in lines[-30:] for m in NET_TRANSIENT_MARKERS)
+
+
+def requeue_transient(cur, job: dict) -> bool:
+    """一時的なネットワークの失敗で落ちたジョブを、そのまま順番待ちに積み直す。同じチケットで 30 分に NET_RETRY_MAX 回まで。
+    積み直したら True（番人の job: の停止は、同じ流れの次のジョブが始まると閉じる）"""
+    cur.execute("select count(*) as n from jobs where correlation_id=%s and enqueued_by='net_retry' and enqueued_at > now() - interval '30 minutes'",
+                (job["correlation_id"],))
+    if cur.fetchone()["n"] >= NET_RETRY_MAX:
+        return False
+    import factoryctl   # 積み直しの入力の引き継ぎは factoryctl rerun と同じものを使う
+    kind = job.get("kind") or "implement"
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
+                    "select correlation_id, repo, issue_number, attempt + 1, 'net_retry', model_tier, kind, ticket_id, priority from jobs where id=%s returning id",
+                    (job["id"],))
+    except psycopg.errors.UniqueViolation:
+        return False   # 同じチケットのジョブがもう積まれている
+    new_id = cur.fetchone()["id"]
+    record_event(cur, "job.enqueued", job["correlation_id"], new_id, {"by": "net_retry", "attempt": job["attempt"] + 1, "previous": job["id"],
+                                                                      "ticket_id": job.get("ticket_id"), "priority": job.get("priority"),
+                                                                      **(continuation.carry_over(cur, job["id"]) if kind == "implement" else {}),
+                                                                      **factoryctl.carried_input(cur, job["id"], kind)})
+    log(f"job {job['id']} failed on a transient network error, requeued as {new_id}")
+    return True
 
 
 def requeue_preempted(cur, job: dict, preempted_for: int, cost_usd):
