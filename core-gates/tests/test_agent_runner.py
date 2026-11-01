@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -212,7 +213,17 @@ class HeartbeatTest(unittest.TestCase):
         self.assertGreaterEqual(self._beats(advance=True), 1)
 
     def test_silent_when_transcript_does_not_advance(self):
-        self.assertEqual(self._beats(advance=False), 0)
+        with mock.patch.object(ar, "_cpu_mark", return_value=1.0):
+            self.assertEqual(self._beats(advance=False), 0)
+
+    def test_prints_while_tools_use_cpu(self):
+        # 1 つの長いコマンドの間は記録が進まないが、CPU を使っていれば作業中
+        ticks = iter(range(0, 1000, 10))
+        with mock.patch.object(ar, "_cpu_mark", side_effect=lambda: float(next(ticks))):
+            self.assertGreaterEqual(self._beats(advance=False), 1)
+
+    def test_cpu_mark_reads_proc(self):
+        self.assertGreaterEqual(ar._cpu_mark(), 0.0)
 
     def test_writes_to_given_fd(self):
         r, w = os.pipe()
