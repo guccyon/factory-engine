@@ -56,6 +56,8 @@ def validate(spec, defs: dict, out_dir: Path | None = None) -> list[str]:
             if "new" in s and not isinstance(s["new"], bool):
                 errs.append(f"screens[{i}].new が true / false でない")
     errs += package_errors(spec)
+    if "prototype" in spec and not isinstance(spec["prototype"], bool):
+        errs.append("prototype が true / false でない")
     if "brand_impact" in spec and not isinstance(spec["brand_impact"], bool):
         errs.append("brand_impact が true / false でない")
     for k in ("states", "design_system_constraints", "design_system_gaps"):
@@ -250,6 +252,7 @@ def prompt(defs: dict, issue: dict, inp: dict) -> str:
    - recommended_look: 見た目の案を作ったときだけ、推す見た目の案の id（理由は recommended_look_reason に 1 文）
    - brand_impact: 利用者（生徒・コーチ）が見る画面で、色・書体・写真など印象に効く見た目を決める案なら true。管理画面の流れだけなら false
    - rationale: 設計の理由。{why}
+   - prototype: {pk.get('prototype', '')}。つながなかったら false
    - open_questions: {pk.get('open_questions', '')}（なければ []）
    - judgments: 決めたことのうち判断が要ったもの（kind は ui・aesthetic・system_interface・error_handling・scope、question、note）
    - notes: 補足（任意）
