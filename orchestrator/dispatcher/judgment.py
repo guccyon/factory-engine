@@ -154,8 +154,8 @@ def human_decided(cur, pr_url: str) -> dict:
 
 def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts: dict, mode: str, mode_basis: str) -> dict:
     """judge の結果を Judgment（stage=judged）と judgment.judged に残す。返り値は起票・印に使う集計。
-    同じ PR で人がすでに判断した項目は、judge が人に回しても回し直さない（衝突の解消などで head が変わるたびに
-    同じ問いが人に戻っていた。11-01 rally #505）。人の判断を引き継いだことを記録に残す"""
+    同じ PR で人がすでに判断した項目は、judge が人に回しても回し直さず、案を替えもしない（衝突の解消などで head が変わるたびに
+    同じ問いが人に戻っていた。11-01 rally #505。judge が人の決めた案を替えた。11-02 rally #581）。人の判断を引き継いだことを記録に残す"""
     tr = inp.get("track_record", {})
     decided = human_decided(cur, pr_url)
     by_id = {p["artifact_id"]: p for p in inp.get("provisional", [])}
@@ -173,7 +173,9 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
         verdict, forced = delegated_verdict(category, v.get("verdict"), v.get("confidence"), v.get("precedent"), level)
         if forced:
             v = {**v, "verdict": verdict, "replacement": None}
-        carried = decided.get(_key(category, question)) if kind == "provisional" and v.get("verdict") == "escalate" else None
+        # 人の判断は escalate だけでなく adopt・replace より優先する。要素レベルの自己承認（#137）で judge が
+        # 人の決めた案を replace し、決定を覆す直しが起票された（11-02 rally #581）
+        carried = decided.get(_key(category, question)) if kind == "provisional" else None
         if carried:
             v = {**v, "verdict": "human_decided", "replacement": None}
         conf = v.get("confidence")
