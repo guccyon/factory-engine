@@ -133,3 +133,17 @@ def test_label_without_escalation_still_waits(cur):
     judged(cur, 10, "adopt")
     supervisor.conflict_step(cur, P, {**pr(), "labels": [{"name": "factory:needs-judgment"}]})
     assert enqueued(cur) == []
+
+
+def test_waits_while_on_hold(cur):
+    # ほかの PR を待つ保留の間は、人の判断が付いていても衝突を解かない（11-02 rally #589）
+    import stoppage
+    ops.upsert_ticket(cur, "github", f"{REPO}#249", REPO, title="D61", priority=70)
+    judged(cur, 10, "escalate", {"grade": "agree"})
+    stoppage.open_stoppage(cur, f"hold:{P['url']}", "human", "#505 を待つ", correlation_id=P["corr"], detected_by="builder")
+    supervisor.conflict_step(cur, P, {**pr(), "labels": [{"name": "factory:needs-judgment"}]})
+    supervisor.conflict_step(cur, P, pr(sha="def"))
+    assert enqueued(cur) == []
+    stoppage.close_stoppage(cur, f"hold:{P['url']}", remedy="#505 が入った", closed_by="builder")
+    supervisor.conflict_step(cur, P, pr(sha="ghi"))
+    assert len(enqueued(cur)) == 1
