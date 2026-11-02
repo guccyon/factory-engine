@@ -152,6 +152,20 @@ def human_decided(cur, pr_url: str) -> dict:
     return {_key(r["payload"].get("category"), r["payload"].get("question")): r["payload"]["human_grade"] for r in cur.fetchall()}
 
 
+def decisions_settled(cur, pr_url: str) -> bool:
+    """最後の judge が人に回した項目が 1 件以上あり、そのすべてに人の判断（human_grade）が付いているか。
+    付いていれば、ラベルと judge: の停止は次の judge で外れるのを待つだけで、人を待ってはいない"""
+    cur.execute("select job_id from artifacts where type='Judgment' and payload->>'stage'='judged' and payload->>'pr_url'=%s "
+                "order by id desc limit 1", (pr_url,))
+    last = cur.fetchone()
+    if not last:
+        return False
+    cur.execute("select payload->'human_grade' as g from artifacts where type='Judgment' and payload->>'stage'='judged' "
+                "and payload->>'pr_url'=%s and job_id is not distinct from %s and payload->>'verdict'='escalate'", (pr_url, last["job_id"]))
+    grades = [r["g"] for r in cur.fetchall()]
+    return bool(grades) and all(g not in (None, "null") for g in grades)
+
+
 def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts: dict, mode: str, mode_basis: str) -> dict:
     """judge の結果を Judgment（stage=judged）と judgment.judged に残す。返り値は起票・印に使う集計。
     同じ PR で人がすでに判断した項目は、judge が人に回しても回し直さず、案を替えもしない（衝突の解消などで head が変わるたびに

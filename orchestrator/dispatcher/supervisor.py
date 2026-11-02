@@ -262,10 +262,13 @@ def waiting_for_human(cur, url: str, pr: dict | None = None) -> bool:
 
 def awaiting_decision(cur, url: str, pr: dict) -> bool:
     """人の判断を待っている PR か（judge が人に回した・差し戻しを流さなかった・委員会が人に回した・表が承認を求めた、
-    または factory:needs-judgment のラベルが付いている）。CI 落ち・衝突の停止（ci:）は含めない（工場が自分で直す対象）"""
-    if any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []):
+    または factory:needs-judgment のラベルが付いている）。CI 落ち・衝突の停止（ci:）は含めない（工場が自分で直す対象）。
+    judge が人に回した項目にすべて人の判断が付いていれば、ラベルと judge: の停止は待ちに数えない。差し戻しの直しのあとに
+    衝突すると、衝突を解かない → judge をやり直せない → ラベルも停止も外れない、で止まっていた（11-02 rally #592）"""
+    settled = judgment.decisions_settled(cur, url)
+    if not settled and any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []):
         return True
-    for prefix in ("judge:", "sendback:"):
+    for prefix in (("sendback:",) if settled else ("judge:", "sendback:")):
         if stoppage.open_keys(cur, f"{prefix}{url}"):
             return True
     d = committee.decided(cur, url)
