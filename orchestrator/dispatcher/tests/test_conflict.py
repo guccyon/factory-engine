@@ -98,3 +98,38 @@ def test_no_conflict_stoppage_while_human_decision_pending(cur):
     assert stoppage.open_keys(cur, f"ci:{P['url']}") != []
     supervisor.ci_failure_step(cur, P, "abc", "dirty", labeled)   # 判断待ちに戻れば閉じる
     assert stoppage.open_keys(cur, f"ci:{P['url']}") == []
+
+
+def judged(cur, job_id, verdict, grade=None):
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into jobs(id, correlation_id, repo, issue_number, state) overriding system value values (%s,%s,%s,999,'succeeded') "
+                "on conflict (id) do nothing", (job_id, P["corr"], REPO))
+    cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Judgment',%s,%s,'verify',%s)",
+                (P["corr"], job_id, Jsonb({"stage": "judged", "pr_url": P["url"], "verdict": verdict, "human_grade": grade})))
+
+
+def test_resolves_after_all_escalations_decided(cur):
+    # 人に回した項目にすべて人の判断が付けば、ラベルと judge: の停止が残っていても衝突を解く（11-02 rally #592）
+    import stoppage
+    ops.upsert_ticket(cur, "github", f"{REPO}#249", REPO, title="D61", priority=70)
+    stoppage.open_stoppage(cur, f"judge:{P['url']}", "human", "judge が人に回した", correlation_id=P["corr"], detected_by="supervisor")
+    labeled = {**pr(), "labels": [{"name": "factory:needs-judgment"}]}
+    judged(cur, 10, "adopt")
+    judged(cur, 10, "escalate")
+    judged(cur, 10, "escalate", {"grade": "disagree"})
+    supervisor.conflict_step(cur, P, labeled)
+    assert enqueued(cur) == []   # 1 件まだ人の判断がない
+    cur.execute("update artifacts set payload = jsonb_set(payload, '{human_grade}', '{\"grade\": \"agree\"}') where payload->'human_grade' = 'null'::jsonb and payload->>'verdict'='escalate'")
+    supervisor.conflict_step(cur, P, labeled)
+    assert len(enqueued(cur)) == 1
+    judged(cur, 11, "escalate")   # 直しのあとの judge が新しく人に回したら、また待つ
+    supervisor.conflict_step(cur, P, {**labeled, "head": {**labeled["head"], "sha": "def"}})
+    assert len(enqueued(cur)) == 1
+
+
+def test_label_without_escalation_still_waits(cur):
+    # 人に回した項目がない（確信度の低さなどで付いた）ラベルは、これまでどおり待つ
+    ops.upsert_ticket(cur, "github", f"{REPO}#249", REPO, title="D61", priority=70)
+    judged(cur, 10, "adopt")
+    supervisor.conflict_step(cur, P, {**pr(), "labels": [{"name": "factory:needs-judgment"}]})
+    assert enqueued(cur) == []
