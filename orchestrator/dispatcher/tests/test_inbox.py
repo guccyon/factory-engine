@@ -171,3 +171,9 @@ def test_design_choice_defers_to_review_page(cur):
     assert xs[f"choice:{look}"]["who"] == "design_chief"
     inbox.request(cur, "design_look:ux-9", "review_page", "design_chief", "画面 9 の見た目", url="/review/ux-9")
     assert f"choice:{look}" not in {i["key"] for i in inbox.items(cur)}
+
+
+def test_hold_waiting_for_another_pr_is_builders(cur):
+    stoppage.open_stoppage(cur, "hold:https://github.com/o/r/pull/589", "human", "#505 のマージ待ち", quiet=True)
+    [i] = inbox.items(cur)
+    assert i["who"] == "builder"

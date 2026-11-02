@@ -81,7 +81,9 @@ def _open_task_keys(cur, key: str | None = None) -> set[str]:
 
 
 # ------------------------------------------------------------------ 集める
-STOPPAGE_WHO = {"drain": "builder", "sendback": "builder"}   # 入れ替えの再開と差し戻しの扱いは建設者。マージ・judge の判断はオーナー
+# 入れ替えの再開と差し戻しの扱い、ほかの PR を待つ保留（hold:）は建設者。マージ・judge の判断はオーナー
+# （hold は人の判断が済んだあとの順番待ちで、オーナーのすることはない。11-02 rally #589 が「オーナーの出番」と出ていた）
+STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder"}
 
 
 def _stoppages(cur, now) -> list[dict]:
