@@ -91,7 +91,7 @@ def type_styles(tokens: dict) -> list[dict]:
             out.append({"name": _k(name), "size": _px(s.get("size")), "weight": int(s.get("weight") or 400) if str(s.get("weight") or "").isdigit() else 400,
                         "line_height": s.get("line_height") if isinstance(s.get("line_height"), (int, float)) else 1.5,
                         "letter_spacing": s.get("letter_spacing") if isinstance(s.get("letter_spacing"), str) and re.fullmatch(r"-?[0-9.]+em", s["letter_spacing"]) else "0",
-                        "use": str(s.get("use") or "")})
+                        "use": str(s.get("use") or ""), "sample": str(s.get("sample") or "")})
     return out
 
 
@@ -158,7 +158,7 @@ def build(files: dict[str, str]) -> str:
     sw = "".join(f'<div class="sw"><div class="chip" style="background:var({n})"></div><code>{e(n[8:])}</code><span>{e(v)}</span></div>'
                  for n, v, kind in vars_ if kind == "color")
     ty = "".join(f'<div class="ty"><code>{e(s["name"])}</code><span class="meta">{e(s["size"])} / {s["weight"]}</span>'
-                 f'<div class="type-{s["name"]}">{e(s["use"][:28]) or "あいうえお Aa 0123"}</div></div>' for s in styles)
+                 f'<div class="type-{s["name"]}">{e(s["sample"][:40] or s["use"][:28]) or "あいうえお Aa 0123"}</div></div>' for s in styles)
     space = "".join(f'<div class="sp"><code>{e(n[8:])}</code><span class="meta">{e(v)}</span><i style="width:var({n})"></i></div>'
                     for n, v, kind in vars_ if kind == "space")
     radius = "".join(f'<div class="rd"><i style="border-radius:var({n})"></i><code>{e(n[9:])}</code><span class="meta">{e(v)}</span></div>'

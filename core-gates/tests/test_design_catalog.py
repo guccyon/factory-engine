@@ -54,3 +54,11 @@ def test_cli(tmp_path):
     assert dc.main([str(tmp_path), str(tmp_path / "c.html")]) == 0 and (tmp_path / "c.html").is_file()
     (tmp_path / "components.yaml").write_text("components: [{id: a}]\n")
     assert dc.main([str(tmp_path), str(tmp_path / "c.html")]) == 1
+
+
+def test_type_sample_comes_before_use():
+    # 書体の見本は sample（実際の画面の文言）を出す。sample がなければ use を出す
+    tok = {"typography": {"scale": {"display": {"size": 44, "use": "残りの回数", "sample": "残り 2 回"},
+                                    "body": {"size": 16, "use": "本文"}}}}
+    html = dc.build({"tokens.yaml": yaml.safe_dump(tok, allow_unicode=True), "components.yaml": yaml.safe_dump(COMP, allow_unicode=True)})
+    assert '<div class="type-display">残り 2 回</div>' in html and '<div class="type-body">本文</div>' in html
