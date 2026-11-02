@@ -227,8 +227,8 @@ def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None, 
     if ("pr.conflicted" in seen or mergeable_state == "dirty" or "pr.ci_failed" in seen) and continuation.pending(cur, p["url"], sha):
         return   # 工場の続きのジョブが直している最中。人には回さない（ADR 0017）
     tried = continuation.attempts(cur, p["url"], "ci_failed")
-    if ("pr.conflicted" in seen or mergeable_state == "dirty") and pr is not None and awaiting_decision(cur, p["url"], pr):
-        # 人の判断待ちの間は衝突を解かない（conflict_step）。解けなかった扱いの停止は開かず、開いていれば閉じる（判断が付けば解く）
+    if ("pr.conflicted" in seen or mergeable_state == "dirty") and pr is not None and (awaiting_decision(cur, p["url"], pr) or over_budget(cur)):
+        # 人の判断待ちと予算の枠を使い切っている間は衝突を解かない（conflict_step）。解けなかった扱いの停止は開かず、開いていれば閉じる
         stoppage.close_stoppage(cur, key, remedy="人の判断待ち。判断が付いたら衝突を解く", closed_by="supervisor")
         return
     if "pr.conflicted" in seen or mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
@@ -286,6 +286,10 @@ def conflict_step(cur, p: dict, pr: dict):
     解けなかったら次の head は来ないので、同じ head では二度積まず、番人のマージ待ちの停止に任せる"""
     if not CONFLICT_FIX or (pr["head"].get("repo") or {}).get("full_name") != p["repo"]:
         return   # フォークの PR は触らない
+    if over_budget(cur):
+        # 予算の枠を使い切っている間は、衝突の解消も積まない（枠が戻った最初の周期で、その時点の head で 1 回だけ解く）。
+        # 新しい実装だけを止めていた 11-02 は、枠の上限 $700 に対して衝突の解消だけで $1,420 使った
+        return
     if awaiting_decision(cur, p["url"], pr):
         # 人の判断待ちの間は解かない。main が動くたびに解き直して費用がかさむ（11-01 rally #505、約 3 時間で 6 回・$36）。
         # 判断が付いて待ちが外れたら、その時点の head で 1 回だけ解く
@@ -516,7 +520,7 @@ def budget_window(now: datetime) -> tuple[datetime, float] | None:
 
 
 def over_budget(cur) -> dict | None:
-    """今の枠の予算を使い切っていれば、その様子を返す（新しい実装を投入しない。作業中のもの・検査・judge は止めない）"""
+    """今の枠の予算を使い切っていれば、その様子を返す（新しい実装と衝突の解消を積まない。作業中のもの・検査・judge・指摘の直しは止めない）"""
     w = budget_window(datetime.now(timezone(timedelta(hours=9))))
     if w is None:
         return None

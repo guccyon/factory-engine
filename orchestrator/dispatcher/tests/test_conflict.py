@@ -147,3 +147,17 @@ def test_waits_while_on_hold(cur):
     stoppage.close_stoppage(cur, f"hold:{P['url']}", remedy="#505 が入った", closed_by="builder")
     supervisor.conflict_step(cur, P, pr(sha="ghi"))
     assert len(enqueued(cur)) == 1
+
+
+def test_no_conflict_fix_while_over_budget(cur, monkeypatch):
+    # 予算の枠を使い切っている間は衝突を解かず、解けなかった扱いの停止も開かない。枠が戻れば解く（11-02）
+    import stoppage
+    ops.upsert_ticket(cur, "github", f"{REPO}#249", REPO, title="D61", priority=70)
+    monkeypatch.setattr(supervisor, "over_budget", lambda c: {"spent_usd": 800, "budget_usd": 700})
+    supervisor.conflict_step(cur, P, pr())
+    supervisor.ci_failure_step(cur, P, "abc", "dirty", pr())
+    assert enqueued(cur) == []
+    assert stoppage.open_keys(cur, f"ci:{P['url']}") == []
+    monkeypatch.setattr(supervisor, "over_budget", lambda c: None)
+    supervisor.conflict_step(cur, P, pr())
+    assert len(enqueued(cur)) == 1
