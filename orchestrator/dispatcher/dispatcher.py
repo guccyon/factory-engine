@@ -642,6 +642,12 @@ def run_job(job: dict, reattaching: bool = False):
             log("run_job error", job_id, repr(e))
             cur.execute("update jobs set state='failed', finished_at=now(), error=%s where id=%s and state='running'", (repr(e)[:500], job_id))
             record_event(cur, "job.finished", corr, job_id, {"state": "failed", "error": repr(e)[:500]})
+            # コンテナを起こす前の準備（GitHub への問い合わせ）で名前解決などが一時的に失敗したときも積み直す（11-02 job 2267）
+            if transient_exception(e):
+                try:
+                    requeue_transient(cur, job)
+                except Exception as e2:  # noqa: BLE001
+                    log("requeue after run_job error failed", job_id, repr(e2))
         finally:
             reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0020）
             if JOB_DB_ENABLED:
@@ -655,6 +661,11 @@ def run_job(job: dict, reattaching: bool = False):
 def net_transient(lines: list[str]) -> bool:
     """ログの終わりに一時的なネットワークの失敗の印があるか"""
     return any(m in l.lower() for l in lines[-30:] for m in NET_TRANSIENT_MARKERS)
+
+
+def transient_exception(e: BaseException) -> bool:
+    """dispatcher の中で起きた例外が、一時的なネットワークの失敗か（名前解決・接続・時間切れ）"""
+    return isinstance(e, (urllib.error.URLError, ConnectionError, TimeoutError)) or net_transient([repr(e)])
 
 
 def requeue_transient(cur, job: dict) -> bool:

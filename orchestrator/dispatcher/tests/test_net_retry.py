@@ -69,3 +69,11 @@ def test_does_not_double_enqueue_when_active_job_exists(cur):
     j = failed_job(cur)
     cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values (%s,%s,514,'implement','queued')", (CORR, REPO))
     assert not dispatcher.requeue_transient(cur, j)
+
+
+def test_transient_exception_before_container_starts():
+    import socket
+    import urllib.error
+    assert dispatcher.transient_exception(urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution")))
+    assert dispatcher.transient_exception(TimeoutError("timed out"))
+    assert not dispatcher.transient_exception(KeyError("pr_url"))
