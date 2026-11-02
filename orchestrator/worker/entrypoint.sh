@@ -51,7 +51,7 @@ if [ -n "${HANDOFF_DIR}" ] && ! { mkdir -p "${HANDOFF_DIR}/jobs" 2>/dev/null && 
   echo "[worker] handoff dir not writable (${HANDOFF_DIR}); continuing without it"   # 古いイメージ（/handoff を持たない）でもラインは止めない
   HANDOFF_DIR=""
 fi
-PR_URL="" PR_NUMBER="${CONTINUE_PR:-}" CLAUDE_RC="" TURNS="" COST="" SUMMARY="" PROVISIONAL="" RESUMED="false"
+PR_URL="" PR_NUMBER="${CONTINUE_PR:-}" CLAUDE_RC="" TURNS="" COST="" SUMMARY="" PROVISIONAL="" RESUMED="false" MECHANICAL=""
 
 save_handoff() {
   # 実装役の文脈をチケットのボリュームに残す（保留）。失敗してもジョブの結果は変えない
@@ -104,6 +104,19 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
   git checkout -q -b "${BRANCH}" "origin/${BRANCH}"
   if ! git merge --no-edit -q "origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
     CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+  fi
+  # 衝突の解消で、衝突が CHANGELOG.md の追記どうしだけ（または衝突がない）なら、エージェントを使わずに機械的に解く。
+  # 同時に流した PR が同じ CHANGELOG に追記し合い、1 日に 345 回・$1,420 の衝突の解消が走った（2026-11-02）
+  if [ "${CONTINUE_REASON:-}" = "conflict" ]; then
+    if [ "${CONFLICTS}" = "CHANGELOG.md " ]; then
+      git show :1:CHANGELOG.md > /work/cl.base 2>/dev/null || : > /work/cl.base
+      git show :2:CHANGELOG.md > /work/cl.ours && git show :3:CHANGELOG.md > /work/cl.theirs \
+        && git merge-file --union /work/cl.ours /work/cl.base /work/cl.theirs \
+        && cp /work/cl.ours CHANGELOG.md && git add CHANGELOG.md && MECHANICAL="CHANGELOG.md の追記どうしの衝突を、両方の行を残して機械的に解きました（エージェントは使っていません）。" \
+        && CONFLICTS=""
+    elif [ -z "${CONFLICTS}" ]; then
+      MECHANICAL="既定ブランチを衝突なく取り込みました（エージェントは使っていません）。"
+    fi
   fi
   echo "[worker] continue ${CONTINUE_REASON} pr=#${CONTINUE_PR} branch=${BRANCH} conflicts=[${CONFLICTS}]"
 else
@@ -205,8 +218,17 @@ if [ -n "${JOB_DEADLINE:-}" ]; then
 fi
 set +e
 # 作業中の合図（会話の記録が進んだら 1 行）は fd 3 からコンテナの出力へ。出力が止まったと誤って知らせないため（2026-11-01）
-CLAUDE_OUT=$(AGENT_HEARTBEAT_FD=3 "${AGENT_TIMEOUT[@]}" "${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" ${HANDOFF_DIR:+--state-dir "${HANDOFF_DIR}/agent"} <<<"${PROMPT}" 3>&2 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
+# 衝突の解消は前のジョブの会話を引き継がない（--state-dir を渡さない）。引き継ぐと長い履歴を毎回読み込み、CHANGELOG の 1 行の衝突でも 1 回 $10 を超えた（2026-11-02）。
+# 前のジョブの報告は previous-jobs.md で渡している
+STATE_ARGS=()
+[ -n "${HANDOFF_DIR}" ] && [ "${CONTINUE_REASON:-}" != "conflict" ] && STATE_ARGS=(--state-dir "${HANDOFF_DIR}/agent")
+if [ -n "${MECHANICAL:-}" ]; then
+  CLAUDE_OUT=$(jq -nc --arg o "${MECHANICAL}" '{output:$o, cost_usd:0, num_turns:0, usage:{}, resumed:false}')
+  CLAUDE_RC=0
+else
+CLAUDE_OUT=$(AGENT_HEARTBEAT_FD=3 "${AGENT_TIMEOUT[@]}" "${AGENT[@]}" exec implement --tier "${MODEL_TIER:-tier-large}" --max-turns "${MAX_TURNS}" "${STATE_ARGS[@]}" <<<"${PROMPT}" 3>&2 2>/work/claude.err)   # stderr はリポジトリの外に置く（コミットに混ざらないように）
 CLAUDE_RC=$?
+fi
 set -e
 echo "[worker] claude exit=${CLAUDE_RC} at=$(date -u +%H:%M:%S)"
 sed 's/^/[claude.err] /' /work/claude.err | tail -50 || true
