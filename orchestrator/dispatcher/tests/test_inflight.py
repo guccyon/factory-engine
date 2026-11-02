@@ -45,3 +45,14 @@ def test_continuation_job_on_open_pr_counts_once(cur):
 def test_job_for_pr_waiting_on_human_still_counts(cur):
     job(cur, 5, "running")            # 人を待つ PR（open_prs に入らない）の直しは、動いている間だけ数える
     assert supervisor.inflight_count(cur, set()) == 1
+
+
+def test_labeled_or_held_pr_is_waiting_for_human(cur):
+    import stoppage
+    url = "https://github.com/o/r/pull/534"
+    assert not supervisor.waiting_for_human(cur, url, {"labels": []})
+    # judge の停止は閉じたが、ラベルが残っている（衝突は解かずに止まるので、枠も取らない）
+    assert supervisor.waiting_for_human(cur, url, {"labels": [{"name": "factory:needs-judgment"}]})
+    # ほかの PR のマージを待つ保留
+    stoppage.open_stoppage(cur, "hold:https://github.com/o/r/pull/589", "human", "#505 のマージ待ち", quiet=True)
+    assert supervisor.waiting_for_human(cur, "https://github.com/o/r/pull/589", {"labels": []})

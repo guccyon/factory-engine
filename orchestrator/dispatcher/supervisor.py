@@ -241,10 +241,15 @@ def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None, 
         stoppage.close_stoppage(cur, key, remedy="次の head で CI が通った（衝突も解けた）", closed_by="supervisor")
 
 
-def waiting_for_human(cur, url: str) -> bool:
-    """人を待っている PR か（judge が人に回した、差し戻しを流さなかった、CI 落ち・衝突、表が承認を求めた、知見の委員会が人に回した）。
-    同時に流す件数の枠には数えない。承認待ちをラインのクリティカルパスにしない（2026-10-31 オーナー、11-01 に委員会の分を足した）"""
-    for prefix in ("judge:", "sendback:", "ci:"):
+def waiting_for_human(cur, url: str, pr: dict | None = None) -> bool:
+    """人を待っている PR か（judge が人に回した、差し戻しを流さなかった、CI 落ち・衝突、表が承認を求めた、知見の委員会が人に回した、
+    factory:needs-judgment のラベルが付いている、ほかの PR を待つ保留）。
+    同時に流す件数の枠には数えない。承認待ちをラインのクリティカルパスにしない（2026-10-31 オーナー、11-01 に委員会の分を足した）。
+    ラベルと保留は 11-02 に足した。ラベルの付いた PR は衝突を解かずに止まる（awaiting_decision）のに枠を取り、
+    rally #527・#534・#589 が動かないまま 3 枠を埋めていた"""
+    if pr is not None and any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []):
+        return True
+    for prefix in ("judge:", "sendback:", "ci:", "hold:"):
         if stoppage.open_keys(cur, f"{prefix}{url}"):
             return True
     d = committee.decided(cur, url)
@@ -332,7 +337,7 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             else:
                 ci_fix_step(cur, p, pr)
             ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"), pr)
-        if not waiting_for_human(cur, p["url"]):
+        if not waiting_for_human(cur, p["url"], pr):
             open_corrs.add(p["corr"])
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
             continue   # CI 待ち・衝突・ドラフト（途中終了）は表を引くまでもない
