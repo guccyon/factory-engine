@@ -103,6 +103,9 @@ details { background: var(--sheet); border: 1px solid var(--rule); padding: 10px
 details summary { cursor: pointer; font-weight: 700 }
 details summary:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px }
 details ul { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 2px }
+.outlook { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px }
+@media (max-width: 760px) { .outlook { grid-template-columns: minmax(0, 1fr) } }
+.outlook td.state { white-space: nowrap }
 .tag { font-size: 11px; padding: 0 6px; margin-right: 6px; background: var(--steel-soft); color: var(--ink) }
 .tag.builder { background: var(--rule) }
 footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 10px }
@@ -123,6 +126,18 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
     <div>
       <div class="strip" id="strip"></div>
       <div class="strip-note">帯の幅は憲章の期間の目安（週）。色は各フェーズの済んだ割合</div>
+    </div>
+  </section>
+
+  <section class="outlook" aria-label="Gen1 の完了と商品化">
+    <div class="card table-wrap">
+      <h2>Gen1 の完了の見込み（ロードマップの順に片付くとみなした粗い見込み）</h2>
+      <table class="reasons"><thead><tr><th>フェーズ</th><th style="text-align:right">進捗</th><th style="text-align:right" id="fc-a"></th><th style="text-align:right" id="fc-b"></th></tr></thead><tbody id="forecast"></tbody></table>
+      <div class="sub-note">P6 を終えると Gen1 の完了。項目を書き直すと割合が段差で動く</div>
+    </div>
+    <div class="card table-wrap">
+      <h2>商品化の条件（Gen1 の先。測り方が決まるまで日付は出さない）</h2>
+      <table class="reasons"><thead><tr><th>条件</th><th>中身</th><th style="white-space:nowrap">測り方</th></tr></thead><tbody id="commercial"></tbody></table>
     </div>
   </section>
 
@@ -269,6 +284,22 @@ function render() {
     seg.title = `${p.id} ${p.ja}: ${pct(p.progress)}%`;
     seg.append(bar, lab); $("strip").append(seg);
   });
+
+  // Gen1 の完了の見込みと商品化の条件
+  const FC = S.progress.forecast || [];
+  if (FC.length === 2) {
+    $("fc-a").textContent = `いまのペース（${FC[0].pace_pt} pt/日）`; $("fc-b").textContent = `半分のペース`;
+    FC[0].phases.forEach((p, i) => {
+      const ph = S.progress.phases[i], tr = el("tr");
+      tr.append(el("td", null, `${p.id} ${p.ja}`), el("td", "n", `${pct(ph.progress)}%`),
+        el("td", "n", p.done ? "済" : (p.date ? md(p.date) : "—")), el("td", "n", p.done ? "済" : (FC[1].phases[i].date ? md(FC[1].phases[i].date) : "—")));
+      $("forecast").append(tr);
+    });
+  }
+  (S.progress.commercial || []).forEach((c) => {
+    const tr = el("tr"); tr.append(el("td", null, c.ja), el("td", null, c.note || ""), el("td", "state", c.measure ? "あり" : "未定義")); $("commercial").append(tr);
+  });
+  if (!FC.length && !(S.progress.commercial || []).length) document.querySelector("section.outlook").hidden = true;
 
   // 頼みたいこと
   const asks = [];

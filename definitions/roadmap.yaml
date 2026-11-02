@@ -122,3 +122,13 @@ phases:
     items:
       - { id: second_factory, ja: "Blueprint から 2 号機が生成される", measure: { manual: todo } }
       - { id: reconcile, ja: "Engine の改善が Reconcile で両工場に配布される", measure: { manual: todo } }
+
+# 商品化の条件（2026-11-01 オーナー）: P0a〜P6 を終えても Gen1 の完了にすぎず、工場の商品化はその先。
+# 完全に自律で運用できることが前提。測り方（measure）が決まるまで、日報は条件を並べるだけで日付の見込みは出さない。
+# 測り方は「商品化の条件を壁打ちする」の検討で決め、決まったら phases の items と同じ measure を書く
+commercial:
+  - { id: guardrails, ja: "完全に自律で運用できるだけのガードレール", note: "止める・戻す・人に回すの線が揃い、人が常駐しなくても事故にならない" }
+  - { id: judgment_engine, ja: "自律判断のエンジン", note: "judge・検査役・プランナーが、人の判断を委任できる精度で決める（人と一致した率で測る候補）" }
+  - { id: signal_improvement, ja: "運用中のシグナルからの自律改善提案（Gen2 以降）", note: "Issue だけでなく、行動ログ・利用統計・SLI・障害から改善を起こす" }
+  - { id: ui_quality, ja: "プロダクトの UI の品質（言葉の選び方など）", note: "画面の文言・見た目が商品として出せる水準" }
+  - { id: outside_contact, ja: "外界との接点", note: "外形監視、GitHub App、OAuth・通知の設定、報告のダッシュボード" }
