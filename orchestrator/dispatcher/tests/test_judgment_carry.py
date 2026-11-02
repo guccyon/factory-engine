@@ -61,3 +61,16 @@ def test_carried_items_do_not_lower_confidence(cur):
     cur.execute("update artifacts set payload = jsonb_set(payload, '{human_grade}', %s) where id=%s", (Jsonb({"grade": "agree"}), aid))
     second = judge(cur, {"文字の役割の当て方": ("escalate", 0.3), "書体の同梱": ("adopt", 0.9)})
     assert second["escalated"] == [] and second["min_confidence"] == 0.9
+
+
+@pytest.mark.parametrize("verdict", ["replace", "adopt"])
+def test_human_decision_wins_over_judge_replace(cur, verdict):
+    # 人が PR の案に決めたあと、要素レベルの自己承認で judge が案を替えた（11-02 rally #581）
+    first = judge(cur, {"文字の役割の当て方": ("escalate", 0.6), "書体の同梱": ("adopt", 0.9)})
+    aid = first["escalated"][0]["artifact_id"]
+    cur.execute("update artifacts set payload = jsonb_set(payload, '{human_grade}', %s) where id=%s", (Jsonb({"grade": "agree"}), aid))
+    second = judge(cur, {"文字の役割の当て方": (verdict, 0.7), "書体の同梱": ("adopt", 0.9)})
+    assert second["replaced"] == [] and second["escalated"] == []
+    cur.execute("select payload from artifacts where type='Judgment' and payload->>'question'='文字の役割の当て方' order by id desc limit 1")
+    p = cur.fetchone()["payload"]
+    assert p["verdict"] == "human_decided" and p["carried_human_decision"] == {"grade": "agree"}
