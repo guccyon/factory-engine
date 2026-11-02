@@ -303,8 +303,9 @@ def ci_fix_step(cur, p: dict, pr: dict):
         log("ci fix enqueued", p["url"], "job", jid)
 
 
-def merge_step(cur, rules: dict, manifests: dict):
-    open_count = 0
+def merge_step(cur, rules: dict, manifests: dict) -> set:
+    """返り値は、同時上限に数える開いた工場の PR の correlation_id（人を待つ PR は数えない）"""
+    open_corrs: set = set()
     for p in factory_prs(cur):
         cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s", (p["url"],))
         if cur.fetchone():
@@ -332,7 +333,7 @@ def merge_step(cur, rules: dict, manifests: dict):
                 ci_fix_step(cur, p, pr)
             ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"), pr)
         if not waiting_for_human(cur, p["url"]):
-            open_count += 1
+            open_corrs.add(p["corr"])
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
             continue   # CI 待ち・衝突・ドラフト（途中終了）は表を引くまでもない
         sha = pr["head"]["sha"]
@@ -367,8 +368,8 @@ def merge_step(cur, rules: dict, manifests: dict):
         gh("PUT", f"repos/{p['repo']}/pulls/{p['number']}/merge", {"merge_method": "squash", "sha": sha})
         record(cur, "supervisor.merged", p["corr"], {"pr_url": p["url"], "head_sha": sha, "basis": basis}, f"supervisor.merged:{p['url']}")
         log("merged", p["url"], basis)
-        open_count = max(0, open_count - 1)
-    return open_count
+        open_corrs.discard(p["corr"])
+    return open_corrs
 
 
 def inspector_approved(cur, pr_url: str, sha: str) -> tuple[bool, str]:
@@ -516,9 +517,16 @@ def over_budget(cur) -> dict | None:
     return {"window_start": start.isoformat(), "budget_usd": usd, "spent_usd": round(spent, 2)} if spent >= usd else None
 
 
-def enqueue_step(cur, open_prs: int):
-    cur.execute("select count(*) as n from jobs where state in ('queued','running')")
-    inflight = cur.fetchone()["n"] + open_prs
+def inflight_count(cur, open_prs) -> int:
+    """同時に流しているチケットの数。待ち・実行中のジョブと、開いた工場の PR（人を待たないもの）を、チケット（correlation_id）ごとに 1 と数える。
+    以前はジョブの数と PR の数を足していたので、PR の衝突・CI の直しの続きのジョブが PR と二重に数えられ、
+    直しが重なると新しいタスクが投入されなくなった（11-02 朝、21 件と数えて上限 13 で止まった）"""
+    cur.execute("select coalesce(correlation_id, 'job:' || id::text) as corr from jobs where state in ('queued','running')")
+    return len({r["corr"] for r in cur.fetchall()} | set(open_prs))
+
+
+def enqueue_step(cur, open_prs: set):
+    inflight = inflight_count(cur, open_prs)
     state_cache: dict[str, str] = {}
 
     def issue_state(repo: str, n: int) -> str:
