@@ -310,7 +310,14 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
     review_fix) SECTION_TITLE="検査の指摘の直し" ;;
     *) SECTION_TITLE="続きのジョブ" ;;
   esac
-  NEW_BODY=$(printf '%s\n\n## %s（job %s）\n%s\n\n- model: %s、turns: %s、cost(API 換算): $%s\n' "${OLD_BODY}" "${SECTION_TITLE}" "${JOB_ID}" "${SUMMARY}" "${MODEL}" "${TURNS}" "${COST}")
+  # 続きのジョブの報告は、本文の末尾に折りたたんで 1 件ずつ足す。見出しのまま足すと、衝突の解消が重なった PR で
+  # 同じ見出しが 11 回並び、元の概要が埋もれた（2026-11-02 rally #657）
+  ENTRY=$(printf '<details><summary>%s（job %s、turns %s、$%s）</summary>\n\n%s\n\n- model: %s\n</details>' "${SECTION_TITLE}" "${JOB_ID}" "${TURNS}" "${COST}" "${SUMMARY}" "${MODEL}")
+  if grep -q '^## 続きのジョブの記録$' <<<"${OLD_BODY}"; then
+    NEW_BODY=$(printf '%s\n%s\n' "${OLD_BODY}" "${ENTRY}")
+  else
+    NEW_BODY=$(printf '%s\n\n## 続きのジョブの記録\n\n%s\n' "${OLD_BODY}" "${ENTRY}")
+  fi
   if [ "${CONTINUE_REASON}" = "incomplete" ] && [ -z "${INCOMPLETE}" ]; then
     # 仕上がったら未完了の印を外し、Issue を閉じる参照に直してドラフトを外す
     NEW_BODY=$(printf '%s' "${NEW_BODY}" | sed -e '/^\*\*未完了\*\*:/d' -e "s/^Refs #${ISSUE_NUMBER}$/Closes #${ISSUE_NUMBER}/")
