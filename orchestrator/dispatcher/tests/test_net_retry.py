@@ -48,6 +48,14 @@ def test_detects_transient_markers():
     assert not dispatcher.net_transient(["error: pathspec 'x' did not match\n"])
 
 
+def test_net_transient_push_rejected():
+    # GitHub 側の一時的な拒否はやり直す。理由のある拒否（保護ブランチなど）はやり直さない
+    assert dispatcher.net_transient([" ! [remote rejected]   HEAD -> factory/issue-626-job-2236 (failed)\n"])
+    assert dispatcher.net_transient([" ! [remote rejected] HEAD -> factory/x (missing necessary objects)\n"])
+    assert not dispatcher.net_transient([" ! [remote rejected] HEAD -> main (protected branch hook declined)\n"])
+    assert not dispatcher.net_transient([" ! [rejected]        HEAD -> factory/x (non-fast-forward)\n"])
+
+
 def test_requeues_with_same_input_and_caps(cur):
     j = failed_job(cur)
     assert dispatcher.requeue_transient(cur, j)
