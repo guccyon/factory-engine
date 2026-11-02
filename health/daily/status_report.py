@@ -221,7 +221,28 @@ def roadmap_progress(conn) -> dict:
         phases.append({"id": ph["id"], "ja": ph["ja"], "weight": ph["weight_weeks"], "progress": round(p, 3), "items": items})
         wsum += ph["weight_weeks"]
         acc += ph["weight_weeks"] * p
-    return {"overall": round(acc / wsum, 3) if wsum else 0.0, "phases": phases}
+    return {"overall": round(acc / wsum, 3) if wsum else 0.0, "phases": phases, "commercial": spec.get("commercial", [])}
+
+
+def gen1_forecast(progress: dict, today: str, start: str = START_DATE) -> list[dict]:
+    """ロードマップ（P0a〜P6）を終える＝Gen1 の完了の見込み。これまでの平均のペースと、その半分の 2 本。
+
+    フェーズはロードマップの順に片付くとみなす粗い見込み。商品化の日付はここから出さない（条件は roadmap.yaml の commercial）。
+    """
+    d0, d1 = datetime.fromisoformat(start).date(), datetime.fromisoformat(today).date()
+    pace = progress["overall"] / max((d1 - d0).days, 1)   # 1 日あたりの進捗（割合）
+    phases = progress["phases"]
+    wsum = sum(p["weight"] for p in phases) or 1
+    out = []
+    for name, f in (("これまでの平均のペース", 1.0), ("半分のペース", 0.5)):
+        rows = []
+        for k, p in enumerate(phases):
+            rest = sum((1 - q["progress"]) * q["weight"] for q in phases[:k + 1]) / wsum   # p まで（p を含む）の残り
+            done = p["progress"] >= 1
+            rows.append({"id": p["id"], "ja": p["ja"], "done": done,
+                         "date": None if done or pace <= 0 else (d1 + timedelta(days=rest / (pace * f))).isoformat()})
+        out.append({"name": name, "pace_pt": round(pace * f * 100, 1), "phases": rows})
+    return out
 
 
 # ------------------------------------------------------------------ 前日の動き・頼みたいこと
@@ -629,6 +650,7 @@ def main() -> int:
     if conn is not None and args.publish:
         ingest_quality(conn, date)
     progress = roadmap_progress(conn)
+    progress["forecast"] = gen1_forecast(progress, date)
     snap = {"date": date, "generated_at": now.isoformat(), "progress": progress,
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
