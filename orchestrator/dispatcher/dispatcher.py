@@ -90,6 +90,8 @@ LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちの�
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 一時的なネットワークの失敗（名前解決・接続）。ワーカーの最初の git clone で落ちることが多い（11-01 job 1350、1640 ほか）
 NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "connection timed out", "temporary failure in name resolution")
+# GitHub 側の一時的な push の拒否（やり直すと通る）。保護ブランチなど理由のある拒否は含めない
+PUSH_TRANSIENT_REASONS = ("(failed)", "(missing necessary objects)")
 NET_RETRY_MAX = int(ENV.get("NET_RETRY_MAX", "3"))   # 同じチケットで 30 分のうちに自動でやり直す上限
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
@@ -659,8 +661,10 @@ def run_job(job: dict, reattaching: bool = False):
 
 
 def net_transient(lines: list[str]) -> bool:
-    """ログの終わりに一時的なネットワークの失敗の印があるか"""
-    return any(m in l.lower() for l in lines[-30:] for m in NET_TRANSIENT_MARKERS)
+    """ログの終わりに一時的なネットワークの失敗（GitHub 側の一時的な push の拒否を含む）の印があるか"""
+    tail = [l.lower() for l in lines[-30:]]
+    return any(m in l for l in tail for m in NET_TRANSIENT_MARKERS) or \
+        any("[remote rejected]" in l and l.rstrip().endswith(PUSH_TRANSIENT_REASONS) for l in tail)
 
 
 def transient_exception(e: BaseException) -> bool:
