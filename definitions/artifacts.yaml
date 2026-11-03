@@ -56,6 +56,10 @@ types:
     stage: learn
     required: [day, window_days, signals, clusters]
     note: "ADR 0013。教師信号を signature で束ねたもの（決定的）。clusters の 1 つが learn ジョブの入力になり、Lesson を 1 つ書く"
+  ProcessRetrospective:
+    stage: learn
+    required: [day, window_days, signals, cost, clusters]
+    note: "ADR 0027 の 3。工程の信号を process:<信号>:<鍵> で束ねたもの（決定的）。閾値を超えた束（route）は事例型の分析役に回る"
   HumanChoice:
     stage: [design, govern]
     required: [kind, status, question, options, recommended, subject]

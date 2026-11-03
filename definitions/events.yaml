@@ -222,6 +222,14 @@ events:
     source: control_plane
     required: [day, signals, clusters, rubric_candidates]
     note: "ADR 0013。supervisor が 1 日 1 回、直近 30 日の教師信号を signature で束ねた。dedupe は learn.retrospected:<JST の日付>。束の中身は artifacts の Retrospective"
+  learn.process_retrospected:
+    source: control_plane
+    required: [day, signals, cost, clusters, routed]
+    note: "ADR 0027 の 3。supervisor が 1 日 1 回、直近 7 日の工程の信号を process:<信号>:<鍵> で束ねた。routed は分析役に回す閾値を超えた束。dedupe は learn.process_retrospected:<JST の日付>。束の中身は artifacts の ProcessRetrospective"
+  conflict.files:
+    source: control_plane
+    required: [files, source]
+    note: "ADR 0027 の 3。衝突の解消のジョブで衝突したファイル（機械的に解く前）。dispatcher がジョブのログの seen=[...] から残す。source は worker_log か backfill（factoryctl learn backfill-conflicts）。dedupe は conflict.files:<job_id>"
   learn.rule_filed:
     source: control_plane
     required: [signature, issue, signals, day]

@@ -124,6 +124,7 @@ case_review:
   incidents:
     sendback:  { ja: 差し戻し, source: "events sendback.filed（後片付けが会話の記録を保存した後）", themes: [4, 5, 6] }
     stoppage:  { ja: 停止, source: "stoppages（閉じたもの、60 分以上。予算と一時停止は除く）", themes: [6] }
+    process:   { ja: 工程の信号の束, source: "learning.yaml の process_retrospective（閾値を超えた束。ADR 0027 の 3）", themes: [6] }
   per_day: 3          # 1 日に積む分析の数（仮置き）
   tier: tier-judge
   max_turns: 40

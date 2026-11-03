@@ -46,9 +46,27 @@ teacher_signals:
     eval_from: { positive: "patches/ の負例の差分", negative: "元 PR の差分" }
   stoppage:
     ja: "工場の停止（factory-bug・ticket）"
-    source: "events stoppage.closed（category in factory-bug, ticket）"
-    signature: "stoppage:<category>"
-    note: "工場自身の改善（Engine の PR）に回す。製品の overlay のルールにはしない"
+    source: "events stoppage.closed（category in factory-bug, ticket）。wait に数えたものは除く"
+    signature: "process:stoppage:<停止の key の頭（ci・job・stuck など）>"
+    note: "工程の信号（ADR 0027 の 3、下の process_retrospective）。作用先は Engine と工程で、製品の overlay のルールにはしない"
+  # 工程の信号（ADR 0027 の 3、ADR 0023 のテーマ 6「工程の進め方」）。工程の無駄を数える。束ねるのは orchestrator/dispatcher/process_learn.py
+  conflict_fix:
+    ja: "衝突の解消のジョブ（PR が main と衝突し、工場が取り込み直した）"
+    source: "events continue.enqueued（reason=conflict）と conflict.files（衝突したファイル。ワーカーのログの seen=[...]）、job.finished の cost_usd"
+    signature: "process:conflict_fix:<衝突したファイル>"
+    note: "ジョブ 1 件・ファイル 1 つにつき 1 件。費用はファイルの数で割る。2026-11-03 より前の機械的に解いた CHANGELOG.md は記録に残っておらず (衝突なし) に入る"
+  rework:
+    ja: "同じチケットのやり直し（途中終了の続き・CI の直し・指摘の直し・rerun・割り込みでの積み直し）が窓の中で REWORK_MIN 回以上"
+    source: "events continue.enqueued（reason≠conflict）、job.enqueued（by=rerun）、job.preempted"
+    signature: "process:rework:<一番多かった理由>"
+  cost_outlier:
+    ja: "1 マージあたりの費用（そのチケットの全ジョブ）が、同じ変更種別の中央値の COST_OUTLIER_X 倍以上"
+    source: "events pr.merged、artifacts PR の change_types、job.finished の cost_usd"
+    signature: "process:cost_outlier:<変更種別>"
+  wait:
+    ja: "チケットが人を待たない理由（衝突・CI・ジョブの失敗など）で WAIT_MIN_H 時間以上止まった"
+    source: "stoppages（category が human・budget・idle でなく、チケットに付いたもの）"
+    signature: "process:wait:<停止の key の頭>"
   quality_regression:
     ja: "定期診断の指標が前回より悪くなった（内部品質。ADR 0019）"
     source: "events quality.regressed（原因の PR は from_sha..to_sha の間にマージされた工場の PR）"
@@ -72,7 +90,17 @@ retrospective:
   window_days: 30
   schedule: "毎日 1 回（supervisor。日報の後）"
   min_signals_for_lesson: 1          # 1 件でも Stage 1（episodic）の Lesson は作る
-  ignore_signatures: ["stoppage:*"]  # 停止は Engine の改善に回す（上の stoppage.note）
+  ignore_signatures: ["process:*"]   # 工程の信号は下の process_retrospective で束ねる（製品のルールにしない）
+
+# 工程の信号の束（ADR 0027 の 3）。決定的に束ね、閾値を超えた束を事例型の分析役（ADR 0023、case.py）に回す。数値は仮置き（運用パラメータ）
+process_retrospective:
+  window_days: 7
+  schedule: "毎日 1 回（supervisor の learn_step。artifacts の ProcessRetrospective と events の learn.process_retrospected）"
+  signals: [conflict_fix, rework, cost_outlier, wait, stoppage]
+  params: { REWORK_MIN: 3, COST_OUTLIER_X: 3, COST_OUTLIER_MIN_SAMPLES: 5, WAIT_MIN_H: 3 }
+  route_to_case_review: { min_signals: 10, or_min_cost_usd: 50, per_day: 1, again_after_days: 7 }
+  effect: "束ごとに前の同じ長さの窓の件数・費用を並べる（factoryctl report process）。学習器に自分を採点させない（ADR 0013 の 8）"
+  approval: "作用先ごとの承認の線は learning_taxonomy.yaml の approval（運用パラメータは工場、プランナーへの知見は委員会、製品の構造は改善チケット、工場のプロセスとアーキテクチャはオーナー）"
 
 lesson:
   required: [teacher_signal, signature, summary, eval_cases, knowledge_stage, confidentiality, source_refs]

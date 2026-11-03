@@ -54,6 +54,8 @@
 
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
+  factoryctl report process [--days 7]            # 工程の信号の束（ADR 0027 の 3。衝突の解消・やり直し・費用の外れ値・待ち・停止）。前の窓との比較つき
+  factoryctl learn backfill-conflicts [--days 7]  # 衝突の解消のジョブのログ（オブジェクトストア）から、衝突したファイルの記録（conflict.files）を埋める
 """
 import json
 import os
@@ -73,6 +75,7 @@ import judgment
 import learn
 import ops
 import planner
+import process_learn
 import ship
 import stoppage
 
@@ -398,6 +401,39 @@ def drain_report(cur) -> int:
     return 0 if st["ready"] else 3
 
 
+def backfill_conflicts(cur, days: int) -> int:
+    """衝突の解消のジョブ（continue.enqueued の reason=conflict）のうち、衝突したファイルの記録がないものを、ジョブのログから埋める"""
+    from minio import Minio
+    e = os.environ
+    st = Minio(e["OBJECTSTORE_ENDPOINT"], access_key=e["OBJECTSTORE_ACCESS_KEY"], secret_key=e["OBJECTSTORE_SECRET_KEY"], secure=False)
+    cur.execute("""select c.job_id, c.correlation_id as corr, f.payload->>'blob_key' as k from events c
+                     join events f on f.name='job.finished' and f.job_id=c.job_id
+                    where c.name='continue.enqueued' and c.payload->>'reason'='conflict' and c.occurred_at >= now() - make_interval(days => %s)
+                      and not exists (select 1 from events x where x.name='conflict.files' and x.job_id=c.job_id) order by c.id""", (days,))
+    filled = missing = 0
+    for r in cur.fetchall():
+        if not r["k"]:
+            missing += 1
+            continue
+        try:
+            obj = st.get_object(e.get("OBJECTSTORE_BUCKET", "factory-artifacts"), r["k"])
+            try:
+                log = obj.read().decode("utf-8", "replace")
+            finally:
+                obj.close()
+                obj.release_conn()
+        except Exception:  # noqa: BLE001  ログが消えたジョブは飛ばす
+            missing += 1
+            continue
+        files = process_learn.parse_conflict_files(log)
+        if files is None:
+            missing += 1
+            continue
+        filled += process_learn.record_conflict_files(cur, r["job_id"], r["corr"], files, source="backfill")
+    print(f"conflict.files: filled {filled}, no log or no conflict line {missing}")
+    return 0
+
+
 def main(argv):
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
@@ -516,6 +552,12 @@ def main(argv):
         report_provenance(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "judgments":
         report_judgments(cur, argv)
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "process":
+        retro = process_learn.retrospect(cur, window_days=int(opt(argv, "--days", str(process_learn.WINDOW_DAYS))))
+        print("\n".join([f"# 工程の信号（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",
+                         "生成: `factoryctl report process`（ADR 0027 の 3）", ""] + process_learn.report_lines(retro)))
+    elif cmd == "learn" and len(argv) > 2 and argv[2] == "backfill-conflicts":
+        return backfill_conflicts(cur, int(opt(argv, "--days", str(process_learn.WINDOW_DAYS))))
     elif cmd == "report" and len(argv) > 2 and argv[2] == "learning":
         retro = learn.retrospect(cur, window_days=int(opt(argv, "--days", str(learn.WINDOW_DAYS))))
         print("\n".join([f"# Learn ループ（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",
