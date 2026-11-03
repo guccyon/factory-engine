@@ -222,3 +222,64 @@ def test_knowledge_paths_are_their_own_change_type():
     assert supervisor.classify(files, rules) == ["knowledge"]
     d = supervisor.decide(["knowledge"], {"autonomy": {"matrix": {"factory_rule": {"merge": "auto"}}}})
     assert d["table"] == "human_approve"   # 委員会ができるまでは、manifest に無い種別として人の承認に倒れる
+
+
+# ------------------------------------------------------------------ 工程の改善案の Issue（ADR 0027 の 3）
+def process_analyzed(cur, sig="process:conflict_fix:CHANGELOG.md", day="2026-11-03"):
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, state, kind) values (%s,'o/r',0,'succeeded','case_review') returning id",
+                (f"case:{sig}@{day}",))
+    jid = cur.fetchone()["id"]
+    bundle = {"signature": sig, "signals": 689, "tickets": 120, "cost": 2919.79, "prev": {"signals": 0, "cost": 0.0}}
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (f"case:{sig}@{day}", jid, Jsonb({"by": "supervisor", "kind": "case_review",
+                                                  "input": {"process": {"bundle": bundle, "window": {"from": "a", "to": "b"}}}})))
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('case.analyzed',%s,%s,%s)",
+                (f"case:{sig}@{day}", jid, Jsonb({"incident": f"{sig}@{day}", "kind": "process", "ticket": None,
+                                                  "summary": "全 PR が 1 つの CHANGELOG.md に追記して衝突した", "viewpoints": [],
+                                                  "root_causes": ["共有ファイルへの追記"], "learnings": [L(6, "変更ごとの断片にする")]})))
+
+
+def engine_gh(calls, open_issues=()):
+    def gh(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return list(open_issues)
+        return {"number": 200, "html_url": "https://github.com/e/f/issues/200"}
+    return gh
+
+
+def test_process_issue_body():
+    a = {"incident": "process:conflict_fix:CHANGELOG.md@2026-11-03", "event_id": 3, "summary": "s", "root_causes": ["r"],
+         "learnings": [L(6, "変更ごとの断片にする")], "process": {"bundle": {"signals": 689, "tickets": 120, "cost": 2919.79}, "window": {}}}
+    title, body = case.process_issue(a, None)
+    assert title == "工程の改善案: process:conflict_fix:CHANGELOG.md（689 件・$2,919.79）"
+    assert "変更ごとの断片にする" in body and "人の承認" in body and "すでに減っている見込み" in body
+
+
+def test_supervisor_files_process_proposal_once_to_engine_repo(cur, monkeypatch):
+    calls = []
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "PROCESS_ISSUES", True)
+    monkeypatch.setattr(supervisor, "ENGINE_REPO", "e/f")
+    monkeypatch.setattr(supervisor, "gh", engine_gh(calls))
+    process_analyzed(cur)
+    supervisor.process_issue_step(cur)
+    supervisor.process_issue_step(cur)
+    posts = [c for c in calls if c[0] == "POST"]
+    assert len(posts) == 1 and posts[0][1] == "repos/e/f/issues" and posts[0][2]["labels"] == ["factory:process-proposal"]
+    assert "689 件" in posts[0][2]["title"]
+    cur.execute("select payload from events where name='process.proposal_filed'")
+    assert [r["payload"]["issue"] for r in cur.fetchall()] == ["https://github.com/e/f/issues/200"]
+
+
+def test_supervisor_skips_when_same_signature_is_open(cur, monkeypatch):
+    calls = []
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "PROCESS_ISSUES", True)
+    monkeypatch.setattr(supervisor, "gh", engine_gh(calls, [{"title": "工程の改善案: process:conflict_fix:CHANGELOG.md（10 件・$5.00）",
+                                                             "html_url": "https://github.com/e/f/issues/9"}]))
+    process_analyzed(cur)
+    supervisor.process_issue_step(cur)
+    assert not [c for c in calls if c[0] == "POST"]
+    cur.execute("select payload from events where name='process.proposal_filed'")
+    assert cur.fetchone()["payload"]["duplicate_of"] == "https://github.com/e/f/issues/9"

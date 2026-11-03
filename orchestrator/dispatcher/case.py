@@ -189,6 +189,64 @@ def record(cur, corr: str, job_id: int, inp: dict, result: dict) -> bool:
     return True
 
 
+# ------------------------------------------------------------------ 工程の改善案の Issue（ADR 0027 の 3）
+def pending_process(cur, limit: int) -> list[dict]:
+    """まだ改善案の Issue にしていない、工程の信号の束の分析（古い順）。分析したときの束の中身（積んだときの入力）も添える"""
+    cur.execute("""select a.id, a.payload,
+                          (select j.payload->'input'->'process' from events j
+                            where j.name='job.enqueued' and j.job_id=a.job_id order by j.id limit 1) as process
+                     from events a
+                    where a.name='case.analyzed' and a.payload->>'kind'='process'
+                      and not exists (select 1 from events f where f.name='process.proposal_filed' and f.payload->>'incident'=a.payload->>'incident')
+                    order by a.id limit %s""", (limit,))
+    return [{"event_id": r["id"], **r["payload"], "process": r["process"] or {}} for r in cur.fetchall()]
+
+
+def signature_of(incident: str) -> str:
+    """束の出来事の key（signature@日付）から signature"""
+    return (incident or "").split("@", 1)[0]
+
+
+def process_issue(a: dict, now_bundle: dict | None) -> tuple[str, str]:
+    """工程の信号の束の分析 1 件から、工場（factory-engine）への改善案の Issue。実装は人の承認の後（工程の変更は人。ADR 0027）"""
+    sig = signature_of(a.get("incident", ""))
+    summary = scrub(a.get("summary", "")).strip()
+    b = (a.get("process") or {}).get("bundle") or {}
+    w = (a.get("process") or {}).get("window") or {}
+    title = f"工程の改善案: {sig}（{b.get('signals', '-')} 件・${float(b.get('cost') or 0):,.2f}）"
+    causes = "\n".join(f"- {scrub(c)}" for c in a.get("root_causes") or []) or "- （なし）"
+    props = "\n".join(f"{i}. {scrub(x.get('statement', ''))}\n   - 作用先: {x.get('target', '')}\n   - 案: {scrub(x.get('proposal', ''))}"
+                      f"\n   - 繰り返しそう: {'はい' if x.get('recurring') else 'いいえ'}"
+                      for i, x in enumerate(a.get("learnings") or [], 1)) or "（なし）"
+    if now_bundle:
+        now_line = f"- 起票したときの直近の窓: {now_bundle['signals']} 件・${now_bundle['cost']:,.2f}（その前の窓: {now_bundle['prev']['signals']} 件・${now_bundle['prev']['cost']:,.2f}）"
+    else:
+        now_line = "- 起票したときの直近の窓: 閾値を下回っているか、束がない（すでに減っている見込み）"
+    body = f"""工程の信号（ADR 0027 の 3）の束を事例型の分析役（ADR 0023）が分析し、工場への改善案を出しました。
+
+## 束
+- signature: `{sig}`
+- 分析したときの窓（{w.get('from', '-')} 〜 {w.get('to', '-')}）: {b.get('signals', '-')} 件、チケット {b.get('tickets', '-')} 件、${float(b.get('cost') or 0):,.2f}
+{now_line}
+- 分析の記録: 制御プレーンの events `case.analyzed`（id {a.get('event_id')}）、artifacts `CaseAnalysis`
+
+## 要約
+{summary or '（なし）'}
+
+## 真因
+{causes}
+
+## 改善案
+{props}
+
+## 進め方
+- 工程・判断基準・アーキテクチャの変更は人の承認が要ります（ADR 0027）。工場はこの Issue だけでは実装しません
+- 採る案を決めて、このリポジトリで ADR か PR にしてください。運用パラメータの調整で済むものは、その旨をコメントで指示してください
+- 既に手当て済みの案は、手当てした PR や ADR を書いて閉じてください
+"""
+    return title, body
+
+
 # ------------------------------------------------------------------ 知見の変更セットの Issue（ADR 0024 の 3）
 KNOWLEDGE_ROOT = ".factory-config/knowledge"
 # Issue は公開のリポジトリに立つ。分析の文に紛れた個人情報・環境の名前に見える形は伏せる（守りの本体は変更セットの CI と委員会の根拠の担当）
