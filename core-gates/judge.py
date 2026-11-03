@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+import pr_diff        # PR の差分（300 ファイルを超える PR はファイルごとの差分から組み立てる）
 
 MAX_DIFF, MAX_FILES_CHARS, MAX_FILE, MAX_ISSUE = 40000, 30000, 6000, 8000
 SEVERITY = (Path(__file__).resolve().parent / "severity.md").read_text(encoding="utf-8")   # 重さの物差しとエンジニアリングの姿勢（建設者の物差し）
@@ -93,7 +94,7 @@ def main() -> int:
         except Exception:  # noqa: BLE001  取れなくても裁きは続ける
             pass
     ticket_text = "\n\n".join(tickets) or "（PR が閉じる Issue が見つからなかった）"
-    diff = sh("gh", "pr", "diff", number, "-R", repo)
+    diff = pr_diff.fetch(repo, number, sh)
     if len(diff) > MAX_DIFF:
         diff = diff[:MAX_DIFF] + f"\n[... 差分が長いので {MAX_DIFF} 文字で切った]"
     clone = Path("/work/product")
