@@ -47,6 +47,7 @@ import judgment
 import learn
 import ops
 import process_learn
+import serialize
 import ship
 import stoppage
 
@@ -55,6 +56,7 @@ DATABASE_URL = ENV["DATABASE_URL"]
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
 GH_TOKEN = ENV.get("SUPERVISOR_GH_TOKEN") or ENV["GH_TOKEN"]
 INTERVAL = int(ENV.get("SUPERVISOR_INTERVAL_SEC", "60"))
+SERIALIZE = ENV.get("SUPERVISOR_SERIALIZE", "1") == "1"   # よく衝突するファイルに触るタスクを並べて流す（ADR 0027 の 2）。0 で止める
 MAX_INFLIGHT = int(ENV.get("SUPERVISOR_MAX_INFLIGHT", "1"))   # 工場で同時に流す Ticket（ジョブ＋開いている工場の PR）。衝突を避けて 1 から
 RULES_PATH = ENV.get("CHANGE_TYPE_RULES", "/definitions/change_type_rules.yaml")
 PLANNED_LABEL, IMPLEMENT_LABEL = "factory:planned", ENV.get("TRIGGER_LABEL", "factory:implement")
@@ -540,6 +542,41 @@ def inflight_count(cur, open_prs) -> int:
     return len({r["corr"] for r in cur.fetchall()} | set(open_prs))
 
 
+_pr_files_cache: dict[str, set[str]] = {}   # PR の url@head → 変更ファイル
+_issue_body_cache: dict[str, str] = {}
+
+
+def inflight_touched_files(cur) -> dict[str, set[str]]:
+    """流れているチケットが触る（触る見込みの）ファイル。開いた工場の PR はその変更ファイル、PR のまだないジョブは見込みのファイル"""
+    out: dict[str, set[str]] = {}
+    for p in factory_prs(cur):
+        cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s", (p["url"],))
+        if cur.fetchone():
+            continue
+        try:
+            pr = gh("GET", f"repos/{p['repo']}/pulls/{p['number']}")
+            if pr["state"] != "open" or waiting_for_human(cur, p["url"], pr):
+                continue   # 人の判断を待つ PR では並べない（何日も待つと、同じファイルに触るタスクが止まってしまう）
+            key = f"{p['url']}@{pr['head']['sha']}"
+            if key not in _pr_files_cache:
+                _pr_files_cache[key] = {f["filename"] for f in pr_files(p["repo"], p["number"])}
+            out.setdefault(p["corr"], set()).update(_pr_files_cache[key])
+        except Exception as e:  # noqa: BLE001  分からない PR は数えない（並べ損ねても、衝突は今までどおり続きのジョブが解く）
+            log("inflight files failed", p["url"], repr(e))
+    cur.execute("select distinct correlation_id as corr, repo, issue_number as n from jobs where state in ('queued','running') and kind='implement'")
+    for j in cur.fetchall():
+        if j["corr"] in out or not j["n"]:
+            continue
+        if j["corr"] not in _issue_body_cache:
+            try:
+                _issue_body_cache[j["corr"]] = gh("GET", f"repos/{j['repo']}/issues/{j['n']}").get("body") or ""
+            except Exception as e:  # noqa: BLE001
+                log("inflight issue failed", j["corr"], repr(e))
+                continue
+        out[j["corr"]] = serialize.expected_files(cur, j["corr"], _issue_body_cache[j["corr"]])
+    return out
+
+
 def enqueue_step(cur, open_prs: set):
     inflight = inflight_count(cur, open_prs)
     state_cache: dict[str, str] = {}
@@ -570,6 +607,8 @@ def enqueue_step(cur, open_prs: set):
                 "and not (source_ref = any(%s))", (REPOS, seen))
     ready.sort(key=lambda r: (-r[0]["priority"], r[2].get("created_at") or ""))   # 優先度の高い順、同じなら古い順
     paused = over_budget(cur) if ready else None
+    hot = serialize.hot_files(cur) if ready and SERIALIZE else {}
+    inflight_files: dict[str, set[str]] | None = None   # よく衝突するファイルに触るタスクがあるときだけ、流れているものの変更ファイルを集める
     if paused and record(cur, "supervisor.budget_paused", None, paused, f"supervisor.budget_paused:{paused['window_start']}"):
         log("budget paused", paused)
     for t, repo, it, deps in ready:
@@ -578,6 +617,16 @@ def enqueue_step(cur, open_prs: set):
         if paused and t["priority"] < ops.PREEMPT_AT:   # 枠の予算を使い切ったら次の枠まで投入しない（p0 は止めない）
             continue
         corr = f"github:{repo}#{it['number']}"
+        expected = serialize.expected_files(cur, corr, it.get("body")) if hot else set()
+        if hot and any(serialize.touches(expected, h) for h in hot):
+            # 衝突を避ける並べ方（ADR 0027 の 2）: 同じよく衝突するファイルに触るタスクが流れていれば、終わるまで投入しない
+            if inflight_files is None:
+                inflight_files = inflight_touched_files(cur)
+            b = serialize.blocker(expected, hot, inflight_files, corr)
+            if b:
+                if serialize.record(cur, corr, b[0], b[1], hot[b[0]]):
+                    log("serialized", corr, b[0], "behind", b[1])
+                continue
         if not record(cur, "supervisor.enqueued", corr, {"repo": repo, "issue": it["number"], "deps": deps, "priority": t["priority"]},
                       f"supervisor.enqueued:{repo}#{it['number']}"):
             continue
@@ -591,6 +640,8 @@ def enqueue_step(cur, open_prs: set):
             gh("POST", f"repos/{repo}/issues/{it['number']}/labels", {"labels": [IMPLEMENT_LABEL]})
             cur.execute("update tickets set state='active', updated_at=now() where id=%s", (t["id"],))
         inflight += 1
+        if inflight_files is not None:
+            inflight_files[corr] = expected
 
 
 def daily_report_step(cur):

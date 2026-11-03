@@ -46,7 +46,7 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                "design_scale": p.get("design_scale"), "design_direction_given": p.get("design_direction_given"),
                "guards": result.get("guards") or [], "advisories": result.get("advisories") or [],
                "summary": p.get("summary"), "questions": p.get("questions") or [], "facts": result.get("facts") or {},
-               "evidence": p.get("evidence") or [], "interpretation": p.get("interpretation"), "confidence": p.get("confidence"),
+               "evidence": p.get("evidence") or [], "expected_files": p.get("expected_files") or [], "interpretation": p.get("interpretation"), "confidence": p.get("confidence"),
                "agent_ready": p.get("ready"), "versions": result.get("versions") or {},
                "model": result.get("model"), "cost_usd": result.get("cost_usd"), "num_turns": result.get("num_turns")}
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Plan',%s,%s,'plan',%s) returning id",

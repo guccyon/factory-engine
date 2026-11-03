@@ -66,6 +66,7 @@ def schema(defs: dict) -> dict:
             "recommended": {"type": "integer", "minimum": 0}},
             "required": ["question", "why", "options", "recommended"]}},
         "evidence": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "expected_files": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
         "interpretation": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
         "required": ["ready", "steps", "design_scale", "design_direction_given", "summary", "alternatives", "questions",
@@ -183,6 +184,9 @@ def prompt(defs: dict, f: dict, round_: int) -> str:
 - design_direction_given: チケットか返事に、デザインの進め方の指定（既存の画面に倣う・案を出す・デザインシステムから）があるか
 - summary: 何をするチケットで、なぜその経路か（2〜3 文）
 - questions: 1 つの問いに why（何を決めると着手できるか）、options（2〜4 つ）、recommended（推す選択肢の番号、0 から）
+- expected_files: このチケットで変わる見込みのファイル（リポジトリのルートからのパス。分からなければファイル名だけ）。
+  契約（specs/contracts/）・生成した型・画面の一覧・ルーティングのような、機能を足すたびに 1 か所へ追記する登録の箇所を必ず挙げる。
+  工場はこれを、同時に流しているタスクとの衝突を避ける並べ方に使う（ADR 0027 の 2）
 - 3 層で書く: evidence（根拠: 見たファイルと箇所）、interpretation（どう読んでその判断にしたか）、confidence（0〜1）
 - 日本語の平易な文で。識別子はそのまま
 """

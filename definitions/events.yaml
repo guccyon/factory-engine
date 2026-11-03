@@ -306,6 +306,10 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]
     note: "ADR 0025・0026。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
+  plan.serialized:
+    source: control_plane
+    required: [file, behind, hot, why]
+    note: "ADR 0027 の 2。supervisor が投入の直前に、よく衝突するファイル（工程の信号 conflict_fix の束で、7 日に 3 回以上・解消の費用 $5 以上。CHANGELOG.md は除く）に触る見込みのタスクを、同じファイルに触る流れているチケット（behind）が終わるまで投入しなかった。見込みは Plan の expected_files とチケットの本文のパス。人の判断を待つ PR では並べない。dedupe は plan.serialized:<チケット>:<ファイル>:<behind>。factoryctl plan show に出る"
   plan.asked:
     source: control_plane
     required: [plan_id, repo, issue, round, questions]
