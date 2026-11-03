@@ -51,6 +51,12 @@ if [ -n "${HANDOFF_DIR}" ] && ! { mkdir -p "${HANDOFF_DIR}/jobs" 2>/dev/null && 
   echo "[worker] handoff dir not writable (${HANDOFF_DIR}); continuing without it"   # 古いイメージ（/handoff を持たない）でもラインは止めない
   HANDOFF_DIR=""
 fi
+# 変更をすべてステージする。依存の置き場（node_modules/ など）はリポジトリに入れない。製品の .gitignore に漏れがあっても
+# エージェントが npm install した結果をコミットしないように外す（2026-11-03 rally #678: node_modules を含む 435 ファイルの PR になり、検査が止まった）
+stage_all() {
+  git add -A
+  git diff --cached --name-only | grep -E '(^|/)(node_modules|\.dart_tool)/' | git rm -r --cached --quiet --pathspec-from-file=- 2>/dev/null || true
+}
 PR_URL="" PR_NUMBER="${CONTINUE_PR:-}" CLAUDE_RC="" TURNS="" COST="" SUMMARY="" PROVISIONAL="" RESUMED="false" MECHANICAL=""
 
 save_handoff() {
@@ -301,7 +307,7 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
     echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg pr "${CONTINUE_PR}" '{pr_url:null, reason:"pr_not_open", continue_pr:($pr|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
     exit 6
   fi
-  git add -A
+  stage_all
   if [ -n "${MERGING}" ]; then
     git commit -q --no-edit
   fi
@@ -336,7 +342,7 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
   fi
   echo "[worker] continued pr=${PR_URL}"
 else
-git add -A
+stage_all
 git commit -q -m "$(printf 'feat: %s (#%s)\n\n工場のヘッドレスワーカー（job %s）による実装。%s\n\n%s #%s' "${TITLE}" "${ISSUE_NUMBER}" "${JOB_ID}" "${INCOMPLETE:+ 途中終了（claude exit ${CLAUDE_RC}）のため未完了。}" "${LINK_KW}" "${ISSUE_NUMBER}")"
 git push -q -u origin "${BRANCH}:${BRANCH}"
 

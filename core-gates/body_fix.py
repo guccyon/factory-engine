@@ -16,6 +16,7 @@ import sys
 import time
 
 import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+import pr_diff        # PR の差分（300 ファイルを超える PR はファイルごとの差分から組み立てる）
 
 MAX_DIFF, MAX_APPEND = 30000, 4000
 SCHEMA = {"type": "object", "properties": {"append_markdown": {"type": "string"}, "summary": {"type": "string"}},
@@ -41,7 +42,7 @@ def main() -> int:
         raise SystemExit("not a PR url")
     repo, number = m.group(1), m.group(2)
     body = json.loads(sh("gh", "pr", "view", number, "-R", repo, "--json", "body"))["body"] or ""
-    diff = sh("gh", "pr", "diff", number, "-R", repo)[:MAX_DIFF]
+    diff = pr_diff.fetch(repo, number, sh)[:MAX_DIFF]
     prompt = f"""あなたは工場のワーカーです。PR の本文に対する検査の指摘を、本文の末尾に節を足すことで直します。
 既存の本文は書き換えません。足す節（Markdown、見出しは「## 」で始める）だけを append_markdown に返してください。
 書く内容は、差分と本文から事実として言えることだけにします。指摘に挙がっていないことは足しません。日本語で書きます。

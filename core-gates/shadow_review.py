@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+import pr_diff        # PR の差分（300 ファイルを超える PR はファイルごとの差分から組み立てる）
 
 HERE = Path(__file__).resolve().parent
 
@@ -105,7 +106,7 @@ def pr_parts(url: str) -> tuple[str, int]:
 def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -> dict:
     repo, number = pr_parts(pr_url)
     meta = json.loads(sh("gh", "pr", "view", str(number), "-R", repo, "--json", "title,body,files"))
-    diff = sh("gh", "pr", "diff", str(number), "-R", repo)
+    diff = pr_diff.fetch(repo, number, sh)
     if len(diff) > max_diff_chars:
         diff = diff[:max_diff_chars] + f"\n\n[... 差分が長いので {max_diff_chars} 文字で切った]"
     body = meta.get("body") or ""
