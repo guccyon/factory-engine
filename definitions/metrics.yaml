@@ -59,7 +59,7 @@ metrics:
     formula: "PR が新規作成したファイル（status=added、CHURN_EXCLUDE に当たらないもの）について、merged_at から churn_window_days 以内の別コミットでの変更行（追加＋削除）/ 作成時行数 > churn_ratio なら true。新規ファイルがなければ null（対象外）"
     unit: "boolean | null（未確定・対象外）"
     source: [pr.merged, commit.landed]
-    exclude: ["^\\.claude/memories/", "^docs/", "CHANGELOG.md", "README(.ja)?.md"]
+    exclude: ["^\\.claude/memories/", "^docs/", "CHANGELOG.md", "^changelog\\.d/", "README(.ja)?.md"]
     exclude_reason: "追記で育つ文書・知見ファイルはコードの手戻りではない（式の試走で真っ先に誤検出された）"
   incident:
     formula: "incident.opened.related_pr_ids に含まれる"

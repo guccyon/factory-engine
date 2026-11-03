@@ -126,6 +126,13 @@ else
 fi
 
 ISSUE_JSON=$(gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json title,body,labels)
+# CHANGELOG の取りまとめ（ADR 0027 の 1）: エージェントを使わず、断片を CHANGELOG.md に移す。断片がなければ変更なしで終わる
+if [ -z "${CONTINUE_BRANCH}" ] && jq -e '.labels[]? | select(.name == "factory:changelog")' <<<"${ISSUE_JSON}" >/dev/null; then
+  CL_RC=0
+  python3 /work/engine/core-gates/changelog_compile.py . || CL_RC=$?
+  echo "[worker] changelog compile rc=${CL_RC}"
+  MECHANICAL="changelog.d の断片を CHANGELOG.md の [Unreleased] に取りまとめました（エージェントは使っていません。core-gates/changelog_compile.py）。"
+fi
 TITLE=$(jq -r .title <<<"${ISSUE_JSON}")
 BODY=$(jq -r '.body // ""' <<<"${ISSUE_JSON}")
 

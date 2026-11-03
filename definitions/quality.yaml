@@ -148,7 +148,7 @@ change_cost:
       new_files: { points: 1, when: "製品コードの新しいファイルが 3 つ以上（テストを除く）" }
       size: { points: [[500, 1], [1500, 2]], measure: "追加＋削除の行数（生成物も含む）" }
     levels: { easy: [0, 1], medium: [2, 3], hard: [4, 99] }
-    exclude_paths: ["^docs/", "CHANGELOG\\.md$", "README(\\.\\w+)?\\.md$", "^\\.factory-config/"]
+    exclude_paths: ["^docs/", "CHANGELOG\\.md$", "^changelog\\.d/", "README(\\.\\w+)?\\.md$", "^\\.factory-config/"]
     test_paths: ["/tests?/", "\\.test\\.", "_test\\."]
     note: "Gen1 は領域をパスで数える。コンテキスト（L3 の割り当て）で数えるのは次。見積の規模（Issue に書かれた大きさ）は入口に項目ができてから"
   measures:

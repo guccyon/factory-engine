@@ -229,13 +229,13 @@ rules:
     note: "「文書の正しさを検査でとる」の型。三位一体（PR-001）を CI で落とせるようにする根拠"
 
   - id: DOC-002
-    title: "利用者に見える変更は CHANGELOG の [Unreleased] に足す"
+    title: "利用者に見える変更は CHANGELOG の [Unreleased] に足す（断片の置き場があればそこに書く）"
     gate: L1
     scope: generic
     knowledge_stage: rubric
     state: candidate
     confidentiality: public
-    check: "利用者に見える変更を含む PR に CHANGELOG の差分があるか"
+    check: "利用者に見える変更を含む PR に CHANGELOG の差分があるか。製品が断片の置き場 changelog.d/ を持つときは、CHANGELOG.md を直接書き換えず changelog.d/<Issue 番号>.md に書いているか（ADR 0027。取りまとめの PR だけは CHANGELOG.md を書き換える）"
     severity: should
     source: "リポジトリの開発ガイド"
 
