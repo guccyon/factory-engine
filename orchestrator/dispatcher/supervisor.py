@@ -64,6 +64,7 @@ JUDGE_ENABLED = ENV.get("SUPERVISOR_JUDGE", "1") == "1"       # 検査が終わ�
 MODE_DEFAULT, MODE_SCHEDULE = ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", "")
 DAILY_REPORT = ENV.get("DAILY_REPORT_SCRIPT", "/health/daily/status_report.py")   # 空にすると日次レポートを出さない
 RELEASE_TRAIN_HOUR = int(ENV.get("RELEASE_TRAIN_HOUR", "17"))   # JST。空の RELEASE_TRAIN で止める。夕方に検証へ出し、夜に承認を押せるように
+CHANGELOG_COMPILE_EVERY = int(ENV.get("CHANGELOG_COMPILE_EVERY", "10"))   # 断片がこの数たまったら取りまとめる（ADR 0027 の 1。仮置き）
 RELEASE_TRAIN = [r.strip() for r in ENV.get("RELEASE_TRAIN", "").split(",") if r.strip()]   # 列車を走らせる製品（出荷の形 ship.yaml を持つもの）
 DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai のページは 6 時にこの結果から描く。Mac が寝ていた日は起きたときに出す
 # 使用量の枠ごとの予算（2026-10-29 オーナー: Max の使用量は毎朝 7:00 から 5 時間ごとにリセット。1 日 約 $100 を枠ごとに均し、
@@ -624,6 +625,47 @@ def release_train_step(cur):
             log("release train", rid, len(prs))
 
 
+def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:
+    """取りまとめの Issue を起こすか。断片が CHANGELOG_COMPILE_EVERY 件以上、または出荷の列車の 1 時間前を過ぎて断片があり、今日まだ取りまとめていない"""
+    if n <= 0:
+        return False
+    return n >= CHANGELOG_COMPILE_EVERY or (now_jst.hour >= RELEASE_TRAIN_HOUR - 1 and not compiled_today)
+
+
+def changelog_step(cur, now: datetime | None = None):
+    """CHANGELOG の断片（changelog.d/）の取りまとめの Issue を起こす（ADR 0027 の 1）。1 時間に 1 回、製品ごとに見る。
+    取りまとめはワーカーが core-gates/changelog_compile.py で決定的に行う（factory:changelog のラベル）"""
+    if DRY_RUN:
+        return
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=9)))
+    for repo in REPOS:
+        if not record(cur, "changelog.checked", None, {"repo": repo}, f"changelog.checked:{repo}:{now:%Y-%m-%dT%H}"):
+            continue
+        try:
+            items = gh("GET", f"repos/{repo}/contents/changelog.d")
+        except Exception:  # noqa: BLE001  断片の置き場がない製品（404）や一時的な失敗は次の周回で
+            continue
+        n = sum(1 for x in items or [] if x.get("type") == "file" and x.get("name", "").endswith(".md") and x.get("name") != "README.md")
+        cur.execute("select 1 from events where name='changelog.compile_filed' and payload->>'repo'=%s and payload->>'day'=%s",
+                    (repo, f"{now:%Y-%m-%d}"))
+        if not changelog_due(n, now, cur.fetchone() is not None):
+            continue
+        try:
+            if gh("GET", f"repos/{repo}/issues?labels=factory:changelog&state=open&per_page=1"):
+                continue   # 取りまとめの Issue がまだ開いている
+            issue = gh("POST", f"repos/{repo}/issues", {
+                "title": f"CHANGELOG の取りまとめ（断片 {n} 件）",
+                "body": "changelog.d/ の断片を CHANGELOG.md の [Unreleased] に移し、移した断片を消す（ADR 0027 の 1）。"
+                        "ワーカーがエージェントを使わずに core-gates/changelog_compile.py で行う。",
+                "labels": ["factory:planned", "factory:changelog"]})
+        except Exception as e:  # noqa: BLE001
+            log("changelog issue failed", repo, repr(e))
+            continue
+        record(cur, "changelog.compile_filed", f"github:{repo}#{issue['number']}", {"repo": repo, "fragments": n, "day": f"{now:%Y-%m-%d}",
+                                                                                   "issue": issue["html_url"]})
+        log("changelog compile filed", repo, n, issue["html_url"])
+
+
 def learn_step(cur):
     """1 日 1 回、教師信号を束ねて Retrospective を残す（ADR 0013 の 2）。決定的で、トークンを使わない。日報の後に回す"""
     if DRY_RUN:
@@ -869,6 +911,7 @@ def tick():
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
         daily_report_step(cur)
+        changelog_step(cur)
         release_train_step(cur)
         learn_step(cur)
         rule_transition_step(cur)

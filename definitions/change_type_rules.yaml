@@ -32,5 +32,5 @@ rules:
   - type: untrusted_input_path
     paths: ["orchestrator/worker/**", "orchestrator/dispatcher/**", "core-gates/**", "health/evals/**"]   # factory-engine を工場が直すようになったとき用
 
-docs_only_paths: ["docs/**", "**/*.md", "CHANGELOG*", "README*", "**/CLAUDE.md", "LICENSE*"]
+docs_only_paths: ["docs/**", "**/*.md", "CHANGELOG*", "changelog.d/**", "README*", "**/CLAUDE.md", "LICENSE*"]
 default: code_change
