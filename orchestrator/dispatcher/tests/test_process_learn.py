@@ -139,3 +139,13 @@ def test_record_once_per_day(cur):
     assert pl.record_retrospective(cur, r, "2026-11-03") is False
     lines = pl.report_lines(r)
     assert any("process:conflict_fix:CHANGELOG.md" in l for l in lines)
+
+
+def test_cost_outlier_excludes_conflict_fix_jobs(cur):
+    for t in range(1, 6):
+        job(cur, t, 1.0)
+        cur.execute("insert into artifacts(type, correlation_id, payload) values ('PR', %s, %s)",
+                    (f"github:o/r#{t}", Jsonb({"pr_url": R + str(t), "change_types": ["code_change"]})))
+        ev(cur, "pr.merged", t, {"pr_url": R + str(t)})
+    conflict_job(cur, 5, ["src/a.ts"], 20.0)        # 衝突の解消の費用は conflict_fix で数える
+    assert [c for c in pl.retrospect(cur)["clusters"] if c["signal"] == "cost_outlier"] == []

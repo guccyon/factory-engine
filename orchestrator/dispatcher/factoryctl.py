@@ -76,6 +76,7 @@ import learn
 import ops
 import planner
 import process_learn
+import serialize
 import ship
 import stoppage
 
@@ -106,7 +107,7 @@ def plan_cmd(cur, argv) -> int:
     if sub == "show" and len(argv) > 3:
         repo, n = split_ref(argv[3])
         rows = planner.plans(cur, f"github:{repo}#{n}")
-        if not rows:
+        if not rows and not serialize.serialized(cur, f"github:{repo}#{n}"):
             print("no plan"); return 1
         for p in rows:
             print(f"## Plan {p['id']}（job {p['job_id']}、{p['created_at']:%Y-%m-%d %H:%M}、{p.get('round')} 回目）: {p.get('decision')}  {planner.path_ja(p.get('steps') or [])}")
@@ -120,7 +121,11 @@ def plan_cmd(cur, argv) -> int:
             print(f"解釈: {p.get('interpretation') or ''}")
             for q in p.get("questions") or []:
                 print(f"問い: {q.get('question')} {q.get('options')}")
+            if p.get("expected_files"):
+                print("変わる見込みのファイル: " + ", ".join(p["expected_files"]))
             print(f"入力の版: {json.dumps(p.get('versions') or {}, ensure_ascii=False)}\n")
+        for s in serialize.serialized(cur, f"github:{repo}#{n}"):
+            print(f"並べた（{s['at']:%m-%d %H:%M}）: {s.get('why')}")
         return 0
     days = int(opt(argv, "--days", "7"))
     cur.execute("select correlation_id, payload, created_at from artifacts where type='Plan' and created_at > now() - make_interval(days => %s) "

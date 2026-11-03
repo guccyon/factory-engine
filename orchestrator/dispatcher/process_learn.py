@@ -112,12 +112,15 @@ def rework(cur, frm: datetime, to: datetime) -> list[dict]:
 
 
 def cost_outlier(cur, frm: datetime, to: datetime) -> list[dict]:
-    """マージした PR 1 本あたりの費用（そのチケットの全ジョブ）が、同じ変更種別の中央値の COST_OUTLIER_X 倍以上。鍵は変更種別"""
+    """マージした PR 1 本あたりの費用（そのチケットの全ジョブ）が、同じ変更種別の中央値の COST_OUTLIER_X 倍以上。鍵は変更種別。
+    衝突の解消のジョブの費用は conflict_fix で数えるので除く（二重に数えると、衝突の多かった日のタスクがみな外れ値になる。2026-11-03 の初回で 69 件）"""
     cur.execute("""select m.correlation_id as corr, m.payload->>'pr_url' as pr, m.occurred_at as at,
                           (select a.payload->'change_types'->>0 from artifacts a where a.type='PR' and a.payload->>'pr_url'=m.payload->>'pr_url'
                             order by a.id limit 1) as ct,
                           (select coalesce(sum((f.payload->>'cost_usd')::float), 0) from events f
-                            where f.name='job.finished' and f.correlation_id=m.correlation_id and f.payload->>'cost_usd' is not null) as cost
+                            where f.name='job.finished' and f.correlation_id=m.correlation_id and f.payload->>'cost_usd' is not null
+                              and not exists (select 1 from events c where c.name='continue.enqueued' and c.job_id=f.job_id
+                                               and c.payload->>'reason'='conflict')) as cost
                      from events m where m.name='pr.merged' and m.occurred_at >= %s and m.occurred_at < %s order by m.id""", (frm, to))
     rows = cur.fetchall()
     by: dict[str, list[dict]] = {}
