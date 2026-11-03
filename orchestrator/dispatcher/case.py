@@ -15,9 +15,12 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
 
+import process_learn
+
 LOOKBACK_DAYS = 14             # これより前の出来事は選ばない
 STOPPAGE_MIN_MINUTES = 60      # 分析する停止の長さの下限（definitions/learning_taxonomy.yaml の case_review.incidents）
 SKIP_STOPPAGE_PREFIXES = ("budget:", "drain:")   # 予算の枠の使い切りと、人の一時停止は分析しない
+PROCESS_PER_DAY = 1           # 工程の信号の束（ADR 0027 の 3）を 1 日に回す数。出来事 1 件より重いので 1 つずつ
 TIMELINE_MAX = 80              # 入力に入れる出来事の数の上限
 SESSION_MAX_CHARS = 120_000    # セッションの抜粋の上限
 FILE_MAX_CHARS = 20_000        # アーカイブの 1 ファイルの上限
@@ -38,9 +41,11 @@ def mask(text: str) -> str:
 
 # ------------------------------------------------------------------ 出来事を選ぶ
 def pick_incidents(cur, now: datetime | None = None, limit: int = 3) -> list[dict]:
-    """まだ分析していない出来事を新しい順に選ぶ。差し戻し（会話の記録の保存の後）と、閉じた長い停止を交互に"""
+    """まだ分析していない出来事を選ぶ。閾値を超えた工程の信号の束（ADR 0027 の 3）を先に 1 つ、
+    残りは差し戻し（会話の記録の保存の後）と閉じた長い停止を新しい順に交互に"""
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=LOOKBACK_DAYS)
+    bundles = process_learn.pick_bundles(cur, now, min(limit, PROCESS_PER_DAY)) if limit > 0 else []
     cur.execute("select payload->>'incident' as k from events where name='case.enqueued'")
     done = {r["k"] for r in cur.fetchall()}
     # 差し戻し: judge が検査の指摘か仮決めの差し替えを採った PR。そのチケットの引き継ぎがアーカイブされていること
@@ -57,7 +62,7 @@ def pick_incidents(cur, now: datetime | None = None, limit: int = 3) -> list[dic
                     order by ended_at desc""", (since, STOPPAGE_MIN_MINUTES))
     stops = [{"key": f"stoppage:{r['key']}", "kind": "stoppage", "corr": r["corr"], "stoppage_key": r["key"], "category": r["category"]}
              for r in cur.fetchall() if not r["key"].startswith(SKIP_STOPPAGE_PREFIXES) and f"stoppage:{r['key']}" not in done]
-    out = []
+    out = list(bundles)
     while len(out) < limit and (sendbacks or stops):
         for q in (sendbacks, stops):
             if q and len(out) < limit:
@@ -72,7 +77,19 @@ def _short(p: dict, keep: int = 400) -> dict:
 
 
 def build_input(cur, inc: dict) -> dict:
-    inp: dict = {"incident": {k: v for k, v in inc.items() if k != "corr"}, "correlation_id": inc.get("corr")}
+    inp: dict = {"incident": {k: v for k, v in inc.items() if k not in ("corr", "bundle", "others", "window")}, "correlation_id": inc.get("corr")}
+    if inc["kind"] == "process":
+        # 工程の信号の束: 束の中身と、同じ窓のほかの束（全体の中の大きさが分かるように）。出来事の流れは例のチケットの 1 つ目から
+        inp["process"] = {"bundle": inc["bundle"], "other_bundles": inc["others"], "window": inc["window"],
+                          "signal_definitions": "definitions/learning.yaml の teacher_signals（conflict_fix・rework・cost_outlier・wait・stoppage）"}
+        first = next((s["ticket"] for s in inc["bundle"].get("samples") or [] if s.get("ticket")), None)
+        rows = []
+        if first:
+            cur.execute("select name, occurred_at, job_id, payload from events where correlation_id=%s order by id", (first,))
+            rows = cur.fetchall()
+        inp["timeline"] = [{"name": e["name"], "at": e["occurred_at"].isoformat(), "job_id": e["job_id"], "payload": _short(e["payload"])}
+                           for e in rows[-TIMELINE_MAX:]]
+        return inp
     if inc["kind"] == "stoppage":
         cur.execute("select key, category, what, waiting_for, cause, remedy, prevention, detected_by, started_at, ended_at, job_id "
                     "from stoppages where key=%s", (inc["stoppage_key"],))
@@ -213,7 +230,7 @@ def knowledge_issue(a: dict, themes: dict[int, str]) -> tuple[str, str]:
     summary = scrub(a.get("summary", "")).strip()
     head = summary.splitlines()[0][:60] if summary else a.get("incident", "")
     title = f"知見: 事例の記録と知見の下書きを足す（{head}）"
-    kind = {"sendback": "差し戻し", "stoppage": "停止"}.get(a.get("kind"), a.get("kind", ""))
+    kind = {"sendback": "差し戻し", "stoppage": "停止", "process": "工程の信号の束"}.get(a.get("kind"), a.get("kind", ""))
     causes = "\n".join(f"- {scrub(c)}" for c in a.get("root_causes") or []) or "- （なし）"
     views = []
     for v in a.get("viewpoints") or []:

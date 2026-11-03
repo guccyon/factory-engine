@@ -43,6 +43,7 @@ import judgment
 import notify_inbox
 import ops
 import pr_events
+import process_learn
 import reattach
 import stoppage
 import tidy
@@ -474,6 +475,9 @@ def run_job(job: dict, reattaching: bool = False):
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
             if result and result.get("usage"):
                 record_event(cur, "session.cost_recorded", corr, job_id, {"model": result.get("model"), "usage": usage, "cost_usd": result.get("cost_usd")})
+            conflicted = process_learn.parse_conflict_files("".join(l for l in lines if l.startswith("[worker] continue conflict")))   # 衝突の解消なら、衝突したファイルを工程の信号に残す（ADR 0027 の 3）
+            if conflicted is not None:
+                process_learn.record_conflict_files(cur, job_id, corr, conflicted)
             if volume:
                 saved = next((l for l in reversed(lines) if l.startswith("[worker] handoff saved")), None)
                 if saved:   # 実装役の文脈をボリュームに残した（保留）。続きのジョブはここから再開する（ADR 0017）

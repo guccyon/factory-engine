@@ -105,6 +105,7 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
   if ! git merge --no-edit -q "origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
     CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
   fi
+  SEEN_CONFLICTS="${CONFLICTS:-}"   # 機械的に解く前に衝突していたファイル。dispatcher が工程の信号（ADR 0027 の 3）に残す
   # 衝突の解消で、衝突が CHANGELOG.md の追記どうしだけ（または衝突がない）なら、エージェントを使わずに機械的に解く。
   # 同時に流した PR が同じ CHANGELOG に追記し合い、1 日に 345 回・$1,420 の衝突の解消が走った（2026-11-02）
   if [ "${CONTINUE_REASON:-}" = "conflict" ]; then
@@ -118,7 +119,7 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
       MECHANICAL="既定ブランチを衝突なく取り込みました（エージェントは使っていません）。"
     fi
   fi
-  echo "[worker] continue ${CONTINUE_REASON} pr=#${CONTINUE_PR} branch=${BRANCH} conflicts=[${CONFLICTS}]"
+  echo "[worker] continue ${CONTINUE_REASON} pr=#${CONTINUE_PR} branch=${BRANCH} conflicts=[${CONFLICTS}] seen=[${SEEN_CONFLICTS}]"
 else
   git clone --quiet --depth 1 --branch "${DEFAULT_BRANCH}" "https://github.com/${REPO}.git" repo
   cd repo

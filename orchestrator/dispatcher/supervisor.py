@@ -46,6 +46,7 @@ import design
 import judgment
 import learn
 import ops
+import process_learn
 import ship
 import stoppage
 
@@ -681,6 +682,10 @@ def learn_step(cur):
     if not learn.record_retrospective(cur, retro, day):
         return
     log("retrospective", day, "signals", retro["signals"], "clusters", len(retro["clusters"]))
+    proc = process_learn.retrospect(cur)   # 工程の信号（ADR 0027 の 3）。分析役へは case_review_step が回す
+    process_learn.record_retrospective(cur, proc, day)
+    log("process retrospective", day, "signals", proc["signals"], "cost", proc["cost"],
+        "routed", [c["signature"] for c in proc["clusters"] if c["route"]])
     c = learn.pick_cluster(cur, retro) if LEARN_RULE_ISSUES else None
     if not c:
         return
@@ -774,7 +779,8 @@ def case_review_step(cur, now: datetime | None = None):
         jid = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
                     (corr, jid, Jsonb({"by": "supervisor", "kind": "case_review", "input": inp})))
-        record(cur, "case.enqueued", corr, {"incident": inc["key"], "kind": inc["kind"], "ticket": inc.get("corr"), "job_id": jid, "day": day},
+        record(cur, "case.enqueued", corr, {"incident": inc["key"], "kind": inc["kind"], "ticket": inc.get("corr"), "job_id": jid, "day": day,
+                                            **({"signature": inc["signature"]} if inc.get("signature") else {})},
                f"case.enqueued:{inc['key']}")
         log("case review enqueued", inc["key"], "job", jid)
 
