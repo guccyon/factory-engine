@@ -51,6 +51,7 @@ import process_learn
 import serialize
 import ship
 import stoppage
+import usage
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -73,8 +74,7 @@ RELEASE_TRAIN = [r.strip() for r in ENV.get("RELEASE_TRAIN", "").split(",") if r
 DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai のページは 6 時にこの結果から描く。Mac が寝ていた日は起きたときに出す
 # 使用量の枠ごとの予算（2026-10-29 オーナー: Max の使用量は毎朝 7:00 から 5 時間ごとにリセット。1 日 約 $100 を枠ごとに均し、
 # 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
-BUDGET_WINDOWS_WEEKDAY = ENV.get("BUDGET_WINDOWS_WEEKDAY", "07:10,12:15,17:35,22:25,03:15")
-BUDGET_WINDOWS_WEEKEND = ENV.get("BUDGET_WINDOWS_WEEKEND", "07:20,12:20,17:20,22:20,03:20")
+# BUDGET_WINDOWS_WEEKDAY / BUDGET_WINDOWS_WEEKEND（既定と読み方は usage.py）
 CONFLICT_FIX = ENV.get("SUPERVISOR_CONFLICT_FIX", "1") == "1"   # 衝突した工場の PR に、既定ブランチを取り込んで衝突を解くジョブを head ごとに 1 回積む。0 で止める
 CI_FIX = ENV.get("SUPERVISOR_CI_FIX", "1") == "1"   # CI が落ちた工場の PR に、同じ担当の続きのジョブを積む（PR ごとに CONTINUE_MAX 回まで。ADR 0017）。0 で止める
 DESIGN_REVIEW = ENV.get("DESIGN_REVIEW", "1") == "1"   # 週 1 回の設計の診断のジョブを積む（ADR 0022）。0 で止める
@@ -525,22 +525,8 @@ def judge_step(cur, manifests: dict):
 
 
 def budget_window(now: datetime) -> tuple[datetime, float] | None:
-    """今（JST）の使用量の枠の開始時刻と予算。枠は前日からまたぐ（22 時の枠は翌 3 時まで）。週末は開始した日で決める"""
-    def parse(spec):
-        out = []
-        for part in spec.split(","):
-            hm, _, usd = part.strip().partition(":")
-            if hm and usd:
-                out.append((int(hm), float(usd)))
-        return sorted(out)
-    for back in (0, 1):
-        day = now - timedelta(days=back)
-        spec = BUDGET_WINDOWS_WEEKEND if day.weekday() >= 5 else BUDGET_WINDOWS_WEEKDAY
-        for h, usd in reversed(parse(spec)):
-            start = day.replace(hour=h, minute=0, second=0, microsecond=0)
-            if start <= now:
-                return start, usd
-    return None
+    """今（JST）の使用量の枠の開始時刻と予算。枠の読み方は使用量の集計と 1 か所にまとめた（usage.py）"""
+    return usage.budget_windows(now)
 
 
 def over_budget(cur) -> dict | None:

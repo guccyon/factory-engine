@@ -70,6 +70,7 @@
 
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
+  factoryctl report usage [--days 14] [--json]    # 使用量（トークンの消費と費用、日ごと・役割・モデル・契約の週、アカウントを足すかの判断の材料）。コンソールの /usage と同じ
   factoryctl report process [--days 7]            # 工程の信号の束（ADR 0027 の 3。衝突の解消・やり直し・費用の外れ値・待ち・停止）。前の窓との比較つき
   factoryctl learn backfill-conflicts [--days 7]  # 衝突の解消のジョブのログ（オブジェクトストア）から、衝突したファイルの記録（conflict.files）を埋める
 """
@@ -89,6 +90,7 @@ import desk
 import design_line
 import drain
 import line
+import usage
 import judgment
 import learn
 import ops
@@ -682,6 +684,13 @@ def main(argv):
         report_provenance(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "judgments":
         report_judgments(cur, argv)
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "usage":
+        v = usage.view(cur, days=int(opt(argv, "--days", "14")))
+        if "--json" in argv:
+            print(json.dumps(v, ensure_ascii=False, indent=2))
+        else:
+            print("\n".join([f"# 工場の使用量（{v['generated_at'][:16]} 時点、制御プレーンから生成）", "",
+                             "生成: `factoryctl report usage`。費用は API 単価に換算した消費の物差しで、定額の契約の実請求ではない", ""] + usage.report_lines(v)))
     elif cmd == "report" and len(argv) > 2 and argv[2] == "process":
         retro = process_learn.retrospect(cur, window_days=int(opt(argv, "--days", str(process_learn.WINDOW_DAYS))))
         print("\n".join([f"# 工程の信号（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",

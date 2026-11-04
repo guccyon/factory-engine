@@ -3,6 +3,8 @@
 
 - 操業 API（JSON）が正本で、画面はその利用者の 1 つ。将来の顧客向けアプリも同じ API を使う
   GET  /api/inbox                         受信トレイ: 人が対応するものの一覧（ADR 0026 の決定 7。inbox.py）。/api/state にも inbox として入る
+  GET  /api/usage?days=14                 使用量: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
+  GET  /usage                             同じ中身のページ（usage_page.py）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
@@ -47,6 +49,8 @@ import ops
 import prototype
 import review_page
 import ship
+import usage
+import usage_page
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -313,6 +317,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/inbox":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, inbox.view(cur))
+        if urlsplit(self.path).path in ("/api/usage", usage_page.PATH):
+            u = urlsplit(self.path)
+            days = parse_qs(u.query).get("days", ["14"])[0]
+            with db() as conn, conn.cursor() as cur:
+                v = usage.view(cur, days=min(max(int(days) if days.isdigit() else 14, 1), 90))
+            if u.path == usage_page.PATH:
+                return self._send(200, usage_page.render(v).encode(), "text/html; charset=utf-8")
+            return self._json(200, v)
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
         url = urlsplit(self.path)
@@ -414,7 +426,7 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 .ch:target,.rel:target,#ship:target{outline:2px solid var(--accent);outline-offset:2px}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 </style></head><body>
-<header><h1>工場の操業コンソール</h1><button id="bell" aria-expanded="false" aria-controls="inbox" title="受信トレイ: 人が対応するもの"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>受信トレイ <span class="n" id="bell-n">0</span></button><span id="hdr"></span></header>
+<header><h1>工場の操業コンソール</h1><button id="bell" aria-expanded="false" aria-controls="inbox" title="受信トレイ: 人が対応するもの"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>受信トレイ <span class="n" id="bell-n">0</span></button><a class="stat" href="/usage" title="トークンの消費と費用">使用量</a><span id="hdr"></span></header>
 <section id="inbox" hidden></section>
 <section id="stops"></section>
 <section id="ship"></section>
