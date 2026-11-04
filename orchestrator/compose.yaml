@@ -133,6 +133,7 @@ services:
       # 出荷の列車（ADR 0012）。この製品の Release を 1 日 1 回、この時（JST）を過ぎたら切って staging に出す。空で止める
       RELEASE_TRAIN: ${RELEASE_TRAIN-guccyon/rally}
       RELEASE_TRAIN_HOUR: ${RELEASE_TRAIN_HOUR:-17}
+      SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
       # 週 1 回の設計の診断（ADR 0022）。definitions/design_review.yaml の曜日・時（JST）を過ぎたら製品ごとに 1 回。0 で止める
       DESIGN_REVIEW: ${DESIGN_REVIEW:-1}
       QUALITY_REPOS: ${QUALITY_REPOS:-}
@@ -158,6 +159,7 @@ services:
       CONSOLE_PORT: 8790
       CONSOLE_ALLOWED_HOSTS: ${CONSOLE_ALLOWED_HOSTS:-localhost,127.0.0.1}
       CONSOLE_OPERATOR: ${CONSOLE_OPERATOR:-builder}     # 操作の記録に残す名前（Gen1 はログインなし）
+      SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 段の残りを赤く出す下限（dispatcher と同じ値）
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
@@ -185,6 +187,7 @@ services:
       GH_TOKEN: ${GH_TOKEN:?GitHub token (.env)}          # 製品のソースを取る（読むだけ）
       SHIP_POLL_SEC: ${SHIP_POLL_SEC:-2}                   # Rollback の秒数に効くので短く
       SHIP_WORKDIR: /ship
+      SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}   # 出荷の失敗を停止として知らせる先
       NOTIFIER: ${NOTIFIER:-github-issue}
     volumes:

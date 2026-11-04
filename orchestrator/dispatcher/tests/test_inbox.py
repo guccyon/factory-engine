@@ -177,3 +177,15 @@ def test_hold_waiting_for_another_pr_is_builders(cur):
     stoppage.open_stoppage(cur, "hold:https://github.com/o/r/pull/589", "human", "#505 のマージ待ち", quiet=True)
     [i] = inbox.items(cur)
     assert i["who"] == "builder"
+
+
+def test_held_product_is_not_waiting_for_prod(cur, monkeypatch):
+    import ship
+    from psycopg.types.json import Jsonb
+    rid = "o/app@0.7.0"
+    cur.execute("insert into events(name, correlation_id, payload) values ('release.created',%s,%s)",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": "o/app", "app_version": "0.7.0", "prs": []})))
+    ship.record(cur, "release.deployed", rid, {"repo": "o/app", "env": "staging", "ok": True, "request_id": 0})
+    assert [i["key"] for i in inbox._releases(cur)] == [f"release:{rid}"]
+    monkeypatch.setattr(ship, "PROD_HOLD", {"o/app"})
+    assert inbox._releases(cur) == []
