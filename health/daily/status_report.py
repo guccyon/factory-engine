@@ -263,6 +263,11 @@ def activity(conn, since: datetime, until: datetime) -> dict:
         out["jobs"] = {s: {"count": n, "cost_usd": float(c)} for s, n, c in cur.fetchall()}
         cur.execute("select count(*) from events where name='job.finished' and occurred_at >= %s and occurred_at < %s and (payload->>'usage_limited')::boolean", (since, until))
         out["usage_limited"] = cur.fetchone()[0]
+        # 工場が自分で決めたこと（2026-11-04 オーナー: 知見の PR は委員会の可決でマージし、決めた内容は定期報告で知らせる）
+        cur.execute("""select name, payload from events where name in ('committee.decided','committee.revise','process.proposal_filed')
+                         and occurred_at >= %s and occurred_at < %s order by id""", (since, until))
+        out["decisions"] = [{"name": n, **{k: p.get(k) for k in ("pr_url", "outcome", "decision", "added", "signature", "issue", "duplicate_of")}}
+                            for n, p in cur.fetchall()]
         cur.execute("select key, category, what from stoppages where started_at >= %s and started_at < %s order by started_at", (since, until))
         out["stoppages_opened"] = [{"key": k, "category": c, "what": w} for k, c, w in cur.fetchall()]
         cur.execute("select key, category, what, started_at from stoppages where ended_at is null order by started_at")
@@ -435,9 +440,29 @@ def fmt_activity(a: dict) -> list[str]:
                  f"（使用量上限 {a.get('usage_limited', 0)}）、検査 {a.get('inspections', 0)} 件、費用 ${cost:.2f}（API 単価換算）")
     opened = a.get("stoppages_opened", [])
     lines.append(f"- 新しい停止: {len(opened)} 件" + "".join(f"\n  - `{s['category']}` {s['what']}" for s in opened))
+    lines += fmt_decisions(a.get("decisions") or [])
     still = a.get("stoppages_open", [])
     lines.append(f"- 開いたままの停止: {len(still)} 件" + "".join(f"\n  - `{s['category']}` {s['what']}（{s['since']} から）" for s in still))
     return lines
+
+
+COMMITTEE_JA = {"adopt": "採用", "enforce": "採用（決定論の担保を起票）", "human": "人の判断へ", "sendback": "不採用"}
+
+
+def fmt_decisions(ds: list[dict]) -> list[str]:
+    """知見の委員会の議決と、工程の改善案の起票（工場が自分で決めたこと）"""
+    if not ds:
+        return ["- 委員会の議決・工程の改善案: なし"]
+    out = [f"- 委員会の議決・工程の改善案: {len(ds)} 件"]
+    for d in ds:
+        if d["name"] == "committee.decided":
+            added = "、".join(x.rsplit("/", 1)[-1].removesuffix(".yaml") for x in d.get("added") or [] if "/K-" in x) or "知見なし"
+            out.append(f"  - 委員会 {COMMITTEE_JA.get(d.get('outcome'), d.get('outcome'))}: {d.get('pr_url')}（{added}）")
+        elif d["name"] == "committee.revise":
+            out.append(f"  - 委員会 直してかけ直す: {d.get('pr_url')}")
+        else:
+            out.append(f"  - 工程の改善案: `{d.get('signature')}` → {d.get('issue') or ('既存 ' + str(d.get('duplicate_of')))}")
+    return out
 
 
 def ingest_quality(conn, day: str):

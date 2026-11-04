@@ -250,6 +250,14 @@ events:
     source: control_plane
     required: [incident, analysis_event, themes, learnings, issue, day]
     note: "ADR 0024 の 3。supervisor が事例の分析（case.analyzed）のうち最初に回すテーマ（learning_taxonomy.yaml の status: first）の学びがあるものを、知見の変更セットの Issue（factory:planned・factory:learn）にした。工場の implement ジョブが事例記録と知見の下書きを 1 本の PR に書く。1 日に KNOWLEDGE_ISSUES_PER_DAY 件まで。dedupe は出来事ごと"
+  committee.revise:
+    source: control_plane
+    required: [pr_url, head_sha, votes]
+    note: "ADR 0024 の 4（2026-11-04 オーナー: 知見の PR は委員会の可決でマージし、割れたときだけ人へ）。1〜2 役が直し方を示して差し戻したので、理由を指摘として続きのジョブ（review_fix）に渡した。直して head が変われば委員会にかけ直す。同じ PR の 2 度目の revise は human の議決にする。dedupe は PR ごと"
+  committee.reopened:
+    source: control_plane
+    required: [pr_url]
+    note: "factoryctl committee reopen。人に回した知見の PR を委員会にかけ直す（それより前の committee.decided は数えない）。supervisor が積み直し、承認待ちのラベルを外す"
   process.proposal_filed:
     source: control_plane
     required: [incident, signature, day]
