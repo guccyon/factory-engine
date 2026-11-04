@@ -327,6 +327,7 @@ def ci_fix_step(cur, p: dict, pr: dict):
 def merge_step(cur, rules: dict, manifests: dict) -> set:
     """返り値は、同時上限に数える開いた工場の PR の correlation_id（人を待つ PR は数えない）"""
     open_corrs: set = set()
+    knowledge_turns: dict[str, tuple[set, str | None]] = {}
     for p in factory_prs(cur):
         cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s", (p["url"],))
         if cur.fetchone():
@@ -346,6 +347,11 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
                 record(cur, "pr.closed_unmerged", p["corr"], {"pr_url": p["url"], "closed_at": pr["closed_at"], "decided": (d or {}).get("payload")},
                        f"pr.closed_unmerged:{p['url']}")
             continue
+        if p["repo"] not in knowledge_turns:   # 周期ごとに製品 1 回だけ引く
+            knowledge_turns[p["repo"]] = ({q["corr"] for q in committee.queue(cur, p["repo"])}, committee.turn(cur, p["repo"]))
+        queued, current = knowledge_turns[p["repo"]]
+        if p["corr"] in queued and p["corr"] != current:
+            continue   # 知見は製品ごとに 1 件ずつ直列に流す。順番が来るまで衝突も解かず委員会にも持ち込まない（同時上限にも数えない）
         if not pr.get("draft"):
             # 衝突と CI 落ちは、まず同じ担当の続きのジョブで直す（ADR 0016・0017）。直せない・上限に達したときだけ停止（ci:）を開いて人へ
             if pr.get("mergeable_state") == "dirty":
@@ -861,7 +867,8 @@ def knowledge_root_exists(repo: str) -> bool:
 
 def knowledge_issue_step(cur, now: datetime | None = None):
     """事例の分析（case.analyzed）のうち、最初に回すテーマの学びがあるものを、知見の変更セットの Issue にする（ADR 0024 の 3）。
-    工場の implement ジョブが事例記録と知見の下書き（draft・hypothesis）を 1 本の PR に書く。PR は change_type_rules の knowledge 種別"""
+    工場の implement ジョブが事例記録と知見の下書き（draft・hypothesis）を 1 本の PR に書く。PR は change_type_rules の knowledge 種別。
+    まだ起票していない分析がキューで、製品ごとに 1 件ずつ取り出す（committee.turn）。前の知見がマージされてから書くので、番号がぶつからない"""
     if not KNOWLEDGE_ISSUES or DRY_RUN:
         return
     now = now or datetime.now(timezone.utc)
@@ -876,6 +883,7 @@ def knowledge_issue_step(cur, now: datetime | None = None):
     except OSError:
         return
     roots: dict[str, bool] = {}
+    busy: set[str] = set()
     for a in case.pending_knowledge(cur, themes, room):
         m = re.match(r"github:([^#]+)#\d+$", a.get("ticket") or "")
         repo = m.group(1) if m and m.group(1) in REPOS else REPOS[0]
@@ -883,6 +891,10 @@ def knowledge_issue_step(cur, now: datetime | None = None):
             roots[repo] = knowledge_root_exists(repo)
         if not roots[repo]:
             continue
+        if repo in busy or committee.turn(cur, repo):
+            busy.add(repo)
+            continue   # 知見は製品ごとに 1 件ずつ。流れている知見が済む（または人の判断待ちに移る）まで次を起票しない
+        busy.add(repo)
         title, body = case.knowledge_issue(a, themes)
         try:
             issue = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})

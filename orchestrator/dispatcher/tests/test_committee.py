@@ -198,3 +198,32 @@ def test_reopen_ignores_old_human_decision_and_reenqueues(cur, monkeypatch):
     assert ("DELETE", "repos/o/r/issues/12/labels/factory%3Aneeds-approval") in calls
     assert committee.record(cur, "o/r", 12, f"committee:{PR}", None, result("adopt"), lambda m, p, b=None: {}, lambda *a: None)
     assert committee.approved(cur, PR)
+
+
+def filed(cur, issue, pr=None, age="0 hours"):
+    corr = f"github:o/r#{issue}"
+    cur.execute("insert into events(name, correlation_id, occurred_at, payload) values ('knowledge.case_filed',%s, now() - %s::interval, %s)",
+                (corr, age, psycopg.types.json.Jsonb({"incident": f"x:{issue}"})))
+    if pr:
+        cur.execute("insert into artifacts(type, correlation_id, payload) values ('PR',%s,%s)",
+                    (corr, psycopg.types.json.Jsonb({"pr_url": f"https://github.com/o/r/pull/{pr}"})))
+    return corr
+
+
+def test_knowledge_flows_one_at_a_time_and_human_waits_step_aside(cur):
+    """知見のキューは起票の古い順に 1 件ずつ。人の判断待ちに移ったものは次に譲る（2026-11-04 オーナー）"""
+    a, b, c = filed(cur, 1, 101), filed(cur, 2, 102), filed(cur, 3)
+    assert [q["corr"] for q in committee.queue(cur, "o/r")] == [a, b, c]
+    assert committee.turn(cur, "o/r") == a
+    cur.execute("insert into events(name, correlation_id, payload) values ('committee.decided',%s,%s)",
+                (a, psycopg.types.json.Jsonb({"pr_url": "https://github.com/o/r/pull/101", "outcome": "human"})))
+    assert committee.turn(cur, "o/r") == b
+    cur.execute("insert into events(name, correlation_id, payload) values ('pr.merged',%s,'{}')", (b,))
+    assert committee.turn(cur, "o/r") == c   # まだ PR がない（書いている）ものも順番を持つ
+    assert committee.turn(cur, "other/repo") is None
+
+
+def test_stuck_writer_without_pr_gives_up_its_turn(cur):
+    filed(cur, 1, age="3 days")
+    b = filed(cur, 2, 102)
+    assert committee.turn(cur, "o/r") == b

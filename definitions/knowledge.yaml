@@ -11,6 +11,7 @@ layout:
   cases: "cases/C-NNNN.md"          # 事例記録（なぜなぜの過程）
   committee: "committee/D-NNNN.yaml" # 委員会の議決
   index: "INDEX.md"                 # 自動生成（core-gates/knowledge_check.py --index）。手で編集しない
+  numbering: "既定ブランチの空いている次の番号。知見は製品ごとに 1 件ずつ直列に流す（supervisor・committee.turn）。ぶつかった PR は衝突の解消の前に core-gates/knowledge_renumber.py が付け直す（ADR 0024 の 2026-11-04 の追記）"
   owner: committee                  # 置き場の構造（ディレクトリの分け方）は委員会がオーナー。週 1 の定例で見直し、変えるときは Issue にしてラインで
 
 knowledge:
