@@ -16,6 +16,7 @@
 工場の入れ替え（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
   factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
   factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
+  factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
@@ -402,6 +403,8 @@ def drain_report(cur) -> int:
         print(f"  実行中のジョブ {j['id']} {j['kind']} {j['repo']}#{j['issue_number']}（{j['elapsed_sec'] // 60} 分）")
     for e in st["shipping"]:
         print(f"  処理中の出荷 {e['name']} {e['release_id']}")
+    if st["allowed"]:
+        print(f"  一時停止のまま流すもの: {' '.join(st['allowed'])}")
     print("入れ替えてよい" if st["ready"] else "まだ入れ替えない（上の終わりを待つ）")
     return 0 if st["ready"] else 3
 
@@ -502,6 +505,21 @@ def main(argv):
             print(f"{t['id']:>4} {ops.level_of(t['priority'])}({t['priority']}) {t['state']:<7} {t['source_ref']} {t['title'][:40]}{hold}{wait} {t['jobs'] or ''}")
     elif cmd == "drain":
         if len(argv) > 2 and argv[2] == "status":
+            return drain_report(cur)
+        if len(argv) > 2 and argv[2] == "allow":
+            urls = [a for a in argv[3:] if a.startswith("https://")]
+            corrs = []
+            for u in urls:
+                cur.execute("select correlation_id from artifacts where type='PR' and payload->>'pr_url'=%s order by id desc limit 1", (u,))
+                r = cur.fetchone()
+                if not r:
+                    print(f"工場の PR ではない: {u}")
+                    return 2
+                corrs += [r["correlation_id"], f"committee:{u}"]   # 衝突の解消・検査・judge はチケットの、委員会は PR の correlation_id
+            if not urls or not drain.allow(cur, corrs, "factoryctl", opt(argv, "--reason", "")):
+                print("一時停止していない（流してよいものを足すのは一時停止の間だけ）" if urls else "PR の URL を渡す")
+                return 1
+            print(f"一時停止のまま流す: {len(urls)} 本（{' '.join(urls)}）")
             return drain_report(cur)
         changed = drain.set_drain(cur, True, "factoryctl", opt(argv, "--reason", ""))
         print("ラインを一時停止にした（順番待ちを取り出さない）" if changed else "すでに一時停止中")

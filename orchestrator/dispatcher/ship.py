@@ -137,6 +137,8 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
 
 
 def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, str]:
+    if env == "prod" and prod_held(repo):
+        return False, PROD_HOLD_MSG   # 戻すのも本番を起動するので受け付けない
     st = status(cur, repo)
     cur_env = st["environments"].get(env)
     if not cur_env or not cur_env.get("previous"):
@@ -293,7 +295,7 @@ def handle(cur, ev: dict):
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})
             seed_once(cur, cfg, repo, "staging", rel, common)
-        elif name == "release.approved" and prod_held(repo):
+        elif (name == "release.approved" or (name == "release.rollback_requested" and p.get("env") == "prod")) and prod_held(repo):
             # 受け付けた後で止めた・直接書かれた承認も、本番は起動しない（停止には開かない。止めているのは意図どおり）
             record(cur, "release.ship_failed", rid, {**common, "request": name, "error": PROD_HOLD_MSG, "held": True})
         elif name == "release.approved":

@@ -233,3 +233,19 @@ def test_recover_requeues_jobs_killed_by_docker_shutdown(cur, docker):
     cur.execute("select count(*) as n from jobs where enqueued_by='recover'")
     assert cur.fetchone()["n"] == 1
     assert not (docker.dir / "containers" / "factory-job-1").exists()
+
+
+def test_allowed_jobs_flow_while_paused(cur):
+    """一時停止のまま、決めた PR のジョブだけ流す（2026-11-04 オーナー: ラインは止めたまま知見の PR だけ流す）"""
+    assert drain.allow(cur, ["github:o/r#1"], "t") is False          # 一時停止していなければ足さない
+    drain.set_drain(cur, True, "t")
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
+                "('github:o/r#9','o/r',9,'t','implement'), ('github:o/r#1','o/r',12,'t','inspect'), ('committee:https://github.com/o/r/pull/13','o/r',13,'t','committee_review')")
+    assert drain.claim_allowed(cur, drain.allowed(cur)) is None       # 足すまでは何も取り出さない
+    assert drain.allow(cur, ["github:o/r#1", "committee:https://github.com/o/r/pull/13"], "t")
+    got = [drain.claim_allowed(cur, drain.allowed(cur)) for _ in range(3)]
+    assert sorted(j["kind"] for j in got if j) == ["committee_review", "inspect"]   # ほかのジョブは取り出さない
+    drain.set_drain(cur, False, "t")
+    assert drain.allowed(cur) == []                                    # 再開で消える
+    drain.set_drain(cur, True, "t")
+    assert drain.allowed(cur) == []                                    # 次の一時停止には持ち越さない

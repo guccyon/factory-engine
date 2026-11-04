@@ -759,12 +759,11 @@ def run_loop(reattached: list[dict] | None = None):
         try:
             with db() as conn, conn.cursor() as cur:
                 if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。実行中のジョブはそのまま流す
-                    sem.release()
-                    time.sleep(3)
-                    continue
-                cur.execute("select * from claim_job()")   # (claim_job()).* は列ごとに関数が呼ばれるので使わない
-                row = cur.fetchone()
-                job = row if row and row.get("id") else None
+                    job = drain.claim_allowed(cur, drain.allowed(cur))   # 一時停止の間も流すと決めたもの（factoryctl drain allow）だけは取り出す
+                else:
+                    cur.execute("select * from claim_job()")   # (claim_job()).* は列ごとに関数が呼ばれるので使わない
+                    row = cur.fetchone()
+                    job = row if row and row.get("id") else None
         except Exception as e:  # noqa: BLE001
             log("claim error", e)
         if not job:
