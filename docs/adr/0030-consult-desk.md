@@ -1,6 +1,6 @@
 # ADR 0030: 事業部の窓口（外からの依頼の壁打ちと、各ファンクションへの問い合わせ）
 
-- 状態: 提案
+- 状態: 承認（2026-11-05 オーナー。決めどころ W1〜W6 は推奨どおり）
 - 関係: ADR 0009（操業コンソールと工場側のチケット。操業 API・優先度・`tickets` の入口の抽象化）、ADR 0025・0026（プランナーの責務と着手判定）、ADR 0028（P5b の Answer ライン）、ADR 0029（ラインの流量の宣言）、`definitions/stages.yaml` の intake / clarify / triage、`definitions/planner.yaml`
 
 ## 文脈
