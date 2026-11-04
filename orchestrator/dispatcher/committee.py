@@ -8,12 +8,19 @@
   - human: 人の承認に回す（factory:needs-approval）。人のマージが採用、閉じれば不採用
   - adopt / enforce: 採用。enforce の担保の案は、委員会が実装せずに Issue にして工場のラインで作る
 - supervisor は、変更種別 knowledge の PR を自動でマージする前に、委員会の採用（approved）を見る
+- 知見は製品ごとに 1 件ずつ直列に流す（queue・turn）。並列に書くとどの PR も同じ番号（K-0001・C-0001）を取って全部が衝突した
+  （2026-11-04 オーナー: 振り返りの対象をキューに積み、委員会が 1 つずつ取り出して評価し、番号がぶつからないように蓄積する）
 """
 from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
 import continuation
+import judgment
+import stoppage
+
+# 知見の Issue を起票してから PR ができるまで、順番を持っていてよい時間。過ぎたら詰まったとみなし、次に譲る
+QUEUE_WRITE_GRACE = "2 days"
 
 ROLE_JA = {"consistency": "整合", "evidence": "根拠", "enforcement": "担保", "dissent": "反対"}
 VOTE_JA = {"adopt": "採る", "enforce": "採る（決定論で担保）", "human": "人に回す", "sendback": "差し戻す"}
@@ -29,6 +36,35 @@ def decided(cur, pr_url: str) -> dict | None:
                    order by id desc limit 1""", (pr_url, pr_url))
     r = cur.fetchone()
     return r["payload"] if r else None
+
+
+def queue(cur, repo: str) -> list[dict]:
+    """製品の知見のキュー（起票の古い順）。済んだ（PR がマージされた・閉じた）ものは除く。
+    要素は {corr, pr_url（まだ PR がなければ None）, blocked（人を待っている・書き手が詰まった）}"""
+    cur.execute("""select f.correlation_id as corr, f.occurred_at > now() - %s::interval as fresh,
+                          (select a.payload->>'pr_url' from artifacts a where a.type='PR' and a.correlation_id=f.correlation_id
+                            and a.payload->>'pr_url' is not null order by a.id desc limit 1) as pr_url
+                     from events f
+                    where f.name='knowledge.case_filed' and f.correlation_id like %s
+                      and not exists (select 1 from events d where d.name in ('pr.merged','pr.closed_unmerged') and d.correlation_id=f.correlation_id)
+                    order by f.id""", (QUEUE_WRITE_GRACE, f"github:{repo}#%"))
+    out = []
+    for r in cur.fetchall():
+        url = r["pr_url"]
+        if url:
+            d = decided(cur, url)
+            # 人を待つもの（supervisor.awaiting_decision と同じ見方）。衝突・CI 落ちの停止（ci:）は工場が直す対象なので待ちに数えない
+            prefixes = ("sendback:", "hold:") if judgment.decisions_settled(cur, url) else ("judge:", "sendback:", "hold:")
+            blocked = bool(d and d.get("outcome") == "human") or any(stoppage.open_keys(cur, f"{k}{url}") for k in prefixes)
+        else:
+            blocked = not r["fresh"]
+        out.append({"corr": r["corr"], "pr_url": url, "blocked": blocked})
+    return out
+
+
+def turn(cur, repo: str) -> str | None:
+    """いま流してよい知見（キューの先頭の、人を待っていないもの）の correlation_id。人を待つものは次に譲る（待ちでキューを止めない）"""
+    return next((q["corr"] for q in queue(cur, repo) if not q["blocked"]), None)
 
 
 def rounds(cur, pr_url: str) -> int:

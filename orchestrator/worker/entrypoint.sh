@@ -108,8 +108,22 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
   cd repo
   git fetch --quiet origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
   git checkout -q -b "${BRANCH}" "origin/${BRANCH}"
+  # 知見の PR は、取り込む前に番号（K・C・D）を既定ブランチと重ならないように付け直す（ADR 0024、2026-11-04）。
+  # 並列に書いた知見の PR がどれも K-0001・C-0001 を取り、全部が衝突した（rally #570 ほか 4 本）
+  RENUMBERED=""
+  if [ "${CONTINUE_REASON:-}" = "conflict" ] && [ -d .factory-config/knowledge ]; then
+    RENUMBERED=$(python3 /work/engine/core-gates/knowledge_renumber.py --repo . --base "origin/${DEFAULT_BRANCH}" --commit \
+                 | jq -r '.renamed | to_entries | map("\(.key) → \(.value)") | join("、")' 2>/dev/null) || RENUMBERED=""
+    [ -n "${RENUMBERED}" ] && echo "[worker] knowledge renumbered: ${RENUMBERED}"
+  fi
   if ! git merge --no-edit -q "origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
     CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+  fi
+  # 知見の一覧（INDEX.md）は中身から作る自動生成のファイルなので、衝突したら作り直す
+  if [ "${CONTINUE_REASON:-}" = "conflict" ] && [[ " ${CONFLICTS}" == *" .factory-config/knowledge/INDEX.md "* ]]; then
+    if python3 /work/engine/core-gates/knowledge_check.py --repo . --index && git add .factory-config/knowledge/INDEX.md; then
+      CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+    fi
   fi
   SEEN_CONFLICTS="${CONFLICTS:-}"   # 機械的に解く前に衝突していたファイル。dispatcher が工程の信号（ADR 0027 の 3）に残す
   # 衝突の解消で、衝突が CHANGELOG.md の追記どうしだけ（または衝突がない）なら、エージェントを使わずに機械的に解く。
@@ -123,6 +137,9 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
         && CONFLICTS=""
     elif [ -z "${CONFLICTS}" ]; then
       MECHANICAL="既定ブランチを衝突なく取り込みました（エージェントは使っていません）。"
+    fi
+    if [ -n "${RENUMBERED}" ] && [ -n "${MECHANICAL:-}" ]; then
+      MECHANICAL="${MECHANICAL} 知見の番号を既定ブランチと重ならないように付け直し（${RENUMBERED}）、INDEX.md を作り直しました（core-gates/knowledge_renumber.py）。"
     fi
   fi
   echo "[worker] continue ${CONTINUE_REASON} pr=#${CONTINUE_PR} branch=${BRANCH} conflicts=[${CONFLICTS}] seen=[${SEEN_CONFLICTS}]"

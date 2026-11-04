@@ -184,7 +184,8 @@ def test_knowledge_issue_body_scrubs_personal_data():
     assert "status: draft" in body and "knowledge_check.py" in body and "テーマ 6（工程の進め方）" in body
 
 
-def test_supervisor_files_knowledge_issues_up_to_per_day_once(cur, monkeypatch):
+def test_supervisor_files_knowledge_issues_one_at_a_time(cur, monkeypatch):
+    """知見は製品ごとに 1 件ずつ。前の知見の PR がマージされるまで次を起票しない（2026-11-04 オーナー、番号の衝突を避ける）"""
     calls = []
     monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
     monkeypatch.setattr(supervisor, "DRY_RUN", False)
@@ -195,12 +196,21 @@ def test_supervisor_files_knowledge_issues_up_to_per_day_once(cur, monkeypatch):
     for i in range(3):
         analyzed(cur, f"sendback:{i}", [L(4)])
     supervisor.knowledge_issue_step(cur)
-    supervisor.knowledge_issue_step(cur)   # 1 日の上限に達したので積まない
+    supervisor.knowledge_issue_step(cur)   # 1 件目が流れている間は積まない
     posts = [c for c in calls if c[0] == "POST"]
-    assert len(posts) == 2 and posts[0][1] == "repos/o/r/issues"
+    assert len(posts) == 1 and posts[0][1] == "repos/o/r/issues"
     assert posts[0][2]["labels"] == ["factory:planned", "factory:learn"]
+    cur.execute("select correlation_id from events where name='knowledge.case_filed'")
+    first = cur.fetchone()["correlation_id"]
+    ev(cur, "pr.merged", first, {"pr_url": "https://github.com/o/r/pull/90"})
+    supervisor.knowledge_issue_step(cur)   # 済んだので次を 1 件
+    supervisor.knowledge_issue_step(cur)
     cur.execute("select payload from events where name='knowledge.case_filed' order by id")
     assert [r["payload"]["incident"] for r in cur.fetchall()] == ["sendback:0", "sendback:1"]
+    cur.execute("select correlation_id from events where name='knowledge.case_filed' order by id desc limit 1")
+    ev(cur, "pr.merged", cur.fetchone()["correlation_id"], {"pr_url": "https://github.com/o/r/pull/91"})
+    supervisor.knowledge_issue_step(cur)   # 1 日の上限（2 件）に達した
+    assert len([c for c in calls if c[0] == "POST"]) == 2
 
 
 def test_supervisor_skips_repo_without_knowledge_root(cur, monkeypatch):
