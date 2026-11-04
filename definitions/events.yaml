@@ -294,6 +294,22 @@ events:
     source: control_plane
     required: [incident, analysis_event, themes, learnings, issue, day]
     note: "ADR 0024 の 3。supervisor が事例の分析（case.analyzed）のうち最初に回すテーマ（learning_taxonomy.yaml の status: first）の学びがあるものを、知見の変更セットの Issue（factory:planned・factory:learn）にした。工場の implement ジョブが事例記録と知見の下書きを 1 本の PR に書く。1 日に KNOWLEDGE_ISSUES_PER_DAY 件まで。dedupe は出来事ごと"
+  restricted.added:
+    source: approval_log
+    required: [id, product, knowledge_ids, by]
+    note: "ADR 0024 の 5。管理者が知見の制限付きの保管先に記録を置いた（factoryctl restricted add）。id は R-NNNN。中身は暗号にして restricted_records に置き、ここには書かない"
+  restricted.read:
+    source: approval_log
+    required: [id, by, purpose]
+    note: "ADR 0024 の 5。制限付きの保管先の中身を読んだ（factoryctl restricted show）。誰が・何のために。restricted_reads にも同じ記録。中身は書かない"
+  restricted.read_failed:
+    source: approval_log
+    required: [id, by]
+    note: "ADR 0024 の 5。中身を読もうとしたが鍵が違って復号できなかった。読もうとした記録（restricted.read）は先に残る"
+  restricted.retired:
+    source: approval_log
+    required: [id, by, reason]
+    note: "ADR 0024 の 5。制限付きの記録を retired にし、中身を消した。id は再利用しない"
   committee.revise:
     source: control_plane
     required: [pr_url, head_sha, votes]

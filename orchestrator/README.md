@@ -302,6 +302,18 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 docker compose exec dispatcher factoryctl report learning --days 30
 ```
 
+知見の制限付きの保管先（ADR 0024 の 5）: 障害対応などで利用者の情報をどうしても含む知見の中身は、git に置かず制御プレーンの `restricted_records` に置き、git の知見からは evidence の `restricted: R-NNNN` で指すだけにする。中身は管理者だけが持つ鍵 `RESTRICTED_STORE_KEY` で pgcrypto の対称鍵暗号にする。鍵は `.env` にもサービスの環境にも置かない（ワーカーのジョブの DB は同じ Postgres の上にあるので、DB の権限だけでは管理者に限れない）。鍵をなくすと中身は戻せないので、管理者のパスワード管理に置く。
+一覧には中身も見出しも出さず、読むたびに誰が・何のために読んだかを `restricted_reads` と events の `restricted.read` に残す。ワーカー・操業コンソール・窓口の API には出さない（factoryctl だけ）。
+
+```bash
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/005_restricted.sql   # 既存の DB に表を足す（冪等）
+export RESTRICTED_STORE_KEY=...   # 管理者の手元の鍵（16 文字以上）。シェルの履歴に残さない
+docker compose exec -T -e RESTRICTED_STORE_KEY dispatcher factoryctl restricted add guccyon/rally --knowledge K-0012 < incident.md   # R-NNNN が出る
+docker compose exec dispatcher factoryctl restricted list
+docker compose exec -e RESTRICTED_STORE_KEY dispatcher factoryctl restricted show R-0001 --purpose "再発の確認"
+docker compose exec dispatcher factoryctl restricted retire R-0001 --reason "保管の期限"   # 中身を消し、id と記録は残す
+```
+
 ## 建設状況の日次レポート（ADR 0008）
 
 supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
