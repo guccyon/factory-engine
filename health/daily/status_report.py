@@ -143,6 +143,24 @@ def yaml_files(repo: str, path: str) -> list[dict]:
     return out
 
 
+def usage_view(conn) -> dict | None:
+    """工場の使用量（トークンの消費と費用。orchestrator/dispatcher/usage.py と同じ集計で、操業コンソールの /usage と同じもの）。
+    朝の報告の「工場の操業」が読む。supervisor の中では /app に、作業ツリーでは orchestrator/dispatcher にある"""
+    if conn is None:
+        return None
+    for d in ("/app", str(Path(__file__).resolve().parents[2] / "orchestrator" / "dispatcher")):
+        if Path(d, "usage.py").exists() and d not in sys.path:
+            sys.path.append(d)
+    try:
+        import usage
+        from psycopg.rows import dict_row
+        with conn.cursor(row_factory=dict_row) as cur:
+            return usage.view(cur)
+    except Exception as e:  # noqa: BLE001  使用量が出せなくてもレポートは出す
+        print("[status-report] 使用量を数えられない:", repr(e), file=sys.stderr)
+        return None
+
+
 def db_conn():
     if not DATABASE_URL:
         return None
@@ -614,7 +632,19 @@ def render_daily(snap: dict, prev: dict | None) -> str:
     for repo, hist in (snap.get("quality") or {}).items():
         lines.append(f"- 内部品質: {fmt_quality({repo: hist[-2:] if len(hist) > 1 else hist})[0]}")
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
+    lines += fmt_usage(snap.get("usage"))
     return "\n".join(lines)
+
+
+def fmt_usage(u: dict | None) -> list[str]:
+    """使用量（契約の週の消費と、アカウントを足すかの判断の材料）。詳しくは操業コンソールの /usage"""
+    if not u:
+        return []
+    w = u["week"]
+    return ["", "**使用量（契約の週）**",
+            f"- {w['start'][5:16].replace('T', ' ')} から ${w['cost_usd']:,.2f}（1 日 ${w['per_day_usd']:,.2f}、週の見込み ${w['projected_usd']:,.2f}、API 単価換算）、"
+            f"契約の上限に当たった回数 {w['usage_limited']}",
+            *[f"- {x['text']}" for x in u["signals"]]]
 
 
 # ------------------------------------------------------------------ 記録と公開
@@ -687,7 +717,8 @@ def main() -> int:
     snap = {"date": date, "generated_at": now.isoformat(), "progress": progress,
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
-            "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn)}
+            "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
+            "usage": usage_view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],
