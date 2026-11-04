@@ -90,6 +90,10 @@ COMMITTEE = ENV.get("COMMITTEE", "1") == "1"   # 知見の変更セットの PR 
 COMMITTEE_WEEKLY = ENV.get("COMMITTEE_WEEKLY", "1") == "1"   # 知見の委員会の週 1 の定例（ADR 0024）。0 で止める
 KNOWLEDGE_DEFS = ENV.get("KNOWLEDGE_DEFINITIONS", "/definitions/knowledge.yaml")
 KNOWLEDGE_ISSUES_PER_DAY = int(ENV.get("KNOWLEDGE_ISSUES_PER_DAY", "2"))   # 委員会ができるまでは知見の PR は人の承認（knowledge 種別）なので少なく
+PROCESS_ISSUES = ENV.get("PROCESS_ISSUES", "1") == "1"   # 工程の信号の束の分析から、工場への改善案の Issue を起票する（ADR 0027 の 3）。0 で止める
+PROCESS_ISSUES_PER_DAY = int(ENV.get("PROCESS_ISSUES_PER_DAY", "1"))   # 束の分析は 1 日 1 件なので、起票も 1 件まで
+ENGINE_REPO = ENV.get("ENGINE_REPO", "guccyon/factory-engine")   # 工場自体のリポジトリ（改善案の起票先）
+PROCESS_LABEL = "factory:process-proposal"
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -882,6 +886,45 @@ def knowledge_issue_step(cur, now: datetime | None = None):
         log("knowledge issue filed", a["incident"], issue["html_url"])
 
 
+def process_issue_step(cur, now: datetime | None = None):
+    """工程の信号の束の分析（case.analyzed の kind=process）を、工場のリポジトリへの改善案の Issue にする（ADR 0027 の 3）。
+    同じ signature の改善案が開いていれば足さない（記録だけ）。実装とマージは人の承認"""
+    if not PROCESS_ISSUES or DRY_RUN:
+        return
+    now = now or datetime.now(timezone.utc)
+    day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
+    cur.execute("select count(*) as n from events where name='process.proposal_filed' and payload->>'day'=%s and payload->>'issue' is not null", (day,))
+    room = PROCESS_ISSUES_PER_DAY - cur.fetchone()["n"]
+    if room <= 0:
+        return
+    pending = case.pending_process(cur, room)
+    if not pending:
+        return
+    try:
+        open_titles = {i.get("title", ""): i.get("html_url") for i in gh("GET", f"repos/{ENGINE_REPO}/issues?state=open&labels={PROCESS_LABEL}&per_page=100") or []}
+    except Exception as e:  # noqa: BLE001  次の周回でやり直す
+        log("process proposals list failed", repr(e))
+        return
+    clusters = {c["signature"]: c for c in process_learn.retrospect(cur, now)["clusters"]}
+    for a in pending:
+        sig = case.signature_of(a["incident"])
+        dup = next((u for t, u in open_titles.items() if f"工程の改善案: {sig}（" in t), None)
+        if dup:
+            record(cur, "process.proposal_filed", None, {"incident": a["incident"], "signature": sig, "duplicate_of": dup, "day": day},
+                   f"process.proposal_filed:{a['incident']}")
+            continue
+        title, body = case.process_issue(a, clusters.get(sig) if clusters.get(sig, {}).get("route") else None)
+        try:
+            issue = gh("POST", f"repos/{ENGINE_REPO}/issues", {"title": title, "body": body, "labels": [PROCESS_LABEL]})
+        except Exception as e:  # noqa: BLE001
+            log("process proposal failed", a["incident"], repr(e))
+            continue
+        record(cur, "process.proposal_filed", None, {"incident": a["incident"], "signature": sig, "analysis_event": a["event_id"],
+                                                     "proposals": len(a.get("learnings") or []), "issue": issue["html_url"], "day": day},
+               f"process.proposal_filed:{a['incident']}")
+        log("process proposal filed", sig, issue["html_url"])
+
+
 def design_review_due(now: datetime, schedule: dict) -> bool:
     """その週（ISO 週）の指定の曜日・時（JST）を過ぎたか。過ぎていれば週末まで拾う"""
     wd = WEEKDAYS.index(schedule.get("weekday", "saturday"))
@@ -974,6 +1017,7 @@ def tick():
         rule_transition_step(cur)
         case_review_step(cur)
         knowledge_issue_step(cur)
+        process_issue_step(cur)
         design_review_step(cur)
         committee_weekly_step(cur)
 

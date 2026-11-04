@@ -100,6 +100,7 @@ process_retrospective:
   params: { REWORK_MIN: 3, COST_OUTLIER_X: 3, COST_OUTLIER_MIN_SAMPLES: 5, WAIT_MIN_H: 3 }
   route_to_case_review: { min_signals: 10, or_min_cost_usd: 50, per_day: 1, again_after_days: 7 }
   effect: "束ごとに前の同じ長さの窓の件数・費用を並べる（factoryctl report process）。学習器に自分を採点させない（ADR 0013 の 8）"
+  proposals: "分析役の改善案は supervisor が工場のリポジトリに Issue（factory:process-proposal）として起票する（process_issue_step、1 日 1 件、同じ signature が開いていれば足さない）。工場は Issue だけでは実装しない"
   approval: "作用先ごとの承認の線は learning_taxonomy.yaml の approval（運用パラメータは工場、プランナーへの知見は委員会、製品の構造は改善チケット、工場のプロセスとアーキテクチャはオーナー）"
 
 lesson:

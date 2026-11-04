@@ -250,6 +250,10 @@ events:
     source: control_plane
     required: [incident, analysis_event, themes, learnings, issue, day]
     note: "ADR 0024 の 3。supervisor が事例の分析（case.analyzed）のうち最初に回すテーマ（learning_taxonomy.yaml の status: first）の学びがあるものを、知見の変更セットの Issue（factory:planned・factory:learn）にした。工場の implement ジョブが事例記録と知見の下書きを 1 本の PR に書く。1 日に KNOWLEDGE_ISSUES_PER_DAY 件まで。dedupe は出来事ごと"
+  process.proposal_filed:
+    source: control_plane
+    required: [incident, signature, day]
+    note: "ADR 0027 の 3。supervisor が工程の信号の束の分析（case.analyzed の kind=process）を、工場のリポジトリ（ENGINE_REPO）への改善案の Issue（factory:process-proposal）にした（issue・analysis_event・proposals）。同じ signature の改善案が開いていれば起票せず duplicate_of だけ残す。1 日に PROCESS_ISSUES_PER_DAY 件まで。実装とマージは人の承認。dedupe は出来事ごと"
   ui_design.drafted:
     source: control_plane
     required: [repo, issue, artifact_id, round, variants, recommended, gaps]
