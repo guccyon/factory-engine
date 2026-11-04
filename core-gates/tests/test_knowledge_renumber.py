@@ -69,3 +69,22 @@ def test_nothing_to_do_when_no_collision(tmp_path):
     repo = setup(tmp_path)
     kr.renumber(repo, "main", commit=True)
     assert kr.renumber(repo, "main", commit=True) == {}
+
+
+def test_rewrites_only_added_lines_in_existing_files(tmp_path):
+    # 既存の知見を直す変更セット（amend）: このブランチが既存の K-0001 に足した事例の参照だけを付け直す（rally #677）
+    repo = tmp_path / "r"
+    repo.mkdir()
+    sh(repo, "init", "-q", "-b", "main")
+    write(repo, {"K-0001.yaml": "id: K-0001\nevidence:\n  - case: C-0001\n", "cases/C-0001.md": "# C-0001\n"})
+    commit(repo, "init")
+    sh(repo, "checkout", "-q", "-b", "topic")
+    write(repo, {"K-0001.yaml": "id: K-0001\nevidence:\n  - case: C-0001\n  - case: C-0002\n", "cases/C-0002.md": "# C-0002\n"})
+    commit(repo, "topic")
+    sh(repo, "checkout", "-q", "main")
+    write(repo, {"cases/C-0002.md": "# main\n"})
+    commit(repo, "main")
+    sh(repo, "checkout", "-q", "topic")
+    assert kr.renumber(repo, "main", commit=True) == {"C-0002": "C-0003"}
+    # 足した行は C-0003 に、もとからある行（id: K-0001、case: C-0001）はそのまま
+    assert (repo / R / "K-0001.yaml").read_text() == "id: K-0001\nevidence:\n  - case: C-0001\n  - case: C-0003\n"

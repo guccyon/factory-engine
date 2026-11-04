@@ -11,6 +11,8 @@
   2. 既定ブランチとこのブランチの両方で使っている番号の最大の次から、古い番号の順に新しい番号を振る
   3. ファイルを git mv し、このブランチが足したファイルの中の参照（K-0001 など）を 1 回の置き換えで直す
      （既定ブランチのファイルには触らない。ぶつかった番号は、このブランチの中では自分の知見を指しているので）
+     既存の知見を直す変更セット（amend）もあるので、このブランチが書き換えた既存のファイルは、このブランチが足した行だけを直す
+     （rally #677 で、K-0001 の evidence に足した C-0003 が付け直されず、別の PR の事例を指した）
   4. --commit なら 1 つのコミットにする。INDEX.md は既定ブランチを取り込んだ後に knowledge_check.py --index で作り直す
 
 使い方:
@@ -20,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import subprocess
@@ -74,6 +77,16 @@ def rewrite(text: str, mapping: dict[str, str]) -> str:
     return pat.sub(lambda m: mapping[m.group(1)], text)
 
 
+def rewrite_added_lines(before: str, after: str, mapping: dict[str, str]) -> str:
+    """after のうち before になかった行（このブランチが足した・書き換えた行）だけを置き換える"""
+    a, b = before.splitlines(keepends=True), after.splitlines(keepends=True)
+    out = []
+    for op, _, _, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        chunk = b[j1:j2]
+        out.extend(chunk if op == "equal" else [rewrite(line, mapping) for line in chunk])
+    return "".join(out)
+
+
 def renumber(repo: Path, base: str, commit: bool = False) -> dict[str, str]:
     mb = git(repo, "merge-base", base, "HEAD").strip()
     base_ids = set(ids_of(git(repo, "ls-tree", "-r", "--name-only", base, "--", ROOT).split()))
@@ -96,6 +109,17 @@ def renumber(repo: Path, base: str, commit: bool = False) -> dict[str, str]:
             continue
         text = f.read_text(encoding="utf-8")
         new = rewrite(text, mapping)
+        if new != text:
+            f.write_text(new, encoding="utf-8")
+            git(repo, "add", p)
+    for p in git(repo, "diff", "--name-only", "--diff-filter=M", mb, "HEAD", "--", ROOT).split():
+        if p.endswith("/INDEX.md"):
+            continue
+        f = repo / p
+        if not f.is_file():
+            continue
+        text = f.read_text(encoding="utf-8")
+        new = rewrite_added_lines(git(repo, "show", f"{mb}:{p}"), text, mapping)
         if new != text:
             f.write_text(new, encoding="utf-8")
             git(repo, "add", p)
