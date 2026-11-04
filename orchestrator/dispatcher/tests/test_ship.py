@@ -125,3 +125,25 @@ def test_contract_sets_rollback_floor(cur):
     st = ship.status(cur, REPO)["environments"]["prod"]
     assert st["previous"] == a and "contract" in st["rollback_blocked"]   # b → a は戻せない（DB に contract が残る）
     assert ship.request_rollback(cur, REPO, "prod", "t", "test")[0] is False
+
+
+def test_prod_hold_keeps_product_on_staging_only(cur, monkeypatch):
+    """1st リリース前（development）の製品は本番に出さない。承認を受け付けず、shipper も本番を起動せず、列車は staging に出し続ける（2026-11-04 オーナー）"""
+    monkeypatch.setattr(ship, "PROD_HOLD", {REPO})
+    rid = release(cur, "0.7.0")
+    deployed(cur, rid, "staging")
+    ok, msg = ship.request_approve(cur, rid, "t", "test")
+    assert ok is False and "development" in msg
+    assert ship.busy(cur, REPO) is False                            # 本番待ちにならないので、次の版を staging に出せる
+    calls = []
+    monkeypatch.setattr(ship, "deploy", lambda *a, **k: calls.append(a) or 1.0)
+    monkeypatch.setattr(ship, "source", lambda *a, **k: ("/nonexistent", "c"))
+    ev_id = ship.record(cur, "release.approved", rid, {"by": "t", "via": "test"})   # 止める前に受け付けた承認
+    ev = [e for e in ship.pending(cur) if e["id"] == ev_id][0]
+    ship.handle(cur, ev)
+    assert calls == []                                              # 本番は起動しない
+    cur.execute("select payload from events where name='release.ship_failed'")
+    assert cur.fetchone()["payload"]["held"] is True
+    cur.execute("select count(*) as n from stoppages")
+    assert cur.fetchone()["n"] == 0                                 # 意図した停止なので人には回さない
+    assert ship.pending(cur) == []

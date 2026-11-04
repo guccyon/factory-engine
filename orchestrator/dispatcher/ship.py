@@ -32,6 +32,15 @@ WORK = os.environ.get("SHIP_WORKDIR", "/ship")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,40}$")
 REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested")
 RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.ship_failed")
+# 本番に出さない製品（1st リリース前の development。2026-11-04 オーナー: 本番はしばらく動かさず staging だけ）。
+# 承認を受け付けず、shipper も本番を起動しない。staging の版が本番待ちにならないので、出荷の列車は staging に出し続ける。
+# 製品の段階（development → 1st リリース後）を持つリリース管理ができるまでのつなぎ
+PROD_HOLD = {r.strip() for r in os.environ.get("SHIP_PROD_HOLD", "").split(",") if r.strip()}
+PROD_HOLD_MSG = "この製品は 1st リリース前（development）なので本番には出さない（SHIP_PROD_HOLD）"
+
+
+def prod_held(repo: str) -> bool:
+    return repo in PROD_HOLD
 
 
 def now() -> datetime:
@@ -90,6 +99,8 @@ def busy(cur, repo: str) -> bool:
                 (list(REQUESTS), f"{repo}@%", list(RESULTS)))
     if cur.fetchone():
         return True
+    if prod_held(repo):
+        return False   # 本番に出さないので、staging の版は本番待ちにならない
     envs = status(cur, repo)["environments"]
     staged = envs.get("staging", {}).get("release_id")
     return bool(staged) and staged != envs.get("prod", {}).get("release_id")
@@ -116,6 +127,8 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
     st = status(cur, release_of(cur, release_id)["repo"]) if release_of(cur, release_id) else None
     if not st:
         return False, "その Release はない"
+    if prod_held(release_of(cur, release_id)["repo"]):
+        return False, PROD_HOLD_MSG
     staged = st["environments"].get("staging", {}).get("release_id")
     if staged != release_id:
         return False, "staging でいま確かめられている版ではない"
@@ -280,6 +293,9 @@ def handle(cur, ev: dict):
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})
             seed_once(cur, cfg, repo, "staging", rel, common)
+        elif name == "release.approved" and prod_held(repo):
+            # 受け付けた後で止めた・直接書かれた承認も、本番は起動しない（停止には開かない。止めているのは意図どおり）
+            record(cur, "release.ship_failed", rid, {**common, "request": name, "error": PROD_HOLD_MSG, "held": True})
         elif name == "release.approved":
             path, _ = source(repo, rel["app_version"])
             secs = deploy(ship_config(path), path, repo, "prod", rel)
