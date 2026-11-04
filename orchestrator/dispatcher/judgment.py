@@ -203,7 +203,8 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
-                   "human_grade": None, "forced_escalation": forced, "carried_human_decision": carried}
+                   "human_grade": None, "forced_escalation": forced, "carried_human_decision": carried,
+                   "already_applied": bool(v.get("already_applied")) if v.get("verdict") == "replace" else None}
         cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Judgment',%s,%s,'verify',%s) returning id",
                     (corr, job_id, Jsonb(payload)))
         aid = cur.fetchone()["id"]
@@ -216,7 +217,9 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
             escalated.append({"artifact_id": aid, "category": category, "question": question})
         elif kind == "defect" and v.get("verdict") == "adopt":
             adopted_defects.append({**src, "judgment_id": aid})
-        elif kind == "provisional" and v.get("verdict") == "replace":
+        elif kind == "provisional" and v.get("verdict") == "replace" and not payload["already_applied"]:
+            # 今の差分がすでに差し替え後の案になっているもの（already_applied）は、記録だけ残して差し戻さない。
+            # 直す作業のない差し戻しの Issue が起票され、差し戻しの上限に当たってマージが止まった（11-04 rally #571・#570・#677）
             replaced.append({"artifact_id": aid, "category": category, "question": question, "replacement": v.get("replacement"),
                              "interpretation": payload["interpretation"]})
     return {"adopted_defects": adopted_defects, "replaced": replaced, "escalated": escalated,

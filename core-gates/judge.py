@@ -31,6 +31,7 @@ SCHEMA = {
             "artifact_id": {"type": "integer"},
             "verdict": {"type": "string", "enum": ["adopt", "replace", "escalate"]},
             "replacement": {"type": "string"},
+            "already_applied": {"type": "boolean", "description": "replace のときだけ。今の差分がすでに replacement の案になっていて、直す作業がないなら true"},
             "confidence": {"type": "number"},
             "evidence": {"type": "string"}, "interpretation": {"type": "string"}, "impact": {"type": "string"},
             "precedent": {"type": "string", "description": "aesthetic を adopt・replace にするときは必須。沿っている既存の部品・画面のファイルのパスと箇所、UXSpec のファイルと項目、または要素レベルなら拠った UI の定石"},
@@ -120,6 +121,8 @@ def main() -> int:
 
 # 裁き方
 - 仮決め（provisional）の各件: adopt（そのままでよい）/ replace（別の案にすべき。replacement に案を書く）/ escalate（渡したものでは決められない。人に回す）
+  - replace で、仮決めの記録は古いが今の差分がすでに replacement の案になっている（直す作業がない）ときは、already_applied を true にする。
+    記録の差し替えとして残すだけで、差し戻しにはしない
 - 検査の指摘（defects）の各件（rubric に指摘の根拠になった項目の本文がある）: adopt（直すべき欠陥。nit も機械的に直せるなら adopt）/ reject（偽陽性、または差分の外のことで判定できない）/ escalate
 - 各件に 3 層を書く: evidence（根拠: 参照したファイルのパスと見出し、差分の箇所）、interpretation（根拠をどう読んでその結論にしたか）、confidence（0〜1）
 - category が aesthetic（見た目と印象）の仮決めには、必ず level を書く（ADR 0025、2026-11-02 改訂）。

@@ -74,3 +74,17 @@ def test_human_decision_wins_over_judge_replace(cur, verdict):
     cur.execute("select payload from artifacts where type='Judgment' and payload->>'question'='文字の役割の当て方' order by id desc limit 1")
     p = cur.fetchone()["payload"]
     assert p["verdict"] == "human_decided" and p["carried_human_decision"] == {"grade": "agree"}
+
+
+@pytest.mark.parametrize("applied", [True, False])
+def test_already_applied_replace_is_recorded_but_not_sent_back(cur, applied):
+    # 仮決めの記録が古いだけで、今の差分がすでに差し替え後の案になっているときは差し戻さない（11-04 rally #571・#570・#677）
+    judgment.record_provisional(cur, CORR, None, PR, "### scope 2: 書体の同梱\n- 選んだ: 同梱しない\n- 確信度: 0.5\n")
+    inp = judgment.judge_input(cur, PR, "attended")
+    aid = inp["provisional"][0]["artifact_id"]
+    v = {"artifact_id": aid, "verdict": "replace", "replacement": "同梱する", "confidence": 0.8, **({"already_applied": True} if applied else {})}
+    out = judgment.record_judged(cur, CORR, None, PR, inp, {"provisional": [v]}, "attended", "test")
+    assert len(out["replaced"]) == (0 if applied else 1)
+    cur.execute("select payload from artifacts where type='Judgment' order by id desc limit 1")
+    p = cur.fetchone()["payload"]
+    assert p["verdict"] == "replace" and p["already_applied"] is applied and p["decision"] == "同梱する"
