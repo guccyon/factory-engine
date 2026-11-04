@@ -44,6 +44,9 @@ context_for_agents:
   include: "status=active かつ confidence が confirmed か settled（settled で deterministic の担保が効いているものは渡さない）"
   attach: [confidence, verified_at]
   usage_event: knowledge.used   # 渡した記録。数えるのは測る側
+  selector: core-gates/knowledge_context.py   # 決定論で選ぶ。review_by を過ぎたもの・client の区分は渡さない。役割は scope.roles（空ならすべて）
+  roles_wired: [implement]                    # 今つないでいる役割（2026-11-05）。検査・judge などはつなぐときに足す
+  limits: { items: 12, chars: 12000 }         # 仮置き。確認日の新しい順
 
 # 失効のきっかけ（決定論で見るもの）
 invalidation:

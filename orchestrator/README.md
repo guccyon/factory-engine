@@ -302,6 +302,8 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 docker compose exec dispatcher factoryctl report learning --days 30
 ```
 
+知見をワーカーに渡す（ADR 0024 の 6）: implement のワーカーは、製品の知見のうち active で確認済み以上（settled で決定論の担保が効いているもの・再確認の期限を過ぎたもの・client の区分は除く）を `core-gates/knowledge_context.py` で選び、確かさと確認日を付けて `/work/context/knowledge.md` に置く。プロンプトには場所と扱い方（目の前の事実を優先し、食い違いは「## 補足」に書く）だけを書く。渡した id は events の `knowledge.used` に残る。`KNOWLEDGE_CONTEXT=0` で止める。
+
 知見の制限付きの保管先（ADR 0024 の 5）: 障害対応などで利用者の情報をどうしても含む知見の中身は、git に置かず制御プレーンの `restricted_records` に置き、git の知見からは evidence の `restricted: R-NNNN` で指すだけにする。中身は管理者だけが持つ鍵 `RESTRICTED_STORE_KEY` で pgcrypto の対称鍵暗号にする。鍵は `.env` にもサービスの環境にも置かない（ワーカーのジョブの DB は同じ Postgres の上にあるので、DB の権限だけでは管理者に限れない）。鍵をなくすと中身は戻せないので、管理者のパスワード管理に置く。
 一覧には中身も見出しも出さず、読むたびに誰が・何のために読んだかを `restricted_reads` と events の `restricted.read` に残す。ワーカー・操業コンソール・窓口の API には出さない（factoryctl だけ）。
 

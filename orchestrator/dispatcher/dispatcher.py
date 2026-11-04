@@ -191,6 +191,14 @@ def comment(repo: str, issue: int, text: str):
 
 
 # ------------------------------------------------------------------ キュー（薄いワークフロー I/F：enqueue / claim / finish / cancel）
+def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: dict | None):
+    """ワーカーが文脈に渡した知見（ADR 0024 の 6）を knowledge.used に残す。使われ方（差し戻し・60 日使われない）は測る側が数える"""
+    ids = [i for i in (result.get("knowledge_ids") or []) if isinstance(i, str)][:50]
+    if ids:
+        record_event(cur, "knowledge.used", corr, job_id, {"repo": repo, "issue": issue, "role": "implement", "ids": ids, "pr_url": result.get("pr_url"),
+                                                          "continue_reason": (cont or {}).get("reason")}, dedupe_key=f"knowledge.used:{job_id}")
+
+
 def record_event(cur, name: str, correlation_id: str | None, job_id: int | None, payload: dict, dedupe_key: str | None = None):
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values (%s,%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (name, correlation_id, job_id, Jsonb(payload), dedupe_key))
@@ -365,6 +373,7 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
                    "-e", f"JOB_DEADLINE={int(time.time()) + JOB_TIMEOUT}",   # 打ち切りの時刻（epoch 秒）。ワーカーはエージェントをこれより前に止め、後処理の時間を残す
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
+                   "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
@@ -624,6 +633,7 @@ def run_job(job: dict, reattaching: bool = False):
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
                                                   "change_types": result.get("change_types", ["code_change"]), "provenance": prov}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"]}, dedupe_key=f"pr.opened:{result['pr_url']}")
+                record_knowledge_used(cur, corr, job_id, repo, issue, result, cont)
                 for text in (result.get("lessons") or [])[:3]:   # ワーカーの「## 知見」を episodic の Lesson として残す（P0 は記録のみ。採用はしない）
                     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Lesson',%s,%s,'learn',%s)",
                                 (corr, job_id, Jsonb({"knowledge_stage": "episodic", "teacher_signal": "worker_self_report", "summary": text,
@@ -638,6 +648,7 @@ def run_job(job: dict, reattaching: bool = False):
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
                                                   "change_types": result.get("change_types", ["code_change"]), "provenance": prov, "incomplete": True}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"], "incomplete": True}, dedupe_key=f"pr.opened:{result['pr_url']}")
+                record_knowledge_used(cur, corr, job_id, repo, issue, result, cont)
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                 comment(repo, issue, f"ジョブ {job_id} は途中で終了しました（{err}）。差分はドラフト PR {result['pr_url']} に残してあります。範囲を満たしていれば建設者がドラフトを外してマージ、足りなければ `factoryctl rerun {job_id} --continue` でこのブランチから続きを（最初からやり直さない）。")
             else:

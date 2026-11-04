@@ -310,6 +310,10 @@ events:
     source: approval_log
     required: [id, by, reason]
     note: "ADR 0024 の 5。制限付きの記録を retired にし、中身を消した。id は再利用しない"
+  knowledge.used:
+    source: control_plane
+    required: [repo, issue, role, ids]
+    note: "ADR 0024 の 6。implement のワーカーが、委員会が採用した active で確認済み以上の知見（core-gates/knowledge_context.py が選ぶ）を文脈に渡した。ids は K-NNNN。pr_url と continue_reason を添える。知見に従った作業の差し戻しや、60 日使われない知見を数えるのは測る側。dedupe はジョブごと"
   committee.revise:
     source: control_plane
     required: [pr_url, head_sha, votes]

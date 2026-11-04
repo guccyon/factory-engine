@@ -210,6 +210,23 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
 "
 fi
 
+# この製品の知見（ADR 0024 の 6）: 委員会が採用した active で確認済み以上の知見を、確かさと確認日を付けて文脈のファイルにする。
+# 選ぶのは core-gates/knowledge_context.py（決定論）。渡した id は FACTORY_RESULT の knowledge_ids に載せ、dispatcher が knowledge.used に残す。KNOWLEDGE_CONTEXT=0 で止める
+KNOWLEDGE_NOTE=""
+KNOWLEDGE_IDS='[]'
+if [ "${KNOWLEDGE_CONTEXT:-1}" != "0" ] && [ -z "${MECHANICAL:-}" ] && [ -d .factory-config/knowledge ]; then
+  KX=$(python3 /work/engine/core-gates/knowledge_context.py --repo . --role implement --out "${CONTEXT}/knowledge.md" 2>/dev/null || echo '{}')
+  KNOWLEDGE_IDS=$(jq -c '.ids // []' <<<"${KX}" 2>/dev/null || echo '[]')
+  [ -z "${KNOWLEDGE_IDS}" ] && KNOWLEDGE_IDS='[]'
+  echo "[worker] knowledge context ids=${KNOWLEDGE_IDS}"
+  if [ "${KNOWLEDGE_IDS}" != "[]" ] && [ -s "${CONTEXT}/knowledge.md" ]; then
+    KNOWLEDGE_NOTE="
+# この製品の知見
+${CONTEXT}/knowledge.md に、知見の委員会が採用したこの製品の知見（確認済み以上）があります。作業を始める前に読み、関係するものを踏まえてください。確かさと確認日を見て、目の前のコードや specs/ と食い違うときは目の前の事実を優先し、食い違いを最後の出力の「## 補足」に知見の id を添えて書いてください。Issue と下の「約束」が知見より優先します。
+"
+  fi
+fi
+
 PROMPT=$(cat <<EOF
 ${CONTINUE_NOTE}
 あなたは工場のヘッドレスワーカーです。このリポジトリで GitHub Issue #${ISSUE_NUMBER} を実装してください。
@@ -217,7 +234,7 @@ ${CONTINUE_NOTE}
 # Issue: ${TITLE}
 
 ${BODY}
-
+${KNOWLEDGE_NOTE}
 # 約束
 - 先に README と specs/（あれば specs/README.md と、そこで最初に読むよう指示されたファイル）と docs/ を読み、用語・境界・不変条件をそれに合わせる。手元の推測で定義を作らない
 - リポジトリの CLAUDE.md や README の規約に従う。コード・テスト・文書は同じ変更に含める（三位一体）
@@ -387,9 +404,9 @@ CHANGE_TYPE="code_change"
 if ! git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" | grep -vqE '(\.md$|^docs/|^CLAUDE\.md$)'; then CHANGE_TYPE="docs_only"; fi
 
 echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg n "${PR_NUMBER}" --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg ct "${CHANGE_TYPE}" --arg files "${CHANGED}" \
-  --argjson lessons "${LESSONS_JSON}" --arg provisional "${PROVISIONAL}" \
+  --argjson lessons "${LESSONS_JSON}" --arg provisional "${PROVISIONAL}" --argjson knowledge "${KNOWLEDGE_IDS}" \
   --arg incomplete "${INCOMPLETE}" --arg rc "${CLAUDE_RC}" \
-  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, provisional_raw:$provisional, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
+  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, provisional_raw:$provisional, knowledge_ids:$knowledge, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
 # 途中終了なら、PR は残したうえでジョブとしては失敗にする（dispatcher が factory:failed にして rerun を案内する）
 # 最後の行を `[ … ] && exit 4` にすると、条件が偽のときスクリプトの終了コードが 1 になる（T08 job 30 で成功が失敗扱いになった）
 if [ -n "${INCOMPLETE}" ]; then exit 4; fi
