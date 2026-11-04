@@ -200,26 +200,27 @@ HEARTBEAT_CPU_SEC 秒以上使ったときだけ出す。どちらもなけれ�
         self.thread.join(timeout=5)
 
 
-def _claude_restore(state: Path | None) -> str | None:
-    """前のジョブの会話の記録を ~/.claude/projects に戻し、そのセッション id を返す。なければ None"""
+def _claude_restore(state: Path | None) -> tuple[str | None, float]:
+    """前のジョブの会話の記録を ~/.claude/projects に戻し、そのセッション id と、その会話のそれまでの費用の累計を返す。なければ (None, 0)。
+    再開した会話の total_cost_usd は前のジョブまでの分を含む累計なので、ジョブの費用はこの累計を引いて出す（11-04 の調査で二重計上が分かった）"""
     if state is None:
-        return None
+        return None, 0.0
     try:
         meta = json.loads((state / "session.json").read_text(encoding="utf-8"))
         sid, project = str(meta["session_id"]), str(meta["project"])
         src = state / f"{sid}.jsonl"
         if not src.is_file() or "/" in project or "/" in sid:
-            return None
+            return None, 0.0
         dst = _claude_projects() / project
         dst.mkdir(parents=True, exist_ok=True)
         (dst / src.name).write_bytes(src.read_bytes())
-        return sid
-    except (OSError, ValueError, KeyError):
-        return None
+        return sid, float(meta.get("total_cost_usd") or 0.0)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, 0.0
 
 
-def _claude_save(state: Path | None, sid: str | None):
-    """会話の記録を state に写す（次の続きのジョブの近道）。失敗してもジョブは止めない"""
+def _claude_save(state: Path | None, sid: str | None, total_cost_usd: float = 0.0):
+    """会話の記録を state に写す（次の続きのジョブの近道）。会話の費用の累計も残し、次のジョブが自分の分だけを数えられるようにする。失敗してもジョブは止めない"""
     if state is None or not sid:
         return
     try:
@@ -228,7 +229,7 @@ def _claude_save(state: Path | None, sid: str | None):
             return
         state.mkdir(parents=True, exist_ok=True)
         (state / found.name).write_bytes(found.read_bytes())
-        (state / "session.json").write_text(json.dumps({"session_id": sid, "project": found.parent.name}), encoding="utf-8")
+        (state / "session.json").write_text(json.dumps({"session_id": sid, "project": found.parent.name, "total_cost_usd": total_cost_usd}), encoding="utf-8")
     except OSError as e:
         print(f"[agent_runner] session save failed: {e}", file=sys.stderr)
 
@@ -237,7 +238,7 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
     # ワーカーの中だけで使う（使い捨てのコンテナなので権限の確認を省く）。stderr はそのまま流す
     state = Path(state_dir) / "claude-code" if state_dir else None
     base = ["claude", "-p", "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions"]
-    sid = _claude_restore(state)
+    sid, prior_cost = _claude_restore(state)
     resumed = bool(sid)
     with _Heartbeat():
         r = subprocess.run(base + (["--resume", sid] if sid else []), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
@@ -255,8 +256,10 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
             res = json.loads(r.stdout)
         except json.JSONDecodeError:
             res = {}
-    _claude_save(state, res.get("session_id"))
-    return Result(output=res.get("result") or "", cost_usd=res.get("total_cost_usd") or 0.0, usage=res.get("usage") or {},
+    total = float(res.get("total_cost_usd") or 0.0)
+    _claude_save(state, res.get("session_id"), total)
+    cost = max(total - prior_cost, 0.0) if resumed else total   # 再開したら前のジョブまでの累計を引く（引かないと続きのたびに前の分を数え直す）
+    return Result(output=res.get("result") or "", cost_usd=round(cost, 6), usage=res.get("usage") or {},
                   model=a.model, runner=a.runner, num_turns=res.get("num_turns") or 0, exit=r.returncode, resumed=resumed)
 
 

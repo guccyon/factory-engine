@@ -33,7 +33,8 @@ if os.environ.get("FAKE_FAIL_ONCE") and not os.path.exists(os.environ["FAKE_FAIL
     sys.exit(1)
 if "--resume" in args and os.environ.get("FAKE_RESUME_FAIL"):
     print("{}"); sys.exit(1)
-out = {"result": "こんにちは", "total_cost_usd": 0.25, "usage": {"input_tokens": 3}, "num_turns": 2}
+# 再開した会話の total_cost_usd は前回までの分を含む累計（本物の Claude Code と同じ）
+out = {"result": "こんにちは", "total_cost_usd": 0.25 + (float(os.environ.get("FAKE_PRIOR_COST", "0")) if "--resume" in args else 0), "usage": {"input_tokens": 3}, "num_turns": 2}
 if "--dangerously-skip-permissions" in args and os.environ.get("HOME"):
     # 会話の記録を Claude Code と同じところに書く（作業ディレクトリごとのフォルダ）
     sid = "s-" + str(sum(1 for _ in open(os.environ["FAKE_LOG"])))
@@ -89,7 +90,7 @@ class RunTest(unittest.TestCase):
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
         self.log = d / "log.jsonl"
         self.env = {"PATH": f"{d}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(self.log)}
-        self._old = {k: os.environ.get(k) for k in [*self.env, "FAKE_FAIL_ONCE", "FAKE_RC", "FAKE_RESUME_FAIL", "HOME"]}
+        self._old = {k: os.environ.get(k) for k in [*self.env, "FAKE_FAIL_ONCE", "FAKE_RC", "FAKE_RESUME_FAIL", "FAKE_PRIOR_COST", "HOME"]}
         os.environ.update(self.env)
         ar.RETRY_BASE = 0
 
@@ -150,7 +151,7 @@ class RunTest(unittest.TestCase):
         r1 = ar.run_agentic("implement", "作業して", state_dir=str(state))
         self.assertFalse(r1.resumed)
         meta = json.loads((state / "claude-code" / "session.json").read_text())
-        self.assertEqual(meta, {"session_id": "s-1", "project": "-work-repo"})
+        self.assertEqual(meta, {"session_id": "s-1", "project": "-work-repo", "total_cost_usd": 0.25})
         # 別のコンテナ（記録のない HOME）でも、ボリュームの記録から続きを再開する
         os.environ["HOME"] = str(Path(self.tmp.name) / "home2")
         r2 = ar.run_agentic("implement", "続きを", state_dir=str(state))
@@ -158,6 +159,29 @@ class RunTest(unittest.TestCase):
         args = self.calls()[1]
         self.assertEqual(args[args.index("--resume") + 1], "s-1")
         self.assertEqual(json.loads((state / "claude-code" / "session.json").read_text())["session_id"], "s-2")
+
+    def test_resumed_job_counts_only_its_own_cost(self):
+        # 再開した会話の total_cost_usd は累計。ジョブの費用は前のジョブまでの分を引いた自分の分だけ（11-04 の二重計上）
+        os.environ["HOME"] = str(Path(self.tmp.name) / "home")
+        state = Path(self.tmp.name) / "agent"
+        self.assertEqual(ar.run_agentic("implement", "作業して", state_dir=str(state)).cost_usd, 0.25)
+        os.environ["FAKE_PRIOR_COST"] = "0.25"
+        r2 = ar.run_agentic("implement", "続きを", state_dir=str(state))
+        self.assertTrue(r2.resumed)
+        self.assertEqual(r2.cost_usd, 0.25)
+        self.assertEqual(json.loads((state / "claude-code" / "session.json").read_text())["total_cost_usd"], 0.5)
+        os.environ["FAKE_PRIOR_COST"] = "0.5"
+        self.assertEqual(ar.run_agentic("implement", "もう一度", state_dir=str(state)).cost_usd, 0.25)
+
+    def test_resume_from_old_record_without_cost_keeps_total(self):
+        # 費用の累計を残す前の記録から再開したときは、引けないので従来どおり total を数える（多めに出る側に倒す）
+        os.environ["HOME"] = str(Path(self.tmp.name) / "home")
+        state = Path(self.tmp.name) / "agent"
+        ar.run_agentic("implement", "作業して", state_dir=str(state))
+        meta_p = state / "claude-code" / "session.json"
+        meta = json.loads(meta_p.read_text()); meta.pop("total_cost_usd"); meta_p.write_text(json.dumps(meta))
+        os.environ["FAKE_PRIOR_COST"] = "0.25"
+        self.assertEqual(ar.run_agentic("implement", "続きを", state_dir=str(state)).cost_usd, 0.5)
 
     def test_resume_failure_falls_back_to_new_session(self):
         os.environ["HOME"] = str(Path(self.tmp.name) / "home")
