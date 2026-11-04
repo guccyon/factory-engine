@@ -3,6 +3,8 @@
 - 審査（4 役の票と議決）はワーカーの core-gates/committee_review.py。議決とそれで active にした知見は PR のブランチに積まれる
 - ここは結果を受けて、events の committee.decided と artifacts の CommitteeDecision に残し、PR にまとめを書く
   - sendback: 理由を書いて PR を閉じる（不採用。票は記録に残る）
+  - revise: 1〜2 役が直し方を示して差し戻した。差し戻しの理由を指摘として続きのジョブ（review_fix）に渡し、直したらかけ直す。
+    同じ PR の 2 度目の revise は human にする（2026-11-04 オーナー: 知見の PR は委員会の可決でマージし、割れたときだけ人へ）
   - human: 人の承認に回す（factory:needs-approval）。人のマージが採用、閉じれば不採用
   - adopt / enforce: 採用。enforce の担保の案は、委員会が実装せずに Issue にして工場のラインで作る
 - supervisor は、変更種別 knowledge の PR を自動でマージする前に、委員会の採用（approved）を見る
@@ -11,16 +13,50 @@ from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
+import continuation
+
 ROLE_JA = {"consistency": "整合", "evidence": "根拠", "enforcement": "担保", "dissent": "反対"}
 VOTE_JA = {"adopt": "採る", "enforce": "採る（決定論で担保）", "human": "人に回す", "sendback": "差し戻す"}
-OUTCOME_JA = {"adopt": "採用", "enforce": "採用（担保の Issue を起票）", "human": "人の判断へ", "sendback": "不採用（差し戻し）"}
+OUTCOME_JA = {"adopt": "採用", "enforce": "採用（担保の Issue を起票）", "human": "人の判断へ", "sendback": "不採用（差し戻し）",
+              "revise": "直してかけ直す"}
 APPROVAL_LABEL = "factory:needs-approval"
 
 
 def decided(cur, pr_url: str) -> dict | None:
-    cur.execute("select payload from events where name='committee.decided' and payload->>'pr_url'=%s order by id desc limit 1", (pr_url,))
+    """最新の議決。factoryctl committee reopen（committee.reopened）より前の議決は数えない"""
+    cur.execute("""select payload from events d where name='committee.decided' and payload->>'pr_url'=%s
+                     and not exists (select 1 from events o where o.name='committee.reopened' and o.payload->>'pr_url'=%s and o.id > d.id)
+                   order by id desc limit 1""", (pr_url, pr_url))
     r = cur.fetchone()
     return r["payload"] if r else None
+
+
+def rounds(cur, pr_url: str) -> int:
+    """委員会にかけた回数の区切り（直してかけ直した回数 + かけ直しの指示の回数）。積むときの dedupe に使う"""
+    cur.execute("select count(*) as n from events where name in ('committee.revise','committee.reopened') and payload->>'pr_url'=%s", (pr_url,))
+    return cur.fetchone()["n"]
+
+
+def revised(cur, pr_url: str) -> bool:
+    cur.execute("select 1 from events where name='committee.revise' and payload->>'pr_url'=%s limit 1", (pr_url,))
+    return cur.fetchone() is not None
+
+
+def revised_head_moved(cur, pr_url: str, sha: str) -> bool:
+    """最後の区切りが revise なら、その後に head が変わった（直しが push された）か。reopen なら常に True"""
+    cur.execute("""select name, payload->>'head_sha' as h from events where name in ('committee.revise','committee.reopened')
+                    and payload->>'pr_url'=%s order by id desc limit 1""", (pr_url,))
+    r = cur.fetchone()
+    return not r or r["name"] == "committee.reopened" or r["h"] != sha
+
+
+def revise_signal(result: dict) -> dict:
+    """差し戻した役の理由を、続きのジョブ（review_fix）の指摘の形にする"""
+    defects = [{"rubric_id": f"committee:{v.get('role')}", "severity": "sendback", "location": ".factory-config/knowledge/",
+                "evidence": r, "remediation_hint": "知見の委員会の差し戻しの理由に沿って、知見（K-*.yaml）と事例記録を直す。"
+                                                  "knowledge_check を通し、INDEX.md を作り直す"}
+               for v in result.get("votes") or [] if v.get("vote") == "sendback" for r in v.get("reasons") or []]
+    return {"defects": defects, "source": "committee"}
 
 
 def approved(cur, pr_url: str) -> bool:
@@ -66,12 +102,17 @@ def enforce_issue(e: dict, result: dict) -> tuple[str, str]:
 
 
 def record(cur, repo: str, pr_number: int, corr: str, job_id: int, result: dict, gh, comment) -> bool:
-    """議決を残して、PR に作用する。同じ PR の議決は 1 度だけ"""
+    """議決を残して、PR に作用する。同じ PR の議決は 1 度だけ（revise はかけ直しの区切りごと）"""
+    if result.get("outcome") == "revise":
+        if revised(cur, result.get("pr_url")):
+            result = {**result, "outcome": "human", "reason": "revised_once"}   # 直してもまだ割れた: 人へ
+        else:
+            return revise(cur, repo, pr_number, corr, job_id, result, gh, comment)
     payload = {"pr_url": result.get("pr_url"), "outcome": result.get("outcome"), "decision": result.get("decision"),
                "votes": result.get("votes") or [], "enforce": result.get("enforce") or [], "added": result.get("added") or [],
                "pushed_sha": result.get("pushed_sha") or None, "reason": result.get("reason"), "cost_usd": result.get("cost_usd")}
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.decided',%s,%s,%s,%s) "
-                "on conflict (dedupe_key) do nothing returning id", (corr, job_id, Jsonb(payload), f"committee.decided:{result.get('pr_url')}"))
+                "on conflict (dedupe_key) do nothing returning id", (corr, job_id, Jsonb(payload), f"committee.decided:{result.get('pr_url')}:{rounds(cur, result.get('pr_url'))}"))
     if cur.fetchone() is None:
         return False
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('CommitteeDecision',%s,%s,'committee',%s)",
@@ -94,6 +135,23 @@ def record(cur, repo: str, pr_number: int, corr: str, job_id: int, result: dict,
                         (corr, job_id, Jsonb({"decision": result.get("decision"), "knowledge": e.get("knowledge"),
                                               "solution_kind": e.get("solution_kind"), "issue": issue.get("html_url")}), key))
     return True
+
+
+def revise(cur, repo: str, pr_number: int, corr: str, job_id: int, result: dict, gh, comment) -> bool:
+    """1〜2 役の差し戻し: 理由を指摘として続きのジョブに渡す。直して head が変われば supervisor がかけ直す"""
+    pr_url = result.get("pr_url")
+    pr = gh("GET", f"repos/{repo}/pulls/{pr_number}")
+    cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.revise',%s,%s,%s,%s) "
+                "on conflict (dedupe_key) do nothing returning id",
+                (corr, job_id, Jsonb({"pr_url": pr_url, "head_sha": pr["head"]["sha"], "votes": result.get("votes") or [],
+                                      "cost_usd": result.get("cost_usd")}), f"committee.revise:{pr_url}"))
+    if cur.fetchone() is None:
+        return False
+    comment(repo, pr_number, summary(result).replace("\n\n---", "\n\n差し戻した役の理由に沿って工場が直し、委員会にかけ直します。"
+                                                   "かけ直しでまだ割れたら人の判断に回します。\n\n---", 1))
+    jid = continuation.enqueue(cur, repo=repo, pr_number=pr_number, pr_url=pr_url, branch=pr["head"]["ref"], head_sha=pr["head"]["sha"],
+                               reason="review_fix", by="committee", signal=revise_signal(result))
+    return jid is not None
 
 
 # ------------------------------------------------------------------ 週 1 の定例

@@ -13,6 +13,7 @@ if URL:
     os.environ.setdefault("GH_TOKEN", "x")
     import committee
     import psycopg
+    import psycopg.types.json
     import supervisor
     from psycopg.rows import dict_row
 
@@ -145,3 +146,55 @@ def test_pr_sent_to_human_by_committee_does_not_take_a_slot(cur):
     assert not supervisor.waiting_for_human(cur, PR)
     committee.record(cur, "o/r", 12, f"committee:{PR}", None, result("human"), lambda m, p, b=None: {}, lambda repo, n, text: None)
     assert supervisor.waiting_for_human(cur, PR)
+
+
+# ------------------------------------------------------------------ 直してかけ直す（2026-11-04 オーナー: 知見の PR は委員会の可決でマージ）
+def revise_result():
+    r = result("revise")
+    r["votes"][3] = {"role": "dissent", "vote": "sendback", "reasons": ["K-0002 の主語を追記の仕方に直す"], "personal_data": False}
+    return r
+
+
+def gh_pr(calls, head="h1"):
+    def gh(m, p, b=None):
+        calls.append((m, p, b))
+        return {"head": {"ref": "factory/issue-5-job-9", "sha": head}} if m == "GET" else {}
+    return gh
+
+
+def test_revise_enqueues_fix_then_second_split_goes_to_human(cur, monkeypatch):
+    monkeypatch.setattr(supervisor, "COMMITTEE", True)
+    calls, comments = [], []
+    comment = lambda repo, n, text: comments.append(text)
+    assert committee.record(cur, "o/r", 12, f"committee:{PR}", None, revise_result(), gh_pr(calls), comment)
+    cur.execute("select payload from events where name='job.enqueued' and payload->'continue'->>'reason'='review_fix'")
+    sig = cur.fetchone()["payload"]["input"]
+    assert sig["defects"][0]["evidence"] == "K-0002 の主語を追記の仕方に直す" and sig["defects"][0]["rubric_id"] == "committee:dissent"
+    assert committee.decided(cur, PR) is None and "かけ直します" in comments[0]
+    cur.execute("update jobs set state='succeeded'")
+    supervisor.enqueue_committee(cur, P, "h1")      # 直しがまだ push されていない
+    cur.execute("select count(*) as n from jobs where kind='committee_review'")
+    assert cur.fetchone()["n"] == 0
+    supervisor.enqueue_committee(cur, P, "h2")      # 直した head でかけ直す
+    cur.execute("select count(*) as n from jobs where kind='committee_review'")
+    assert cur.fetchone()["n"] == 1
+    assert committee.record(cur, "o/r", 12, f"committee:{PR}", None, revise_result(), gh_pr(calls, "h2"), comment)
+    assert committee.decided(cur, PR)["outcome"] == "human"   # 2 度目に割れたら人へ
+
+
+def test_reopen_ignores_old_human_decision_and_reenqueues(cur, monkeypatch):
+    monkeypatch.setattr(supervisor, "COMMITTEE", True)
+    calls = []
+    monkeypatch.setattr(supervisor, "gh", lambda m, p, b=None: calls.append((m, p)) or {})
+    committee.record(cur, "o/r", 12, f"committee:{PR}", None, result("human"), lambda m, p, b=None: {}, lambda *a: None)
+    supervisor.enqueue_committee(cur, P, "s1")
+    cur.execute("select count(*) as n from jobs where kind='committee_review'")
+    assert cur.fetchone()["n"] == 0
+    cur.execute("insert into events(name, payload) values ('committee.reopened', %s)", (psycopg.types.json.Jsonb({"pr_url": PR}),))
+    assert committee.decided(cur, PR) is None
+    supervisor.enqueue_committee(cur, P, "s1")
+    cur.execute("select count(*) as n from jobs where kind='committee_review'")
+    assert cur.fetchone()["n"] == 1
+    assert ("DELETE", "repos/o/r/issues/12/labels/factory%3Aneeds-approval") in calls
+    assert committee.record(cur, "o/r", 12, f"committee:{PR}", None, result("adopt"), lambda m, p, b=None: {}, lambda *a: None)
+    assert committee.approved(cur, PR)

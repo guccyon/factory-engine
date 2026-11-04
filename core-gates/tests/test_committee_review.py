@@ -38,7 +38,8 @@ def test_aggregate():
     assert cr.aggregate([V(r, "adopt") for r in ROLES], ROLES) == "adopt"
     assert cr.aggregate([V(r, "adopt") for r in ROLES[:3]] + [V("dissent", "enforce")], ROLES) == "enforce"
     assert cr.aggregate([V(r, "sendback") for r in ROLES[:3]] + [V("dissent", "adopt")], ROLES) == "sendback"
-    assert cr.aggregate([V(r, "adopt") for r in ROLES[:3]] + [V("dissent", "sendback")], ROLES) == "human"   # 割れたら人
+    assert cr.aggregate([V(r, "adopt") for r in ROLES[:3]] + [V("dissent", "sendback")], ROLES) == "revise"  # 1〜2 役の差し戻しは直してかけ直す
+    assert cr.aggregate([V("consistency", "adopt"), V("evidence", "human"), V("enforcement", "adopt"), V("dissent", "sendback")], ROLES) == "revise"
     assert cr.aggregate([V(r, "adopt") for r in ROLES[:3]] + [V("dissent", "human")], ROLES) == "human"
     assert cr.aggregate([V(r, "adopt") for r in ROLES[:3]], ROLES) == "human"                               # 欠けた役
     assert cr.aggregate([V(r, "adopt") for r in ROLES[:3]] + [V("dissent", "adopt", personal_data=True)], ROLES) == "sendback"

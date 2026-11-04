@@ -452,7 +452,11 @@ def enqueue_committee(cur, p: dict, sha: str):
     委員会は議決を PR のブランチに積むので head が変わるが、議決があれば積み直さない"""
     if not COMMITTEE or committee.decided(cur, p["url"]):
         return
-    cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.committee:{p['url']}",))
+    rnd = committee.rounds(cur, p["url"])   # 直してかけ直す（revise）・かけ直しの指示（reopen）のたびに区切りが進む
+    key = f"supervisor.committee:{p['url']}" + (f":{rnd}" if rnd else "")
+    if rnd and not committee.revised_head_moved(cur, p["url"], sha):
+        return   # revise の直しがまだ push されていない
+    cur.execute("select 1 from events where dedupe_key=%s", (key,))
     if cur.fetchone():
         return
     try:
@@ -461,7 +465,12 @@ def enqueue_committee(cur, p: dict, sha: str):
     except psycopg.errors.UniqueViolation:
         return   # 同じ PR の検査・judge が待ち・実行中。次の周回で積む
     jid = cur.fetchone()["id"]
-    record(cur, "supervisor.committee_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha, "job_id": jid}, f"supervisor.committee:{p['url']}")
+    record(cur, "supervisor.committee_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha, "job_id": jid, "round": rnd}, key)
+    if rnd:
+        try:   # 人に回したときの承認待ちのラベルを外す（かけ直しの結果でまた付く）
+            gh("DELETE", f"repos/{p['repo']}/issues/{p['number']}/labels/{urllib.parse.quote(committee.APPROVAL_LABEL)}")
+        except Exception:  # noqa: BLE001  付いていなければ 404
+            pass
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
                 (f"committee:{p['url']}", jid, Jsonb({"by": "supervisor", "kind": "committee_review", "pr_url": p["url"], "head_sha": sha})))
     log("committee enqueued", p["url"], "job", jid)

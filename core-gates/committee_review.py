@@ -4,7 +4,7 @@
 - 4 役はそれぞれ別のエージェント。知見を書いた分析役・実装役は入らない（学ぶ側に自分を採点させない）
 - 材料（変更の差分、PR の head の知見の置き場、specs/）は一時ディレクトリに写してから読ませる。製品のチェックアウトには触らせない
 - 議決は決定論で集める（aggregate）。全員が採る → adopt（担保の案があれば enforce）、3 役以上が差し戻す → sendback、
-  個人情報を見つけた役がいる → sendback、それ以外（割れた・人に回すべきという票がある）→ human
+  個人情報を見つけた役がいる → sendback、1〜2 役が差し戻す → revise（工場が直してかけ直す）、それ以外（人に回すべきという票がある）→ human
 - sendback 以外は、議決 committee/D-NNNN.yaml を書き、この PR で足した下書きの知見を active にして decided_by を付け、INDEX.md を作り直す。
   human のときも同じ形にし、人のマージを採用の承認とする（閉じれば不採用）
 - 委員会は実装しない。担保の案（enforce）は結果に返し、dispatcher が Issue にして工場のラインで作る
@@ -32,7 +32,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 KNOWLEDGE_DEFS = Path(os.environ.get("KNOWLEDGE_DEFINITIONS") or HERE.parent / "definitions" / "knowledge.yaml")
 ROOT = ".factory-config/knowledge"
-VOTES = ["adopt", "enforce", "human", "sendback"]
+VOTES = ["adopt", "enforce", "human", "sendback"]   # 票。議決（outcome）にはこのほかに revise がある
 MAX_TURNS = 30
 
 
@@ -48,6 +48,8 @@ def aggregate(votes: list[dict], roles: list[str]) -> str:
         return "enforce" if "enforce" in vs else "adopt"
     if vs.count("sendback") >= 3:
         return "sendback"
+    if "sendback" in vs:
+        return "revise"   # 1〜2 役が直し方を示して差し戻した: 工場が直して委員会にかけ直す（2 度目に割れたら人へ。dispatcher の committee.record）
     return "human"
 
 
@@ -111,7 +113,9 @@ def prompt(role: str, spec: dict, defs: dict, files: list[str]) -> str:
 票の決め方:
 - adopt: あなたの観点で問題がなく、採ってよい
 - enforce: 採ってよく、さらに決定論（lint・テスト・型・スキーマ・CI・設定・overlay のルール）で担保すべき。enforcement に知見の id・強さ・解決策の種類・具体案を書く
-- human: あなたの観点では決められない（新しい用語・業務ルールの定義、役割への指示・ラインの設定・Engine、Blueprint に作用するなど）
+- human: あなたの観点では決められず、人が決めるべき（知見の置き場の構造を変える、製品の新しい用語・業務ルールを定義する）。
+  この PR は知見を記録するだけで、作用先（役割への指示・ラインの設定・Engine・Blueprint）を変えない。作用先を変えるときは別に承認を経るので、
+  作用先が Engine やラインであることだけでは human にしない（2026-11-04 オーナー: 知見の PR は委員会の可決でマージする）
 - sendback: あなたの観点で採れない（根拠に辿れない、矛盾する、範囲が広すぎる、など）。reasons に直し方を書く
 - personal_data: 利用者や人を特定できる情報（氏名・連絡先・利用者 ID・本文の引用など）が残っていれば true
 
@@ -199,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     r = review(repo, a.base, defs)
     outcome = aggregate(r["votes"], list(defs["committee"]["roles"]))
     decision = None
-    if outcome != "sendback":
+    if outcome not in ("sendback", "revise"):
         decision = write_decision(repo, a.pr_url, outcome, r["votes"], r["added"], today)
         ok, log = check(repo, today)
         if not ok:

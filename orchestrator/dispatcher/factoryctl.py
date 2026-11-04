@@ -551,6 +551,11 @@ def main(argv):
             for r in cur.fetchall():
                 end = f"{r['ended_at']:%m-%d %H:%M}" if r["ended_at"] else "open"
                 print(f"{r['key']:<26} {r['category']:<11} {r['started_at']:%m-%d %H:%M} → {end:<11} {r['what']}")
+    elif cmd == "committee" and len(argv) > 3 and argv[2] == "reopen":
+        # 人に回した知見の PR を、委員会にかけ直す（2026-11-04 オーナー: 知見の PR は委員会の可決でマージする。決める前に人へ回ったものの移行用）
+        for url in argv[3:]:
+            cur.execute("insert into events(name, payload) values ('committee.reopened',%s)", (Jsonb({"pr_url": url, "by": "builder"}),))
+            print(f"reopened {url}（次の周回で委員会に積み直し、承認待ちのラベルを外す）")
     elif cmd == "report" and len(argv) > 2 and argv[2] == "stoppages":
         report_stoppages(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "provenance":
