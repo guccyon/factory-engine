@@ -147,3 +147,12 @@ def test_prod_hold_keeps_product_on_staging_only(cur, monkeypatch):
     cur.execute("select count(*) as n from stoppages")
     assert cur.fetchone()["n"] == 0                                 # 意図した停止なので人には回さない
     assert ship.pending(cur) == []
+
+
+def test_prod_hold_refuses_prod_rollback(cur, monkeypatch):
+    monkeypatch.setattr(ship, "PROD_HOLD", {REPO})
+    a, b = release(cur, "0.6.0"), release(cur, "0.7.0")
+    deployed(cur, a, "prod")
+    deployed(cur, b, "prod")
+    ok, msg = ship.request_rollback(cur, REPO, "prod", "t", "test")
+    assert ok is False and "development" in msg

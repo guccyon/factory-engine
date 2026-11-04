@@ -11,6 +11,8 @@ from psycopg.types.json import Jsonb
 import ship
 
 EVENTS = ("factory.drain_requested", "factory.drain_released")
+# 一時停止の間だけ流すもの（2026-11-04 オーナー: ラインは止めたまま、知見の PR だけ流す）。今の一時停止が続く間だけ効き、再開で消える
+ALLOW_EVENT = "factory.drain_allowed"
 
 
 def state(cur) -> dict | None:
@@ -36,6 +38,40 @@ def set_drain(cur, on: bool, by: str, reason: str = "") -> bool:
     return True
 
 
+def allow(cur, corrs: list[str], by: str, reason: str = "") -> bool:
+    """一時停止の間も流してよいジョブの correlation_id を足す（今の一時停止の間だけ）。一時停止していなければ記録しない"""
+    if not active(cur):
+        return False
+    corrs = sorted(set(allowed(cur)) | set(corrs))
+    cur.execute("insert into events(name, payload) values (%s, %s)", (ALLOW_EVENT, Jsonb({"corrs": corrs, "by": by, "reason": reason})))
+    return True
+
+
+def allowed(cur) -> list[str]:
+    """今の一時停止の間に流してよい correlation_id。一時停止していない・足していなければ空"""
+    cur.execute("select id from events where name = any(%s) order by id desc limit 1", (list(EVENTS),))
+    last = cur.fetchone()
+    if not last or not active(cur):
+        return []
+    cur.execute("select payload from events where name=%s and id > %s order by id desc limit 1", (ALLOW_EVENT, last["id"]))
+    r = cur.fetchone()
+    return list(r["payload"].get("corrs") or []) if r else []
+
+
+def claim_allowed(cur, corrs: list[str]) -> dict | None:
+    """一時停止の間に、流してよいジョブだけを 1 つ取り出す（claim_job と同じ選び方を、correlation_id で絞る）"""
+    if not corrs:
+        return None
+    cur.execute("""select q.id from jobs q where q.state='queued' and not q.cancel_requested and q.correlation_id = any(%s)
+                      and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held)
+                    order by q.priority desc, q.enqueued_at for update skip locked limit 1""", (corrs,))
+    r = cur.fetchone()
+    if not r:
+        return None
+    cur.execute("update jobs set state='running', started_at=now() where id=%s returning *", (r["id"],))
+    return cur.fetchone()
+
+
 def status(cur) -> dict:
     """入れ替えてよいか。running はつなぎ直しを含む実行中のジョブ、shipping は処理中の出荷の依頼"""
     st = state(cur)
@@ -44,5 +80,5 @@ def status(cur) -> dict:
     running = [dict(r) for r in cur.fetchall()]
     shipping = [{"name": e["name"], "release_id": e["payload"].get("release_id") or e["payload"].get("repo")} for e in ship.pending(cur)]
     return {"draining": st is not None, "since": st["since"].isoformat() if st else None, "by": st["by"] if st else None,
-            "reason": st["reason"] if st else "", "running": running, "shipping": shipping,
+            "reason": st["reason"] if st else "", "running": running, "shipping": shipping, "allowed": allowed(cur),
             "ready": st is not None and not running and not shipping}
