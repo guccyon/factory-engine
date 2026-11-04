@@ -194,6 +194,24 @@ docker compose exec dispatcher factoryctl priority guccyon/rally#170 p0 --reason
 docker compose exec dispatcher factoryctl hold 12
 ```
 
+## 事業部の窓口（ADR 0030）
+
+工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口（`dispatcher/desk_api.py`、http://localhost:8792）。操業コンソールより狭く、相談と、依頼者に許した範囲のチケットの操作（優先度・保留・状態）だけを受ける。API が正本で、MCP のサーバー（順番 3）はこれを呼ぶだけの包みにする。
+
+- 今入っているのは順番 1: トークンと役割（運用主・依頼者）、会話の記録（`desk_conversations` と events の `desk.*`）、明確な指示（「#812 を先に」）を壁打ちを通さずに通す優先度・保留・チケットの状態
+- 相談を開くと会話の id が返り、相手の返事は会話を読んで取る。壁打ちの相手（プランナーの相談役）は順番 2、回答役は順番 4 で入る。それまでは開いた相談は `open` のまま残り、運用主が `factoryctl desk list` で拾う
+
+```bash
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
+docker compose up -d --build desk
+docker compose exec dispatcher factoryctl desk token create builder --role operator     # トークンはこのときだけ出る
+T=fdk_...   # 出たトークン
+curl -s -H "Authorization: Bearer $T" localhost:8792/api/desk/tickets/guccyon%2Frally%23900
+curl -s -H "Authorization: Bearer $T" -d '{"level":"p1","reason":"検証に使う"}' localhost:8792/api/desk/tickets/guccyon%2Frally%23900/priority
+curl -s -H "Authorization: Bearer $T" -d '{"kind":"request","product":"guccyon/rally","body":"予約まわりの通知を先に進めて"}' localhost:8792/api/desk/conversations
+curl -s -H "Authorization: Bearer $T" "localhost:8792/api/desk/conversations/1?after=0&wait=30"
+```
+
 ## PR の見張り（ADR 0015）
 
 工場の PR に起きた動き（push、CI の結果、衝突、レビュー）を GitHub から拾い、抽象化したイベント（`pr.head_updated` / `pr.ci_failed` / `pr.ci_passed` / `pr.conflicted` / `pr.review_submitted`）として events に発行する、決定論的なモジュール（`dispatcher/pr_events.py`。dispatcher の中のスレッド）。オーケストレーター（supervisor）は GitHub を見ずにこのイベントを読む。
