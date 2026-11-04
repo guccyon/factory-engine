@@ -93,6 +93,7 @@ phases:
       - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff と Ticket の生産", measure: { manual: todo } }
       - { id: opportunity_to_ticket, ja: "テーマ 1 つから人が触らずに Requirements と段の束（依存つき）が出る", measure: { manual: todo } }   # ADR 0025 の完了条件 1
       - { id: design_variants, ja: "画面を含む段は要素と振る舞いが決まった UXSpec を持って実装に流れ、案はデザイン検査役が承認する（新しい画面・ブランド・低確信だけ人）", measure: { manual: todo } }   # ADR 0025 の 2・3
+      - { id: consult_desk, ja: "外（顧客の Claude Desktop など）から窓口の API・MCP でプランナーに曖昧な依頼を壁打ちし、確定した依頼がタスクのまとまりになって指定の優先度でラインに入った", measure: { manual: todo } }   # ADR 0030 の順番 1〜3。何を流すかは外が決める
       - { id: screen_capture_taste, ja: "実装後の画面のキャプチャが PR に付き、人の違和感の印が教師信号として Learn に入る", measure: { manual: todo } }   # ADR 0025 の 4
       # 要求者ペルソナ 10 人それぞれの最新の結果のうち、確定・往復 3 回以内・意図と一致（採点役）の人数。8 人で満点（仮置き）
       # 一巡させるのは orchestrator/scripts/clarify-bench.sh
@@ -136,7 +137,7 @@ phases:
     ja: Operate
     weight_weeks: 6
     items:
-      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }
+      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }   # ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える
       - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
       - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
       - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）
