@@ -61,6 +61,13 @@
   factoryctl plan list [--days 7]                          # 最近の判定（経路・当てた決まり・印・確信度・費用）
   factoryctl plan show <owner/repo#123>                    # そのチケットの判定の履歴（役ごとの理由、とらなかった経路、根拠・解釈、入力の版）
 
+知見の制限付きの保管先（ADR 0024 の 5）。利用者の情報をどうしても含む知見の中身を暗号にして置き、git の知見からは restricted: R-NNNN で指す。
+鍵は管理者だけが持つ（.env に置かない）。-e RESTRICTED_STORE_KEY で渡すか、聞かれたときに打つ。読むたびに誰が・何のために読んだかを残す:
+  docker compose exec -T -e RESTRICTED_STORE_KEY dispatcher factoryctl restricted add <owner/repo> [--knowledge K-0001,..] [--by ..] < 中身.md   # R-NNNN を出す
+  factoryctl restricted list [<owner/repo>]                # id・製品・指している知見・読んだ回数だけ（中身は出さない）
+  docker compose exec -e RESTRICTED_STORE_KEY dispatcher factoryctl restricted show <R-NNNN> --purpose "何のために" [--by ..]
+  factoryctl restricted retire <R-NNNN> [--reason ..] [--by ..]   # 中身を消し、id と記録は残す
+
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
   factoryctl report process [--days 7]            # 工程の信号の束（ADR 0027 の 3。衝突の解消・やり直し・費用の外れ値・待ち・停止）。前の窓との比較つき
@@ -87,6 +94,7 @@ import learn
 import ops
 import planner
 import process_learn
+import restricted
 import serialize
 import ship
 import stoppage
@@ -480,6 +488,45 @@ def desk_cmd(cur, argv):
     return 2
 
 
+def restricted_key() -> str:
+    key = os.environ.get("RESTRICTED_STORE_KEY", "")
+    if not key and sys.stdin.isatty():
+        import getpass
+        key = getpass.getpass("RESTRICTED_STORE_KEY: ")
+    return key
+
+
+def restricted_cmd(cur, argv):
+    sub = argv[2] if len(argv) > 2 else "list"
+    by = opt(argv, "--by", os.environ.get("FACTORY_ADMIN", "builder"))
+    try:
+        if sub == "add" and len(argv) > 3:
+            ids = [k for k in (opt(argv, "--knowledge", "") or "").split(",") if k]
+            body = sys.stdin.read()
+            print(restricted.add(cur, argv[3], body, ids, by, restricted_key()))
+            print("git の知見からは evidence に「- restricted: <この id>」と書いて指す（中身は書かない）", file=sys.stderr)
+            return 0
+        if sub == "list":
+            product = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None
+            for r in restricted.list_records(cur, product):
+                state = f"retired {r['retired_at']:%m-%d}" if r["retired_at"] else "active"
+                last = f" 最後 {r['last_read_at']:%m-%d %H:%M}" if r["last_read_at"] else ""
+                print(f"{r['rid']:<8} {state:<14} {r['product']} {','.join(r['knowledge_ids']) or '-'} 作成 {r['created_by']} {r['created_at']:%m-%d %H:%M} 読んだ {r['reads']} 回{last}")
+            return 0
+        if sub == "show" and len(argv) > 3:
+            print(restricted.read(cur, argv[3], by, opt(argv, "--purpose", ""), restricted_key()))
+            return 0
+        if sub == "retire" and len(argv) > 3:
+            ok = restricted.retire(cur, argv[3], by, opt(argv, "--reason", ""))
+            print("retired（中身を消しました）" if ok else "active な記録がない")
+            return 0 if ok else 1
+    except restricted.RestrictedError as e:
+        print(e)
+        return 2
+    print(__doc__)
+    return 2
+
+
 def main(argv):
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
@@ -697,6 +744,8 @@ def main(argv):
         return release_status(cur, argv[3])
     elif cmd == "desk":
         return desk_cmd(cur, argv)
+    elif cmd == "restricted":
+        return restricted_cmd(cur, argv)
     else:
         print(__doc__); return 2
     return 0
