@@ -40,6 +40,7 @@ from psycopg.rows import dict_row
 import choice
 import design_line
 import drain
+import line
 import inbox
 import judgment
 import ops
@@ -176,7 +177,7 @@ def snapshot(cur) -> dict:
     return {
         "releases": releases(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": MAX_PARALLEL,
+        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur),
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
                     "planned": planned, "line_low_below": LINE_LOW_BELOW},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
@@ -243,6 +244,12 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             return 400, {"error": "env は staging か prod"}
         ok, msg = ship.request_rollback(cur, repo, env, by, "console")
         return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/line/scale":   # ラインの流量の宣言（ADR 0028）。{workers, tickets, governance} のうち渡したものだけ変える
+        try:
+            line.scale(cur, by, reason, **{k: body.get(k) for k in line.FIELDS})
+        except (ValueError, TypeError) as e:
+            return 400, {"error": str(e)}
+        return 200, {"scale": line.status(cur)}
     if path in ("/api/factory/drain", "/api/factory/resume"):
         drain.set_drain(cur, path.endswith("/drain"), by, reason)
         return 200, {"line": drain.status(cur)}

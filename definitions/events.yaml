@@ -182,6 +182,14 @@ events:
     source: approval_log
     required: [artifact_id, category, stage, mode, grade]
     note: "factoryctl judgment grade。人の採点（agree | disagree）。類型ごとの一致率（track_record）の材料"
+  line.scaled:
+    source: control_plane
+    required: [workers, tickets, governance, by]
+    note: "ADR 0029。ラインの流量の宣言（factoryctl line scale・操業コンソール）。最後のものが正本。dispatcher と supervisor が周回ごとに読む。reason は任意"
+  factory.drain_allowed:
+    source: control_plane
+    required: [corrs, by]
+    note: "ADR 0020 の 2026-11-04 の追記。一時停止の間も流すジョブの correlation_id（factoryctl drain allow）。今の一時停止の間だけ効く"
   factory.drain_requested:
     source: control_plane
     required: [by]

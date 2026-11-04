@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
+import line
 import ship
 
 EVENTS = ("factory.drain_requested", "factory.drain_released")
@@ -59,36 +60,18 @@ def allowed(cur) -> list[str]:
 
 
 def claim_allowed(cur, corrs: list[str]) -> dict | None:
-    """一時停止の間に、流してよいジョブだけを 1 つ取り出す（claim_job と同じ選び方を、correlation_id で絞る）"""
+    """一時停止の間に、流してよいジョブだけを 1 つ取り出す（ラインの枠の空きの範囲で。line.claim_line）"""
     if not corrs:
         return None
-    cur.execute("""select q.id from jobs q where q.state='queued' and not q.cancel_requested and q.correlation_id = any(%s)
-                      and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held)
-                    order by q.priority desc, q.enqueued_at for update skip locked limit 1""", (corrs,))
-    r = cur.fetchone()
-    if not r:
-        return None
-    cur.execute("update jobs set state='running', started_at=now() where id=%s returning *", (r["id"],))
-    return cur.fetchone()
+    return line.claim_line(cur, corrs)
 
 
-# 委員会と知見の流れ（ADR 0024）は、ラインとは別の枠で動かし、ラインの一時停止でも止めない（2026-11-04 オーナー: 独立性を担保したい）。
-# 委員会の審議・週 1 の定例・事例の分析と、知見の PR のジョブ（書く・衝突の解消と番号の付け直し・検査・judge）が対象
-GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "case_review")
+# 委員会と知見の流れ（ADR 0024 の 2026-11-04 の追記）はラインとは別の枠で、一時停止でも止めない。数と取り出し方は line に 1 か所
+GOVERNANCE_KINDS = line.GOVERNANCE_KINDS
 
 
 def claim_governance(cur) -> dict | None:
-    """委員会と知見の流れのジョブを 1 つ取り出す。一時停止の間も取り出す"""
-    cur.execute("""select q.id from jobs q where q.state='queued' and not q.cancel_requested
-                      and (q.kind = any(%s) or q.correlation_id like 'committee:%%'
-                           or q.correlation_id in (select f.correlation_id from events f where f.name='knowledge.case_filed'))
-                      and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held)
-                    order by q.priority desc, q.enqueued_at for update skip locked limit 1""", (list(GOVERNANCE_KINDS),))
-    r = cur.fetchone()
-    if not r:
-        return None
-    cur.execute("update jobs set state='running', started_at=now() where id=%s returning *", (r["id"],))
-    return cur.fetchone()
+    return line.claim_governance(cur)
 
 
 def status(cur) -> dict:

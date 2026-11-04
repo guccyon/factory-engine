@@ -51,6 +51,7 @@ services:
       # 同時実行・予算（Blueprint runtime / budgets から。実測で調整）
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}   # 委員会と知見の流れの専用の枠。ラインの枠とは別で、ラインの一時停止でも止めない（ADR 0024）
+      SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}   # 流量の宣言（line.scaled）がないときの既定。3 つとも同じ値を各サービスに渡す（ADR 0028）
       MAX_TURNS: ${MAX_TURNS:-40}
       TOKEN_BUDGET_PER_JOB: ${TOKEN_BUDGET_PER_JOB:-2000000}
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
@@ -119,6 +120,8 @@ services:
       SUPERVISOR_GH_TOKEN: ${SUPERVISOR_GH_TOKEN:-}   # マージ権限を分けるときの別トークン。空ならワーカーと同じ
       SUPERVISOR_INTERVAL_SEC: ${SUPERVISOR_INTERVAL_SEC:-60}
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
+      MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
       SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
       SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}       # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
       SUPERVISOR_JUDGE: ${SUPERVISOR_JUDGE:-1}           # 検査のあと、仮決めと指摘を裁く judge のジョブを積む（ADR 0006）
@@ -162,6 +165,8 @@ services:
       CONSOLE_OPERATOR: ${CONSOLE_OPERATOR:-builder}     # 操作の記録に残す名前（Gen1 はログインなし）
       SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
+      GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
       WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 段の残りを赤く出す下限（dispatcher と同じ値）
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
       FACTORY_MODE: ${FACTORY_MODE:-}

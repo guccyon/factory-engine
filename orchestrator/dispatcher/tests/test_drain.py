@@ -110,7 +110,8 @@ def test_no_preemption_while_draining(cur):
     low = job(cur, "o/r#1", state="running", priority=50)
     job(cur, "o/r#2", priority=100)
     drain.set_drain(cur, True, "factoryctl")
-    dispatcher.MAX_PARALLEL = 1
+    import line
+    line.scale(cur, "t", workers=1)
     dispatcher.ops_once()
     cur.execute("select cancel_requested from jobs where id=%s", (low,))
     assert not cur.fetchone()["cancel_requested"]
@@ -244,7 +245,7 @@ def test_allowed_jobs_flow_while_paused(cur):
     assert drain.claim_allowed(cur, drain.allowed(cur)) is None       # 足すまでは何も取り出さない
     assert drain.allow(cur, ["github:o/r#1", "committee:https://github.com/o/r/pull/13"], "t")
     got = [drain.claim_allowed(cur, drain.allowed(cur)) for _ in range(3)]
-    assert sorted(j["kind"] for j in got if j) == ["committee_review", "inspect"]   # ほかのジョブは取り出さない
+    assert [j["kind"] for j in got if j] == ["inspect"]   # ほかのジョブは取り出さない。委員会は専用の枠（claim_governance）で流れる
     drain.set_drain(cur, False, "t")
     assert drain.allowed(cur) == []                                    # 再開で消える
     drain.set_drain(cur, True, "t")
@@ -254,6 +255,8 @@ def test_allowed_jobs_flow_while_paused(cur):
 def test_governance_jobs_flow_while_paused(cur):
     """委員会と知見の流れはラインと独立。一時停止の間も取り出す（2026-11-04 オーナー）"""
     drain.set_drain(cur, True, "t")
+    import line
+    line.scale(cur, "t", governance=5)
     cur.execute("insert into events(name, correlation_id, payload) values ('knowledge.case_filed','github:o/r#7','{}')")
     cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
                 "('github:o/r#9','o/r',9,'t','implement'), ('github:o/r#7','o/r',21,'t','implement'), "
@@ -262,3 +265,28 @@ def test_governance_jobs_flow_while_paused(cur):
     assert sorted((j["kind"], j["issue_number"]) for j in got if j) == [("case_review", 30), ("committee_review", 13), ("implement", 21)]
     cur.execute("select state from jobs where issue_number=9")
     assert cur.fetchone()["state"] == "queued"   # ラインのジョブは一時停止の間は流さない
+
+
+def test_line_scale_is_declared_and_followed(cur, monkeypatch):
+    """流量はあるべき数の宣言に合わせる（ReplicaSet の考え方、2026-11-05 オーナー）。上げ直さずに次の周回から効く"""
+    import line
+    monkeypatch.setenv("MAX_PARALLEL", "3")
+    monkeypatch.setenv("SUPERVISOR_MAX_INFLIGHT", "13")
+    assert {k: line.spec(cur)[k] for k in line.FIELDS} == {"workers": 3, "tickets": 13, "governance": 1}   # 宣言がなければ環境変数
+    line.scale(cur, "t", "検証のため絞る", workers=1, tickets=1)
+    s = line.spec(cur)
+    assert (s["workers"], s["tickets"], s["governance"], s["reason"]) == (1, 1, 1, "検証のため絞る")
+    for n in (1, 2):
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values (%s,'o/r',%s,'t','implement')", (f"github:o/r#{n}", n))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values ('case:z','o/r',50,'t','case_review')")
+    assert line.claim_line(cur)["issue_number"] == 1
+    assert line.claim_line(cur) is None                  # ワーカー 1 機が埋まっている
+    assert line.claim_governance(cur)["kind"] == "case_review"   # 委員会の枠は別に数える
+    assert line.running(cur) == {"workers": 1, "governance": 1}
+    line.scale(cur, "t", workers=2)
+    assert line.claim_line(cur)["issue_number"] == 2     # 増やせば次の取り出しから効く
+    line.scale(cur, "t", workers=0)
+    cur.execute("select count(*) as n from jobs where state='running'")
+    assert cur.fetchone()["n"] == 3                      # 減らしても動いているジョブは止めない
+    with pytest.raises(ValueError):
+        line.scale(cur, "t", workers=-1)
