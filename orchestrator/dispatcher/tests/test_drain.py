@@ -249,3 +249,16 @@ def test_allowed_jobs_flow_while_paused(cur):
     assert drain.allowed(cur) == []                                    # 再開で消える
     drain.set_drain(cur, True, "t")
     assert drain.allowed(cur) == []                                    # 次の一時停止には持ち越さない
+
+
+def test_governance_jobs_flow_while_paused(cur):
+    """委員会と知見の流れはラインと独立。一時停止の間も取り出す（2026-11-04 オーナー）"""
+    drain.set_drain(cur, True, "t")
+    cur.execute("insert into events(name, correlation_id, payload) values ('knowledge.case_filed','github:o/r#7','{}')")
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
+                "('github:o/r#9','o/r',9,'t','implement'), ('github:o/r#7','o/r',21,'t','implement'), "
+                "('committee:https://github.com/o/r/pull/13','o/r',13,'t','committee_review'), ('case:x','o/r',30,'t','case_review')")
+    got = [drain.claim_governance(cur) for _ in range(4)]
+    assert sorted((j["kind"], j["issue_number"]) for j in got if j) == [("case_review", 30), ("committee_review", 13), ("implement", 21)]
+    cur.execute("select state from jobs where issue_number=9")
+    assert cur.fetchone()["state"] == "queued"   # ラインのジョブは一時停止の間は流さない

@@ -65,6 +65,8 @@ PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判�
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
+# 委員会と知見の流れの専用の枠（drain.GOVERNANCE_KINDS ほか）。ラインの枠とは別に数え、ラインの一時停止でも止めない。0 で専用の枠を持たない
+GOVERNANCE_PARALLEL = int(ENV.get("GOVERNANCE_PARALLEL", "1"))
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TOKEN_BUDGET = int(ENV.get("TOKEN_BUDGET_PER_JOB", "2000000"))
 WORKER_IMAGE = ENV.get("WORKER_IMAGE", "factory-worker:p0")
@@ -741,6 +743,31 @@ def ops_loop():
         time.sleep(OPS_INTERVAL)
 
 
+def governance_loop():
+    """委員会と知見の流れのジョブを、ラインの枠とは別の枠で流す（ADR 0024 の 2026-11-04 の追記）。ラインの一時停止中も取り出す。
+    ラインの枠も、空いていればこれらのジョブを取ってよい（どちらで流れても同じジョブ）"""
+    sem = threading.BoundedSemaphore(GOVERNANCE_PARALLEL)
+    while True:
+        sem.acquire()
+        job = None
+        try:
+            with db() as conn, conn.cursor() as cur:
+                job = drain.claim_governance(cur)
+        except Exception as e:  # noqa: BLE001
+            log("governance claim error", e)
+        if not job:
+            sem.release()
+            time.sleep(3)
+            continue
+
+        def _run(j=job):
+            try:
+                run_job(j)
+            finally:
+                sem.release()
+        threading.Thread(target=_run, daemon=True).start()
+
+
 def run_loop(reattached: list[dict] | None = None):
     sem = threading.BoundedSemaphore(MAX_PARALLEL)
     for j in reattached or []:   # 上げ直す前から動いているジョブ（ADR 0020）。枠を数えるため、ほかより先に枠を取る
@@ -1211,6 +1238,8 @@ def main():
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
     threading.Thread(target=poll_loop, daemon=True).start()
     threading.Thread(target=ops_loop, daemon=True).start()
+    if GOVERNANCE_PARALLEL > 0:
+        threading.Thread(target=governance_loop, daemon=True).start()
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
     if tidy.TIDY_ENABLED:
