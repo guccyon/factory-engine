@@ -107,7 +107,32 @@ phases:
                 order by payload->>'requester', id desc) last
               where (payload->>'converged')::boolean
 
-  - id: P5
+  - id: P5a
+    ja: 触れる環境と QA の 1 本
+    weight_weeks: 6
+    # 2026-11-04 オーナー: P5 を 2 段に分ける（ADR 0028）。P5a は P4 に依存しないものから着手し、P4 の残りと並行でよい。
+    # 完了は「rally で、触れる環境と Mac ランナーの上で、ユーザーストーリーから QA 役の Verdict まで 1 本通り、夜間の探索が回った」。
+    # 着手はラインの再開の指示の後。アーキテクチャに触れる点（QA 役と Verdict の型、Mac ランナー、Blueprint の欄、Defect/Incident の型）は ADR 0028
+    items:
+      - { id: mac_runner, ja: "Mac ランナーが工場から呼べる（iOS シミュレーターの起動・インストール・画面の取得・操作・ログの回収をジョブから）", measure: { manual: todo } }   # Mac 上の MCP サーバー＋常駐。対話は要らないので Remote Control ではない。Gen1 は dispatcher から直接でもよい
+      - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す
+      - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { manual: todo } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env
+      - id: user_story
+        ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）がプランナーの出力に加わり、既存機能に 3 本以上遡って書かれた"
+        measure: { github_files: { repo: guccyon/rally, path: specs/stories, target: 3 } }   # P4 typed_upstream と同じ PR で型を足す。最初の 3 本: コーチが新しい相談に返事する（rally #895）、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う
+      - id: qa_verdict
+        ja: "QA 役が Release 候補にシナリオを流し Verdict（judge と同じ型）を出し、hold なら Defect を起票して差し戻した実績"
+        measure: { db: { target: 5, sql: "select count(*) from events where name = 'qa.verdict'" } }
+      - { id: scenario_time, ja: "時間をまたぐシナリオ（契約 → 再起動 → 翌日の再ログイン → 契約が残っている）が 1 本回る", measure: { manual: todo } }   # 環境の再起動と時計の進めを QA が起こせること
+      - id: nightly_explore
+        ja: "夜間に無人で探索テストが回り、朝の報告に Defect と印が出た夜"
+        measure: { db: { target: 3, sql: "select count(distinct date(created_at)) from events where name = 'qa.explore'" } }   # unattended。夜間の予算の枠に入れる。印は人が採点して Golden Set へ
+      - { id: defect_metrics, ja: "Defect が「どの Release・どの変更・どこで見つけた・原因の工程・観点」つきで events に残り、日報に流出防止率と発見工程の分布が出る", measure: { manual: todo } }
+      - { id: quality_policy, ja: "Blueprint に品質方針の欄（アクセシビリティのレベル、扱うデータ、サポート対象の表、言葉の指針、S1 の条件）があり、rally の値が入っている", measure: { manual: todo } }   # 値は建設者が代理で仮置き
+      - { id: product_stage, ja: "製品の段階（development / launch / operating）を Blueprint に持ち、段階で出荷先と承認が決まる（#160 の SHIP_PROD_HOLD を置き換えた）", measure: { manual: todo } }   # ADR 0012 の拡張。段階の切り替えは人
+      - { id: ci_diagnose, ja: "PR ごとの依存・静的解析・秘密情報の診断が CI テンプレートで rally と factory-engine の両方に入り、shadow で結果が出ている", measure: { manual: todo } }
+
+  - id: P5b
     ja: Operate
     weight_weeks: 6
     items:
@@ -115,6 +140,13 @@ phases:
       - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
       - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
       - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）
+      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028
+      - id: release_train
+        ja: "定期便（人の承認は便ごと 1 回）で Release が出て、S1 だけ緊急便"
+        measure: { db: { target: 3, sql: "select count(*) from events where name = 'release.train'" } }
+      - { id: ephemeral_env, ja: "PR ごとの使い捨て環境が立って壊れる", measure: { manual: todo } }
+      - { id: preview_distribution, ja: "日中に人が並走し、TestFlight に 1 本配った（署名は人の Mac）", measure: { manual: todo } }
+      - { id: quality_learn, ja: "品質の Learn（Defect と Incident を入力に、重点とシナリオの追加が自動で、基準の変更案が委員会に出た）が 1 周回った", measure: { manual: todo } }
 
   - id: P6
     ja: メタ化
