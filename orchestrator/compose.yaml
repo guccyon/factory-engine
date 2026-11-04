@@ -50,6 +50,7 @@ services:
       POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-30}
       # 同時実行・予算（Blueprint runtime / budgets から。実測で調整）
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}   # 委員会と知見の流れの専用の枠。ラインの枠とは別で、ラインの一時停止でも止めない（ADR 0024）
       MAX_TURNS: ${MAX_TURNS:-40}
       TOKEN_BUDGET_PER_JOB: ${TOKEN_BUDGET_PER_JOB:-2000000}
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}

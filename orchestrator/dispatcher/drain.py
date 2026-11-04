@@ -72,6 +72,25 @@ def claim_allowed(cur, corrs: list[str]) -> dict | None:
     return cur.fetchone()
 
 
+# 委員会と知見の流れ（ADR 0024）は、ラインとは別の枠で動かし、ラインの一時停止でも止めない（2026-11-04 オーナー: 独立性を担保したい）。
+# 委員会の審議・週 1 の定例・事例の分析と、知見の PR のジョブ（書く・衝突の解消と番号の付け直し・検査・judge）が対象
+GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "case_review")
+
+
+def claim_governance(cur) -> dict | None:
+    """委員会と知見の流れのジョブを 1 つ取り出す。一時停止の間も取り出す"""
+    cur.execute("""select q.id from jobs q where q.state='queued' and not q.cancel_requested
+                      and (q.kind = any(%s) or q.correlation_id like 'committee:%%'
+                           or q.correlation_id in (select f.correlation_id from events f where f.name='knowledge.case_filed'))
+                      and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held)
+                    order by q.priority desc, q.enqueued_at for update skip locked limit 1""", (list(GOVERNANCE_KINDS),))
+    r = cur.fetchone()
+    if not r:
+        return None
+    cur.execute("update jobs set state='running', started_at=now() where id=%s returning *", (r["id"],))
+    return cur.fetchone()
+
+
 def status(cur) -> dict:
     """入れ替えてよいか。running はつなぎ直しを含む実行中のジョブ、shipping は処理中の出荷の依頼"""
     st = state(cur)
