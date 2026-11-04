@@ -13,11 +13,10 @@
 """
 from __future__ import annotations
 
-from psycopg.types.json import Jsonb
-
 import continuation
 import judgment
 import stoppage
+from psycopg.types.json import Jsonb
 
 # 知見の Issue を起票してから PR ができるまで、順番を持っていてよい時間。過ぎたら詰まったとみなし、次に譲る
 QUEUE_WRITE_GRACE = "2 days"
