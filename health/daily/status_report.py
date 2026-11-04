@@ -533,14 +533,22 @@ def fmt_change_cost(cc: list[dict]) -> list[str]:
     return lines + ["", "中央値。同じ難易度で週を追って増えていれば、作りが変えにくくなっている兆し。"]
 
 
+def cost_day(h: dict) -> str:
+    """推移の 1 点の費用が数えた日。配信日（date）の前日。記録に cost_date があればそれ"""
+    return h.get("cost_date") or (datetime.fromisoformat(h["date"]).date() - timedelta(days=1)).isoformat()
+
+
 def fmt_trend(history: list[dict]) -> list[str]:
     if len(history) < 2:
         return ["（推移は 2 日分たまってから出ます）"]
     xs = ", ".join(f'"{h["date"][5:]}"' for h in history)
     prog = ", ".join(str(round(h["overall"] * 100, 1)) for h in history)
+    # 費用は配信した日の前日（JST の 0〜24 時）の分。配信日ではなく、数えた日を軸に出す
+    cxs = ", ".join(f'"{cost_day(h)[5:]}"' for h in history)
     cost = ", ".join(f'{h.get("cost_usd") or 0:.2f}' for h in history)
     return ["```mermaid", "xychart-beta", '  title "全体の進捗（%）"', f"  x-axis [{xs}]", '  y-axis "%" 0 --> 100', f"  line [{prog}]", "```",
-            "", "```mermaid", "xychart-beta", '  title "1 日の費用（USD、API 単価換算）"', f"  x-axis [{xs}]", f"  bar [{cost}]", "```"]
+            "", "```mermaid", "xychart-beta", '  title "1 日の費用（USD、API 単価換算）"', f"  x-axis [{cxs}]", f"  bar [{cost}]", "```",
+            "", "費用は数えた日（JST の 0〜24 時）の分。予算の枠（7 時区切り）とは区切りが違う"]
 
 
 def render_dashboard(snap: dict, history: list[dict]) -> str:
