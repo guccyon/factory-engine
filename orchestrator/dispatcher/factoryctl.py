@@ -16,6 +16,8 @@
 工場の入れ替え（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
   factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
   factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
+  factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
+  factoryctl line scale [--workers N] [--tickets N] [--governance N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
   factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
@@ -72,6 +74,7 @@ import choice
 import continuation
 import design_line
 import drain
+import line
 import judgment
 import learn
 import ops
@@ -503,6 +506,23 @@ def main(argv):
             hold = " 保留" if t["held"] else ""
             wait = f" 依存待ち {' '.join(t['waiting_on'])}" if t["waiting_on"] else ""
             print(f"{t['id']:>4} {ops.level_of(t['priority'])}({t['priority']}) {t['state']:<7} {t['source_ref']} {t['title'][:40]}{hold}{wait} {t['jobs'] or ''}")
+    elif cmd == "line":
+        if len(argv) > 2 and argv[2] == "scale":
+            vals = {k: int(opt(argv, f"--{k}")) for k in line.FIELDS if opt(argv, f"--{k}") is not None}
+            if not vals:
+                print("--workers・--tickets・--governance のどれかを渡す")
+                return 2
+            try:
+                line.scale(cur, "factoryctl", opt(argv, "--reason", ""), **vals)
+            except ValueError as e:
+                print(e)
+                return 2
+        st = line.status(cur)
+        d, r = st["desired"], st["running"]
+        print(f"ラインのワーカー: {r['workers']} / {d['workers']}　委員会の枠: {r['governance']} / {d['governance']}　同時に流すチケット: {d['tickets']}")
+        print(f"宣言: {st['by']}{'（' + st['reason'] + '）' if st['reason'] else ''}{' ' + st['at'] if st['at'] else '（環境変数の値）'}")
+        if drain.active(cur):
+            print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")
     elif cmd == "drain":
         if len(argv) > 2 and argv[2] == "status":
             return drain_report(cur)

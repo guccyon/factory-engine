@@ -44,6 +44,7 @@ import committee
 import continuation
 import design
 import judgment
+import line
 import learn
 import ops
 import process_learn
@@ -630,8 +631,9 @@ def enqueue_step(cur, open_prs: set):
     inflight_files: dict[str, set[str]] | None = None   # よく衝突するファイルに触るタスクがあるときだけ、流れているものの変更ファイルを集める
     if paused and record(cur, "supervisor.budget_paused", None, paused, f"supervisor.budget_paused:{paused['window_start']}"):
         log("budget paused", paused)
+    max_inflight = line.spec(cur)["tickets"]   # 宣言（factoryctl line scale）から周回ごとに読む（ADR 0028）
     for t, repo, it, deps in ready:
-        if inflight >= MAX_INFLIGHT and t["priority"] < ops.PREEMPT_AT:
+        if inflight >= max_inflight and t["priority"] < ops.PREEMPT_AT:
             continue
         if paused and t["priority"] < ops.PREEMPT_AT:   # 枠の予算を使い切ったら次の枠まで投入しない（p0 は止めない）
             continue

@@ -95,7 +95,7 @@ def test_enqueue_step_holds_second_task_on_same_hot_file(cur, monkeypatch):
     monkeypatch.setattr(supervisor, "gh", fake_gh)
     monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
     monkeypatch.setattr(supervisor, "DRY_RUN", False)
-    monkeypatch.setattr(supervisor, "MAX_INFLIGHT", 13)
+    monkeypatch.setenv("SUPERVISOR_MAX_INFLIGHT", "13")
     monkeypatch.setattr(supervisor, "over_budget", lambda cur: None)
     monkeypatch.setattr(supervisor, "factory_prs", lambda cur: [])
     supervisor.enqueue_step(cur, set())

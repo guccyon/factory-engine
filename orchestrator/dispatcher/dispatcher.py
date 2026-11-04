@@ -40,6 +40,7 @@ import design_system_line
 import planner
 import drain
 import judgment
+import line
 import notify_inbox
 import ops
 import pr_events
@@ -64,9 +65,7 @@ TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "�
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
-MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
-# 委員会と知見の流れの専用の枠（drain.GOVERNANCE_KINDS ほか）。ラインの枠とは別に数え、ラインの一時停止でも止めない。0 で専用の枠を持たない
-GOVERNANCE_PARALLEL = int(ENV.get("GOVERNANCE_PARALLEL", "1"))
+MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))   # ラインのワーカーの数の既定。宣言（factoryctl line scale）があればそちら（ADR 0028）
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TOKEN_BUDGET = int(ENV.get("TOKEN_BUDGET_PER_JOB", "2000000"))
 WORKER_IMAGE = ENV.get("WORKER_IMAGE", "factory-worker:p0")
@@ -725,7 +724,7 @@ def requeue_preempted(cur, job: dict, preempted_for: int, cost_usd):
 def ops_once():
     with db() as conn, conn.cursor() as cur:
         # ラインの一時停止中は割り込まない（止めても次を流せない。ADR 0020）
-        for victim, urgent in ([] if drain.active(cur) else ops.preempt_victims(cur, MAX_PARALLEL)):
+        for victim, urgent in ([] if drain.active(cur) else ops.preempt_victims(cur, line.spec(cur)["workers"])):
             ops.stop_job(cur, victim["id"], "dispatcher", f"緊急のジョブ {urgent['id']} を先に流す", preempted_for=urgent["id"])
             log(f"preempt job {victim['id']} (priority {victim['priority']}) for job {urgent['id']} (priority {urgent['priority']})")
         # 止める印が付いた作業中のジョブのコンテナを止める（コンソール・factoryctl・割り込みの共通の出口）
@@ -743,67 +742,37 @@ def ops_loop():
         time.sleep(OPS_INTERVAL)
 
 
-def governance_loop():
-    """委員会と知見の流れのジョブを、ラインの枠とは別の枠で流す（ADR 0024 の 2026-11-04 の追記）。ラインの一時停止中も取り出す。
-    ラインの枠も、空いていればこれらのジョブを取ってよい（どちらで流れても同じジョブ）"""
-    sem = threading.BoundedSemaphore(GOVERNANCE_PARALLEL)
+def _claim_loop(name: str, claim):
+    """枠の空きの分だけジョブを取り出して流す。枠の数は周回ごとに宣言（line.spec）から読むので、上げ直さずに増減できる（ADR 0028）。
+    数を下げても、動いているジョブは最後まで流す（新しく取り出さないだけ）"""
     while True:
-        sem.acquire()
         job = None
         try:
             with db() as conn, conn.cursor() as cur:
-                job = drain.claim_governance(cur)
+                job = claim(cur)
         except Exception as e:  # noqa: BLE001
-            log("governance claim error", e)
+            log(f"{name} claim error", e)
         if not job:
-            sem.release()
             time.sleep(3)
             continue
+        threading.Thread(target=run_job, args=(job,), daemon=True).start()
 
-        def _run(j=job):
-            try:
-                run_job(j)
-            finally:
-                sem.release()
-        threading.Thread(target=_run, daemon=True).start()
+
+def _claim_line(cur):
+    if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。一時停止の間も流すと決めたもの（factoryctl drain allow）だけは取り出す
+        return drain.claim_allowed(cur, drain.allowed(cur))
+    return line.claim_line(cur)
+
+
+def governance_loop():
+    """委員会と知見の流れのジョブを、ラインとは別の枠で流す（ADR 0024 の 2026-11-04 の追記）。ラインの一時停止中も取り出す"""
+    _claim_loop("governance", line.claim_governance)
 
 
 def run_loop(reattached: list[dict] | None = None):
-    sem = threading.BoundedSemaphore(MAX_PARALLEL)
-    for j in reattached or []:   # 上げ直す前から動いているジョブ（ADR 0020）。枠を数えるため、ほかより先に枠を取る
-        got = sem.acquire(blocking=False)   # 上限を下げて上げ直したときは枠を超えて流れる（つなぎ直しは捨てない）
-
-        def _resume(j=j, got=got):
-            try:
-                run_job(j, reattaching=True)
-            finally:
-                if got:
-                    sem.release()
-        threading.Thread(target=_resume, daemon=True).start()
-    while True:
-        sem.acquire()
-        job = None
-        try:
-            with db() as conn, conn.cursor() as cur:
-                if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。実行中のジョブはそのまま流す
-                    job = drain.claim_allowed(cur, drain.allowed(cur))   # 一時停止の間も流すと決めたもの（factoryctl drain allow）だけは取り出す
-                else:
-                    cur.execute("select * from claim_job()")   # (claim_job()).* は列ごとに関数が呼ばれるので使わない
-                    row = cur.fetchone()
-                    job = row if row and row.get("id") else None
-        except Exception as e:  # noqa: BLE001
-            log("claim error", e)
-        if not job:
-            sem.release()
-            time.sleep(3)
-            continue
-
-        def _run(j=job):
-            try:
-                run_job(j)
-            finally:
-                sem.release()
-        threading.Thread(target=_run, daemon=True).start()
+    for j in reattached or []:   # 上げ直す前から動いているジョブ（ADR 0020）。running のまま数えられるので枠を取る必要はない
+        threading.Thread(target=run_job, args=(j,), kwargs={"reattaching": True}, daemon=True).start()
+    _claim_loop("line", _claim_line)
 
 
 # ------------------------------------------------------------------ judge の結果に従って印を付け、差し戻しを起票する（ADR 0006 後半 / D5）
@@ -1238,8 +1207,7 @@ def main():
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
     threading.Thread(target=poll_loop, daemon=True).start()
     threading.Thread(target=ops_loop, daemon=True).start()
-    if GOVERNANCE_PARALLEL > 0:
-        threading.Thread(target=governance_loop, daemon=True).start()
+    threading.Thread(target=governance_loop, daemon=True).start()   # 枠の数（governance）が 0 なら取り出さない
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
     if tidy.TIDY_ENABLED:
