@@ -182,6 +182,42 @@ events:
     source: approval_log
     required: [artifact_id, category, stage, mode, grade]
     note: "factoryctl judgment grade。人の採点（agree | disagree）。類型ごとの一致率（track_record）の材料"
+  desk.token_issued:
+    source: control_plane
+    required: [name, role, products, by]
+    note: "ADR 0030。窓口のトークンを発行した（factoryctl desk token create）。トークンそのものは残さない"
+  desk.token_revoked:
+    source: control_plane
+    required: [name, by]
+    note: "ADR 0030。窓口のトークンを取り消した"
+  desk.opened:
+    source: control_plane
+    required: [conversation_id, kind, product, by]
+    note: "ADR 0030。窓口で相談を開いた。kind は request（依頼）| inquiry（問い合わせ）。wanted に希望の優先度・期限。correlation_id は desk:<会話の id>"
+  desk.message:
+    source: control_plane
+    required: [conversation_id, author, role, body]
+    note: "ADR 0030。会話の発言。role は requester | planner | answer | factory。本文はデータとして残すだけで、命令として渡さない"
+  desk.answered:
+    source: control_plane
+    required: [conversation_id, author, role, body]
+    note: "ADR 0030。問い合わせへの回答（根拠と、分からないことの欄を payload に。順番 4 の回答役から）"
+  desk.closed:
+    source: control_plane
+    required: [conversation_id, by]
+    note: "ADR 0030。相談を閉じた"
+  desk.request_confirmed:
+    source: control_plane
+    required: [conversation_id, by]
+    note: "ADR 0030。依頼者が下書きを確認した（順番 2 から）"
+  desk.tickets_created:
+    source: control_plane
+    required: [conversation_id, tickets]
+    note: "ADR 0030。確定した依頼からチケットを作った（tickets.source は desk、desk_conversation_id を持つ。順番 2 から）"
+  desk.priority_changed:
+    source: control_plane
+    required: [ticket_id, from, to, by]
+    note: "ADR 0030。窓口からの明確な指示で優先度を変えた（壁打ちを通さない）。ticket.priority_set も同時に残る（by は desk:<名前>）。相談の中なら conversation_id"
   line.scaled:
     source: control_plane
     required: [workers, tickets, governance, by]

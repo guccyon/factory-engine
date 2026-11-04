@@ -37,6 +37,12 @@
   factoryctl release status <repo>                          # 環境ごとのいまの版と前の版、出荷の記録
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
+事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
+  factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
+  factoryctl desk token list
+  factoryctl desk token revoke <名前>
+  factoryctl desk list                                     # 相談の一覧（新しい順）
+
 モードと判断（ADR 0006）:
   factoryctl mode show
   factoryctl mode set attended|unattended [--until ISO]       # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先
@@ -72,6 +78,7 @@ from psycopg.types.json import Jsonb
 
 import choice
 import continuation
+import desk
 import design_line
 import drain
 import line
@@ -445,6 +452,34 @@ def backfill_conflicts(cur, days: int) -> int:
     return 0
 
 
+def desk_cmd(cur, argv):
+    sub = argv[2:4]
+    try:
+        if sub[:2] == ["token", "create"] and len(argv) > 4:
+            products = [p for p in (opt(argv, "--product", "") or "").split(",") if p]
+            token = desk.create_token(cur, argv[4], opt(argv, "--role", "requester"), products, opt(argv, "--by", "factoryctl"))
+            print(token)
+            print("このトークンは今しか出ません。依頼者の手元（MCP の設定など）に渡してください", file=sys.stderr)
+            return 0
+        if sub[:2] == ["token", "list"]:
+            for t in desk.list_tokens(cur):
+                print(f"{t['name']:<20} {t['role']:<9} {','.join(t['products']) or '（すべて）'} {t['created_at']:%m-%d %H:%M}"
+                      f"{' 取り消し ' + format(t['revoked_at'], '%m-%d %H:%M') if t['revoked_at'] else ''}")
+            return 0
+        if sub[:2] == ["token", "revoke"] and len(argv) > 4:
+            print("取り消しました" if desk.revoke_token(cur, argv[4], opt(argv, "--by", "factoryctl")) else "有効なトークンがない")
+            return 0
+        if sub[:1] == ["list"]:
+            for c in desk.list_conversations(cur, {"name": "factoryctl", "role": "operator", "products": []}):
+                print(f"{c['id']:>4} {c['kind']:<8} {c['state']:<17} {c['product']} {c['opened_by']} r{c['rounds']} {c['title'][:50]}")
+            return 0
+    except desk.DeskError as e:
+        print(e)
+        return 2
+    print(__doc__)
+    return 2
+
+
 def main(argv):
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
@@ -660,6 +695,8 @@ def main(argv):
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":
         return release_status(cur, argv[3])
+    elif cmd == "desk":
+        return desk_cmd(cur, argv)
     else:
         print(__doc__); return 2
     return 0
