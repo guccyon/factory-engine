@@ -86,8 +86,10 @@ def test_schema_matches_definitions():
     assert s["steps"]["items"]["properties"]["role"]["enum"] == list(DEFS["roles"])
     assert s["steps"]["items"]["properties"]["effort"]["enum"] == list(DEFS["efforts"])
     assert "alternatives" in pl.schema(DEFS)["required"]
-    assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps"}
-    assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement"}
+    assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized"}
+    assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design"}
+    assert s["size"]["properties"]["layers"]["items"]["enum"] == [x["layer"] for x in DEFS["sizing"]["layers"]] + ["other"]
+    assert s["tasks"]["items"]["required"][:3] == ["key", "title", "kind"]   # 窓口の相談役と同じ型
     assert set(s["design_scale"]["enum"]) == set(DEFS["design_scales"])
     assert s["questions"]["maxItems"] == DEFS["asking"]["max_questions"]
 
@@ -105,12 +107,17 @@ def test_plan_stages_reads_and_decides(tmp_path, monkeypatch):
         seen["step"], seen["prompt"] = step, prompt
         seen["files"] = sorted(str(p) for p in Path(".").rglob("*") if p.is_file())
         seen["comments"] = Path("comments.md").read_text(encoding="utf-8")
-        return agent_runner.Result(output={**O(steps=["implement"], scale="small"), "summary": "s", "evidence": [], "interpretation": "i"},
+        seen["sizes"] = Path("sizes.md").read_text(encoding="utf-8")
+        return agent_runner.Result(output={**O(steps=["implement"], scale="small"), "summary": "s", "evidence": [], "interpretation": "i",
+                                           "size": {"layers": ["web"], "turns_band": "S", "basis": "b"}},
                                    cost_usd=0.05, model="m")
 
     monkeypatch.setattr(agent_runner, "run", fake)
     issue = {"title": "項目を足す", "body": "本文", "comments": [{"createdAt": "t", "body": "返事です"}]}
-    out = pl.plan(issue, {"round": 2}, DEFS, repo)
+    table = [{"layers": "backend+web", "n": 4, "files_median": 22, "turns_median": 48, "turns_p90": 70, "incomplete": 1,
+              "examples": ["https://github.com/o/r/pull/9"]}]
+    out = pl.plan(issue, {"round": 2, "size_table": table}, DEFS, repo)
+    assert "| backend+web | 4 | 22 | 48 | 70 | 1 |" in seen["sizes"] and "sizes.md" in seen["prompt"]
     assert seen["step"] == "plan" and "2 回目" in seen["prompt"] and "デザインシステムは ある" in seen["prompt"]
     assert "specs/design/tokens.yaml" in seen["files"] and "knowledge/k1.yaml" in seen["files"] and "specs/shot.png" not in seen["files"]
     assert "返事です" in seen["comments"]
@@ -124,3 +131,47 @@ def test_main_writes_result(tmp_path, monkeypatch):
     (tmp_path / "issue.json").write_text(json.dumps({"title": "t", "body": "b"}))
     assert pl.main(["--issue", str(tmp_path / "issue.json"), "--out", str(tmp_path / "out.json")]) == 0
     assert json.loads((tmp_path / "out.json").read_text())["decision"] == "ready"
+
+
+def SZ(layers=("web",), band="M", files=5, tasks=(), steps=("implement",)):
+    return {**O(steps=steps, scale="screen"), "size": {"layers": list(layers), "turns_band": band, "basis": "b"},
+            "expected_files": [f"f{i}" for i in range(files)], "tasks": list(tasks)}
+
+
+def T(key, kind="implement", deps=()):
+    return {"key": key, "title": f"題 {key}", "kind": kind, "summary": "s", "do": ["する"], "acceptance": ["できる"],
+            "depends_on": list(deps), "effort": "standard"}
+
+
+TASKS = [T("t1", "contract"), T("t2", deps=["t1"]), T("t3", "design", deps=["t2"])]
+
+
+@pytest.mark.parametrize("out,want", [
+    (SZ(), ([], [])),
+    (SZ(layers=["contract", "db", "backend", "web"]), (["layers"], "oversized")),           # 層が多いのにタスクがない → 人へ
+    (SZ(layers=["backend", "docs", "other"], files=31), (["files"], "oversized")),           # docs・other は層に数えない
+    (SZ(band="L"), (["turns"], "oversized")),
+    (SZ(band="XL", tasks=TASKS), (["turns"], "split")),
+    (SZ(band="XL", tasks=TASKS[:1]), (["turns"], "oversized")),                              # 1 件だけでは切ったことにならない
+    (SZ(band="XL", tasks=[T("t1", deps=["t2"]), T("t2", deps=["t1"])]), (["turns"], "oversized")),   # 依存の輪
+])
+def test_oversize_and_split(out, want):
+    hit, kind = want
+    assert pl.oversize(out, DEFS) == hit
+    decision, guards, marks, tasks = pl.size_check(out, "ready", pl.steps_of(out, DEFS), DEFS)
+    if not hit:
+        assert (decision, guards, marks, tasks) == ("ready", [], [], [])
+    elif kind == "split":
+        assert decision == "split" and guards == ["oversized"] and [t["key"] for t in tasks] == ["t1", "t2", "t3"]
+    else:
+        assert (decision, guards, tasks) == ("escalate", ["oversized"], [])
+
+
+def test_size_check_waits_for_design_and_marks_missing_size():
+    big = SZ(band="XL", steps=("ui_design", "implement"))
+    assert pl.size_check(big, "ready", ["ui_design", "implement"], DEFS) == ("ready", [], ["split_after_design"], [])
+    big["tasks"] = TASKS   # 実装の手前の判定（画面が決まった後）では切る
+    assert pl.size_check(big, "ready", ["ui_design", "implement"], DEFS, phase="implement")[0] == "split"
+    assert pl.size_check(O(steps=["implement"]), "ready", ["implement"], DEFS) == ("ready", [], ["no_size"], [])
+    assert pl.size_check(O(steps=["design_system"]), "ready", ["design_system"], DEFS) == ("ready", [], [], [])   # 実装役を通らない経路は見ない
+    assert pl.size_check(SZ(band="XL"), "ask", ["implement"], DEFS)[0] == "ask"

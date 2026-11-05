@@ -146,7 +146,8 @@ def _continues(cur, corr: str) -> dict[str, int]:
 
 def _split_child(cur, repo: str, issue: int) -> bool:
     """プランナーか窓口が切ったチケットか（切りすぎを数える対象）"""
-    cur.execute("select 1 from events where name='plan.split' and payload->>'repo'=%s and payload->>'child'=%s limit 1", (repo, str(issue)))
+    cur.execute("select 1 from events where name='plan.split' and payload->>'repo'=%s and (payload->>'child'=%s or payload->'children' @> %s::jsonb) limit 1",
+                (repo, str(issue), f"[{int(issue)}]"))
     if cur.fetchone():
         return True
     cur.execute("select 1 from tickets where source='github' and source_ref=%s and desk_conversation_id is not null", (f"{repo}#{issue}",))

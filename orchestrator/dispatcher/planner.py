@@ -7,6 +7,8 @@
               このチケットは factory:waiting-steps で待つ。そのチケットが閉じたら advance_steps が次の役のラベルを付ける
     ask:      理由と選択肢つきの問いを Issue のコメントに書き、factory:needs-info。返信が付いたら poll_answers が判定し直しを積む
     escalate: factory:plan-human を付けて人に回す
+    split:    大きすぎる（ADR 0036 の 2）。タスクのまとまりを子のチケットとして起票し（窓口と同じ起票。依存のないものから factory:plan）、
+              このチケットは factory:waiting-steps で待つ。子がすべて閉じたら advance_steps がこのチケットを閉じる
 
 判断の根拠（3 層・とらなかった経路・入力の版・当てた guard と印）は Plan と plan.decided に残し、経路ごとの結果と突き合わせて
 後で見返す（factoryctl plan show）。状態は制御プレーンの artifacts（Plan）と events（plan.*）に置く（ADR 0020）。
@@ -15,6 +17,9 @@
 from __future__ import annotations
 
 from psycopg.types.json import Jsonb
+
+import desk_line
+import plan_outcome
 
 # definitions/planner.yaml の labels・roles・asking と同じ値（dispatcher のコンテナには definitions/ がないので写す。食い違いはテストで見る）
 TRIGGER_LABEL, NEEDS_INFO_LABEL, ESCALATE_LABEL = "factory:plan", "factory:needs-info", "factory:plan-human"
@@ -25,9 +30,14 @@ MARKER = "<!-- factory:plan-questions -->"
 RUNNING_LABEL, QUEUED_LABEL = "factory:running", "factory:queued"
 WAITING_LABEL = "factory:waiting-steps"   # 経路の前の役（別のチケット）が終わるのを待っている
 GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方の指定がない", "low_confidence": "プランナーの確信度が低い",
-            "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった"}
+            "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった",
+            "oversized": "大きすぎる（切る基準に当たる）"}
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
-               "design_after_implement": "実装の後にデザインの役がある"}
+               "design_after_implement": "実装の後にデザインの役がある", "no_size": "大きさの見積もりがない",
+               "split_after_design": "大きいので、画面が決まってから実装の手前で切る"}
+SIZE_TABLE_DAYS = 60     # プランナーに渡す実績の表の期間（ADR 0036 の 1）
+LAYER_JA = {"db": "DB", "contract": "契約", "backend": "backend", "web": "Web", "mobile": "モバイル", "docs": "文書", "other": "その他"}
+OVERSIZE_JA = {"layers": "触る層が多い", "files": "変わる見込みのファイルが多い", "turns": "見込みのターンが多い"}
 
 
 def _ja(ids: list[str]) -> str:
@@ -48,6 +58,7 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                "summary": p.get("summary"), "questions": p.get("questions") or [], "facts": result.get("facts") or {},
                "evidence": p.get("evidence") or [], "expected_files": p.get("expected_files") or [], "interpretation": p.get("interpretation"), "confidence": p.get("confidence"),
                "agent_ready": p.get("ready"), "versions": result.get("versions") or {},
+               "size": p.get("size"), "oversize": result.get("oversize") or [], "tasks": result.get("tasks") or [], "phase": result.get("phase"),
                "model": result.get("model"), "cost_usd": result.get("cost_usd"), "num_turns": result.get("num_turns")}
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Plan',%s,%s,'plan',%s) returning id",
                 (corr, job_id, Jsonb(payload)))
@@ -57,6 +68,7 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                                       "steps": payload["steps"], "efforts": [s.get("effort") for s in payload["step_details"] if isinstance(s, dict)],
                                       "design_scale": payload["design_scale"], "guards": payload["guards"], "advisories": payload["advisories"],
                                       "alternatives": len(payload["alternatives"]), "confidence": payload["confidence"],
+                                      "size": payload["size"], "oversize": payload["oversize"], "tasks": len(payload["tasks"]), "phase": payload["phase"],
                                       "versions": payload["versions"], "model": payload["model"], "cost_usd": payload["cost_usd"]})))
     return pid
 
@@ -101,6 +113,44 @@ def split_design_system(cur, gh, repo: str, issue: int, corr: str, plan_id: int,
     return child
 
 
+def attach_sizes(cur, repo: str, inp: dict) -> dict:
+    """プランナーの入力に、この製品の実績の表（plan_outcome）を足す（ADR 0036 の 1）"""
+    try:
+        table = plan_outcome.size_table(plan_outcome.outcomes(cur, repo, SIZE_TABLE_DAYS))
+    except Exception:  # noqa: BLE001  表がなくても判定はできる
+        table = []
+    return {**(inp or {}), "size_table": table}
+
+
+def split_tasks(cur, gh, repo: str, issue: int, corr: str, plan_id: int, title: str, tasks: list[dict], p: dict) -> list[dict]:
+    """大きなチケットを、タスクのまとまり（依存つき）として子のチケットに切る（ADR 0036 の 2）。起票は窓口と同じ（desk_line.file_task）。
+    途中で失敗しても、起票した子は plan.task_filed で覚えているので、判定し直しても同じ子を 2 度作らない"""
+    cur.execute("select payload from events where name='plan.task_filed' and correlation_id=%s and payload->>'plan_id'=%s", (corr, str(plan_id)))
+    numbers = {e["payload"]["key"]: int(e["payload"]["number"]) for e in cur.fetchall()}
+    parent = gh("GET", f"repos/{repo}/issues/{issue}") or {}
+    prio = [l["name"] for l in parent.get("labels") or [] if isinstance(l, dict) and (l.get("name") or "").startswith("factory:priority:")]
+    filed = []
+    for t in tasks:
+        deps = [numbers[k] for k in t.get("depends_on") or [] if k in numbers]
+        if t["key"] not in numbers:
+            kind = desk_line.KIND_JA.get(t.get("kind"), t.get("kind"))
+            body = "\n".join([f"#{issue}（{title}）が大きいので、プランナーが切ったタスクのまとまりの {t['key']}（{kind}）です。{t.get('summary') or ''}",
+                              "", f"もとのチケットの本文（画面の設計 UXSpec・受け入れ条件があればそれも）を正とし、このタスクではその範囲のうち下の「やること」だけを行います。"]
+                             + desk_line.task_sections(t, deps)
+                             + ["", f"<sub>Plan {plan_id}・手間の見込み {desk_line.EFFORT_JA.get(t.get('effort'), t.get('effort'))}</sub>",
+                                f"<!-- factory:plan-split parent={issue} plan={plan_id} task={t['key']} -->"])
+            it = desk_line.file_task(cur, gh, repo, f"{t['title']}（#{issue} の {t['key']}）", body, deps, prio)
+            numbers[t["key"]] = it["number"]
+            cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.task_filed',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                        (corr, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "key": t["key"], "number": it["number"], "label": it["label"]}),
+                         f"plan.task_filed:{plan_id}:{t['key']}"))
+        filed.append({"key": t["key"], "number": numbers[t["key"]], "title": t["title"], "kind": t.get("kind"), "depends_on": deps})
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.split',%s,%s,%s) on conflict (dedupe_key) do nothing",
+                (corr, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "kind": "tasks", "children": [f["number"] for f in filed],
+                              "child": None, "steps": p.get("steps_roles") or ["implement"], "oversize": p.get("oversize") or []}), f"plan.split:{plan_id}"))
+    return filed
+
+
 def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result: dict, swap_label, comment, gh=None, title: str = ""):
     decision, steps = result.get("decision"), [r for r in result.get("steps") or [] if r in ROLE_LABELS]
     p, guards, marks = result.get("plan") or {}, result.get("guards") or [], result.get("advisories") or []
@@ -117,6 +167,18 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
         if marks:
             body += ["", "見返すための印: " + _ja(marks)]
         comment(repo, issue, "\n".join(body + ["", f"<sub>Plan {plan_id}</sub>"]))
+        return
+    if decision == "split" and gh and result.get("tasks"):
+        filed = split_tasks(cur, gh, repo, issue, corr, plan_id, title, result["tasks"], {**p, "steps_roles": steps, "oversize": result.get("oversize")})
+        swap_label(repo, issue, [RUNNING_LABEL], [WAITING_LABEL])
+        sz = p.get("size") or {}
+        why = "、".join(OVERSIZE_JA.get(h, h) for h in result.get("oversize") or [])
+        body = [f"プランナー（ジョブ {job_id}）: 1 回の実装には大きいので（{why}。触る層 {'・'.join(LAYER_JA.get(l, l) for l in sz.get('layers') or [])}、"
+                f"見込み {sz.get('turns_band') or '-'}、変わる見込みのファイル {len(p.get('expected_files') or [])}）、{len(filed)} 件のタスクに切りました。"
+                "依存のないものからプランナーの着手判定に回ります。すべて閉じたら、このチケットを閉じます。", ""]
+        body += [f"- #{f['number']} {f['title']}" + (f"（{' '.join(f'#{d}' for d in f['depends_on'])} の後）" if f["depends_on"] else "") for f in filed]
+        body += ["", p.get("summary") or "", "", f"見積もりの根拠: {sz.get('basis') or '-'}", "", f"<sub>Plan {plan_id}</sub>"]
+        comment(repo, issue, "\n".join(body))
         return
     if decision == "ask":
         round_ = int(result.get("round") or 1)
@@ -200,9 +262,12 @@ def advance_steps(cur, gh, swap_label, comment, repos: list[str]) -> int:
             issue, corr = it["number"], f"github:{repo}#{it['number']}"
             cur.execute("select payload from events where name='plan.split' and correlation_id=%s order by id desc limit 1", (corr,))
             r = cur.fetchone()
-            if not r or not r["payload"].get("child"):
+            if not r or not (r["payload"].get("child") or r["payload"].get("children")):
                 continue
             sp = r["payload"]
+            if sp.get("kind") == "tasks":   # タスクのまとまりに切った（ADR 0036）: 子がすべて閉じたら、このチケットを閉じる
+                n += close_split_parent(cur, gh, comment, repo, issue, corr, sp)
+                continue
             if (gh("GET", f"repos/{repo}/issues/{sp['child']}") or {}).get("state") != "closed":
                 continue
             nxt = sp["steps"][1]
@@ -214,3 +279,18 @@ def advance_steps(cur, gh, swap_label, comment, repos: list[str]) -> int:
             comment(repo, issue, f"#{sp['child']}（デザインシステム）が閉じたので、経路の次の役（{ROLE_JA[nxt]}）に進めました。")
             n += 1
     return n
+
+
+def close_split_parent(cur, gh, comment, repo: str, issue: int, corr: str, sp: dict) -> int:
+    """切ったタスクのまとまり（ADR 0036）の子がすべて閉じたら、もとのチケットを閉じる。1 度だけ"""
+    children = [int(c) for c in sp.get("children") or []]
+    if not children or any((gh("GET", f"repos/{repo}/issues/{c}") or {}).get("state") != "closed" for c in children):
+        return 0
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.advanced',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
+                (corr, Jsonb({"plan_id": sp["plan_id"], "repo": repo, "issue": issue, "after": children, "role": "done"}), f"plan.advanced:{sp['plan_id']}"))
+    if cur.fetchone() is None:
+        return 0
+    comment(repo, issue, f"切ったタスク（{' '.join(f'#{c}' for c in children)}）がすべて閉じたので、このチケットを閉じます。")
+    gh("PATCH", f"repos/{repo}/issues/{issue}", {"state": "closed", "state_reason": "completed"})
+    cur.execute("update tickets set state='closed', updated_at=now() where source='github' and source_ref=%s and state<>'closed'", (f"{repo}#{issue}",))
+    return 1

@@ -461,7 +461,7 @@ events:
   plan.decided:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]
-    note: "ADR 0025・0026。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
+    note: "ADR 0025・0026・0036。decision は ready / ask / escalate / split。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
   plan.serialized:
     source: control_plane
     required: [file, behind, hot, why]
@@ -477,7 +477,11 @@ events:
   plan.split:
     source: control_plane
     required: [plan_id, repo, issue, child, steps]
-    note: "ADR 0026。経路の最初の役がデザインシステムで、後ろにほかの役が続くので、デザインシステムの仕事を別のチケット（child）に切った。元のチケットは factory:waiting-steps で待つ"
+    note: "ADR 0026。経路の最初の役がデザインシステムで、後ろにほかの役が続くので、デザインシステムの仕事を別のチケット（child）に切った。元のチケットは factory:waiting-steps で待つ。ADR 0036 の 2: kind=tasks のときは、大きすぎるのでタスクのまとまりに切った（children に子の番号、oversize に当たった基準。child は null）。子がすべて閉じたら元のチケットを閉じる（plan.advanced の role=done）"
+  plan.task_filed:
+    source: control_plane
+    required: [plan_id, repo, issue, key, number, label]
+    note: "ADR 0036 の 2。切ったタスク 1 件を子のチケットとして起票した（依存のないものは factory:plan、あるものは factory:desk-waiting。起票は窓口と同じ desk_line.file_task）。途中で止まっても、同じ Plan の同じ key は 2 度起票しない。dedupe は plan.task_filed:<plan_id>:<key>"
   plan.outcome:
     source: control_plane
     required: [repo, issue, pr_url, merged, plan_id, planned, judgment, jobs, turns, turns_max, cost_usd, incomplete, continues, files, layers, expected_recall, expected_precision, route_changed, needs_judgment]

@@ -176,5 +176,8 @@ def test_route_changed_split_child_and_unplanned(cur):
     assert po.step(cur, gh, days=None, limit=None) == 1
     got = {o["issue"]: o for o in po.outcomes(cur, days=60)}
     assert got[1]["judgment"] == "misrouted" and got[3]["judgment"] == "oversized"
+    cur.execute("insert into events(name, correlation_id, payload) values ('plan.split','github:o/r#7',%s)",
+                (Jsonb({"repo": "o/r", "issue": 7, "kind": "tasks", "children": [8, 9], "child": None}),))
+    assert po._split_child(cur, "o/r", 9) and not po._split_child(cur, "o/r", 10)   # タスクのまとまりに切った子
     assert got[4]["planned"] is False and got[4]["judgment"] == "ok" and got[4]["plan_id"] is None
     assert len(po.outcomes(cur, days=14)) == 2   # occurred_at は PR の結果が出た時刻
