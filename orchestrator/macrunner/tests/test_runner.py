@@ -175,3 +175,34 @@ def test_mcp_config_only_with_token():
     assert macrunner_client.mcp_config({}) is None
     cfg = macrunner_client.mcp_config({"MAC_RUNNER_TOKEN": TOKEN})
     assert cfg["mcpServers"]["macrunner"]["url"] == "http://host.docker.internal:8793/mcp"
+
+
+def test_idb_retries_until_accessibility_answers(tmp_path, monkeypatch):
+    """起動の直後は画面の読み取りが答えないことがある（実機で 10 秒後に通った）。その失敗だけ読み直す。"""
+    monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path))
+    monkeypatch.setattr(runner, "IDB_RETRY_SEC", 0)
+    n = []
+
+    def fake_run(argv, **kw):
+        n.append(argv)
+        if len(n) < 3:
+            raise runner.ToolError("accessibility service did not answer, retry the read")
+        return b"[]"
+    monkeypatch.setattr(runner, "run", fake_run)
+    assert runner.Runner(runner.config()).idb("ui", "describe-all") == b"[]"
+    assert len(n) == 3
+
+    def other(argv, **kw):
+        n.append(argv)
+        raise runner.ToolError("no such device")
+    monkeypatch.setattr(runner, "run", other)
+    n.clear()
+    with pytest.raises(runner.ToolError):
+        runner.Runner(runner.config()).idb("ui", "tap")
+    assert len(n) == 1   # ほかの失敗は読み直さない
+
+
+def test_shutdown_cleans_companion(server, calls):
+    url, _ = server
+    assert not call(url, "sim_shutdown", {"udid": UDID})["isError"]
+    assert calls[-1] == ["pkill", "-f", f"idb_companion.*{UDID}"]

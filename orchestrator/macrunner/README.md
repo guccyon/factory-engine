@@ -16,6 +16,7 @@
 ```sh
 # 前提: Xcode（シミュレーターの OS を 1 つ以上）、Flutter、git。画面を押す道具には idb を足す:
 #   brew install facebook/fb/idb-companion && pip3 install --user fb-idb
+#   （idb は ~/Library/Python/<版>/bin に入る。install がそこを launchd の PATH に足す）
 cd orchestrator
 scripts/macrunner.sh install      # トークンを作り、launchd に常駐させる（install のときの PATH を渡す）
 scripts/macrunner.sh status       # 常駐・/health・足りない道具
