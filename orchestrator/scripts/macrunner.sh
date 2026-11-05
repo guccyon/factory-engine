@@ -23,7 +23,7 @@ case "${1:-status}" in
     if [ ! -s "$token_file" ]; then
       mkdir -p "$(dirname "$token_file")"
       (umask 077; "$py" -c 'import secrets; print(secrets.token_hex(32))' >"$token_file")
-      echo "トークンを作った: $token_file（.env の MAC_RUNNER_TOKEN に写す: scripts/macrunner.sh token）"
+      echo "トークンを作った: ${token_file}（.env の MAC_RUNNER_TOKEN に写す: scripts/macrunner.sh token）"
     fi
     chmod 600 "$token_file"
     # pip3 install --user fb-idb は idb を ~/Library/Python/<版>/bin に入れ、そこは普段の PATH の外。launchd に渡す PATH に足す
@@ -51,7 +51,7 @@ EOF
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
     launchctl bootstrap "gui/$(id -u)" "$plist"
     PATH="$PATH" "$py" "$runner" preflight || echo "（足りない道具があっても常駐はする。足りない道具を使うと失敗を返す）"
-    echo "常駐させた: $label（127.0.0.1:$port）"
+    echo "常駐させた: ${label}（127.0.0.1:${port}）"
     ;;
   uninstall)
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
