@@ -185,6 +185,7 @@ docker compose exec dispatcher factoryctl swap status <id>   # 段ごとの記�
   - `stuck:<id>` 打ち切りの時刻を過ぎても running のまま
   - `stall:<id>` 実行中のジョブの出力が 15 分（`WATCH_STALL_MIN`）止まっている。出力が再開するかジョブが終われば閉じる（完了まで毎周期見る）
   - `merge:<PR>` supervisor が工場はマージしない（execute=false）と記録した PR が、30 分（`WATCH_MERGE_WAIT_MIN`）マージも閉じもされない。分類は human。マージか閉じられたら閉じる
+  - `inspect:<PR>` マージを判定した最新の head に検査が積まれないまま 30 分（`WATCH_INSPECT_WAIT_MIN`）。分類は factory-bug（検査がないと検査役が承認せず、PR が同時に流す枠を塞ぐ）。検査が積まれる、head が動く、PR がマージか閉じられたら閉じる
 - 停止ではない知らせ: 投入待ちの段（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「段の残り」も下限を切ると赤くなる
 - 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
@@ -271,7 +272,7 @@ docker compose exec dispatcher factoryctl desk show 1                           
 - `supervisor.heartbeat` を出す（途絶えたら番人が停止を開く）
 - 工場の PR が `mergeable_state=clean`（CI 通過・衝突なし・ドラフトでない）になったら、変更ファイルを `definitions/change_type_rules.yaml` で変更種別に写し、製品の manifest を引いて `supervisor.merge_decided` を記録する。表が承認を求めれば PR に `factory:needs-approval`。表が auto で、かつ工場の権限（`phase_grants` の merge）も auto のときは、**検査役の承認**（下の「検査役」）が出た周期に squash でマージする（ADR 0014）。それ以外は記録だけ（shadow）
 - 検査役（ADR 0014。2026-10-31 オーナー）: 人がやる承認を委任する役で、いまは検査（inspect）と judge の組み合わせ。その head で検査と judge が終わり、judge が人に回した判断がなければ承認（`supervisor.inspector_approved`）し、表が auto の PR はその後にマージする。人に回した判断があれば停止 `judge:` を人が閉じるまで待つ。採用された指摘は差し戻しで直すのでマージは止めない（D7）。検査がなければ（`SUPERVISOR_INSPECT=0`）CI 緑で承認とみなす
-- マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。`SUPERVISOR_INSPECT=0` で止める
+- マージを判定した head ごとに検査ジョブ（kind=inspect）を積む。dispatcher がワーカーの `inspect.sh` で `core-gates/shadow_review.py`（Engine の main から毎回取る）を動かし、`gate.evaluated`（mode=shadow）と InspectionReport を残す。GitHub には書かない。同じ PR の別のジョブ（body_fix など）が動いていて積めなかったときは、次の周回で積み直す（周回ごとに試す）。`SUPERVISOR_INSPECT=0` で止める
 - 判定した PR が閉じたら `pr.merged`（誰がマージしたか）/ `pr.closed_unmerged` を記録する。判定と人の判断の一致率の材料
 - `factory:planned` の Issue の本文の「依存: #12 #13」がすべて閉じたら、優先度の高い順に `factory:implement` に替える。同時に流すのは `SUPERVISOR_MAX_INFLIGHT`（既定 1。実行中・投入済みのジョブと開いている工場の PR の合計。ただし人を待っている PR＝judge が人に回した・差し戻しを流さなかった・CI 落ち・衝突・表が承認を求めた、は数えない。2026-10-31）まで。p0 は上限を待たない。保留中は流さない
 - 自律的な再開（ADR 0011）: 停止を閉じるときは `factoryctl stoppage close <key> --woken-by pr_event|watcher|schedule|human` で、builder を起こしたものを残す（人が起こした割合が `report stoppages` に出る）。番人の通知先は `STATUS_NUMBER`（Issue でも PR でもよい。空なら factory:status の Issue）。ホストのスリープは `scripts/keep-awake.sh install` で防ぐ（launchd が常駐させ、工場のコンテナが動いている間だけ `caffeinate` でスリープを止める。止まっていれば普段どおり眠る。`uninstall` で元に戻る、`status` で確認。操業コンソールのトグル「稼働中は Mac をスリープさせない」で切り替えられる。トグルは見張りから連絡があるときだけ出る）

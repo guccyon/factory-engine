@@ -94,6 +94,8 @@ HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の he
 STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジョブの出力がこの分数止まったら停止（完了まで定期的に見る。2026-10-31 オーナー）
 LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
+INSPECT_WAIT_MIN = int(ENV.get("WATCH_INSPECT_WAIT_MIN", "30"))  # マージを判定した最新の head に検査がないまま、この分数たったら停止（rally #976）
+INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"        # supervisor と同じ値（検査を止めていれば見ない）
 DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちの段（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
@@ -1130,7 +1132,7 @@ def watch_once():
         #    judge がマージの直後に終わると、supervisor の「PR が閉じたら閉じる」をすり抜けて開いたまま残る（2026-10-31、rally #253）
         for k in stoppage.open_keys(cur, ""):
             prefix, _, url = k.partition(":")
-            if prefix not in ("judge", "sendback", "ci", "merge") or not url.startswith("https://"):
+            if prefix not in ("judge", "sendback", "ci", "merge", "inspect") or not url.startswith("https://"):
                 continue
             cur.execute("select name from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s limit 1", (url,))
             r = cur.fetchone()
@@ -1158,6 +1160,48 @@ def watch_once():
         for k in stoppage.open_keys(cur, "merge:"):
             if k not in waiting:
                 stoppage.close_stoppage(cur, k, remedy="PR がマージか閉じられた")
+
+        # 8) 検査の積み忘れ
+        inspect_missing_step(cur)
+
+
+def inspect_missing_step(cur):
+    """マージを判定した最新の head に検査（supervisor.inspect の記録）がないまま INSPECT_WAIT_MIN 分たった PR を、停止 inspect:<PR> として開く。
+    検査がないと検査役が承認せず、表が auto の PR もマージされないまま同時に流す枠を塞ぐ。supervisor が積み直すはずなので
+    分類は factory-bug（2026-11-05 rally #976: 検査を積めなかった head が積み直されず、約 6 時間半ラインが止まった）。
+    検査が積まれるか、PR の head が動くか、PR がマージか閉じられたら閉じる"""
+    if not INSPECT_ENABLED:
+        for k in stoppage.open_keys(cur, "inspect:"):
+            stoppage.close_stoppage(cur, k, remedy="検査を止めた（SUPERVISOR_INSPECT=0）")
+        return
+    cur.execute("select distinct on (payload->>'pr_url') payload->>'pr_url' as pr_url, payload->>'head_sha' as sha, occurred_at, correlation_id, "
+                "now() - occurred_at > make_interval(mins => %s) as long_wait from events "
+                "where name='supervisor.merge_decided' order by payload->>'pr_url', id desc", (INSPECT_WAIT_MIN,))
+    missing = {}
+    for d in cur.fetchall():
+        url, sha = d["pr_url"], d["sha"]
+        if not url or not sha:
+            continue
+        cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s", (url,))
+        if cur.fetchone():
+            continue
+        cur.execute("select payload->>'head_sha' as sha from events where name='pr.head_updated' and payload->>'pr_url'=%s order by id desc limit 1", (url,))
+        head = cur.fetchone()
+        if head and head["sha"] and head["sha"] != sha:
+            continue   # head が動いた。新しい head は CI が通ってから判定し直す
+        cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.inspect:{url}@{sha}",))
+        if cur.fetchone():
+            continue
+        missing[f"inspect:{url}"] = d
+    for k, d in missing.items():
+        if d["long_wait"]:
+            stoppage.open_stoppage(cur, k, "factory-bug",
+                                   f"マージを判定した head（{d['sha'][:7]}）に検査が積まれていない。検査役が承認できず、PR が同時に流す枠を塞いでいる",
+                                   waiting_for="supervisor が検査を積み直すこと（積めない理由を supervisor のログで確かめる）",
+                                   started_at=d["occurred_at"], correlation_id=d["correlation_id"])
+    for k in stoppage.open_keys(cur, "inspect:"):
+        if k not in missing:
+            stoppage.close_stoppage(cur, k, remedy="検査が積まれた、head が動いた、または PR がマージか閉じられた")
 
 
 def watch_loop():

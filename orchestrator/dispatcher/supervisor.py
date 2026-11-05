@@ -367,11 +367,14 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             log("merge decided", p["url"], d["table"], "grant", d["factory_grant"], d["change_types"])
             if DRY_RUN:
                 continue
-            enqueue_inspect(cur, p, sha)
             if d["table"] == "human_approve":
                 gh("POST", f"repos/{p['repo']}/issues/{p['number']}/labels", {"labels": [APPROVAL_LABEL]})
         elif DRY_RUN:
             continue
+        # 検査は判定の記録と切り離して周回ごとに試す（head ごとに 1 回積めば、以後は記録で素通り）。
+        # 判定を記録した周回でしか試さないと、同じ PR の別のジョブ（body_fix など）と重なって積めなかった head の検査が
+        # 二度と積まれず、検査のない PR が同時に流す枠を塞ぎ続ける（2026-11-05 rally #976、約 6 時間半ラインが止まった）
+        enqueue_inspect(cur, p, sha)
         if "knowledge" in d["change_types"]:
             enqueue_committee(cur, p, sha)   # 周回ごとに試す。同じ PR の検査ジョブが動いている間は積めない（1 PR 1 ジョブ）
         # マージは表が auto で、かつ検査役が承認してから（ADR 0014）。承認は周期ごとに見直すので、検査・judge が終わった周期でマージする
@@ -450,8 +453,9 @@ def enqueue_inspect(cur, p: dict, sha: str):
         cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','inspect') returning id",
                     (p["corr"], p["repo"], p["number"]))
     except psycopg.errors.UniqueViolation:
-        # 同じ PR のジョブ（judge・委員会など）がまだ動いている。次の周回で積み直せるよう記録を消す（judge_step と同じ）。
-        # 消さないと、この head の検査は二度と積まれず、検査役の承認が「検査待ち」のまま止まる（rally #458）
+        # 同じ PR のジョブ（judge・委員会・body_fix など）がまだ動いている。次の周回で積み直せるよう記録を消す（judge_step と同じ）。
+        # 消さないと、この head の検査は二度と積まれず、検査役の承認が「検査待ち」のまま止まる（rally #458）。
+        # 積み直しは merge_step が周回ごとに呼ぶことで行う（rally #976）
         cur.execute("delete from events where dedupe_key=%s", (f"supervisor.inspect:{p['url']}@{sha}",))
         return
     jid = cur.fetchone()["id"]
