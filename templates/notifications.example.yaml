@@ -1,0 +1,32 @@
+# 通知の出し分けの設定（ADR 0032）。製品のリポジトリの .factory-config/notifications.yaml に写して使う。
+# 工場（dispatcher）が既定ブランチの版を読み、検査を通った版を制御プレーンに写して使う。マージすれば数分で効く。
+#
+# - credential の値は書かない。secret には秘密の置き場の参照だけ（env:NAME は工場の .env の NAME）
+# - 種類（routes のキー）は Engine の definitions/notifications.yaml。出してよい組織に合わない宛先を割り当てると、版ごと拒まれる
+# - routes に書かない種類は operated_by から既定の宛先が決まる。enabled: false でいったん止められる
+# - Gen1 で使えるのは via: slack_webhook / github-issue / log と、秘密の置き場 env だけ
+
+operated_by: business_owner   # business_owner（事業主が操業も自走する）/ provider（提供元が代理で操業する）
+
+connections:
+  provider_hook:
+    party: provider           # provider（提供元）/ business_owner（事業主）
+    via: slack_webhook
+    secret: env:SLACK_WEBHOOK_URL_PROVIDER
+  owner_hook:
+    party: business_owner
+    via: slack_webhook
+    secret: env:SLACK_WEBHOOK_URL_OWNER
+
+destinations:
+  provider_ops:
+    connection: provider_hook
+  owner_dev:
+    connection: owner_hook
+    quiet: "22-7"             # 送らない時間（REPORT_TZ の時）。明けた最初の周回でまとめて送る
+    mentions:                 # 受信トレイの誰の出番かごとのメンション
+      po: "<@U0000000000>"
+
+routes:
+  request.inbox:              # 受信トレイ。事業主の判断が要る件だけが事業主の宛先に届く
+    - to: owner_dev

@@ -166,11 +166,24 @@ def _tasks(cur) -> list[dict]:
              "since": r["occurred_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1]} for r in cur.fetchall()]
 
 
+def _notify_config(cur) -> list[dict]:
+    """通知の設定（製品の .factory-config/notifications.yaml、ADR 0032）のいちばん新しい版が検査を通らなかった。前の写しのまま送っている"""
+    cur.execute("select name, occurred_at, payload from events where name in ('notify.config_changed','notify.config_rejected') order by id desc limit 1")
+    r = cur.fetchone()
+    if not r or r["name"] != "notify.config_rejected":
+        return []
+    p = r["payload"]
+    return [{"key": f"error:notify-config:{(p.get('hash') or '')[:12]}", "kind": "error", "who": "builder",
+             "title": "通知の設定が検査を通らない（前に通った設定のまま送っている）",
+             "action": "; ".join(p.get("problems") or [])[:MAX_LEN], "url": "", "since": r["occurred_at"], "ref": p.get("repo") or ""}]
+
+
 def items(cur, now: datetime | None = None) -> list[dict]:
     """人が対応するもの。待ちの長い順。1 つの集め方が失敗しても残りは返す（受信トレイが空に見えるより一部でも出す）"""
     now = now or datetime.now(timezone.utc)
     out: list[dict] = []
-    for collect in (lambda: _stoppages(cur, now), lambda: _choices(cur), lambda: _releases(cur), lambda: _tasks(cur)):
+    for collect in (lambda: _stoppages(cur, now), lambda: _choices(cur), lambda: _releases(cur), lambda: _tasks(cur),
+                    lambda: _notify_config(cur)):
         try:
             out += collect()
         except Exception as e:  # noqa: BLE001
