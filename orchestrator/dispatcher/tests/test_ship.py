@@ -27,6 +27,7 @@ def cur():
     conn = psycopg.connect(URL, row_factory=dict_row, autocommit=True)
     c = conn.cursor()
     c.execute("truncate events, artifacts, jobs, tickets restart identity cascade")
+    ship.observe_stage(c, REPO, "launch")   # 本番に出せる段階。本番を止める段階の振る舞いは下の development のテストで見る
     yield c
     conn.close()
 
@@ -127,9 +128,9 @@ def test_contract_sets_rollback_floor(cur):
     assert ship.request_rollback(cur, REPO, "prod", "t", "test")[0] is False
 
 
-def test_prod_hold_keeps_product_on_staging_only(cur, monkeypatch):
-    """1st リリース前（development）の製品は本番に出さない。承認を受け付けず、shipper も本番を起動せず、列車は staging に出し続ける（2026-11-04 オーナー）"""
-    monkeypatch.setattr(ship, "PROD_HOLD", {REPO})
+def test_development_stage_keeps_product_on_staging_only(cur, monkeypatch):
+    """development（1st リリース前）の製品は本番に出さない。承認を受け付けず、shipper も本番を起動せず、列車は staging に出し続ける（2026-11-04 オーナー）"""
+    ship.observe_stage(cur, REPO, "development")
     rid = release(cur, "0.7.0")
     deployed(cur, rid, "staging")
     ok, msg = ship.request_approve(cur, rid, "t", "test")
@@ -143,16 +144,51 @@ def test_prod_hold_keeps_product_on_staging_only(cur, monkeypatch):
     ship.handle(cur, ev)
     assert calls == []                                              # 本番は起動しない
     cur.execute("select payload from events where name='release.ship_failed'")
-    assert cur.fetchone()["payload"]["held"] is True
+    p = cur.fetchone()["payload"]
+    assert p["held"] is True and p["stage"] == "development"
     cur.execute("select count(*) as n from stoppages")
     assert cur.fetchone()["n"] == 0                                 # 意図した停止なので人には回さない
     assert ship.pending(cur) == []
 
 
-def test_prod_hold_refuses_prod_rollback(cur, monkeypatch):
-    monkeypatch.setattr(ship, "PROD_HOLD", {REPO})
+def test_development_stage_refuses_prod_rollback(cur):
+    ship.observe_stage(cur, REPO, "development")
     a, b = release(cur, "0.6.0"), release(cur, "0.7.0")
     deployed(cur, a, "prod")
     deployed(cur, b, "prod")
     ok, msg = ship.request_rollback(cur, REPO, "prod", "t", "test")
     assert ok is False and "development" in msg
+
+
+def test_stage_defaults_to_development_until_declared(cur):
+    """manifest を一度も読めていない製品・欄がない製品・知らない値は、本番を立てない development に倒す"""
+    other = "o/other"
+    assert ship.stage_of(cur, other)["stage"] == "development" and ship.stage_of(cur, other)["declared"] is None
+    assert ship.prod_held(cur, other) is True
+    assert ship.observe_stage(cur, other, None) is True                 # 欄がない
+    assert ship.stage_of(cur, other)["declared"] == "" and ship.prod_held(cur, other) is True
+    assert ship.observe_stage(cur, other, "production") is True         # 知らない値はそのまま残し、development として扱う
+    st = ship.stage_of(cur, other)
+    assert st["declared"] == "production" and st["stage"] == "development"
+
+
+def test_stage_observed_only_when_changed(cur):
+    assert ship.observe_stage(cur, REPO, "launch") is False             # fixture と同じ値は書かない
+    assert ship.observe_stage(cur, REPO, "operating") is True
+    assert ship.stage_of(cur, REPO)["operation_started"] is True
+    assert ship.observe_stage(cur, REPO, "operating") is False
+    cur.execute("select count(*) as n from events where name='product.stage_observed'")
+    assert cur.fetchone()["n"] == 2
+
+
+def test_launch_stage_ships_to_prod(cur):
+    rid = release(cur, "0.8.0")
+    deployed(cur, rid, "staging")
+    assert ship.busy(cur, REPO) is True                                 # 本番待ち
+    assert ship.request_approve(cur, rid, "t", "test")[0] is True
+
+
+def test_declared_stage_reads_both_forms():
+    assert ship.declared_stage({"product_stage": {"stage": "launch", "since": "2026-12-01"}}) == "launch"
+    assert ship.declared_stage({"product_stage": "operating"}) == "operating"
+    assert ship.declared_stage({}) is None

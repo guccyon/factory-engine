@@ -186,6 +186,8 @@ def test_held_product_is_not_waiting_for_prod(cur, monkeypatch):
     cur.execute("insert into events(name, correlation_id, payload) values ('release.created',%s,%s)",
                 (f"release:{rid}", Jsonb({"release_id": rid, "repo": "o/app", "app_version": "0.7.0", "prs": []})))
     ship.record(cur, "release.deployed", rid, {"repo": "o/app", "env": "staging", "ok": True, "request_id": 0})
+    assert inbox._releases(cur) == []                                   # 段階を読めていない製品は development に倒す
+    ship.observe_stage(cur, "o/app", "launch")
     assert [i["key"] for i in inbox._releases(cur)] == [f"release:{rid}"]
-    monkeypatch.setattr(ship, "PROD_HOLD", {"o/app"})
+    ship.observe_stage(cur, "o/app", "development")
     assert inbox._releases(cur) == []

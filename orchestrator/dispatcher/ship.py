@@ -32,15 +32,57 @@ WORK = os.environ.get("SHIP_WORKDIR", "/ship")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,40}$")
 REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested")
 RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.ship_failed")
-# 本番に出さない製品（1st リリース前の development。2026-11-04 オーナー: 本番はしばらく動かさず staging だけ）。
-# 承認を受け付けず、shipper も本番を起動しない。staging の版が本番待ちにならないので、出荷の列車は staging に出し続ける。
-# 製品の段階（development → 1st リリース後）を持つリリース管理ができるまでのつなぎ
-PROD_HOLD = {r.strip() for r in os.environ.get("SHIP_PROD_HOLD", "").split(",") if r.strip()}
-PROD_HOLD_MSG = "この製品は 1st リリース前（development）なので本番には出さない（SHIP_PROD_HOLD）"
+# 製品の段階（ADR 0028 の決定 4。definitions/product_stages.yaml の写し。このコンテナには definitions/ がないので写す。食い違いはテストで見る）。
+# 段階で出荷先が決まる。development は本番を立てない（承認を受け付けず、shipper も本番を起動しない。staging の版が本番待ちにならないので、
+# 出荷の列車は staging に出し続ける）。宣言は製品の manifest.yaml の product_stage で、supervisor が読んで product.stage_observed に残す。
+# 一度も読めていない製品は development に倒す（#160 の SHIP_PROD_HOLD を置き換えた）
+STAGES = {
+    "development": {"ja": "開発中（1st リリース前）", "ship_to": ["staging"], "operation_started": False},
+    "launch": {"ja": "公開の準備（本番を立てて、最初の利用者に出すまで）", "ship_to": ["staging", "prod"], "operation_started": False},
+    "operating": {"ja": "運用中（利用者に出した後）", "ship_to": ["staging", "prod"], "operation_started": True},
+}
+DEFAULT_STAGE = "development"
 
 
-def prod_held(repo: str) -> bool:
-    return repo in PROD_HOLD
+def declared_stage(manifest: dict) -> str | None:
+    """manifest.yaml の product_stage の値。{stage: development, ...} の形のほか、product_stage: development とだけ書いたものも読む"""
+    v = manifest.get("product_stage")
+    v = v.get("stage") if isinstance(v, dict) else v
+    return str(v) if v else None
+
+
+def stage_of(cur, repo: str) -> dict:
+    """製品のいまの段階 {stage, ja, ship_to, operation_started, declared}。declared は manifest に書かれていた値
+    （manifest を一度も読めていなければ None、欄がなければ ""。どちらも development として扱う）"""
+    cur.execute("select payload from events where name='product.stage_observed' and payload->>'repo'=%s "
+                "order by id desc limit 1", (repo,))
+    r = cur.fetchone()
+    p = r["payload"] if r else {}
+    s = p.get("stage") if p.get("stage") in STAGES else DEFAULT_STAGE
+    return {"stage": s, **STAGES[s], "declared": p.get("declared") if r else None}
+
+
+def observe_stage(cur, repo: str, stage: str | None, by: str = "supervisor") -> bool:
+    """manifest の宣言を残す。変わったときだけ書く（知らない値は development として扱い、そのまま残して人が気づけるようにする）"""
+    cur.execute("select payload->>'declared' as d from events where name='product.stage_observed' and payload->>'repo'=%s "
+                "order by id desc limit 1", (repo,))
+    r = cur.fetchone()
+    declared = stage or ""
+    if r and r["d"] == declared:
+        return False
+    effective = declared if declared in STAGES else DEFAULT_STAGE
+    cur.execute("insert into events(name, correlation_id, payload) values ('product.stage_observed',%s,%s)",
+                (f"product:{repo}", Jsonb({"repo": repo, "stage": effective, "declared": declared, "known": declared in STAGES, "by": by})))
+    return True
+
+
+def prod_held(cur, repo: str) -> bool:
+    return "prod" not in stage_of(cur, repo)["ship_to"]
+
+
+def held_msg(cur, repo: str) -> str:
+    st = stage_of(cur, repo)
+    return f"この製品は {st['stage']}（{st['ja']}）の段階なので本番には出さない（段階の切り替えは manifest.yaml の product_stage を人の承認で）"
 
 
 def now() -> datetime:
@@ -99,7 +141,7 @@ def busy(cur, repo: str) -> bool:
                 (list(REQUESTS), f"{repo}@%", list(RESULTS)))
     if cur.fetchone():
         return True
-    if prod_held(repo):
+    if prod_held(cur, repo):
         return False   # 本番に出さないので、staging の版は本番待ちにならない
     envs = status(cur, repo)["environments"]
     staged = envs.get("staging", {}).get("release_id")
@@ -127,8 +169,9 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
     st = status(cur, release_of(cur, release_id)["repo"]) if release_of(cur, release_id) else None
     if not st:
         return False, "その Release はない"
-    if prod_held(release_of(cur, release_id)["repo"]):
-        return False, PROD_HOLD_MSG
+    repo = release_of(cur, release_id)["repo"]
+    if prod_held(cur, repo):
+        return False, held_msg(cur, repo)
     staged = st["environments"].get("staging", {}).get("release_id")
     if staged != release_id:
         return False, "staging でいま確かめられている版ではない"
@@ -137,8 +180,8 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
 
 
 def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, str]:
-    if env == "prod" and prod_held(repo):
-        return False, PROD_HOLD_MSG   # 戻すのも本番を起動するので受け付けない
+    if env == "prod" and prod_held(cur, repo):
+        return False, held_msg(cur, repo)   # 戻すのも本番を起動するので受け付けない
     st = status(cur, repo)
     cur_env = st["environments"].get(env)
     if not cur_env or not cur_env.get("previous"):
@@ -295,9 +338,10 @@ def handle(cur, ev: dict):
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})
             seed_once(cur, cfg, repo, "staging", rel, common)
-        elif (name == "release.approved" or (name == "release.rollback_requested" and p.get("env") == "prod")) and prod_held(repo):
+        elif (name == "release.approved" or (name == "release.rollback_requested" and p.get("env") == "prod")) and prod_held(cur, repo):
             # 受け付けた後で止めた・直接書かれた承認も、本番は起動しない（停止には開かない。止めているのは意図どおり）
-            record(cur, "release.ship_failed", rid, {**common, "request": name, "error": PROD_HOLD_MSG, "held": True})
+            record(cur, "release.ship_failed", rid, {**common, "request": name, "error": held_msg(cur, repo), "held": True,
+                                               "stage": stage_of(cur, repo)["stage"]})
         elif name == "release.approved":
             path, _ = source(repo, rel["app_version"])
             secs = deploy(ship_config(path), path, repo, "prod", rel)

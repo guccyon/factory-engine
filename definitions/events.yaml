@@ -166,6 +166,10 @@ events:
     source: control_plane
     required: [artifact_id, category, taxonomy_version, confidence, pr_url]
     note: "ADR 0006。ワーカーの「## 仮決め」の 1 件ごと。dedupe は job と順番。中身は artifacts の Judgment"
+  product.stage_observed:
+    source: control_plane
+    required: [repo, stage, declared, known, by]
+    note: "ADR 0028 の決定 4・ADR 0012 の追記（2026-11-05）。supervisor が製品の manifest の product_stage を読み、変わったときだけ書く。stage は効いている段階（知らない値・未宣言は development）、declared は manifest に書かれていた値。最新の 1 件が今の段階"
   release.created:
     source: control_plane
     required: [release_id, repo, app_version, prs]
