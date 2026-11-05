@@ -17,7 +17,7 @@
   factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
   factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
-  factoryctl line scale [--workers N] [--tickets N] [--governance N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
+  factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
   factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
@@ -49,6 +49,10 @@
   factoryctl desk token list
   factoryctl desk token revoke <名前>
   factoryctl desk list                                     # 相談の一覧（新しい順）
+  factoryctl desk show <相談の id>                          # 会話（発言・最新の下書き・作ったチケット）
+  factoryctl desk reply <相談の id> <本文>                   # 運用主として返事・言い足しを書く（相談役が次の周回で動く）
+  factoryctl desk confirm <相談の id> <下書きの id> [--level p0..p3]   # 下書きを確認して投入する（依頼者の確認 1 回。ADR 0030 の 3）
+  factoryctl desk from-issue <owner/repo#番号>              # clarify で確定した Issue などを窓口の依頼として開き直す（相談役が下書きを出す）
 
 モードと判断（ADR 0006）:
   factoryctl mode show
@@ -84,6 +88,7 @@ Learn ループ（ADR 0013）:
 """
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -113,7 +118,7 @@ import swap
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system")
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult")
 
 
 def carried_input(cur, job_id: int, kind: str) -> dict:
@@ -471,6 +476,9 @@ def backfill_conflicts(cur, days: int) -> int:
     return 0
 
 
+OPERATOR = {"name": "factoryctl", "role": "operator", "products": []}   # factoryctl は運用主として窓口を使う
+
+
 def desk_cmd(cur, argv):
     sub = argv[2:4]
     try:
@@ -489,8 +497,38 @@ def desk_cmd(cur, argv):
             print("取り消しました" if desk.revoke_token(cur, argv[4], opt(argv, "--by", "factoryctl")) else "有効なトークンがない")
             return 0
         if sub[:1] == ["list"]:
-            for c in desk.list_conversations(cur, {"name": "factoryctl", "role": "operator", "products": []}):
-                print(f"{c['id']:>4} {c['kind']:<8} {c['state']:<17} {c['product']} {c['opened_by']} r{c['rounds']} {c['title'][:50]}")
+            for c in desk.list_conversations(cur, OPERATOR):
+                print(f"{c['id']:>4} {c['kind']:<8} {c['state']:<17} {c['product']} {c['opened_by']} r{c['rounds']} ${c['cost_usd']:.2f} {c['title'][:50]}")
+            return 0
+        if sub[:1] == ["show"] and len(argv) > 3:
+            out = desk.read_conversation(cur, OPERATOR, int(argv[3]))
+            c = out["conversation"]
+            print(f"相談 {c['id']}（{c['kind']}・{c['state']}・{c['product']}・{c['opened_by']}・往復 {c['rounds']}・${c['cost_usd']:.2f}）")
+            for m in out["messages"]:
+                print(f"\n--- {m['at'][:16]} {m['event']} {m.get('role') or ''} {m.get('kind') or ''}\n{m.get('body') or ''}".rstrip())
+            for t in out["tickets"]:
+                print(f"チケット {t['id']} {t['source_ref']} {t['state']} {t['level']} {t['title'][:50]}")
+            return 0
+        if sub[:1] == ["reply"] and len(argv) > 4:
+            desk.post_message(cur, OPERATOR, int(argv[3]), " ".join(argv[4:]))
+            print("書きました。相談役が次の周回で動きます")
+            return 0
+        if sub[:1] == ["confirm"] and len(argv) > 4:
+            desk.confirm_draft(cur, OPERATOR, int(argv[3]), int(argv[4]), level=opt(argv, "--level"))
+            print("確認しました。dispatcher が次の周回でチケットを起票します（factoryctl desk show で確かめる）")
+            return 0
+        if sub[:1] == ["from-issue"] and len(argv) > 3:
+            m = re.match(r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$", argv[3])
+            if not m:
+                print("owner/repo#番号 で渡す")
+                return 2
+            import desk_line
+            import ghapi
+
+            def gh(method, path, body=None):
+                return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+            c = desk_line.open_from_issue(cur, gh, OPERATOR, m[1], int(m[2]))
+            print(f"相談 {c['id']} として開きました。相談役が次の周回で問いか下書きを出します（factoryctl desk show {c['id']}）")
             return 0
     except desk.DeskError as e:
         print(e)
@@ -592,10 +630,11 @@ def main(argv):
         print("cancel requested" if ops.stop_job(cur, int(argv[2]), "factoryctl", opt(argv, "--reason", "")) else "job is not active")
     elif cmd == "rerun":
         job_id = int(argv[2])
-        cur.execute("select repo, issue_number, attempt, kind, ticket_id, priority, result from jobs where id=%s", (job_id,))
+        cur.execute("select correlation_id, repo, issue_number, attempt, kind, ticket_id, priority, result from jobs where id=%s", (job_id,))
         j = cur.fetchone()
         if not j:
             print("no such job"); return 1
+        corr = j["correlation_id"] if j["kind"] == "desk_consult" else f"github:{j['repo']}#{j['issue_number']}"   # 窓口の相談役は会話（desk:<id>）に積む
         # 続きのジョブ（衝突・CI 落ち・指摘・途中終了）は、続ける先（工場のブランチと PR）と合図の中身を引き継いで続きとして積み直す。
         # 引き継がないと最初からの実装になり、別のブランチで PR をもう 1 本作ってしまう
         carried = continuation.carry_over(cur, job_id) if j["kind"] == "implement" else {}
@@ -609,13 +648,13 @@ def main(argv):
         try:
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,'rerun',%s,%s,%s,%s) returning id",
-                        (f"github:{j['repo']}#{j['issue_number']}", j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"),
+                        (corr, j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"),
                          j["kind"], j["ticket_id"], j["priority"]))
         except psycopg.errors.UniqueViolation:
             print("an active job already exists for this issue"); return 1
         new_id = cur.fetchone()["id"]
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
-                    (f"github:{j['repo']}#{j['issue_number']}", new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **carried,
+                    (corr, new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **carried,
                                                                                **carried_input(cur, job_id, j["kind"])})))
         print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] + ' (' + cont['reason'] + ')' if cont else ''})")
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
@@ -643,7 +682,7 @@ def main(argv):
         if len(argv) > 2 and argv[2] == "scale":
             vals = {k: int(opt(argv, f"--{k}")) for k in line.FIELDS if opt(argv, f"--{k}") is not None}
             if not vals:
-                print("--workers・--tickets・--governance のどれかを渡す")
+                print("--workers・--tickets・--governance・--desk のどれかを渡す")
                 return 2
             try:
                 line.scale(cur, "factoryctl", opt(argv, "--reason", ""), **vals)
@@ -652,7 +691,7 @@ def main(argv):
                 return 2
         st = line.status(cur)
         d, r = st["desired"], st["running"]
-        print(f"ラインのワーカー: {r['workers']} / {d['workers']}　委員会の枠: {r['governance']} / {d['governance']}　同時に流すチケット: {'?' if r.get('tickets') is None else r['tickets']} / {d['tickets']}")
+        print(f"ラインのワーカー: {r['workers']} / {d['workers']}　委員会の枠: {r['governance']} / {d['governance']}　窓口の枠: {r['desk']} / {d['desk']}　同時に流すチケット: {'?' if r.get('tickets') is None else r['tickets']} / {d['tickets']}")
         print(f"宣言: {st['by']}{'（' + st['reason'] + '）' if st['reason'] else ''}{' ' + st['at'] if st['at'] else '（環境変数の値）'}")
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")

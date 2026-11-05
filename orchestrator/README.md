@@ -229,8 +229,13 @@ docker compose exec dispatcher factoryctl hold 12
 
 工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口（`dispatcher/desk_api.py`、http://localhost:8792）。操業コンソールより狭く、相談と、依頼者に許した範囲のチケットの操作（優先度・保留・状態）だけを受ける。API が正本で、MCP のサーバー（順番 3）はこれを呼ぶだけの包みにする。
 
-- 今入っているのは順番 1: トークンと役割（運用主・依頼者）、会話の記録（`desk_conversations` と events の `desk.*`）、明確な指示（「#812 を先に」）を壁打ちを通さずに通す優先度・保留・チケットの状態
-- 相談を開くと会話の id が返り、相手の返事は会話を読んで取る。壁打ちの相手（プランナーの相談役）は順番 2、回答役は順番 4 で入る。それまでは開いた相談は `open` のまま残り、運用主が `factoryctl desk list` で拾う
+- 順番 1: トークンと役割（運用主・依頼者）、会話の記録（`desk_conversations` と events の `desk.*`）、明確な指示（「#812 を先に」）を壁打ちを通さずに通す優先度・保留・チケットの状態
+- 順番 2（依頼の壁打ち。`dispatcher/desk_line.py`、`core-gates/desk_consult.py`、`definitions/desk.yaml`）: 依頼（`kind: request`）を開くか返事を書くと、dispatcher が相談役のジョブ（`desk_consult`）を窓口の枠で積む。相談役（工場の中のプランナー。製品の `specs/`・`docs/`・流れているチケット・開いている Issue を読むだけ）は、理由と選択肢つきの問いを 1 つ返すか（`waiting_requester`、最大 3 回）、確定した Request とタスクのまとまりの下書き（依存つき、要件 → 画面 → 契約 → 実装の順、既存のチケットとの重なり、見込み）を返す（`drafted`）。問いを使い切ったら、決まったところまでを下書きにして残りを「未確定」と書く
+- 依頼者が下書きを 1 回確認すると（`confirm`、優先度もここで決め直せる）、dispatcher が次の周回で製品の Issue として依存の順に起票する。依存のないタスクは `factory:plan`（プランナーの着手判定。ADR 0026）、あるタスクは `factory:desk-waiting` で、依存が閉じたら `factory:plan` に替わる。チケットはもとの会話（`desk_conversation_id`）と依頼者の優先度（`priority_set_by` は `desk:<名前>`）を持ち、依頼者は自分の依頼から作ったチケットの優先度・保留を変えられる
+- 直したいところは下書きに返事を書けば出し直す（古い下書きは確認できない）。確認した相談には書けない（新しく開く）
+- 窓口の枠は流量の宣言の `desk`（`factoryctl line scale --desk N`、既定 `DESK_PARALLEL=1`）。ラインの一時停止中も相談には答え、ラインのワーカーを奪わない。相談 1 件の費用は `DESK_CONSULT_MAX_USD`（既定 $2、仮置き）まで
+- 問い合わせ（`kind: inquiry`）の回答役は順番 4 で入る。それまでは開いた問い合わせは `open` のまま残り、運用主が `factoryctl desk list` で拾う
+- GitHub の Issue で clarify まで済んだ依頼（`factory:clarified`）は `factoryctl desk from-issue owner/repo#番号` で窓口の依頼として開き直せる
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
@@ -240,8 +245,13 @@ T=fdk_...   # 出たトークン
 curl -s -H "Authorization: Bearer $T" localhost:8792/api/desk/tickets/guccyon%2Frally%23900
 curl -s -H "Authorization: Bearer $T" -d '{"level":"p1","reason":"検証に使う"}' localhost:8792/api/desk/tickets/guccyon%2Frally%23900/priority
 curl -s -H "Authorization: Bearer $T" -d '{"kind":"request","product":"guccyon/rally","body":"予約まわりの通知を先に進めて"}' localhost:8792/api/desk/conversations
-curl -s -H "Authorization: Bearer $T" "localhost:8792/api/desk/conversations/1?after=0&wait=30"
+curl -s -H "Authorization: Bearer $T" "localhost:8792/api/desk/conversations/1?after=0&wait=30"   # 問いか下書きが来るまで待つ
+curl -s -H "Authorization: Bearer $T" -d '{"body":"前日の知らせのほう"}' localhost:8792/api/desk/conversations/1/messages
+curl -s -H "Authorization: Bearer $T" -d '{"draft_id":42,"level":"p1"}' localhost:8792/api/desk/conversations/1/confirm   # 下書きを確認して投入
+docker compose exec dispatcher factoryctl desk show 1                                        # 会話・下書き・作ったチケット
 ```
+
+相談役のジョブは基本のワーカーのイメージに入っている `desk_consult.sh` で動くので、順番 2 を入れるときはワーカーのイメージと dispatcher を作り直す（`build.sh`）。
 
 ## PR の見張り（ADR 0015）
 

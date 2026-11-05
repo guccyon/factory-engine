@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""事業部の窓口の API（ADR 0030 の順番 1）。工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口。
+"""事業部の窓口の API（ADR 0030 の順番 1・2）。工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口。
 
 操業コンソール（console.py）とは別のプロセスで、受けるのは相談と、依頼者に許した範囲のチケットの操作だけ（止める・承認する・流量を変えるはできない）。
-API（JSON）が正本で、MCP のサーバー（順番 3）はこれを呼ぶだけの包みにする。
+API（JSON）が正本で、MCP のサーバー（mcp_desk.py）はこれを呼ぶだけの包み。
 
 認証: Authorization: Bearer <トークン>（factoryctl desk token create で発行。役割と対象の製品を持つ）
   GET  /api/desk/me                                    トークンの名前・役割・対象の製品
@@ -11,6 +11,8 @@ API（JSON）が正本で、MCP のサーバー（順番 3）はこれを呼ぶ�
   GET  /api/desk/conversations                         自分の相談の一覧（運用主はすべて）
   GET  /api/desk/conversations/<id>?after=<id>&wait=<秒>  会話と、after より後の発言。wait（最大 60）を渡すと、新しい発言が来るまで待って返す
   POST /api/desk/conversations/<id>/messages           {"body"} 返事・言い足し
+  POST /api/desk/conversations/<id>/confirm            {"draft_id", "level"?: "p0".."p3"} 下書きを確認して投入する（依頼者の確認 1 回。ADR 0030 の 3）。
+                                                       チケットは dispatcher が次の周回で起票し、会話に「チケットを作った」の発言が付く
   POST /api/desk/conversations/<id>/close              {"reason"?}
   GET  /api/desk/tickets/<id か owner/repo#123>         チケットの状態（段・優先度・順番・作業中のジョブ・PR）
   POST /api/desk/tickets/<id か ref>/priority          {"level" か "priority", "reason"?, "conversation_id"?} 明確な指示（「#812 を先に」）は壁打ちを通さずここで即時に通す
@@ -89,6 +91,9 @@ def route(method: str, path: str, query: dict, body: dict, token: str | None, co
                     time.sleep(POLL_SEC)
             if method == "POST" and len(rest) == 3 and rest[2] == "messages":
                 desk.post_message(cur, who, cid, body.get("body"))
+                return 200, desk.read_conversation(cur, who, cid, _int(query.get("after"), "after"))
+            if method == "POST" and len(rest) == 3 and rest[2] == "confirm":
+                desk.confirm_draft(cur, who, cid, _int(body.get("draft_id"), "draft_id", -1), level=body.get("level"))
                 return 200, desk.read_conversation(cur, who, cid, _int(query.get("after"), "after"))
             if method == "POST" and len(rest) == 3 and rest[2] == "close":
                 return 200, {"conversation": desk.view_conversation(desk.close_conversation(cur, who, cid, str(body.get("reason") or "")[:500]))}

@@ -272,7 +272,7 @@ def test_line_scale_is_declared_and_followed(cur, monkeypatch):
     import line
     monkeypatch.setenv("MAX_PARALLEL", "3")
     monkeypatch.setenv("SUPERVISOR_MAX_INFLIGHT", "13")
-    assert {k: line.spec(cur)[k] for k in line.FIELDS} == {"workers": 3, "tickets": 13, "governance": 1}   # 宣言がなければ環境変数
+    assert {k: line.spec(cur)[k] for k in line.FIELDS} == {"workers": 3, "tickets": 13, "governance": 1, "desk": 1}   # 宣言がなければ環境変数
     line.scale(cur, "t", "検証のため絞る", workers=1, tickets=1)
     s = line.spec(cur)
     assert (s["workers"], s["tickets"], s["governance"], s["reason"]) == (1, 1, 1, "検証のため絞る")
@@ -282,7 +282,7 @@ def test_line_scale_is_declared_and_followed(cur, monkeypatch):
     assert line.claim_line(cur)["issue_number"] == 1
     assert line.claim_line(cur) is None                  # ワーカー 1 機が埋まっている
     assert line.claim_governance(cur)["kind"] == "case_review"   # 委員会の枠は別に数える
-    assert line.running(cur) == {"workers": 1, "governance": 1}
+    assert line.running(cur) == {"workers": 1, "governance": 1, "desk": 0}
     line.scale(cur, "t", workers=2)
     assert line.claim_line(cur)["issue_number"] == 2     # 増やせば次の取り出しから効く
     line.scale(cur, "t", workers=0)

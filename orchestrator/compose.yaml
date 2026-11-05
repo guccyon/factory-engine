@@ -51,6 +51,8 @@ services:
       # 同時実行・予算（Blueprint runtime / budgets から。実測で調整）
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}   # 委員会と知見の流れの専用の枠。ラインの枠とは別で、ラインの一時停止でも止めない（ADR 0024）
+      DESK_PARALLEL: ${DESK_PARALLEL:-1}   # 窓口の相談の専用の枠（ADR 0030 の 6）。ラインの一時停止でも相談には答える
+      DESK_CONSULT_MAX_USD: ${DESK_CONSULT_MAX_USD:-2}   # 相談 1 件の費用の上限（仮置き）。超えたら相談役を動かさない
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}   # 流量の宣言（line.scaled）がないときの既定。3 つとも同じ値を各サービスに渡す（ADR 0028）
       MAX_TURNS: ${MAX_TURNS:-40}
       TOKEN_BUDGET_PER_JOB: ${TOKEN_BUDGET_PER_JOB:-2000000}
@@ -128,6 +130,7 @@ services:
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
+      DESK_PARALLEL: ${DESK_PARALLEL:-1}
       SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
       SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}       # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
       SUPERVISOR_JUDGE: ${SUPERVISOR_JUDGE:-1}           # 検査のあと、仮決めと指摘を裁く judge のジョブを積む（ADR 0006）
@@ -173,6 +176,7 @@ services:
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
+      DESK_PARALLEL: ${DESK_PARALLEL:-1}
       WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 段の残りを赤く出す下限（dispatcher と同じ値）
       PLAN_WEEK_RESET: ${PLAN_WEEK_RESET:-sun 11:00}     # 使用量のページの契約の週の区切り（JST）
       PLAN_WEEKLY_LIMIT_USD: ${PLAN_WEEKLY_LIMIT_USD:-}  # 契約の週の上限の目安（API 単価換算）。空なら割合と見込みを出さない
