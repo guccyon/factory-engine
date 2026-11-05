@@ -11,6 +11,7 @@
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
+  POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
@@ -50,6 +51,7 @@ import ops
 import prototype
 import review_page
 import ship
+import touch
 import usage
 import usage_page
 
@@ -216,7 +218,11 @@ def releases(cur) -> list[dict]:
         cur.execute("select id, occurred_at, name, payload from events where name = any(%s) and payload->>'repo'=%s order by id desc limit 1",
                     (list(ship.RESULTS), repo))
         last = cur.fetchone()
-        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(repo),
+        t = touch.latest(cur, repo)
+        if t:   # 触れる環境の入口（URL・QR・ログインの手がかり）。QR は工場の中で作る（外部のサービスに依存しない）
+            t = {k: t.get(k) for k in ("release_id", "env", "reachable_from_phone", "accounts", "note", "at")} | {
+                "entries": [{**e, "qr_svg": touch.qr_svg(e["url"]) if e.get("qr") else None} for e in t.get("entries") or []]}
+        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(repo), "touch": t,
                     "last": {"name": last["name"], "at": iso(last["occurred_at"]), **{k: last["payload"].get(k) for k in
                              ("release_id", "env", "seconds", "from", "error")}} if last else None})
     return out
@@ -248,6 +254,9 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         if env not in ("staging", "prod"):
             return 400, {"error": "env は staging か prod"}
         ok, msg = ship.request_rollback(cur, repo, env, by, "console")
+        return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/releases/reseed":
+        ok, msg = ship.request_reseed(cur, str(body.get("repo") or ""), "staging", by, "console")
         return (200, {"message": msg}) if ok else (409, {"error": msg})
     if path == "/api/line/scale":   # ラインの流量の宣言（ADR 0028）。{workers, tickets, governance, desk} のうち渡したものだけ変える
         try:
@@ -418,7 +427,8 @@ h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;bo
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}button,select{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
 button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stops{padding:0 16px}#stops div{margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
 #ship{padding:0 16px}.rel{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
-.rel .env b{font-size:15px}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}a.btn{font-size:12px;padding:3px 10px;border-radius:6px;background:var(--ok);color:#fff;text-decoration:none}
+.rel .env b{font-size:15px}.touch{flex-basis:100%;display:flex;flex-wrap:wrap;gap:12px}.touch .e{border:1px solid var(--line);border-radius:8px;padding:8px;max-width:260px}
+.touch .e svg{display:block;width:160px;height:auto;margin-top:6px}.touch code{font-size:11px;word-break:break-all}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}a.btn{font-size:12px;padding:3px 10px;border-radius:6px;background:var(--ok);color:#fff;text-decoration:none}
 #choices{padding:0 16px}.ch{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:var(--card)}
 .opts{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin:8px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:8px}
 .opt.rec{border-color:var(--ok)}.opt img{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}.ch input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(360px,100%)}
@@ -454,14 +464,16 @@ function acts(i){let h="";
  return h?`<div class="acts">${h}</div>`:""}
 const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
- const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す"}[p.request]||p.request)).join("・")}</span>`:"";
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
   if(r.prod_held)b+=`<span class="m">本番には出さない（1st リリース前の development。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
   if(!r.prod_held&&pr.previous&&!pr.rollback_blocked)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前の版に戻す（${VER(pr.previous)} へ）</button>`;
-  if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`}
- const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
- return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
+  if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
+  if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
+ const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
 const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
@@ -509,7 +521,7 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
 document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.id==="line")return post(t.checked?"/api/factory/resume":"/api/factory/drain",{reason:"操業コンソール"});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
- if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
+ if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else if(s.dataset.ship==="reseed")post("/api/releases/reseed",{repo:s.dataset.repo});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c,note=(document.getElementById("note-"+id)||{}).value||"";
  if(b.dataset.ch==="seen")return post(`/api/choices/${id}/seen`,{reason:note});
  if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});

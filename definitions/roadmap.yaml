@@ -117,7 +117,7 @@ phases:
     items:
       - { id: mac_runner, ja: "Mac ランナーが工場から呼べる（iOS シミュレーターの起動・インストール・画面の取得・操作・ログの回収をジョブから）", measure: { manual: todo } }   # Mac 上の MCP サーバー＋常駐。対話は要らないので Remote Control ではない。Gen1 は dispatcher から直接でもよい
       - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す
-      - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { manual: todo } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env
+      - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { db: { target: 1, sql: "select count(distinct payload->>'release_id') from events where name = 'release.touchable' and (payload->>'reachable_from_phone')::boolean" } } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env。factoryctl env up（orchestrator/README の「触れる環境」）。スマートフォンから届く入口を出した Release を数える
       - id: user_story
         ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）がプランナーの出力に加わり、既存機能に 3 本以上遡って書かれた"
         measure: { github_files: { repo: guccyon/rally, path: specs/stories, target: 3 } }   # P4 typed_upstream と同じ PR で型を足す。最初の 3 本: コーチが新しい相談に返事する（rally #895）、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う

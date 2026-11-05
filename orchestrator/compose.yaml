@@ -226,6 +226,11 @@ services:
       SHIP_POLL_SEC: ${SHIP_POLL_SEC:-2}                   # Rollback の秒数に効くので短く
       SHIP_WORKDIR: /ship
       SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
+      # 触れる環境（ADR 0028 の touchable_env）。端末ごとの値なのでここには書かず .env で渡す（README の「触れる環境」）。
+      # SHIP_TOUCH_HOST はスマートフォンから届くこの機械の名前か IP（入口の URL と QR に使う）、SHIP_TOUCH_BIND は画面の待ち受け（例: 0.0.0.0）。
+      # どちらも空なら 127.0.0.1 のまま（この機械からだけ開ける）
+      SHIP_TOUCH_HOST: ${SHIP_TOUCH_HOST:-}
+      SHIP_TOUCH_BIND: ${SHIP_TOUCH_BIND:-}
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}   # 出荷の失敗を停止として知らせる先
       NOTIFIER: ${NOTIFIER:-github-issue}
     volumes:
