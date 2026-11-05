@@ -5,7 +5,7 @@
 
 集めるもの:
 - stoppage: 開いている停止のうち分類が human のもの（マージ待ち・judge が人に回した・差し戻しを流さなかった・ラインの一時停止）
-- choice: 開いている人の選択（HumanChoice。画面の案の選択・抜き取り）
+- choice: 開いている人の選択（HumanChoice。画面の案の選択・抜き取り・実装後の画面のキャプチャ）
 - release: staging で確かめた版がまだ本番に出ていない（「本番に出す」を押すのは人。ADR 0012）
 - task: 他の工程が request() で積んだ依頼（レビューページの承認待ち、着手判定で起票者に返した問いなど）。resolve() で消える
 
@@ -26,7 +26,8 @@ WHO = {
     "builder": "建設者",
     "requester": "起票者",
 }
-CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り"}   # choice.KINDS と同じ
+CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り",
+                 "exit_capture": "実装後の画面"}   # choice.KINDS と同じ
 KINDS = {"stoppage": "人の判断待ちの停止", "choice": "人の選択", "release": "本番への出荷", "task": "依頼"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
@@ -113,10 +114,13 @@ def _choices(cur) -> list[dict]:
         p = r["payload"]
         design = p.get("kind") in ("design_variants", "design_look")
         # 体験の承認は PO、見た目の判断はデザインのチーフ（ADR 0026 の 4・6。Gen1 はどちらもオーナーが兼ねる）
-        who = "po" if p.get("kind") == "design_variants" else "design_chief" if p.get("kind") in ("design_look", "concept_tone") else "owner"
+        # 実装後の画面への違和感の印（ADR 0025 の 4）は見た目の判断なのでデザインのチーフ
+        who = "po" if p.get("kind") == "design_variants" else "design_chief" if p.get("kind") in ("design_look", "concept_tone", "exit_capture") else "owner"
+        action = ("画面を見て、違和感があれば画面ごとに一言の印を付ける。なければ「見た」で閉じる" if p.get("kind") == "exit_capture" else
+                  "案を選ぶか、どれも違えば戻す" + (f"（推奨 {p['recommended']}）" if p.get("recommended") else ""))
         out.append({"key": f"choice:{r['id']}", "kind": "choice", "who": who,
                     "title": f"{CHOICE_TITLES.get(p.get('kind'), '人の選択')}: " + _clip(p.get("question"), 200),
-                    "action": "案を選ぶか、どれも違えば戻す" + (f"（推奨 {p['recommended']}）" if p.get("recommended") else ""),
+                    "action": action,
                     "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1],
                     "uxspec": (p.get("kind"), (p.get("subject") or {}).get("uxspec")) if design else None})
     return out

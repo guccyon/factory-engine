@@ -39,6 +39,7 @@ import design_line
 import design_system_line
 import planner
 import drain
+import exit_capture
 import jobdb
 import judgment
 import line
@@ -105,7 +106,9 @@ SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
 SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の入れ替えの依頼を見る間隔（ADR 0031）
-OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
+OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))
+EXIT_CAPTURE = ENV.get("EXIT_CAPTURE", "1") == "1"   # 実装後の画面のキャプチャを CI の成果物から読み、PR の本文と受信トレイに載せる（ADR 0025 の 4）。0 で止める
+EXIT_CAPTURE_INTERVAL = int(ENV.get("EXIT_CAPTURE_INTERVAL_SEC", "300"))   # 見に行く間隔（状態の取得は ETag つき）。仮置き   # 停止・割り込みを見る間隔（トークンを使わない）
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
 store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV["OBJECTSTORE_ACCESS_KEY"], secret_key=ENV["OBJECTSTORE_SECRET_KEY"], secure=False)
@@ -288,7 +291,24 @@ def poll_loop():
                     design_line.apply_looks(cur, gh, comment)   # 実装に渡した後に選ばれた見た目（ADR 0026 の決定 4）
             except Exception as e:  # noqa: BLE001
                 log("design choice apply failed", repr(e))
+            capture_tick()
         time.sleep(POLL_INTERVAL)
+
+
+_capture_checked_at = 0.0
+
+
+def capture_tick():
+    """実装後の画面のキャプチャを読む（ADR 0025 の 4）。EXIT_CAPTURE_INTERVAL ごとに 1 回"""
+    global _capture_checked_at
+    if not EXIT_CAPTURE or time.time() - _capture_checked_at < EXIT_CAPTURE_INTERVAL:
+        return
+    _capture_checked_at = time.time()
+    try:
+        with db() as conn, conn.cursor() as cur:
+            exit_capture.step(cur, gh, lambda repo, aid: exit_capture.download_artifact(repo, aid, GH_TOKEN), store_put, REPOS, log=log)
+    except Exception as e:  # noqa: BLE001
+        log("exit capture failed", repr(e))
 
 
 # ------------------------------------------------------------------ ワーカーの実行

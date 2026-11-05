@@ -485,7 +485,19 @@ events:
   taste.flagged:
     source: control_plane
     required: [artifact_id, kind, option, note, signature, subject, by]
-    note: "違和感の印。教師信号 taste_flag（learning.yaml）の発生源。signature は taste:<一言を詰めて 40 字>（仮。言語化の候補への寄せは learn が後で行う）"
+    note: "違和感の印。教師信号 taste_flag（learning.yaml）の発生源。signature は taste:<一言を詰めて 40 字>（仮。言語化の候補への寄せは learn が後で行う）。option_label・option_note は印を付けた画面（案）の名前と説明"
+  choice.seen:
+    source: control_plane
+    required: [artifact_id, kind, by, flagged, unflagged, subject, note]
+    note: "ADR 0025 の 4。人が実装後の画面（exit_capture）を見て閉じた。unflagged は印を付けなかった画面（違和感のなかった画面。taste_flag の負例の材料）"
+  choice.closed:
+    source: control_plane
+    required: [artifact_id, kind, status, by, reason]
+    note: "人を待たずに工場が依頼を閉じた（status: superseded＝新しい head のキャプチャで置き換わった、expired＝期限）。人の判断ではないので一致率に数えない"
+  capture.collected:
+    source: control_plane
+    required: [pr_url, head_sha, app]
+    note: "ADR 0025 の 4。工場の PR の head の「画面のキャプチャ / <アプリ>」の状態から CI の成果物（manifest.json と画像）を読んだ（exit_capture.py）。screens は変わった・新しい・消えた画面、choice_id は受信トレイに出した実装後の画面の依頼（変わった画面がなければ null）。成果物が読めなければ error。PR・head・アプリごとに 1 回（dedupe_key）"
   inbox.requested:
     source: control_plane
     required: [key, kind, who, title, url, action, by]
