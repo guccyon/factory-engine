@@ -470,7 +470,7 @@ const dur=s=>s==null?"":s<60?s+"秒":s<3600?Math.floor(s/60)+"分":Math.floor(s/
 const link=(u,t)=>u&&/^https:\/\//.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);
 function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3000)}
 async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body||{})});
- const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));load()}
+ const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&path.startsWith("/api/choices/"))force=true;load()}
 function acts(i){let h="";
  if(i.ticket_id&&["waiting","ready","queued","running"].includes(i.stage)){
   h+=`<select data-t="${i.ticket_id}" aria-label="優先度">`+Object.entries(levels).map(([k,v])=>`<option value="${k}" ${k===i.level?"selected":""}>${k} ${esc(v.name)}</option>`).join("")+`</select>`;
@@ -527,24 +527,29 @@ function scaleView(sc,l){if(!sc)return"";const d=sc.desired,r=sc.running,n=(v)=>
  return `<span class="stat ${paused?"bad":""}" title="流量（いま / 宣言）。${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b> · 窓口 <b>${n(r.desk)} / ${d.desk}</b></span>`}
 function lineView(l){if(!l)return"";const w=[l.running.length?`実行中 ${l.running.length} 件の終わり待ち`:"",l.shipping.length?`出荷 ${l.shipping.length} 件の処理待ち`:""].filter(Boolean).join("・");
  return `<label class="stat sw ${l.draining&&!l.ready?"bad":""}" title="オフにすると順番待ちを取り出さない（実行中のジョブは最後まで流す）。工場の入れ替えのとき">ライン <input type="checkbox" role="switch" id="line" ${l.draining?"":"checked"}><b class="${l.draining?"":"on"}">${l.draining?(l.ready?"一時停止中（入れ替えてよい）":"一時停止中（"+w+"）"):"流している"}</b></label>`}
-async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
+// 周回の描き直しは中身が変わった区画だけ（同じ HTML を入れ直すと画像が読み直され、高さが変わってスクロールが飛ぶ）
+const put=(id,h)=>{const e=document.getElementById(id);if(e&&e._h!==h){e._h=h;e.innerHTML=h}};
+let force=false;
+async function load(){if(document.hidden&&!force)return;let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
  levels=s.levels;const f=s.factory;const hb=f.heartbeat_age_sec;
- document.getElementById("hdr").innerHTML=[
+ put("hdr",[
   `<span class="stat ${hb==null||hb>180?"bad":""}">工場長 <b>${hb==null?"未起動":hb>180?dur(hb)+"前に停止":"動いている"}</b></span>`,
   `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
   scaleView(f.scale,f.line),
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
   `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="投入待ちの段（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">段の残り <b>${f.planned}</b></span>`,
   lineView(f.line),
-  f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" ");
- document.getElementById("ship").innerHTML=shipView(s.releases||[]);
- document.getElementById("runners").innerHTML=pairsView(s.runner_pairs||[])+runnersView(s.runners||[]);
+  f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" "));
+ put("ship",shipView(s.releases||[]));
+ put("runners",pairsView(s.runner_pairs||[])+runnersView(s.runners||[]));
  const ib=s.inbox||{count:0,items:[]},bell=document.getElementById("bell");document.getElementById("bell-n").textContent=ib.count;bell.classList.toggle("has",ib.count>0);
- bell.setAttribute("aria-label",`受信トレイ ${ib.count} 件`);document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";document.getElementById("inbox").innerHTML=inboxView(ib);
- const ce=document.getElementById("choices"),typing=ce.contains(document.activeElement);if(!typing)ce.innerHTML=choicesView(s.choices||[]);
- document.getElementById("stops").innerHTML=f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("");
- document.getElementById("lanes").innerHTML=LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
-  return `<section class="lane"><h2><span>${n}</span><span>${xs.length}</span></h2>${xs.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")}
+ bell.setAttribute("aria-label",`受信トレイ ${ib.count} 件`);document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";put("inbox",inboxView(ib));
+ // 一言を書きかけ（どこかの欄に文字がある・欄を触っている）の間は人の選択を描き直さない。送った後（force）だけ描き直す
+ const ce=document.getElementById("choices"),busy=ce.contains(document.activeElement)||[...ce.querySelectorAll("input")].some(i=>i.value.trim());
+ if(!busy||force)put("choices",choicesView(s.choices||[]));force=false;
+ put("stops",f.open_stoppages.map(x=>`<div>止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join(""));
+ put("lanes",LANES.map(([k,n])=>{const xs=s.items.filter(i=>i.stage===k);
+  return `<section class="lane"><h2><span>${n}</span><span>${xs.length}</span></h2>${xs.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join(""))}
 document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.id==="line")return post(t.checked?"/api/factory/resume":"/api/factory/drain",{reason:"操業コンソール"});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
@@ -565,7 +570,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]")
 document.getElementById("bell").addEventListener("click",()=>{const p=document.getElementById("inbox"),b=document.getElementById("bell");p.hidden=!p.hidden;b.setAttribute("aria-expanded",String(!p.hidden));
  try{localStorage.setItem("inbox-open",p.hidden?"0":"1")}catch(e){}});
 try{if(localStorage.getItem("inbox-open")==="1"){document.getElementById("inbox").hidden=false;document.getElementById("bell").setAttribute("aria-expanded","true")}}catch(e){}
-load();setInterval(load,10000);
+load();setInterval(load,10000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
 </script></body></html>"""
 
 
