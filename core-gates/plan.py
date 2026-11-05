@@ -195,7 +195,7 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
             "prompt": PROMPT_VERSION}
 
 
-PROMPT_VERSION = "4"   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "5"   # 問いの文を変えたら上げる（判断の入力の版として残す）
 
 
 def phase_note(inp: dict) -> str:
@@ -260,7 +260,7 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
   工場はこれを、同時に流しているタスクとの衝突を避ける並べ方に使う（ADR 0027 の 2）
 - size: 実装役に回す仕事の大きさ（経路に implement があるときは必ず書く）。layers は触る層（{layers}）、
   turns_band は実装役の見込みのターンの帯（{bands}）、basis は見積もりの根拠（sizes.md の実績の表の、似た層の組の行と過去のチケット）
-- 切る基準: 実装役に回す仕事が、層 {sp['min_layers']} つ以上（docs・other は数えない）・変わる見込みのファイルが {sp['max_files']} を超える・帯が {sp['max_turns']} ターンを超える
+- 切る基準: 実装役に回す仕事が、層 {sp['min_layers']} つ以上（docs・other は数えない。契約から生成した型は contract、試験や画面の撮影の値を合わせるだけの層は layers に入れない）・変わる見込みのファイルが {sp['max_files']} を超える・帯が {sp['max_turns']} ターンを超える
   のどれかに当たるなら、tasks にタスクのまとまりを書く。1 件は 1 つの層とその契約、{sp['max_files']} ファイル・{sp['max_turns']} ターンまでを目安にする。
   key は t1, t2, … 、kind は {kinds} から、depends_on で依存を付ける（契約 → backend → 画面 の順）。やること（do）と受け入れ条件（acceptance）は
   もとのチケットの範囲を分けて書き、全体で漏れがないようにする。プロダクトデザイナーかデザインシステムのデザイナーが実装役の前にいるときは、

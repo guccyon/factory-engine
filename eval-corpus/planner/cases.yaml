@@ -263,11 +263,9 @@ cases:
     - contract
     - docs
     - backend
-    - web
     counted_layers:
     - contract
     - backend
-    - web
     turns: 41
   expected:
     split: false
@@ -278,7 +276,7 @@ cases:
     route:
     - implement
   confirmed: false
-  note: 契約と backend のチケット。admin-web は生成した型（schema.ts）と試験の値の追従だけで、1 件のまま 41 ターンで終わった。正解は切らない。規則（数える層 3）をそのまま当てると web が数えられて切る側になる。生成した型と追従だけの変更を層に数えるかはオーナーの確認待ち
+  note: 契約と backend のチケット。admin-web は契約から生成した型（schema.ts）だけが変わり、層の決め方では contract に入る（2026-11-05 オーナー決定）。1 件のまま 41 ターンで終わった
 - id: rally-881
   issue: 881
   title: 'D314: 本部が生徒の一覧を返却待ちの動画のある生徒だけに絞り込める（backend と契約）'
@@ -337,11 +335,9 @@ cases:
     - contract
     - docs
     - backend
-    - web
     counted_layers:
     - contract
     - backend
-    - web
     turns: 3
   expected:
     split: false
@@ -352,7 +348,7 @@ cases:
     route:
     - implement
   confirmed: false
-  note: '#883 と同じ形（契約・backend・生成した型の追従）。正解は切らない。turns 3 は費用 $2.72 に比べて少なく、記録が実際のターンを表していない疑いがある（帯は S のまま）'
+  note: '#883 と同じ形（契約・backend・生成した型）。turns 3 は費用 $2.72 に比べて少なく、記録が実際のターンを表していない疑いがある（帯は S のまま）'
 - id: rally-896
   issue: 896
   title: 本部の一覧の表が細い枠に押し込まれ、文字が折り返して列がくっつく
@@ -562,8 +558,8 @@ cases:
     route:
     - implement
   confirmed: false
-  note: 不具合の直し。契約の enum を足し、backend と admin-web の画面（SlotSupplyReport.tsx）まで変わるので層は本当に 3 つ。それでも 16 ファイル・費用 $2.03 で 1 件のまま終わったので、正解は切らない。層の数だけで切ると切りすぎになる例。turns
-    2 は記録の疑いがある
+  note: 不具合の直し。契約の enum を足し、backend と admin-web の画面（SlotSupplyReport.tsx）まで変わるので層は本当に 3 つで、規則では切る。それでも 16 ファイル・費用 $2.03 で
+    1 件のまま終わったので、正解は切らない。層の数だけで切ると切りすぎになる例として残す。turns 2 は記録の疑いがある
 - id: rally-898
   issue: 898
   title: 本部の画面で「ライブレッスン」と「通話」の呼び方が混ざっている
@@ -934,11 +930,10 @@ cases:
     - contract
     - docs
     - backend
-    - web
+    - other
     counted_layers:
     - contract
     - backend
-    - web
     turns: 36
   expected:
     split: false
@@ -949,4 +944,4 @@ cases:
     route:
     - implement
   confirmed: false
-  note: 契約と backend のチケット。admin-web は生成した型・画面の撮影の値・試験の値の追従だけで、1 件のまま 36 ターンで終わった（取り込みのジョブは除く）。正解は切らない
+  note: 契約と backend のチケット。admin-web は生成した型と、試験・画面の撮影の値の追従だけで、その層は数えない（2026-11-05 オーナー決定）。1 件のまま 36 ターンで終わった（取り込みのジョブは除く）

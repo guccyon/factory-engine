@@ -23,12 +23,13 @@ from psycopg.types.json import Jsonb
 from globmatch import glob_re
 
 LAYERS = [("db", ["**/migrations/**"]),
-          ("contract", ["specs/contracts/**"]),
+          ("contract", ["specs/contracts/**", "**/src/api/schema.ts"]),
           ("docs", ["specs/**", "docs/**", "changelog.d/**", "**/*.md"]),
           ("backend", ["apps/backend/**", "backend/**", "server/**"]),
           ("web", ["apps/*-web/**", "web/**"]),
           ("mobile", ["apps/*-app/**", "mobile/**"])]
 UNCOUNTED_LAYERS = ("docs", "other")
+FOLLOW_GLOBS = ["**/tests/**", "**/test/**", "**/screenshots/**", "**/*.test.*", "**/*_test.*"]
 SPLIT = {"min_layers": 3, "max_files": 30, "max_turns": 60}
 MIN_TURNS = 10
 BANDS = {"S": 30, "M": 60, "L": 90}
@@ -40,6 +41,7 @@ MAX_FILE_PAGES = 30     # PR のファイルの一覧は 100 件ずつ。GitHub 
 PR_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)")
 
 _COMPILED = [(layer, [glob_re(g) for g in globs]) for layer, globs in LAYERS]
+_FOLLOW = [glob_re(g) for g in FOLLOW_GLOBS]
 
 
 # ------------------------------------------------------------------ 決定的な部品
@@ -50,9 +52,14 @@ def layer_of(path: str) -> str:
     return "other"
 
 
+def is_follow(path: str) -> bool:
+    return any(p.match(path) for p in _FOLLOW)
+
+
 def layers_of(files: list[str]) -> list[str]:
-    """変わったファイルの層（重なりなし、LAYERS の順）"""
-    seen = {layer_of(f) for f in files}
+    """変わったファイルの層（重なりなし、LAYERS の順）。追従のファイル（試験・撮影の値）しか変わらない層は other に寄せる"""
+    own = {layer_of(f) for f in files if not is_follow(f)}
+    seen = {l if l in own else "other" for l in (layer_of(f) for f in files)}
     return [l for l, _ in LAYERS if l in seen] + (["other"] if "other" in seen else [])
 
 
