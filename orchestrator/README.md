@@ -358,6 +358,15 @@ docker compose exec supervisor python /health/daily/status_report.py --dry-run  
 docker compose exec supervisor python /health/daily/status_report.py --publish --force   # 今日の分を出し直す
 ```
 
+## Mac ランナー（ADR 0028 の決定 3）
+
+iOS シミュレーターを工場から動かすための、ホスト（macOS）の常駐プロセス。工場のコンテナからは `host.docker.internal:8793` に MCP で話す。道具は決まった一覧だけで、ビルドはマージ済みのコミットだけ。入れ方・道具・守りは [macrunner/README.md](macrunner/README.md)。
+
+```bash
+scripts/macrunner.sh install                               # ホストで。トークンを .env の MAC_RUNNER_TOKEN に写す（scripts/macrunner.sh token）
+docker compose exec dispatcher factoryctl runner check     # 届くか: health・MCP・道具・端末
+```
+
 ## ジョブ用の DB
 
 dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<id>` を作り、ワーカーに `DATABASE_URL` で渡す（終了時に落とす）。ワーカーは自前で DB を立てずに DB のテストを動かせる。`JOB_DB_ENABLED=0` で止められる。

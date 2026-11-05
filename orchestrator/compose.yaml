@@ -106,6 +106,11 @@ services:
       SWAP_ENABLED: ${SWAP_ENABLED:-1}
       SWAP_ROOT: ${SWAP_ROOT:-}
       SWAP_EXTRA_MOUNTS: ${SWAP_EXTRA_MOUNTS:-}
+      # Mac ランナー（ADR 0028 の決定 3）。ホストに scripts/macrunner.sh install で常駐させ、トークンを .env に写す。空なら Mac ランナーを使わない
+      MAC_RUNNER_URL: ${MAC_RUNNER_URL:-http://host.docker.internal:8793}
+      MAC_RUNNER_TOKEN: ${MAC_RUNNER_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Docker Desktop では元からある。Linux の Docker でも同じ名前でホストに届くように
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
