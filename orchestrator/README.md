@@ -396,11 +396,11 @@ docker compose exec supervisor python /health/daily/status_report.py --publish -
 
 ## Mac ランナー（ADR 0028 の決定 3）
 
-iOS シミュレーターを工場から動かすための、ホスト（macOS）の常駐プロセス。工場のコンテナからは `host.docker.internal:8793` に MCP で話す。道具は決まった一覧だけで、ビルドはマージ済みのコミットだけ。入れ方・道具・守りは [macrunner/README.md](macrunner/README.md)。
+iOS シミュレーターを工場から動かすための、macOS の常駐プロセス（何台でも）。ランナーは工場のランナーの窓口（compose の `runner-gate`、:8794）へ TLS で仕事を取りに行き、工場とはペアリングで繋ぐ（ADR 0033）。道具は決まった一覧だけで、ビルドはマージ済みのコミットだけ。入れ方・道具・守りは [macrunner/README.md](macrunner/README.md)。
 
 ```bash
-scripts/macrunner.sh install                               # ホストで。トークンを .env の MAC_RUNNER_TOKEN に写す（scripts/macrunner.sh token）
-docker compose exec dispatcher factoryctl runner check     # 届くか: health・MCP・道具・端末
+scripts/macrunner.sh install                               # Mac で。6 桁の番号が出るので、操業コンソールで同じ番号の依頼を「許可」して y
+docker compose exec dispatcher factoryctl runner check     # 届くか: 窓口・ペアリング済みの台数・道具・端末
 ```
 
 ## ジョブ用の DB

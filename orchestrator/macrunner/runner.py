@@ -2,37 +2,42 @@
 """Mac ランナー（ADR 0028 の決定 3、P5a の mac_runner）。
 
 工場の外の機械（macOS のホスト）で常駐し、iOS シミュレーターの操作を決まった道具だけで工場に貸す。
-工場のコンテナ（dispatcher・QA のワーカー）からは host.docker.internal 越しに MCP（Streamable HTTP の JSON 応答）で呼ぶ。
+ランナーは待ち受けない。工場のランナーの窓口（dispatcher/runner_gate.py）へ TLS で仕事を取りに行き、結果を返す（ADR 0033）。
 
 - 道具は決まった一覧だけ（下の TOOLS）。任意のシェルは受けない。引数は形を確かめ、サブプロセスは argv の配列で呼ぶ（シェルを通さない）
-- 認証はトークン（Authorization: Bearer）。トークンは install のときに作って ~/.config/factory/macrunner.token（0600）に置く
+- 工場とはペアリングで繋ぐ（工場の「許可」と Mac の「y」。両側に同じ 6 桁の番号を出す）。受け取った鍵と窓口の証明書の指紋は
+  ~/.config/factory/macrunner.json（0600）に置き、その窓口とだけ話す
 - ビルドするのは許したリポジトリの、既定ブランチに入った（マージ済みの）コミットだけ。ビルドは製品のコードをホストで動かすので、
   検査と judge を通る前のコードは受けない（外す設定は置かない）
 - 操作できるアプリは許したアプリだけ、開ける URL は許したホストの http(s) と許したスキームだけ（範囲の宣言は SCOPE.md と SCOPE）
-- 1 分ごとに操業コンソールへ連絡し（登録済みのランナーの一覧）、外す依頼があれば自分の LaunchAgent を外して止まる
+- 外す依頼が来たら、鍵を捨て、自分の LaunchAgent を外して止まる
 - 呼ばれた道具は ~/Library/Logs/factory-macrunner/calls.jsonl に 1 行ずつ残す（入力する文字は長さだけ）
 - 対話は要らないので Remote Control ではない。macOS 標準の python3（3.9）で動くよう標準ライブラリだけで書く
 
 使い方（ホストで）:
-  python3 runner.py serve           前面で動かす（launchd が呼ぶもの）
-  ../scripts/macrunner.sh install   ログインのたびに launchd が常駐させる
+  python3 runner.py pair            ペアリングする（対話。install が呼ぶ）
+  python3 runner.py serve           窓口へ取りに行き続ける（launchd が呼ぶもの）
+  python3 runner.py bye             Mac 側で外したことを窓口に知らせ、鍵を捨てる（uninstall が呼ぶ）
+  ../scripts/macrunner.sh install   ペアリングして、ログインのたびに launchd が常駐させる
 """
 import base64
+import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.2.0"
-PROTOCOL_VERSION = "2025-06-18"
+VERSION = "0.3.0"
 HOME = os.path.expanduser("~")
 
 
@@ -44,9 +49,9 @@ def config():
     """設定は環境変数から（launchd の plist が渡す）。"""
     root = env("MAC_RUNNER_HOME", os.path.join(HOME, "Library", "Application Support", "factory-macrunner"))
     return {
-        "host": env("MAC_RUNNER_BIND", "127.0.0.1"),
-        "port": int(env("MAC_RUNNER_PORT", "8793")),
-        "token_file": env("MAC_RUNNER_TOKEN_FILE", os.path.join(HOME, ".config", "factory", "macrunner.token")),
+        # 工場のランナーの窓口（ADR 0033）。ペアリングのときに使い、鍵と一緒に覚える
+        "gate": env("MAC_RUNNER_GATE", "https://127.0.0.1:8794"),
+        "cred_file": env("MAC_RUNNER_CRED_FILE", os.path.join(HOME, ".config", "factory", "macrunner.json")),
         "root": root,
         "log_dir": env("MAC_RUNNER_LOG_DIR", os.path.join(HOME, "Library", "Logs", "factory-macrunner")),
         # ビルドしてよいアプリ: <owner/repo>:<リポジトリの中のパス>:<bundle id> をカンマ区切り
@@ -54,9 +59,6 @@ def config():
         # 開ける URL: このホストの http(s)（触れる環境）と、このスキーム（アプリのディープリンク）だけ
         "url_hosts": [h.strip() for h in env("MAC_RUNNER_URL_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()],
         "url_schemes": [x.strip() for x in env("MAC_RUNNER_URL_SCHEMES", "").split(",") if x.strip()],
-        # 登録済みのランナーの一覧（操業コンソール）へ連絡する先。空で連絡しない
-        "console": env("MAC_RUNNER_CONSOLE_URL", "http://127.0.0.1:8790").rstrip("/"),
-        "checkin_sec": int(env("MAC_RUNNER_CHECKIN_SEC", "60")),
         "label": env("MAC_RUNNER_LABEL", "local.factory.macrunner"),
         "plist": env("MAC_RUNNER_PLIST", os.path.join(HOME, "Library", "LaunchAgents", "local.factory.macrunner.plist")),
         "flutter": env("MAC_RUNNER_FLUTTER", "flutter"),
@@ -536,104 +538,6 @@ def redact(name, args):
     return out
 
 
-# ---- MCP（Streamable HTTP。応答は JSON で返し、SSE は使わない） ----
-
-def handle_rpc(runner, msg, log):
-    """JSON-RPC の 1 通を処理する。通知（id なし）には None を返す。"""
-    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
-        return rpc_error(None, -32600, "Invalid Request")
-    mid, method, params = msg.get("id"), msg["method"], msg.get("params") or {}
-    if mid is None:
-        return None
-    if method == "initialize":
-        return rpc_ok(mid, {"protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
-                            "capabilities": {"tools": {"listChanged": False}},
-                            "serverInfo": {"name": "factory-macrunner", "version": VERSION},
-                            "instructions": SCOPE_SUMMARY + "。iOS シミュレーターを動かす Mac ランナー。sim_devices → sim_boot → app_build → build_status → app_install → app_launch → screenshot / ui_* の順に使う"})
-    if method == "ping":
-        return rpc_ok(mid, {})
-    if method == "tools/list":
-        return rpc_ok(mid, {"tools": TOOLS})
-    if method == "tools/call":
-        name, args = params.get("name"), params.get("arguments") or {}
-        started = time.time()
-        try:
-            content, is_error = runner.call(name, args), False
-        except ToolError as e:
-            content, is_error = [{"type": "text", "text": str(e)}], True
-        log({"at": now(), "tool": name, "args": redact(name, args), "error": is_error,
-             "ms": int((time.time() - started) * 1000)})
-        return rpc_ok(mid, {"content": content, "isError": is_error})
-    return rpc_error(mid, -32601, f"Method not found: {method}")
-
-
-def rpc_ok(mid, result):
-    return {"jsonrpc": "2.0", "id": mid, "result": result}
-
-
-def rpc_error(mid, code, message):
-    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
-
-
-def read_token(path):
-    with open(path, encoding="utf-8") as f:
-        tok = f.read().strip()
-    if len(tok) < 32:
-        raise SystemExit(f"{path} のトークンが短い（install で作り直す）")
-    return tok
-
-
-def make_handler(runner, token, log):
-    class Handler(BaseHTTPRequestHandler):
-        server_version = "factory-macrunner/" + VERSION
-
-        def log_message(self, fmt, *args):   # 標準のアクセスログは出さない（calls.jsonl に残す）
-            pass
-
-        def authorized(self):
-            got = self.headers.get("Authorization", "")
-            return got.startswith("Bearer ") and hmac.compare_digest(got[7:].encode(), token.encode())
-
-        def reply(self, code, body=None, ctype="application/json"):
-            data = b"" if body is None else (json.dumps(body, ensure_ascii=False).encode() if not isinstance(body, bytes) else body)
-            self.send_response(code)
-            if data:
-                self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def do_GET(self):
-            if self.path == "/health":   # 生きているかだけ（道具の一覧や端末は出さない）
-                return self.reply(200, {"ok": True, "version": VERSION})
-            if self.path == "/mcp":
-                return self.reply(405)   # サーバーからの SSE は使わない
-            return self.reply(404)
-
-        def do_DELETE(self):
-            return self.reply(405)
-
-        def do_POST(self):
-            if self.path != "/mcp":
-                return self.reply(404)
-            if not self.authorized():
-                return self.reply(401, {"error": "unauthorized"})
-            n = int(self.headers.get("Content-Length") or 0)
-            if n > 1_000_000:
-                return self.reply(413)
-            try:
-                msg = json.loads(self.rfile.read(n) or b"null")
-            except ValueError:
-                return self.reply(400, rpc_error(None, -32700, "Parse error"))
-            if isinstance(msg, list):
-                out = [r for r in (handle_rpc(runner, m, log) for m in msg) if r is not None]
-                return self.reply(200, out) if out else self.reply(202)
-            res = handle_rpc(runner, msg, log)
-            return self.reply(202) if res is None else self.reply(200, res)
-
-    return Handler
-
-
 def make_log(log_dir):
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, "calls.jsonl")
@@ -656,24 +560,99 @@ def preflight(cfg):
     return notes
 
 
-def runner_id(cfg):
-    """この機械のランナーの id（初めて動いたときに作り、置き場に残す）。登録済みのランナーの一覧の鍵。"""
-    path = os.path.join(cfg["root"], "runner.id")
+# ---- 工場のランナーの窓口との話（ADR 0033。ランナーは待ち受けず、窓口へ取りに行く） ----
+
+def execute(runner, name, args, log):
+    """窓口から来た道具の呼び出しを 1 つ動かす。返り値は {content, isError}。"""
+    started = time.time()
     try:
-        with open(path, encoding="utf-8") as f:
-            rid = f.read().strip()
-        if re.match(r"^[0-9a-f]{32}$", rid):
-            return rid
+        content, is_error = runner.call(name, args if isinstance(args, dict) else {}), False
+    except ToolError as e:
+        content, is_error = [{"type": "text", "text": str(e)}], True
+    log({"at": now(), "tool": name, "args": redact(name, args), "error": is_error, "ms": int((time.time() - started) * 1000)})
+    return {"content": content, "isError": is_error}
+
+
+def sas(runner_nonce, gate_nonce, fingerprint):
+    """両側に出す 6 桁の番号（dispatcher/runner_gate.py の sas と同じ計算）。"""
+    d = hashlib.sha256(b"factory-pair\0" + bytes.fromhex(runner_nonce) + bytes.fromhex(gate_nonce) + bytes.fromhex(fingerprint)).digest()
+    n = int.from_bytes(d[:4], "big") % 1000000
+    return "%03d %03d" % (n // 1000, n % 1000)
+
+
+def sign(key, ts, path, body):
+    return hmac.new(bytes.fromhex(key), ("%s\n%s\n" % (ts, path)).encode() + body, hashlib.sha256).hexdigest()
+
+
+class GateError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+class Gate:
+    """窓口への TLS の接続。ペアリングで覚えた証明書の指紋とだけ話す（ペアリングの前は、相手の指紋を番号に混ぜて人が確かめる）。"""
+
+    def __init__(self, url, fingerprint=None, timeout=40):
+        u = urllib.parse.urlsplit(url)
+        if u.scheme != "https" or not u.hostname:
+            raise SystemExit(f"窓口の URL は https://ホスト:ポート（{url}）")
+        self.host, self.port, self.fp, self.timeout = u.hostname, u.port or 8794, fingerprint, timeout
+        self.seen_fp = None
+
+    def post(self, path, obj, cred=None):
+        body = json.dumps(obj).encode()
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE   # 自分用の証明書なので CA では確かめず、指紋で確かめる（下）
+        conn = http.client.HTTPSConnection(self.host, self.port, context=ctx, timeout=self.timeout)
+        try:
+            conn.connect()
+            self.seen_fp = hashlib.sha256(conn.sock.getpeercert(binary_form=True)).hexdigest()
+            if self.fp and not hmac.compare_digest(self.seen_fp, self.fp):
+                raise GateError(0, "窓口の証明書がペアリングのときと違う。話さない（ペアリングし直す）")
+            headers = {"Content-Type": "application/json"}
+            if cred:
+                ts = str(int(time.time()))
+                headers.update({"X-Runner-Id": cred["runner_id"], "X-Runner-Ts": ts, "X-Runner-Sig": sign(cred["key"], ts, path, body)})
+            conn.request("POST", path, body=body, headers=headers)
+            r = conn.getresponse()
+            data = r.read()
+            try:
+                out = json.loads(data or b"{}")
+            except ValueError:
+                out = {}
+            if r.status != 200:
+                raise GateError(r.status, out.get("error") or f"窓口が {r.status} を返した")
+            return out
+        finally:
+            conn.close()
+
+
+def load_cred(cfg):
+    try:
+        with open(cfg["cred_file"], encoding="utf-8") as f:
+            c = json.load(f)
+        return c if all(k in c for k in ("runner_id", "key", "fingerprint", "gate")) else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_cred(cfg, cred):
+    os.makedirs(os.path.dirname(cfg["cred_file"]), exist_ok=True)
+    fd = os.open(cfg["cred_file"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(cred, f)
+
+
+def drop_cred(cfg):
+    try:
+        os.unlink(cfg["cred_file"])
     except OSError:
         pass
-    os.makedirs(cfg["root"], exist_ok=True)
-    rid = uuid.uuid4().hex
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(rid)
-    return rid
 
 
-def checkin_info(cfg, rid, state="running"):
+def hello_info(cfg):
     import platform
     import socket
     tools = [n for exe, n in (("xcrun", "Xcode"), (cfg["flutter"], "Flutter"), (cfg["idb"], "idb")) if shutil.which(exe)]
@@ -681,70 +660,131 @@ def checkin_info(cfg, rid, state="running"):
         devices = str(len(list_devices()))
     except (ToolError, ValueError, KeyError):
         devices = ""
-    return {"id": rid, "name": socket.gethostname().split(".")[0], "kind": "mac", "version": VERSION, "label": cfg["label"],
-            "path": os.path.abspath(__file__), "port": str(cfg["port"]), "platform": f"macOS {platform.mac_ver()[0]}".strip(),
-            "tools": "・".join(tools), "devices": devices, "home": cfg["root"], "logs": cfg["log_dir"], "state": state,
+    def ver(argv):
+        try:
+            return run(argv, timeout=30).decode("utf-8", "replace").strip().splitlines()[0][:80]
+        except (ToolError, IndexError):
+            return ""
+    return {"name": socket.gethostname().split(".")[0], "kind": "mac", "version": VERSION, "label": cfg["label"],
+            "path": os.path.abspath(__file__), "platform": ("macOS " + platform.mac_ver()[0]).strip(),
+            "tools": "・".join(tools), "devices": devices, "home": cfg["root"], "logs": cfg["log_dir"], "capacity": "1",
+            "xcode": ver(["xcodebuild", "-version"]), "flutter": ver([cfg["flutter"], "--version"]),
             "scope": SCOPE_SUMMARY + "。アプリ: " + "、".join(sorted(cfg["apps"]))}
 
 
-def checkin(cfg, rid, state="running", opener=None):
-    """操業コンソールへ連絡する。返事が外す依頼なら True。届かなければ False（工場が止まっていても動き続ける）。"""
-    from urllib.parse import urlencode
-    from urllib.request import urlopen
-    opener = opener or urlopen
-    q = urlencode(checkin_info(cfg, rid, state))
-    try:
-        with opener(f"{cfg['console']}/api/runners/checkin?{q}", timeout=10) as r:
-            return bool(json.loads(r.read()).get("uninstall"))
-    except (OSError, ValueError):
-        return False
+def pair(cfg, ask=input, out=print):
+    """ペアリング（ADR 0033 の決定 1）。両側に同じ 6 桁の番号を出し、工場の「許可」と、ここでの y がそろったら鍵を受け取る。"""
+    g = Gate(cfg["gate"])
+    rn = os.urandom(16).hex()
+    info = hello_info(cfg)
+    start = g.post("/pair/start", {"commit": hashlib.sha256(bytes.fromhex(rn)).hexdigest(), "info": info})
+    fp = g.seen_fp
+    g.fp = fp   # 以後はこの相手とだけ話す
+    pid = start["pair_id"]
+    g.post("/pair/reveal", {"pair_id": pid, "runner_nonce": rn})
+    code = sas(rn, start["gate_nonce"], fp)
+    out(f"工場の操業コンソールの「登録済みのランナー」に、次の番号の接続の依頼が出ています: {code}")
+    out("同じ番号なら、コンソールで「許可」を押してから、ここで y を押してください（10 分で切れます）")
+    if ask("同じ番号ですか？ [y/N] ").strip().lower() != "y":
+        out("やめました（工場の依頼は 10 分で切れます）")
+        return None
+    g.post("/pair/confirm", {"pair_id": pid, "runner_nonce": rn})
+    out("工場の「許可」を待っています…")
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        r = g.post("/pair/wait", {"pair_id": pid, "runner_nonce": rn})
+        if r.get("key"):
+            cred = {"runner_id": r["runner_id"], "key": r["key"], "fingerprint": fp, "gate": cfg["gate"]}
+            save_cred(cfg, cred)
+            out(f"繋がりました（ランナー {r['runner_id'][:8]}）")
+            return cred
+    out("10 分で許可されませんでした。やり直してください")
+    return None
 
 
-def self_uninstall(cfg, rid, log):
-    """外す依頼に応える: LaunchAgent の plist を消し、外したことを知らせてから launchd から外す（ここで止まる）。
-    トークン・ビルドの作業場・ログは残す（消すのは人）。"""
+def self_uninstall(cfg, log):
+    """工場の「外す」に応える: 鍵を捨て、LaunchAgent の plist を消し、launchd から外す（ここで止まる）。
+    ビルドの作業場とログは残す（消すのは人）。窓口の側は、外す依頼を返したときに鍵を捨てている。"""
     log({"at": now(), "tool": "self_uninstall", "args": {}, "error": False, "ms": 0})
+    drop_cred(cfg)
     try:
         os.unlink(cfg["plist"])
     except OSError:
         pass
-    checkin(cfg, rid, "uninstalled")
     try:
-        run(["launchctl", "bootout", f"gui/{os.getuid()}/{cfg['label']}"])
+        run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), cfg["label"])])
     except ToolError:
         pass
     os._exit(0)   # launchd の外で動かしていたときも止まる
 
 
-def checkin_loop(cfg, rid, log):
-    while True:
-        if checkin(cfg, rid):
-            self_uninstall(cfg, rid, log)
-        time.sleep(max(cfg["checkin_sec"], 10))
+def work_once(cfg, runner, cred, gate, log, info=None):
+    """窓口に 1 回取りに行き、来た仕事をこなす。返り値は 'ok' / 'uninstall'。"""
+    r = gate.post("/poll", {"info": info} if info else {}, cred)
+    if r.get("uninstall"):
+        return "uninstall"
+    for c in r.get("calls") or []:
+        res = execute(runner, c.get("tool"), c.get("arguments"), log)
+        gate.post("/result", {"call_id": c.get("call_id"), **res}, cred)
+    return "ok"
 
 
 def serve():
     cfg = config()
-    token = read_token(cfg["token_file"])
+    cred = load_cred(cfg)
+    if not cred:
+        raise SystemExit("ペアリングしていない（scripts/macrunner.sh install でペアリングする）")
     runner = Runner(cfg)
     log = make_log(cfg["log_dir"])
     for n in preflight(cfg):
         print(f"[macrunner] {n}", file=sys.stderr)
-    httpd = ThreadingHTTPServer((cfg["host"], cfg["port"]), make_handler(runner, token, log))
-    print(f"[macrunner] {VERSION} listening on {cfg['host']}:{cfg['port']}", file=sys.stderr)
-    if cfg["console"]:
-        threading.Thread(target=checkin_loop, args=(cfg, runner_id(cfg), log), daemon=True).start()
-    httpd.serve_forever()
+    gate = Gate(cred["gate"], cred["fingerprint"])
+    print(f"[macrunner] {VERSION} → {cred['gate']}（ランナー {cred['runner_id'][:8]}）", file=sys.stderr)
+    last_info, backoff = 0, 5
+    while True:
+        try:
+            info = hello_info(cfg) if time.time() - last_info > 300 else None
+            if work_once(cfg, runner, cred, gate, log, info) == "uninstall":
+                self_uninstall(cfg, log)
+            if info:
+                last_info = time.time()
+            backoff = 5
+        except GateError as e:
+            print(f"[macrunner] 窓口: {e}", file=sys.stderr)
+            time.sleep(60 if e.status in (0, 401) else backoff)
+            backoff = min(backoff * 2, 60)
+        except OSError as e:   # 工場が止まっている・網が切れている。止まらずに待つ
+            print(f"[macrunner] 窓口に届かない: {e}", file=sys.stderr)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
+def bye(cfg):
+    """Mac 側で外したことを窓口に知らせ（鍵を捨てさせる）、こちらの鍵も捨てる（scripts/macrunner.sh uninstall が呼ぶ）。"""
+    cred = load_cred(cfg)
+    if cred:
+        try:
+            Gate(cred["gate"], cred["fingerprint"], timeout=10).post("/bye", {}, cred)
+        except (GateError, OSError) as e:
+            print(f"窓口に知らせられなかった（工場の一覧から「外す」で消せます）: {e}", file=sys.stderr)
+    drop_cred(cfg)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "serve":
         serve()
-    elif len(sys.argv) > 1 and sys.argv[1] == "uninstalled":   # scripts/macrunner.sh uninstall が呼ぶ。手で外したことを工場の一覧に知らせる
-        c = config()
-        if c["console"]:
-            checkin(c, runner_id(c), "uninstalled")
-    elif len(sys.argv) > 1 and sys.argv[1] == "preflight":
+    elif cmd == "pair":
+        try:
+            sys.exit(0 if pair(config()) else 1)
+        except (GateError, OSError) as e:
+            print(f"窓口と話せなかった: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "paired":
+        sys.exit(0 if load_cred(config()) else 1)
+    elif cmd == "bye":
+        bye(config())
+    elif cmd == "preflight":
         notes = preflight(config())
         print("\n".join(notes) or "ok")
         sys.exit(1 if notes else 0)
