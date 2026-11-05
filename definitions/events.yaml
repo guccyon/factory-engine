@@ -98,7 +98,11 @@ events:
   supervisor.heartbeat:
     source: control_plane
     required: []
-    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る"
+    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る。engine_version（ADR 0031）は入れ替え役が新しい版で回ったかを見るのに使う"
+  dispatcher.started:
+    source: control_plane
+    required: [engine_version]
+    note: "ADR 0031。dispatcher が上がった（つなぎ直しの片付けの後）。入れ替え役が新しい版で上がったかを見る。reattaching はつなぎ直すジョブの数"
   supervisor.merge_decided:
     source: control_plane
     required: [pr_url, head_sha, change_types, table, factory_grant, execute]
@@ -234,6 +238,58 @@ events:
     source: control_plane
     required: [by]
     note: "ADR 0020。ラインの再開（factoryctl resume・操業コンソール）。最後の drain_requested / drain_released が今の状態"
+  swap.requested:
+    source: control_plane
+    required: [target, kind, urgency, by]
+    note: "ADR 0031。工場の入れ替えの依頼。この event の id が swap_id、correlation_id は swap:<id>。同時に 1 件。順番 2 は factoryctl swap run（時刻の合意なしで swap.confirmed も出す）"
+  swap.confirmed:
+    source: control_plane
+    required: [swap_id, at, by]
+    note: "ADR 0031。入れ替えの時刻を受けた（basis: manual は手での実行。プランナーの提案は順番 4）。at を過ぎたら dispatcher が入れ替え役を起動する"
+  swap.cancelled:
+    source: control_plane
+    required: [swap_id, by]
+    note: "ADR 0031。入れ替え役を起動する前の取り消し（factoryctl swap cancel）"
+  swap.launched:
+    source: control_plane
+    required: [swap_id, container]
+    note: "ADR 0031。dispatcher が使い捨ての入れ替え役（コンテナ factory-swap-<id>、--rm）を起動した"
+  swap.started:
+    source: control_plane
+    required: [swap_id]
+    note: "ADR 0031。入れ替え役が事前の確かめを始めた（ラインは止めない）"
+  swap.preflight_failed:
+    source: control_plane
+    required: [swap_id, error]
+    note: "ADR 0031。事前の確かめで止めた。何も変えていない（作ったイメージの名前は前の版に戻した）"
+  swap.drained:
+    source: control_plane
+    required: [swap_id, by_me]
+    note: "ADR 0031。一時停止を伴う入れ替え（control_plane）でラインを一時停止した。by_me は入れ替え役が一時停止にしたか（前から一時停止なら再開しない）"
+  swap.applied:
+    source: control_plane
+    required: [swap_id, target_sha, prev, kind]
+    note: "ADR 0031。作業ツリーを早送りし、docker compose up -d ですべてのサービスを上げた"
+  swap.verified:
+    source: control_plane
+    required: [swap_id, checks]
+    note: "ADR 0031。確かめ（版・ヘルスチェック・dispatcher と supervisor の印・コンソールと窓口・つなぎ直し）がそろった"
+  swap.completed:
+    source: control_plane
+    required: [swap_id, target_sha, prev, kind]
+    note: "ADR 0031。入れ替えた。kind は判定（申告の重い方）、kind_declared は申告。stopped_sec は一時停止していた秒数"
+  swap.rolled_back:
+    source: control_plane
+    required: [swap_id, target_sha, prev, reason]
+    note: "ADR 0031 の決定 6。確かめに通らず前の版に戻し、戻した版は通った。同じ target_sha では自動で入れ替えない。受信トレイに建設者への依頼を出す"
+  swap.escalated:
+    source: control_plane
+    required: [swap_id, reason, category]
+    note: "ADR 0031 の決定 7。人に回した。category db は受信トレイ（DB の変更の承認。ボタンは順番 5）、human は停止 swap:<id>。戻しも通らないときは一時停止のまま"
+  swap.failed:
+    source: control_plane
+    required: [swap_id, error]
+    note: "ADR 0031。入れ替え役を起動できなかったか、結果を書かずに消えた（dispatcher が見つけて停止 swap:<id> を開く）"
   job.reattached:
     source: control_plane
     required: [container]

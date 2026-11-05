@@ -35,7 +35,8 @@ def rows_from_inspect(items: list[dict]) -> list[dict]:
             continue
         image = cfg.get("Image", "")
         external = kind == "service" and not image.startswith(OWN_IMAGE_PREFIX)   # postgres・オブジェクトストアなど、工場が作らないイメージ
-        rows.append({"kind": kind, "name": name, "state": state, "image": image, "external": external,
+        health = ((it.get("State") or {}).get("Health") or {}).get("Status")   # ヘルスチェックのないコンテナは None
+        rows.append({"kind": kind, "name": name, "state": state, "image": image, "image_id": it.get("Image", ""), "health": health, "external": external,
                      "version": "-" if external else (labels.get(LABEL) or UNKNOWN)})
     order = {"service": 0, "job": 1}
     return sorted(rows, key=lambda r: (order[r["kind"]], r["name"]))

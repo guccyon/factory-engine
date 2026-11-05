@@ -101,6 +101,11 @@ services:
       LOW_CONFIDENCE: ${LOW_CONFIDENCE:-0.6}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       WEBHOOK_PORT: 8787
+      # 工場の入れ替え（ADR 0031）。受けた依頼の時刻に、使い捨ての入れ替え役のコンテナを起動する。0 で止める。
+      # 作業ツリーの場所は compose のラベルから読む（SWAP_ROOT で上書き）。git worktree の置き場が読めないときは SWAP_EXTRA_MOUNTS（カンマ区切りの絶対パス）
+      SWAP_ENABLED: ${SWAP_ENABLED:-1}
+      SWAP_ROOT: ${SWAP_ROOT:-}
+      SWAP_EXTRA_MOUNTS: ${SWAP_EXTRA_MOUNTS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:

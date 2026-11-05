@@ -34,6 +34,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import ghapi
+from globmatch import glob_re
 import psycopg
 import yaml
 from psycopg.rows import dict_row
@@ -119,22 +120,6 @@ def record(cur, name: str, corr: str | None, payload: dict, dedupe_key: str | No
 
 
 # ------------------------------------------------------------------ 変更種別の写像（表を引くだけ）
-def glob_re(pat: str) -> re.Pattern:
-    out, i = "", 0
-    while i < len(pat):
-        if pat.startswith("**/", i):
-            out, i = out + "(?:.*/)?", i + 3
-        elif pat.startswith("**", i):
-            out, i = out + ".*", i + 2
-        elif pat[i] == "*":
-            out, i = out + "[^/]*", i + 1
-        elif pat[i] == "?":
-            out, i = out + "[^/]", i + 1
-        else:
-            out, i = out + re.escape(pat[i]), i + 1
-    return re.compile(out + r"\Z")
-
-
 def classify(files: list[dict], rules: dict) -> list[str]:
     """files: GitHub の pulls/{n}/files の要素（filename, patch）。返り値は変更種別の一覧（always:<id> を含む）"""
     types: list[str] = []
@@ -1027,7 +1012,8 @@ def committee_weekly_step(cur, now: datetime | None = None):
 
 def tick():
     with db() as conn, conn.cursor() as cur:
-        cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id", (Jsonb({"repos": REPOS}),))
+        cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
+                    (Jsonb({"repos": REPOS, "engine_version": ENV.get("ENGINE_VERSION") or "unknown"}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
