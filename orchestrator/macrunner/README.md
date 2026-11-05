@@ -42,7 +42,7 @@ docker compose exec dispatcher factoryctl runner check
 
 ## できることの範囲
 
-顧客の機械にも置くものなので、範囲は [SCOPE.md](SCOPE.md) に宣言する。広げるときは SCOPE.md と道具を同じ PR で変え、オーナーの承認を通す。
+顧客の機械にも置くものなので、範囲は [SCOPE.md](SCOPE.md) に宣言する。工場とランナーの間を通るメッセージの全部と、利用者をまたぐ穴の確かめは [PROTOCOL.md](PROTOCOL.md)。広げるときは SCOPE.md と道具を同じ PR で変え、オーナーの承認を通す。
 
 ## 登録済みのランナーと外し方
 
