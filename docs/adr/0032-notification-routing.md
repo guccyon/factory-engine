@@ -31,19 +31,19 @@ Slack への通知は Claude 側のコネクタではなく、工場自身が In
 「どの組織のどのサービスに、どの credential で送れるか」（連携）と、「どこに届けるか」（宛先）を分ける。Webhook の URL を通知ごとに発行しなくても、連携を 1 つ登録すれば、その組織の中の任意のチャンネルを宛先にできる。
 
 ```yaml
-connections:                # 連携。credential の値は .env に置き、ここには変数の名前だけ
+connections:                # 連携。credential の値は書かず、秘密の置き場の参照（secret）だけ
   provider_slack:
     party: provider         # provider（運営元）/ business_owner（事業主）
     via: slack_app          # Slack アプリ（ボットのトークン）。chat.postMessage で任意のチャンネルに送る
-    token_env: SLACK_BOT_TOKEN_PROVIDER
+    secret: env:SLACK_BOT_TOKEN_PROVIDER
   owner_slack:
     party: business_owner
     via: slack_app
-    token_env: SLACK_BOT_TOKEN_OWNER
+    secret: aws-sm:factory/rally/slack-owner   # 例 AWS Secrets Manager の名前（後で）
   owner_alerts_hook:
     party: business_owner
     via: slack_webhook      # Incoming Webhook。URL ごとに投稿先のチャンネルが決まる
-    webhook_env: SLACK_WEBHOOK_URL_OWNER_ALERTS
+    secret: env:SLACK_WEBHOOK_URL_OWNER_ALERTS
 
 destinations:               # 宛先。通知の割り当てはこの名前で書く
   provider_dev:
@@ -61,7 +61,9 @@ destinations:               # 宛先。通知の割り当てはこの名前で�
     connection: owner_alerts_hook     # Webhook はチャンネルを書かない
 ```
 
+- `secret` は `<置き場>:<名前>` の参照。値は送る直前に置き場から引き、制御プレーン・ログ・画面には出さない。置き場は差し替えられる口（`env` は環境変数＝Gen1 の `.env`、`aws-sm` は AWS Secrets Manager など）にし、Gen1 は `env` だけを作る
 - 連携の種類（`via`）は `slack_app`・`slack_webhook`・`github-issue`・`log`。今の `INBOX_NOTIFY` の `slack` は `slack_webhook` にあたる
+- Gen1 で試すときは `slack_webhook` と `env` だけを使う（オーナー 2026-11-05）。`slack_app` は形だけ決めておき、作るのは後
 - 宛先の組織（`party`）は連携から引き継ぐ。これが中身の境界（決定 3）の鍵になる
 - 読み込むときに形を検査する（`slack_webhook` は `https://hooks.slack.com/` で始まること、`slack_app` は `channel` があること）。`slack_app` のトークンには `chat:write` だけを付け、ボットを招いたチャンネルにだけ送れる形にする
 
@@ -137,7 +139,7 @@ routes:                      # 書かない種類は operated_by から決まる
 工場はプロダクトごとに専用のものを建てる。同じ工場を並べて動かす（並列稼働）こともありうるので、設定の正本はマシンの中ではなくリポジトリに置く。
 
 - 正本は製品のリポジトリの `.factory-config/notifications.yaml`（`ship.yaml`・`manifest.yaml` と同じ置き場）。連携の名前と credential の変数の名前・宛先・運用形態・割り当て（有効・無効を含む）を書く。credential の値は書かない
-- credential の値は工場ごとの秘密の置き場（Gen1 は `.env`）。並べて動かす工場には同じ値を配る
+- credential の値は秘密の置き場（決定 1 の `secret`。Gen1 は `.env`、将来は AWS Secrets Manager など）。並べて動かす工場は同じ置き場を引く
 - dispatcher と supervisor は、既定ブランチの今の版を周回ごとに読み（変わったときだけ）、検査を通った版を制御プレーンに写す（`notify.config_changed` に commit・内容のハッシュ・連携と宛先の名前・割り当て。秘密の値は残さない）。送るときはこの写しを引く。並べて動かす工場も同じ版に揃う
 - 読めない・検査を通らないときは、前に通った写しのまま送り続け、受信トレイの `error` に出す
 - 行き先: 操業コンソールに通知の設定画面を置き、種類ごとに宛先を選び、有効・無効を切り替える。画面での変更は `notifications.yaml` を書き換える PR になり、マージされたら写しが更新される（正本はリポジトリのまま。変えた人・時刻・理由は PR に残る）。連携の credential を画面から登録するときも値は秘密の置き場に書き、リポジトリ・制御プレーン・画面には出さない
@@ -179,10 +181,10 @@ routes:                      # 書かない種類は operated_by から決まる
 ## 順番
 
 1. 宛先と種類の定義、`notifications.yaml` の読み込みと検査・制御プレーンへの写し、`notify.send`、環境変数からの宛先 `default`（決定 8）。停止・知らせ・受信トレイをこの口に載せ替える（挙動は今と同じ）
-2. 受信トレイの who による振り分け（決定 5）、宛先ごとの `quiet`・メンション、Slack アプリの連携（`slack_app`）
+2. 受信トレイの who による振り分け（決定 5）、宛先ごとの `quiet`・メンション
 3. `report.factory_health`（朝の報告の操業タブと同じ数）
 4. `report.product`（ロードマップの進捗。朝の報告のプロダクト開発タブを工場から出す件と合わせる）
-5. 操業コンソールの通知の設定画面（種類ごとの宛先と有効・無効）。変更は `notifications.yaml` への PR にする
+5. 後で: Slack アプリの連携（`slack_app`）、秘密の置き場の `aws-sm`、操業コンソールの通知の設定画面（種類ごとの宛先と有効・無効）。変更は `notifications.yaml` への PR にする
 
 ## 選ばなかった案
 
@@ -195,7 +197,7 @@ routes:                      # 書かない種類は operated_by から決まる
 
 ## 結果
 
-- 運営元は工場を建てるときに `.factory-config/notifications.yaml` を 1 つ書けば、通知の出し先を決められる。操業中も書き換えてマージすれば変わる。製品のリポジトリが public のときは、宛先のチャンネル名や組織の分け方も公開される
+- 運営元は工場を建てるときに `.factory-config/notifications.yaml` を 1 つ書けば、通知の出し先を決められる。操業中も書き換えてマージすれば変わる。実際の製品のリポジトリと工場は private で運用する（rally は見本のため public）
 - 今の工場は `notifications.yaml` を置かなければ今と同じに動く
 - 事業主の宛先に何を出したかは `notify.sent` で後から確かめられる
 - 種類を足すとき（運用の段の定期レポート、完了報告）は `definitions/notifications.yaml` に 1 行と、文面の関数を 1 つ足す。連携に Slack 以外（メール、Teams など）を足すときは `via` を 1 つ足す
