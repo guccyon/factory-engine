@@ -116,3 +116,6 @@ sizing:
     turns_p90_max: 120
     recall_median_min: 0.6
     misrouted_rate_max: 0.10
+  bench:                             # 固定の評価セットのベンチの合格線（ADR 0036 の 4b・4c。12 件で 10 件以上。パイロット導入の前に満たす）
+    split_ok_min: 0.83               # 切る／切らないの一致
+    band_ok_min: 0.83                # 大きさの帯が ±1 帯の内（正解に帯のある件のうち）

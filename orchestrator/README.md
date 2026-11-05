@@ -157,6 +157,7 @@ docker compose exec dispatcher factoryctl swap status <id>   # 段ごとの記�
   - `factoryctl plan outcomes [--repo owner/repo] [--days 14]`: 突き合わせの一覧。`--backfill` で過去の PR も GitHub から引いて残す（初回に 1 回。`GH_TOKEN` が要る）
   - `factoryctl plan sizes [--repo owner/repo] [--days 60]`: 実績の表（層の組ごとのファイル数・ターン・途中終了・費用）。プランナーの見積もりの材料（順番 2 でプランナーの入力に渡す）
   - `factoryctl plan pass [--repo owner/repo]`: 合格線の実績の 4 つ（途中終了の率・ターンの中央値と 90 パーセンタイル・見込みのファイルの再現率・経路の覆りの率）を直近 14 日で測る。チケットが 10 件に満たなければ参考の値
+- 固定の評価セットのベンチ（ADR 0036 の 4b）: `core-gates/plan_bench.py --repo-dir <製品の main の写し> --sizes sizes.json --out result.json` で、`eval-corpus/planner/cases.yaml` の各チケットをプランナーに判定させ、人が付けた正解（切るべきか・触る層・ターンの帯・経路）と比べる。切る／切らないの一致と、帯が ±1 帯の内の割合が合格線（`definitions/planner.yaml` の `sizing.bench`。12 件で 10 件以上）。切るべき件の当たりも別に出す（切らないだけのプランナーを見落とさないため。合格線ではない）。プランナーのプロンプト・基準・モデルを変えるときに回し、`--score result.json --baseline before.json` で前の版と比べてから入れる。1 件につきプランナーの呼び出しが 1 回
 
 ## デザインシステムのデザイナー役（ADR 0025・0026）
 
