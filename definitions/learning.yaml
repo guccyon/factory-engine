@@ -74,11 +74,11 @@ teacher_signals:
     eval_from: { positive: "原因の PR の差分（悪くした箇所）", negative: "直した PR の差分があれば" }
     note: "learn はまだ読まない（束ねるのは診断が 2 週間たまってから）。1 日の悪化に原因の PR が複数あるときは全部に付ける"
   taste_flag:
-    ja: "人が抜き取りで違和感を付けた（内部品質の感覚。週 5 件）"
-    source: "events taste.flagged（操業コンソールの「人の選択」。画面の案と抜き取りの両方から付く。ADR 0025）。結果は Golden Set にも入る"
+    ja: "人が違和感の印を付けた（実装後の画面のキャプチャ・画面の案・内部品質の抜き取り）"
+    source: "events taste.flagged（操業コンソールの「人の選択」。実装後の画面（exit_capture、CI のキャプチャから。ADR 0025 の 4）、画面の案、抜き取りから付く）。結果は Golden Set にも入る"
     signature: "taste:<言語化の候補>"
-    eval_from: { positive: "違和感を付けた PR の差分", negative: "同じ観点で違和感のなかった差分" }
-    note: "発生源（抜き取りの画面）ができてから"
+    eval_from: { positive: "違和感を付けた PR の差分（印を付けた画面）", negative: "同じ観点で違和感のなかった差分（choice.seen の unflagged）" }
+    note: "learn.collect_signals が読む（2026-11-05）。材料は印の一言と画面（アプリ・画面名・id）。修正 PR がないのでルール化の Issue にはまだ回らず、Retrospective の束に出る"
   # 憲章の残りの信号（KPI 予測誤差、ストア却下、データ要求への訂正、本番障害）は発生源ができたら足す（P5）
   later: [kpi_error, store_rejection, data_request_correction, incident]
 

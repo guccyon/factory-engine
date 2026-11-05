@@ -17,6 +17,7 @@
   POST /api/choices/<id>/choose           {"option", "reason"?} 人の選択（画面の案・抜き取り。ADR 0025）
   POST /api/choices/<id>/return           {"reason"} どの案も選ばず作り手に戻す
   POST /api/choices/<id>/flag             {"note", "option"?} 違和感の印（教師信号 taste_flag）
+  POST /api/choices/<id>/seen             {"note"?} 実装後の画面を見て閉じる（exit_capture。ADR 0025 の 4）
   GET  /api/choices/<id>/image/<option>   案の画像（オブジェクトストアの choices/ の下から中継する）
   GET  /review/<UXSpec の id>             デザインのレビューページ（ADR 0026）。PRD の要約・ユーザーフロー・画面定義書・案・検査役の判断と、承認・直し・違和感
   GET  /review/<UXSpec の id>/image/<名前>.png   レビューページの案の画像（案の HTML はこの origin では開かない）
@@ -261,7 +262,7 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         if not isinstance(body.get("prevent_sleep"), bool):
             return 400, {"error": "prevent_sleep（true か false）が要る"}
         return 200, {"prevent_sleep": ops.set_keep_awake(cur, body["prevent_sleep"], by, reason)}
-    m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag)", path)
+    m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag|seen)", path)
     if m:
         aid, what = int(m.group(1)), m.group(2)
         c = choice.get(cur, aid)
@@ -279,6 +280,8 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             ok, msg = choice.return_to_maker(cur, aid, by, reason)
             if ok and design:
                 design_line.return_to_designer(cur, sub["repo"], int(sub["ticket"]), c["correlation_id"], reason, MODEL_TIER)
+        elif what == "seen":
+            ok, msg = choice.mark_seen(cur, aid, by, reason)
         else:
             opt = body.get("option")
             ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, str(opt) if opt else None)
@@ -463,14 +466,17 @@ const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
   return `<li><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div></li>`}).join("")}</ul></div>`}
-const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り"};
+const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
+ const exit=c.kind==="exit_capture";
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
-  <div class="acts"><button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
- return `<div class="ch" id="choice-${c.id}"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
-  <div class="opts">${opts}</div><div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div></div>`}).join("")}
+  <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
+ const tail=exit?`<input id="note-${c.id}" placeholder="違和感の一言（例: 余白が詰まって見える）。入れて画面の「違和感」を押す" maxlength="300"><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button>`
+  :`<input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button>`;
+ return `<div class="ch" id="choice-${c.id}"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",sub.artifact_url?link(sub.artifact_url,"CI の成果物"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
+  <div class="opts">${opts}</div><div class="acts">${tail}</div></div>`}).join("")}
 function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||"")];
  if(i.job_id)meta.push(`ジョブ ${i.job_id}${i.kind&&i.kind!=="implement"?"（"+esc(i.kind)+"）":""}${i.attempt>1?" 試行"+i.attempt:""}`);
  if(i.rank)meta.push(`${i.rank} 番目`);if(i.held)meta.push("保留中");
@@ -505,6 +511,7 @@ document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c,note=(document.getElementById("note-"+id)||{}).value||"";
+ if(b.dataset.ch==="seen")return post(`/api/choices/${id}/seen`,{reason:note});
  if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});
  if(b.dataset.ch==="flag"){if(!note.trim())return toast("違和感の一言を入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
  if(!note.trim())return toast("戻す理由を一言入れてください");post(`/api/choices/${id}/return`,{reason:note})});

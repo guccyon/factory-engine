@@ -94,7 +94,7 @@ phases:
       - { id: opportunity_to_ticket, ja: "テーマ 1 つから人が触らずに Requirements と段の束（依存つき）が出る", measure: { manual: todo } }   # ADR 0025 の完了条件 1
       - { id: design_variants, ja: "画面を含む段は要素と振る舞いが決まった UXSpec を持って実装に流れ、案はデザイン検査役が承認する（新しい画面・ブランド・低確信だけ人）", measure: { manual: todo } }   # ADR 0025 の 2・3
       - { id: consult_desk, ja: "外（顧客の Claude Desktop など）から窓口の API・MCP でプランナーに曖昧な依頼を壁打ちし、確定した依頼がタスクのまとまりになって指定の優先度でラインに入った", measure: { manual: todo } }   # ADR 0030 の順番 1〜3。何を流すかは外が決める。順番 1（API・会話の記録・トークン・明確な指示）は済み
-      - { id: screen_capture_taste, ja: "実装後の画面のキャプチャが PR に付き、人の違和感の印が教師信号として Learn に入る", measure: { manual: todo } }   # ADR 0025 の 4
+      - { id: screen_capture_taste, ja: "実装後の画面のキャプチャが PR に付き、人の違和感の印が教師信号として Learn に入る", measure: { manual: todo } }   # ADR 0025 の 4。経路は exit_capture.py（CI の成果物 → PR の本文・受信トレイ「実装後の画面」→ taste.flagged → learn の taste_flag）。実際の PR で 1 件通したら done
       # 要求者ペルソナ 10 人それぞれの最新の結果のうち、確定・往復 3 回以内・意図と一致（採点役）の人数。8 人で満点（仮置き）
       # 一巡させるのは orchestrator/scripts/clarify-bench.sh
       - id: clarify_3_rounds
