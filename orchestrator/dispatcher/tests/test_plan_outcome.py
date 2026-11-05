@@ -21,6 +21,7 @@ def test_values_match_definitions():
     s = DEFS["sizing"]
     assert [(x["layer"], x["globs"]) for x in s["layers"]] == [(l, g) for l, g in po.LAYERS]
     assert list(s["uncounted_layers"]) == list(po.UNCOUNTED_LAYERS)
+    assert list(s["follow_globs"]) == po.FOLLOW_GLOBS
     assert s["split"] == po.SPLIT and s["min_turns"] == po.MIN_TURNS and s["bands"] == po.BANDS and s["pass_lines"] == po.PASS_LINES
 
 
@@ -31,6 +32,16 @@ def test_layers_of_rally_paths():
     assert po.layers_of(files) == ["db", "contract", "docs", "backend", "web", "mobile", "other"]
     assert po.layers_key(po.layers_of(files)) == "db+contract+backend+web+mobile"
     assert po.layers_key(["docs"]) == "docs"
+
+
+def test_generated_types_and_follow_only_layers():
+    # 契約と backend のチケット（rally #648 の形）: admin-web は生成した型と試験・撮影の値の追従だけ
+    files = ["specs/contracts/api/admin-web/openapi.yaml", "apps/admin-web/src/api/schema.ts", "apps/admin-web/screenshots/fixtures.ts",
+             "apps/admin-web/tests/headquartersApi.test.ts", "apps/backend/crates/domain/src/x.rs", "apps/backend/crates/interface/tests/x.rs"]
+    assert po.layers_of(files) == ["contract", "backend", "other"]
+    assert po.over_split(po.layers_of(files), 6, 36) == []
+    # 画面の本体も変われば web を数える（rally #900 の形）
+    assert po.layers_of(files + ["apps/admin-web/src/components/headquarters/SlotSupplyReport.tsx"]) == ["contract", "backend", "web"]
 
 
 def test_over_split_and_band():

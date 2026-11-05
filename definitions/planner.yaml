@@ -96,12 +96,18 @@ planner:
 sizing:
   layers:                            # 変わったファイルから層を決める（上から順に当て、最初に当たった層。どれにも当たらなければ other）。製品ごとの上書きは順番 2 で manifest から
     - {layer: db,       globs: ["**/migrations/**"]}
-    - {layer: contract, globs: ["specs/contracts/**"]}
+    - {layer: contract, globs: ["specs/contracts/**", "**/src/api/schema.ts"]}   # 契約から生成した型も契約（2026-11-05 オーナー決定）
     - {layer: docs,     globs: ["specs/**", "docs/**", "changelog.d/**", "**/*.md"]}
     - {layer: backend,  globs: ["apps/backend/**", "backend/**", "server/**"]}
     - {layer: web,      globs: ["apps/*-web/**", "web/**"]}
     - {layer: mobile,   globs: ["apps/*-app/**", "mobile/**"]}
   uncounted_layers: [docs, other]    # 切る基準の層の数に数えない
+  follow_globs:                      # 追従のファイル（試験・画面の撮影の値）。層の変更がこれと生成した型だけなら、その層は数えない（other に寄せる。2026-11-05 オーナー決定）
+    - "**/tests/**"
+    - "**/test/**"
+    - "**/screenshots/**"
+    - "**/*.test.*"
+    - "**/*_test.*"
   split:                             # 実装役に回す仕事 1 件が、どれか 1 つに当たれば切る（ADR 0036 の 2）。実績にも同じ基準を当てて undersized を判定する
     min_layers: 3
     max_files: 30
