@@ -40,7 +40,7 @@ NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 # definitions/notifications.yaml の kinds の写し（dispatcher のコンテナには definitions/ がない。食い違いはテストで見る）
 KINDS = {
     "report.factory_health": {"parties": ("provider", "business_owner"),
-                              "defaults": {"provider": ("provider",), "business_owner": ("business_owner", "provider")}, "status": "later"},
+                              "defaults": {"provider": ("provider",), "business_owner": ("business_owner", "provider")}, "status": "ready"},
     "report.product": {"parties": ("provider", "business_owner"),
                        "defaults": {"provider": ("business_owner", "provider"), "business_owner": ("business_owner", "provider")}, "status": "later"},
     "request.inbox": {"parties": ("business_owner",),

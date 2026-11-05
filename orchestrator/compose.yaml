@@ -132,6 +132,10 @@ services:
     command: ["python", "supervisor.py"]
     depends_on:
       postgres: { condition: service_healthy }
+    # 定期レポート（ADR 0032）の宛先の secret: env:NAME を引くため、.env の値をそのまま渡す。下の environment が先に効く
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
       FACTORY_REPOS: ${FACTORY_REPOS:-guccyon/rally}
@@ -155,6 +159,10 @@ services:
       # 建設状況の日次レポート（health/daily）。JST のこの時を過ぎたら 1 日 1 回（ページは 6 時に描く）。空の DAILY_REPORT_SCRIPT で止める
       DAILY_REPORT_SCRIPT: ${DAILY_REPORT_SCRIPT-/health/daily/status_report.py}
       DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-5}
+      # 定期レポートの通知（ADR 0032）。設定は製品の .factory-config/notifications.yaml（dispatcher と同じ）。提供元の宛先では文面の頭に FACTORY_NAME を付ける
+      NOTIFY_CONFIG_REPO: ${NOTIFY_CONFIG_REPO:-}
+      NOTIFY_CONFIG_POLL_SEC: ${NOTIFY_CONFIG_POLL_SEC:-300}
+      FACTORY_NAME: ${FACTORY_NAME:-}
       # 出荷の列車（ADR 0012）。この製品の Release を 1 日 1 回、この時（JST）を過ぎたら切って staging に出す。空で止める
       RELEASE_TRAIN: ${RELEASE_TRAIN-guccyon/rally}
       RELEASE_TRAIN_HOUR: ${RELEASE_TRAIN_HOUR:-17}

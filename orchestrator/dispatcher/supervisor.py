@@ -49,6 +49,7 @@ import line
 import learn
 import ops
 import process_learn
+import report
 import serialize
 import ship
 import stoppage
@@ -670,6 +671,21 @@ def daily_report_step(cur):
     log("daily report", r.returncode, (r.stdout or r.stderr).strip()[-300:])
 
 
+def notify_report_step(cur):
+    """定期レポート（ADR 0032 の決定 9）。前日の分を毎朝 1 回組み立てて report.built に残し、通知の割り当てどおりに送る。
+    設定（製品の notifications.yaml）がない工場は組み立てて残すだけで、どこにも送らない"""
+    if DRY_RUN:
+        return
+    try:
+        r = report.daily_step(cur)
+    except Exception as e:  # noqa: BLE001  レポートの失敗で周回を止めない
+        log("notify report failed", repr(e)[:300])
+        return
+    for kind, x in (r or {}).items():
+        if x.get("sent") or x.get("failed") or x.get("gave_up"):
+            log("notify report", kind, x)
+
+
 def stage_step(cur, manifests: dict):
     """製品の段階の宣言（manifest.yaml の product_stage）を読み、変わったときだけ product.stage_observed に残す（ADR 0028 の決定 4）。
     shipper・コンソール・受け箱は GitHub を見ずにこの記録を読む。manifest を読めない製品（Engine など）は飛ばし、記録がなければ development に倒す"""
@@ -1043,6 +1059,7 @@ def tick():
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
         daily_report_step(cur)
+        notify_report_step(cur)
         changelog_step(cur)
         release_train_step(cur)
         learn_step(cur)
