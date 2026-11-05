@@ -21,6 +21,7 @@ import choice  # noqa: E402
 import exit_capture as ec  # noqa: E402
 import inbox  # noqa: E402
 import learn  # noqa: E402
+import notify_inbox  # noqa: E402
 
 URL = os.environ.get("TEST_DATABASE_URL")
 REPO, PR, SHA = "o/r", 42, "abcdef1234567890"
@@ -158,7 +159,7 @@ def test_step_collects_once_writes_pr_and_inbox_then_flag_reaches_learn(cur):
     assert gh.body.startswith("## 概要\n実装役が書いた") and ec.MARK in gh.body and "hq-students" in gh.body and "coach-live" in gh.body
     # 受信トレイに「実装後の画面」としてデザインのチーフの出番で出る
     [item] = [i for i in inbox.items(cur) if i["kind"] == "choice"]
-    assert item["who"] == "design_chief" and item["title"].startswith("実装後の画面: admin-web") and "見た" in item["action"]
+    assert item["key"] == "choice:exit_capture" and item["who"] == "design_chief" and item["title"] == f"実装後の画面: 1 件（#{PR}）" and "見た" in item["action"]
     [c] = choice.open_choices(cur)
     assert c["kind"] == "exit_capture" and [o["id"] for o in c["options"]] == ["s1", "s2", "s3"]
     assert c["subject"]["pr_url"] == PR_URL and c["subject"]["app"] == "admin-web" and c["subject"]["artifact_url"] == ART
@@ -244,3 +245,26 @@ def test_unseen_choice_expires(cur):
     cur.execute("update artifacts set created_at = now() - interval '8 days' where id=%s", (aid,))
     assert ec.expire(cur) == 1 and choice.open_choices(cur) == []
     assert choice.flag(cur, aid, "閉じた後でも印は付く", "t", "s1") == (True, "flagged")
+
+
+def test_many_captures_are_one_inbox_item_notified_once(cur):
+    for n in range(5):
+        choice.request(cur, "exit_capture", f"c{n}", "q", [{"id": "s1", "label": "a"}],
+                       subject={"pr_url": f"https://github.com/{REPO}/pull/{100 + n}", "app": "admin-web"})
+    choice.request(cur, "taste_sample", "t", "q", [{"id": "A", "label": "a"}])
+    xs = [i for i in inbox.items(cur) if i["kind"] == "choice"]
+    assert "choice:exit_capture" in {i["key"] for i in xs} and len(xs) == 2
+    [cap] = [i for i in xs if i["key"] == "choice:exit_capture"]
+    assert cap["title"] == "実装後の画面: 5 件（#102・#103・#104 ほか 2 件）" and cap["url"] == "/#choices"
+    now = datetime.now(timezone.utc)
+    hist = {"choice:exit_capture": {"count": 1, "last": now - timedelta(days=2), "escalated": False}}
+    cap["age_sec"] = 3 * 86400
+    assert notify_inbox.due([cap], hist, now) == []          # 知らせ直さず、代理にも回さない
+    assert notify_inbox.due([cap], {}, now) == [(cap, "new")]
+    assert "once" not in inbox.view(cur)["items"][0]
+
+
+def test_idle_open_pr_is_not_watched(cur):
+    factory_pr(cur)
+    cur.execute("update events set occurred_at = now() - interval '3 days' where name='pr.head_updated'")
+    assert ec.candidates(cur, [REPO]) == []
