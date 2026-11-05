@@ -44,6 +44,10 @@
   factoryctl release status <repo>                          # 環境ごとのいまの版と前の版、出荷の記録
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
+触れる環境（ADR 0028 の touchable_env。Gen1 は staging と兼ねる）。Release 候補を 1 コマンドで立て、シードを入れ、URL と QR を出す:
+  factoryctl env up <repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]   # 版がなければ未 Release の PR から切る。--fresh は DB を空にしてシードから入れ直す
+  factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
+
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
   factoryctl desk token list
@@ -108,6 +112,7 @@ import restricted
 import serialize
 import ship
 import stoppage
+import touch
 import swap
 
 
@@ -800,6 +805,14 @@ def main(argv):
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":
         return release_status(cur, argv[3])
+    elif cmd == "env" and len(argv) > 3 and argv[2] == "up":
+        return touch.up(cur, argv[3], release_id=opt(argv, "--release"), fresh="--fresh" in argv, by=opt(argv, "--by", "builder"),
+                        timeout=float(opt(argv, "--timeout", "3600")), do_wait="--no-wait" not in argv,
+                        log=lambda m: print(m, flush=True))
+    elif cmd == "env" and len(argv) > 3 and argv[2] == "show":
+        t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
+        print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")
+        return 0 if t else 1
     elif cmd == "swap":
         return swap_cmd(cur, argv)
     elif cmd == "desk":

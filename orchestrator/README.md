@@ -313,6 +313,31 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
 
+## 触れる環境（ADR 0028 の touchable_env）
+
+Release 候補ごとに、人がスマートフォンと PC で触れる環境を 1 コマンドで立てる。Gen1 は staging を QA の環境と兼ねる（使い捨ての環境は P5b の `ephemeral_env`）。
+手を動かすのは shipper で、`factoryctl env up` は依頼を順に書いて結果を待ち、入口（URL・QR・ログインの手がかり）を出すだけ。
+
+```bash
+docker compose exec dispatcher factoryctl env up guccyon/rally            # 未 Release の PR があれば次の版を切って staging へ。なければいまの版の入口を出す
+docker compose exec dispatcher factoryctl env up guccyon/rally --fresh    # 出したあとに検証の DB を空にして合成シードから入れ直す
+docker compose exec dispatcher factoryctl env up guccyon/rally --release guccyon/rally@0.9.0   # 版を選ぶ（Rollback ではなく、その版を staging に出し直す）
+docker compose exec dispatcher factoryctl env show guccyon/rally          # いまの版の入口
+```
+
+- 入口の形は製品の `.factory-config/ship.yaml` の `touch`（入口の名前とポートの変数・QR を付けるか・ログインの手がかりを出すコマンド・DB を空にするコマンド）。shipper は出す・戻す・入れ直すたびに `release.touchable` に残し、操業コンソールの出荷の欄にも URL・QR・手がかりと「検証の DB をシードから入れ直す」（2 度押し）が出る
+- rally の入口は生徒アプリの Web 版（Flutter。スマートフォンのブラウザで開く）と管理画面（本部・コーチ）。ログインの手がかりはモックのトークン（本部 1 つと、シードのコーチ 3 人）
+- スマートフォンから開くには、この機械の名前（または IP）と画面の待ち受けを `.env` に書いて shipper を上げ直す。端末ごとの値なのでリポジトリには書かない。DB と backend は外に出ない（画面が同じオリジンの `/api/*` を中継する）。合成シードとモックのトークンだけの環境だが、同じ網の誰でも触れるので、家や事務所の閉じた網に限る
+
+  ```bash
+  SHIP_TOUCH_HOST=<スマートフォンから届くこの機械の名前か IP>
+  SHIP_TOUCH_BIND=0.0.0.0
+  ```
+
+  どちらも空なら 127.0.0.1 のままで、入口はこの機械からだけ開ける（`env show` と操業コンソールにそう出る）
+- `--fresh` は検証の環境だけ（ship.yaml の `touch.environments` と `seed.environments` の両方に入っている環境）。本番の DB は入れ直さない
+- iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
