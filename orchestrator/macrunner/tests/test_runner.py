@@ -256,3 +256,10 @@ def test_checkin_and_self_uninstall(tmp_path, monkeypatch):
     def down(u, timeout=10):
         raise OSError("refused")
     assert runner.checkin(cfg, rid, opener=down) is False   # 工場が止まっていてもランナーは動き続ける
+
+
+def test_tool_list_is_fixed():
+    """道具の一覧は PROTOCOL.md と SCOPE.md の約束。足すときはこのテストと文書を同じ変更で直し、オーナーの承認を通す。"""
+    assert sorted(runner.TOOL_NAMES) == sorted([
+        "sim_devices", "sim_boot", "sim_shutdown", "sim_erase", "app_build", "build_status", "app_install", "app_launch",
+        "app_terminate", "screenshot", "open_url", "push", "logs", "ui_describe", "ui_tap", "ui_swipe", "ui_text", "ui_key"])
