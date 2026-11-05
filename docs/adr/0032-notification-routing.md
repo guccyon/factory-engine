@@ -1,6 +1,6 @@
 # ADR 0032: 報告・通知を種類ごとに宛先へ出し分ける（通知のルーティング）
 
-- 状態: 提案（2026-11-05。決めどころ R1〜R7 はオーナーの確認待ち）
+- 状態: 提案（2026-11-05。R1 は決まり、R2〜R7 はオーナーの確認待ち）
 - 関係: ADR 0005（工場状況 Issue と停止の通知）、ADR 0008（建設状況の日次レポート）、ADR 0026 決定 7（受信トレイの通知）、ADR 0029（流量の宣言）、ADR 0030（事業部の窓口）、Issue #174
 
 ## 文脈
@@ -26,25 +26,44 @@ Slack への通知は Claude 側のコネクタではなく、工場自身が In
 
 ## 決定
 
-### 1. 宛先に名前を付けて定義する
+### 1. 連携（credential）と宛先を分けて定義する
 
-宛先は「どの組織のもので、どう送るか」の組。
+「どの組織のどのサービスに、どの credential で送れるか」（連携）と、「どこに届けるか」（宛先）を分ける。Webhook の URL を通知ごとに発行しなくても、連携を 1 つ登録すれば、その組織の中の任意のチャンネルを宛先にできる。
 
 ```yaml
-destinations:
-  provider:            # 名前は自由。通知の割り当てはこの名前で書く
-    party: provider    # provider（運営元）/ business_owner（事業主）
-    via: slack         # slack / github-issue / log（今の INBOX_NOTIFY の選択肢）
-    webhook_env: SLACK_WEBHOOK_URL_PROVIDER   # 秘密は .env に置き、ここには変数の名前だけ
-    quiet: "22-7"      # 送らない時間（REPORT_TZ の時）。明けた最初の周回でまとめて送る
-    mentions: {builder: "<@U…>"}               # 誰の出番かごとのメンション
+connections:                # 連携。credential の値は .env に置き、ここには変数の名前だけ
+  provider_slack:
+    party: provider         # provider（運営元）/ business_owner（事業主）
+    via: slack_app          # Slack アプリ（ボットのトークン）。chat.postMessage で任意のチャンネルに送る
+    token_env: SLACK_BOT_TOKEN_PROVIDER
   owner_slack:
     party: business_owner
-    via: slack
-    webhook_env: SLACK_WEBHOOK_URL_OWNER
+    via: slack_app
+    token_env: SLACK_BOT_TOKEN_OWNER
+  owner_alerts_hook:
+    party: business_owner
+    via: slack_webhook      # Incoming Webhook。URL ごとに投稿先のチャンネルが決まる
+    webhook_env: SLACK_WEBHOOK_URL_OWNER_ALERTS
+
+destinations:               # 宛先。通知の割り当てはこの名前で書く
+  provider_dev:
+    connection: provider_slack
+    channel: "#factory-dev"           # slack_app のときだけ。チャンネル名か ID
+    quiet: "22-7"                     # 送らない時間（REPORT_TZ の時）。明けた最初の周回でまとめて送る
+    mentions: {builder: "<@U…>"}      # 誰の出番かごとのメンション
+  provider_ops:
+    connection: provider_slack
+    channel: "#factory-ops"
+  owner_dev:
+    connection: owner_slack
+    channel: "#dev-progress"
+  owner_alerts:
+    connection: owner_alerts_hook     # Webhook はチャンネルを書かない
 ```
 
-`party` が中身の境界（決定 3）の鍵になる。宛先の種類と URL の形は読み込むときに検査する（`slack` は `https://hooks.slack.com/` で始まること）。
+- 連携の種類（`via`）は `slack_app`・`slack_webhook`・`github-issue`・`log`。今の `INBOX_NOTIFY` の `slack` は `slack_webhook` にあたる
+- 宛先の組織（`party`）は連携から引き継ぐ。これが中身の境界（決定 3）の鍵になる
+- 読み込むときに形を検査する（`slack_webhook` は `https://hooks.slack.com/` で始まること、`slack_app` は `channel` があること）。`slack_app` のトークンには `chat:write` だけを付け、ボットを招いたチャンネルにだけ送れる形にする
 
 ### 2. 通知の種類は Engine の定義に置き、どの組織に出してよいかを種類が持つ
 
@@ -65,12 +84,19 @@ destinations:
 - 文面は宛先の `party` を引数にして作る。事業主の宛先には、運営元の操業コンソール（工場のマシンの中）へのリンク・費用・建設中の不具合を載せない（R5・R7）
 - 運営元の宛先は複数の工場の通知が混ざる前提で、文面の頭に工場の名前（`FACTORY_NAME`）を付ける。事業主の宛先はその事業主の工場の通知だけを受ける（工場は 1 事業主・1 プロダクト）
 
-### 4. 運用形態を 1 つ宣言すれば既定の割り当てが決まり、種類ごとに上書きできる
+### 4. 運用形態を 1 つ宣言すれば既定の割り当てが決まり、種類ごとに複数の宛先へ上書きできる
+
+1 つの種類は複数の宛先に送れる（例 プロダクト開発の進捗を、事業主の `#dev-progress` と運営元の `#factory-dev` の両方へ）。割り当ては宛先ごとに有効・無効を持つ。
 
 ```yaml
 operated_by: provider        # provider（運営元が操業する）/ business_owner（事業主が操業も自走する）
-routes:                      # 書かなければ operated_by から決まる既定
-  product.progress: [provider, owner_slack]
+routes:                      # 書かない種類は operated_by から決まる既定
+  product.progress:
+    - {to: owner_dev}
+    - {to: provider_dev}
+  factory.health:
+    - {to: provider_ops}
+    - {to: owner_alerts, enabled: false}   # いったん止めておく
 ```
 
 既定:
@@ -96,11 +122,14 @@ routes:                      # 書かなければ operated_by から決まる既
 
 代理への切り替え（`INBOX_PROXY`、ADR 0026 決定 7）は、代理の `who` の宛先にも送る。
 
-### 6. 設定は工場ごとのファイルに置き、周回ごとに読み直す
+### 6. 設定は工場ごとのファイルに置き、いずれ操業コンソールの設定画面から変える
 
-- 置き場は工場の作業ツリーの外の `orchestrator/notify.yaml`（`.env` と同じくリポジトリに入れない。`notify.example.yaml` を置く）。パスは `NOTIFY_CONFIG` で変えられる
-- dispatcher と supervisor は周回ごとにファイルを読み直す（変わったときだけ検査し、`notify.config_changed` に内容のハッシュと宛先の名前・割り当てを残す。秘密の値は残さない）。コンテナを作り直さずに変えられる
+工場はプロダクトごとに専用のものを建てるので、設定は工場ごとに持つ。
+
+- Gen1 の置き場は工場の作業ツリーの外の `orchestrator/notify.yaml`（`.env` と同じくリポジトリに入れない。`notify.example.yaml` を置く）。パスは `NOTIFY_CONFIG` で変えられる
+- dispatcher と supervisor は周回ごとにファイルを読み直す（変わったときだけ検査し、`notify.config_changed` に内容のハッシュと連携・宛先の名前・割り当てを残す。秘密の値は残さない）。コンテナを作り直さずに変えられる
 - 読めない・検査を通らないときは、前に通った設定のまま送り続け、受信トレイの `error` に出す
+- 行き先: 操業コンソールに通知の設定画面を置き、種類ごとに宛先を選び、有効・無効を切り替える。そのときは割り当て（`operated_by`・`routes`）の正本を制御プレーンに移し（ADR 0029 の流量と同じく、変えた人・理由・時刻を events に残す）、ファイルは最初の値を入れるだけにする。連携の credential は画面から登録しても `.env`（または秘密の置き場）に書き、制御プレーンと画面には値を出さない
 
 ### 7. 送る口は 1 か所、失敗でラインを止めない
 
@@ -110,7 +139,7 @@ routes:                      # 書かなければ operated_by から決まる既
 
 ### 8. 今の設定のまま動き続ける
 
-`notify.yaml` がないときは、今の環境変数から宛先 `default`（`party: provider`）を 1 つ組み立て、すべての種類をそこに割り当てる。
+`notify.yaml` がないときは、今の環境変数から連携と宛先 `default`（`party: provider`）を 1 つずつ組み立て、すべての種類をそこに割り当てる。
 
 - 受信トレイ: `INBOX_NOTIFY`・`SLACK_WEBHOOK_URL`・`INBOX_QUIET`・`INBOX_SLACK_MENTIONS` をそのまま使う
 - 停止と知らせ: `NOTIFIER`・`STATUS_REPO` をそのまま使う
@@ -128,7 +157,7 @@ routes:                      # 書かなければ operated_by から決まる既
 
 | # | 問い | 推奨 |
 |---|---|---|
-| R1 | 設定の置き場と形 | 工場ごとのファイル `orchestrator/notify.yaml`（リポジトリの外、周回ごとに読み直す）。秘密は `.env`。流量（ADR 0029）のような events での宣言にはしない（秘密が要り、変える頻度も低い） |
+| R1 | 設定の置き場と形 | 決まり（2026-11-05 オーナー「工場の設定ファイルで問題ない。1 つの通知を複数の宛先に送れること。Webhook だけでなく、Slack 連携でチャンネル名を指定して送れる credential の登録も残す。最終的にはダッシュボードの設定画面から通知ごとに通知先と有効・無効を変えたい」）。Gen1 は工場ごとのファイル `orchestrator/notify.yaml`、連携と宛先を分け、割り当ては複数の宛先と有効・無効を持つ。設定画面を作るときに割り当ての正本を制御プレーンに移す |
 | R2 | 通知の種類の一覧 | 決定 2 の 6 種類。種類の一覧は Engine の定義、割り当ては工場ごと |
 | R3 | 事業主が操業も自走するとき、健康状態を運営元にも写すか | 写す（運営元は保守の契約がある限り工場の具合を知る必要がある）。契約で保守をしないときは `routes` で外す |
 | R4 | 受信トレイの振り分け | 誰の出番か（who）で分ける。PO・デザインのチーフ・起票者は事業主、建設者は運営元、オーナーは運用形態に従う |
@@ -139,13 +168,15 @@ routes:                      # 書かなければ operated_by から決まる既
 ## 順番
 
 1. 宛先と種類の定義、`notify.yaml` の読み込みと検査、`notify.send`、環境変数からの宛先 `default`（決定 8）。停止・知らせ・受信トレイをこの口に載せ替える（挙動は今と同じ）
-2. 受信トレイの who による振り分け（決定 5）と、宛先ごとの `quiet`・メンション
+2. 受信トレイの who による振り分け（決定 5）、宛先ごとの `quiet`・メンション、Slack アプリの連携（`slack_app`）
 3. `construction.progress`（`report.daily` の後の要約）
 4. `factory.daily`・`product.progress`（朝の報告のプロダクト開発タブを工場から出す件と合わせる）と `product.release`
+5. 操業コンソールの通知の設定画面（種類ごとの宛先と有効・無効）。割り当ての正本を制御プレーンに移す
 
 ## 選ばなかった案
 
 - **Claude の Slack コネクタで送る**: 事業主ごとに宛先を持てず、工場の外（Claude のアカウント）に宛先が散る。送った記録も工場の events に残らない
+- **Webhook だけにする**: 通知の種類 × チャンネルごとに URL を発行して `.env` に足すことになり、面倒（オーナー 2026-11-05）。Webhook も選べるように残す
 - **環境変数を宛先ごとに増やす**（`SLACK_WEBHOOK_URL_OWNER`・`INBOX_NOTIFY_OWNER` …）: 種類 × 宛先の組み合わせが変数の名前に埋まり、検査もできない。秘密の URL だけを環境変数に残す
 - **割り当てを製品のリポジトリ（`.factory-config/`）に置く**: 運用形態は契約で決まる運営元の設定で、製品の変更ではない。製品のリポジトリは public のこともあり、宛先の名前や組織の分け方を載せたくない
 - **種類ごとに出してよい組織を持たず、割り当てだけに任せる**: 設定の書き間違い 1 つで工場の内部の情報が事業主に出る。読み込みで拒む方が安い
@@ -155,4 +186,4 @@ routes:                      # 書かなければ operated_by から決まる既
 - 運営元は工場を建てるときに `notify.yaml` を 1 つ書けば、事業主ごとに通知の出し先を決められる。操業中も書き換えるだけで変わる
 - 今の工場は `notify.yaml` を置かなければ今と同じに動く
 - 事業主の宛先に何を出したかは `notify.sent` で後から確かめられる
-- 種類を足すときは `definitions/notifications.yaml` に 1 行と、文面の関数を 1 つ足す。宛先に Slack 以外（メール、Teams など）を足すときは `via` を 1 つ足す
+- 種類を足すときは `definitions/notifications.yaml` に 1 行と、文面の関数を 1 つ足す。連携に Slack 以外（メール、Teams など）を足すときは `via` を 1 つ足す
