@@ -15,7 +15,7 @@ kinds:
     defaults:
       provider: [provider]
       business_owner: [business_owner, provider]   # 自走でも提供元に写しを送る（R3）
-    status: later      # 順番 3
+    status: ready      # 順番 3（中身は reports.yaml の仮置き）
   report.product:
     ja: プロダクト開発の日次レポート（ロードマップの進捗）
     parties: [provider, business_owner]
