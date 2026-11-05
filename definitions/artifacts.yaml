@@ -25,6 +25,10 @@ types:
     stage: [intake, clarify]
     required: [requester, raw_text, status]          # status: raw | clarified
     clarified_fields: [what, why, by_when, precision]
+  TaskSetDraft:
+    stage: triage
+    required: [status, request, tasks, unresolved, overlaps, estimate]
+    note: "ADR 0030 の 3。窓口の相談役が確定した依頼から切ったタスクのまとまりの下書き（依存つき、要件 → 画面 → 契約 → 実装の順）。依頼者の確認 1 回で Issue になる。correlation_id は desk:<会話の id>"
   Opportunity:
     stage: triage
     required: [title, problem, expected_effect]      # expected_effect は必須（指標・方向・幅）

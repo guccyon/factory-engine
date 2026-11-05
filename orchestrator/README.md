@@ -206,6 +206,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 - API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
 - 使用量（`/usage`、API は `GET /api/usage?days=14`、CLI は `factoryctl report usage [--days 14] [--json]`）: トークンの消費と費用（API 単価換算）を、日ごと（予算の枠と同じ 7:00 区切り。予算の枠の合計・予算で止めた時間・契約の上限に当たった回数つき）・役割ごと・モデルごと・契約の週（`PLAN_WEEK_RESET`、既定 `sun 11:00`）で出し、先頭に「アカウントを足すかの判断の材料」を決まった規則で並べる（usage.py）。週の上限の目安を API 単価で `PLAN_WEEKLY_LIMIT_USD` に入れると、割合と届く見込みも出る。予算の枠は supervisor と同じ `BUDGET_WINDOWS_WEEKDAY` / `BUDGET_WINDOWS_WEEKEND` を console にも渡す（読み方は usage.py の 1 か所）
 - 人の選択（ADR 0025）: デザイン検査役が人に回した画面の案（`design_variants`）と、内部品質の抜き取り（`taste_sample`）を、上部の「人の選択」に案の画像つきで並べる。「この案にする」「どれも違う（戻す。一言は必須）」「違和感（一言は必須）」を押せる。記録は artifacts の `HumanChoice` と events の `choice.requested`・`choice.made`（推奨との一致 `agreed`）・`choice.returned`・`taste.flagged`（教師信号 taste_flag）。依頼は `choice.request()` で作り、画像はオブジェクトストアの `choices/` か `design/` の下に置く（コンソールが中継し、外の URL は出さない）。デザインの線（`design_line`）は検査役が人に回したときに依頼を作り、画面で選ぶと `factoryctl design pick` と同じく `ui_design.chosen` を残す（Issue への反映は dispatcher の周回）。「どれも違う」は人の一言を指摘にしてデザイナー役を積み直す
+- 実装後の画面（ADR 0025 の 4、`exit_capture.py`）: dispatcher が `EXIT_CAPTURE_INTERVAL_SEC`（既定 300 秒）ごとに、工場の PR（開いているかマージから 48 時間以内）の head の状態「画面のキャプチャ / <アプリ>」を見て、`target_url` の CI の成果物（zip）から `manifest.json` と画像を読む。変わった・新しい・消えた画面の画像を `choices/capture/` の下に置き、人の選択（kind `exit_capture`）を作って受信トレイに「実装後の画面」（デザインのチーフの出番）として出す。画面ごとに「違和感」（一言は必須）で `taste.flagged`、見て違和感がなければ「見た」で `choice.seen`（印のない画面は負例の材料）。新しい head のキャプチャで前の依頼は閉じ、7 日見られなければ閉じる（`choice.closed`）。PR の本文には「実装後の画面のキャプチャ」の節（アプリごとの変わった画面の表と成果物のリンク）を書く。PR・head・アプリごとに 1 回（`capture.collected`）。`EXIT_CAPTURE=0` で止める。成果物を取るには工場のトークンに製品のリポジトリの Actions（読み取り）と Commit statuses（読み取り）が要る
 - 受信トレイ（ADR 0026 の決定 7）: ヘッダーのベルに人が対応するものの件数がバッジで出て、押すと一覧（誰の出番か・何をすればよいか・待ち時間）が開く。集めるのは人の判断待ちの停止（分類 human）・開いている人の選択・staging にあって本番に出ていない版・他の工程が積んだ依頼（`inbox.request(cur, key, kind, who, title, url=, action=)` で積み、`inbox.resolve(cur, key, by, outcome)` で消す。レビューページの承認待ちや着手判定の問いはこれを使う）。API は `GET /api/inbox`（`/api/state` の `inbox` にも入る）。表は持たず、毎回制御プレーンから組み立てる
 - 受信トレイの通知: dispatcher の番人の周回（`notify_inbox.tick`）が、新しく出た件・`INBOX_RENOTIFY_MIN` 分たっても残っている件（`INBOX_MAX_RENOTIFY` 回まで）・`INBOX_ESCALATE_MIN` 分を過ぎた件（代理 `INBOX_PROXY` にも）を 1 通にまとめて通知先に送る。通知先は工場を建てるときに `INBOX_NOTIFY` で選ぶ（`log`・`github-issue`＝工場状況 Issue へのコメント、Gen1 は見回りがこれを読んで Claude アプリに知らせる・`slack`＝`SLACK_WEBHOOK_URL` の Incoming Webhook、誰の出番かごとのメンションは `INBOX_SLACK_MENTIONS`）。値は .env に置く。`INBOX_QUIET`（例 `22-7`）の間は送らず明けてからまとめる。記録は events の `inbox.notified`・`inbox.escalated`・`inbox.cleared`（`waited_sec` が判断待ちの滞留の SLI）
 
@@ -226,10 +227,15 @@ docker compose exec dispatcher factoryctl hold 12
 
 ## 事業部の窓口（ADR 0030）
 
-工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口（`dispatcher/desk_api.py`、http://localhost:8792）。操業コンソールより狭く、相談と、依頼者に許した範囲のチケットの操作（優先度・保留・状態）だけを受ける。API が正本で、MCP のサーバー（順番 3）はこれを呼ぶだけの包みにする。
+工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口（`dispatcher/desk_api.py`、http://localhost:8792）。操業コンソールより狭く、相談と、依頼者に許した範囲のチケットの操作（優先度・保留・状態）だけを受ける。API が正本で、MCP のサーバー（順番 3、`desk-mcp/factory_desk_mcp.py`。stdio、標準ライブラリだけ）はこれを呼ぶだけの包み。手元の Claude Code・Claude Desktop への登録は `desk-mcp/README.md`。
 
-- 今入っているのは順番 1: トークンと役割（運用主・依頼者）、会話の記録（`desk_conversations` と events の `desk.*`）、明確な指示（「#812 を先に」）を壁打ちを通さずに通す優先度・保留・チケットの状態
-- 相談を開くと会話の id が返り、相手の返事は会話を読んで取る。壁打ちの相手（プランナーの相談役）は順番 2、回答役は順番 4 で入る。それまでは開いた相談は `open` のまま残り、運用主が `factoryctl desk list` で拾う
+- 順番 1: トークンと役割（運用主・依頼者）、会話の記録（`desk_conversations` と events の `desk.*`）、明確な指示（「#812 を先に」）を壁打ちを通さずに通す優先度・保留・チケットの状態
+- 順番 2（依頼の壁打ち。`dispatcher/desk_line.py`、`core-gates/desk_consult.py`、`definitions/desk.yaml`）: 依頼（`kind: request`）を開くか返事を書くと、dispatcher が相談役のジョブ（`desk_consult`）を窓口の枠で積む。相談役（工場の中のプランナー。製品の `specs/`・`docs/`・流れているチケット・開いている Issue を読むだけ）は、理由と選択肢つきの問いを 1 つ返すか（`waiting_requester`、最大 3 回）、確定した Request とタスクのまとまりの下書き（依存つき、要件 → 画面 → 契約 → 実装の順、既存のチケットとの重なり、見込み）を返す（`drafted`）。問いを使い切ったら、決まったところまでを下書きにして残りを「未確定」と書く
+- 依頼者が下書きを 1 回確認すると（`confirm`、優先度もここで決め直せる）、dispatcher が次の周回で製品の Issue として依存の順に起票する。依存のないタスクは `factory:plan`（プランナーの着手判定。ADR 0026）、あるタスクは `factory:desk-waiting` で、依存が閉じたら `factory:plan` に替わる。チケットはもとの会話（`desk_conversation_id`）と依頼者の優先度（`priority_set_by` は `desk:<名前>`）を持ち、依頼者は自分の依頼から作ったチケットの優先度・保留を変えられる
+- 直したいところは下書きに返事を書けば出し直す（古い下書きは確認できない）。確認した相談には書けない（新しく開く）
+- 窓口の枠は流量の宣言の `desk`（`factoryctl line scale --desk N`、既定 `DESK_PARALLEL=1`）。ラインの一時停止中も相談には答え、ラインのワーカーを奪わない。相談 1 件の費用は `DESK_CONSULT_MAX_USD`（既定 $2、仮置き）まで
+- 問い合わせ（`kind: inquiry`）の回答役は順番 4 で入る。それまでは開いた問い合わせは `open` のまま残り、運用主が `factoryctl desk list` で拾う
+- GitHub の Issue で clarify まで済んだ依頼（`factory:clarified`）は `factoryctl desk from-issue owner/repo#番号` で窓口の依頼として開き直せる
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
@@ -239,8 +245,13 @@ T=fdk_...   # 出たトークン
 curl -s -H "Authorization: Bearer $T" localhost:8792/api/desk/tickets/guccyon%2Frally%23900
 curl -s -H "Authorization: Bearer $T" -d '{"level":"p1","reason":"検証に使う"}' localhost:8792/api/desk/tickets/guccyon%2Frally%23900/priority
 curl -s -H "Authorization: Bearer $T" -d '{"kind":"request","product":"guccyon/rally","body":"予約まわりの通知を先に進めて"}' localhost:8792/api/desk/conversations
-curl -s -H "Authorization: Bearer $T" "localhost:8792/api/desk/conversations/1?after=0&wait=30"
+curl -s -H "Authorization: Bearer $T" "localhost:8792/api/desk/conversations/1?after=0&wait=30"   # 問いか下書きが来るまで待つ
+curl -s -H "Authorization: Bearer $T" -d '{"body":"前日の知らせのほう"}' localhost:8792/api/desk/conversations/1/messages
+curl -s -H "Authorization: Bearer $T" -d '{"draft_id":42,"level":"p1"}' localhost:8792/api/desk/conversations/1/confirm   # 下書きを確認して投入
+docker compose exec dispatcher factoryctl desk show 1                                        # 会話・下書き・作ったチケット
 ```
+
+相談役のジョブは基本のワーカーのイメージに入っている `desk_consult.sh` で動くので、順番 2 を入れるときはワーカーのイメージと dispatcher を作り直す（`build.sh`）。
 
 ## PR の見張り（ADR 0015）
 
@@ -381,6 +392,15 @@ supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回
 ```bash
 docker compose exec supervisor python /health/daily/status_report.py --dry-run           # 書かずに中身を見る
 docker compose exec supervisor python /health/daily/status_report.py --publish --force   # 今日の分を出し直す
+```
+
+## Mac ランナー（ADR 0028 の決定 3）
+
+iOS シミュレーターを工場から動かすための、ホスト（macOS）の常駐プロセス。工場のコンテナからは `host.docker.internal:8793` に MCP で話す。道具は決まった一覧だけで、ビルドはマージ済みのコミットだけ。入れ方・道具・守りは [macrunner/README.md](macrunner/README.md)。
+
+```bash
+scripts/macrunner.sh install                               # ホストで。トークンを .env の MAC_RUNNER_TOKEN に写す（scripts/macrunner.sh token）
+docker compose exec dispatcher factoryctl runner check     # 届くか: health・MCP・道具・端末
 ```
 
 ## ジョブ用の DB
