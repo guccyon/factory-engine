@@ -19,6 +19,7 @@
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
   factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
+  factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
@@ -536,6 +537,11 @@ def restricted_cmd(cur, argv):
 
 
 def main(argv):
+    if len(argv) > 1 and argv[1] == "version":   # サービスごとの版（ADR 0031）。DB を使わない。--expect <コミット> で、ずれたら終了コード 1
+        import version
+        text, code = version.report(version.list_running(os.environ.get("COMPOSE_PROJECT", "factory")), opt(argv, "--expect"))
+        print(text)
+        return code
     conn = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, autocommit=True)
     cur = conn.cursor()
     cur.execute("select set_config('timezone', %s, false)", (os.environ.get("REPORT_TZ", "Asia/Tokyo"),))   # 表示は建設者の時刻で

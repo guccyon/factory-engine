@@ -45,6 +45,7 @@ docker compose exec dispatcher factoryctl enqueue guccyon/rally 3   # ラベル�
 docker compose exec dispatcher factoryctl events 12     # そのジョブのイベント
 docker compose exec dispatcher factoryctl drain --wait 3000   # ラインを一時停止して、入れ替えてよくなるまで待つ（ADR 0020）
 docker compose exec dispatcher factoryctl resume        # ラインを再開
+docker compose exec dispatcher factoryctl version       # サービスごと・ジョブごとに動いている版（ADR 0031）
 ```
 
 ## 続きのジョブと引き継ぎのボリューム（ADR 0016・0017）
@@ -77,8 +78,14 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 - **工場のコードだけ**（dispatcher・supervisor・console・shipper、ワーカーのイメージの作り直し）: 一時停止は要らない。実行中のジョブはそのまま続く。出荷の処理中だけは shipper を上げ直さない（`drain status` で見る）
 
   ```bash
-  git pull && docker compose build && docker compose up -d dispatcher supervisor console
+  git pull
+  scripts/build.sh                 # イメージを依存の順に作る（土台 → 派生）。版のラベルと ENGINE_VERSION を焼き込む（ADR 0031）
+  docker compose up -d             # すべてのサービスを上げる（一部だけ上げない）
+  docker compose exec dispatcher factoryctl version --expect "$(git rev-parse --short HEAD)"   # どのサービスも新しい版で動いているか（ずれたら終了コード 1）
   ```
+
+  - `docker compose build` や `up -d --build` は使わない。ワーカーのイメージを作らず、派生のイメージ（shipper・design）が古い土台に乗ることがある
+  - `.env` に `ENGINE_VERSION` を書かない（古い値が残って来歴を誤る。イメージに焼き込んだ値が使われる）
 
 - **制御プレーンや Mac ごと**（postgres・オブジェクトストア・Docker・OS の再起動）: ラインを一時停止して、入れ替えてよくなるまで待つ
 
