@@ -227,7 +227,7 @@ docker compose exec dispatcher factoryctl hold 12
 
 ## 事業部の窓口（ADR 0030）
 
-工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口（`dispatcher/desk_api.py`、http://localhost:8792）。操業コンソールより狭く、相談と、依頼者に許した範囲のチケットの操作（優先度・保留・状態）だけを受ける。API が正本で、MCP のサーバー（順番 3）はこれを呼ぶだけの包みにする。
+工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口（`dispatcher/desk_api.py`、http://localhost:8792）。操業コンソールより狭く、相談と、依頼者に許した範囲のチケットの操作（優先度・保留・状態）だけを受ける。API が正本で、MCP のサーバー（順番 3、`desk-mcp/factory_desk_mcp.py`。stdio、標準ライブラリだけ）はこれを呼ぶだけの包み。手元の Claude Code・Claude Desktop への登録は `desk-mcp/README.md`。
 
 - 順番 1: トークンと役割（運用主・依頼者）、会話の記録（`desk_conversations` と events の `desk.*`）、明確な指示（「#812 を先に」）を壁打ちを通さずに通す優先度・保留・チケットの状態
 - 順番 2（依頼の壁打ち。`dispatcher/desk_line.py`、`core-gates/desk_consult.py`、`definitions/desk.yaml`）: 依頼（`kind: request`）を開くか返事を書くと、dispatcher が相談役のジョブ（`desk_consult`）を窓口の枠で積む。相談役（工場の中のプランナー。製品の `specs/`・`docs/`・流れているチケット・開いている Issue を読むだけ）は、理由と選択肢つきの問いを 1 つ返すか（`waiting_requester`、最大 3 回）、確定した Request とタスクのまとまりの下書き（依存つき、要件 → 画面 → 契約 → 実装の順、既存のチケットとの重なり、見込み）を返す（`drafted`）。問いを使い切ったら、決まったところまでを下書きにして残りを「未確定」と書く

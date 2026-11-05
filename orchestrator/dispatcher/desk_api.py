@@ -2,7 +2,7 @@
 """事業部の窓口の API（ADR 0030 の順番 1・2）。工場の外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口。
 
 操業コンソール（console.py）とは別のプロセスで、受けるのは相談と、依頼者に許した範囲のチケットの操作だけ（止める・承認する・流量を変えるはできない）。
-API（JSON）が正本で、MCP のサーバー（mcp_desk.py）はこれを呼ぶだけの包み。
+API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_desk_mcp.py）はこれを呼ぶだけの包み。
 
 認証: Authorization: Bearer <トークン>（factoryctl desk token create で発行。役割と対象の製品を持つ）
   GET  /api/desk/me                                    トークンの名前・役割・対象の製品
