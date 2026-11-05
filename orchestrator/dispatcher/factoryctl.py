@@ -19,7 +19,7 @@
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
   factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
-  factoryctl runner check                          # Mac ランナー（ADR 0028）に届くか: health・MCP・道具・端末。届かなければ終了コード 1
+  factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
