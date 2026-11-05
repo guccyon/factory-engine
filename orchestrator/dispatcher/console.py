@@ -11,12 +11,14 @@
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
+  POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
   POST /api/choices/<id>/choose           {"option", "reason"?} 人の選択（画面の案・抜き取り。ADR 0025）
   POST /api/choices/<id>/return           {"reason"} どの案も選ばず作り手に戻す
   POST /api/choices/<id>/flag             {"note", "option"?} 違和感の印（教師信号 taste_flag）
+  POST /api/choices/<id>/seen             {"note"?} 実装後の画面を見て閉じる（exit_capture。ADR 0025 の 4）
   GET  /api/choices/<id>/image/<option>   案の画像（オブジェクトストアの choices/ の下から中継する）
   GET  /review/<UXSpec の id>             デザインのレビューページ（ADR 0026）。PRD の要約・ユーザーフロー・画面定義書・案・検査役の判断と、承認・直し・違和感
   GET  /review/<UXSpec の id>/image/<名前>.png   レビューページの案の画像（案の HTML はこの origin では開かない）
@@ -49,6 +51,7 @@ import ops
 import prototype
 import review_page
 import ship
+import touch
 import usage
 import usage_page
 
@@ -215,7 +218,11 @@ def releases(cur) -> list[dict]:
         cur.execute("select id, occurred_at, name, payload from events where name = any(%s) and payload->>'repo'=%s order by id desc limit 1",
                     (list(ship.RESULTS), repo))
         last = cur.fetchone()
-        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(cur, repo), "stage": ship.stage_of(cur, repo),
+        t = touch.latest(cur, repo)
+        if t:   # 触れる環境の入口（URL・QR・ログインの手がかり）。QR は工場の中で作る（外部のサービスに依存しない）
+            t = {k: t.get(k) for k in ("release_id", "env", "reachable_from_phone", "accounts", "note", "at")} | {
+                "entries": [{**e, "qr_svg": touch.qr_svg(e["url"]) if e.get("qr") else None} for e in t.get("entries") or []]}
+        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(cur, repo), "stage": ship.stage_of(cur, repo), "touch": t,
                     "last": {"name": last["name"], "at": iso(last["occurred_at"]), **{k: last["payload"].get(k) for k in
                              ("release_id", "env", "seconds", "from", "error")}} if last else None})
     return out
@@ -248,7 +255,10 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             return 400, {"error": "env は staging か prod"}
         ok, msg = ship.request_rollback(cur, repo, env, by, "console")
         return (200, {"message": msg}) if ok else (409, {"error": msg})
-    if path == "/api/line/scale":   # ラインの流量の宣言（ADR 0028）。{workers, tickets, governance} のうち渡したものだけ変える
+    if path == "/api/releases/reseed":
+        ok, msg = ship.request_reseed(cur, str(body.get("repo") or ""), "staging", by, "console")
+        return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/line/scale":   # ラインの流量の宣言（ADR 0028）。{workers, tickets, governance, desk} のうち渡したものだけ変える
         try:
             line.scale(cur, by, reason, **{k: body.get(k) for k in line.FIELDS})
         except (ValueError, TypeError) as e:
@@ -261,7 +271,7 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         if not isinstance(body.get("prevent_sleep"), bool):
             return 400, {"error": "prevent_sleep（true か false）が要る"}
         return 200, {"prevent_sleep": ops.set_keep_awake(cur, body["prevent_sleep"], by, reason)}
-    m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag)", path)
+    m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag|seen)", path)
     if m:
         aid, what = int(m.group(1)), m.group(2)
         c = choice.get(cur, aid)
@@ -279,6 +289,8 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             ok, msg = choice.return_to_maker(cur, aid, by, reason)
             if ok and design:
                 design_line.return_to_designer(cur, sub["repo"], int(sub["ticket"]), c["correlation_id"], reason, MODEL_TIER)
+        elif what == "seen":
+            ok, msg = choice.mark_seen(cur, aid, by, reason)
         else:
             opt = body.get("option")
             ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, str(opt) if opt else None)
@@ -415,7 +427,8 @@ h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;bo
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}button,select{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
 button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stops{padding:0 16px}#stops div{margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
 #ship{padding:0 16px}.rel{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
-.rel .env b{font-size:15px}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}a.btn{font-size:12px;padding:3px 10px;border-radius:6px;background:var(--ok);color:#fff;text-decoration:none}
+.rel .env b{font-size:15px}.touch{flex-basis:100%;display:flex;flex-wrap:wrap;gap:12px}.touch .e{border:1px solid var(--line);border-radius:8px;padding:8px;max-width:260px}
+.touch .e svg{display:block;width:160px;height:auto;margin-top:6px}.touch code{font-size:11px;word-break:break-all}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}a.btn{font-size:12px;padding:3px 10px;border-radius:6px;background:var(--ok);color:#fff;text-decoration:none}
 #choices{padding:0 16px}.ch{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:var(--card)}
 .opts{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin:8px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:8px}
 .opt.rec{border-color:var(--ok)}.opt img{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}.ch input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(360px,100%)}
@@ -451,26 +464,31 @@ function acts(i){let h="";
  return h?`<div class="acts">${h}</div>`:""}
 const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
- const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す"}[p.request]||p.request)).join("・")}</span>`:"";
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
   if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
   if(!r.prod_held&&pr.previous&&!pr.rollback_blocked)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前の版に戻す（${VER(pr.previous)} へ）</button>`;
-  if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`}
- const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
- return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}</div>`}).join("")}
+  if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
+  if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
+ const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
 const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
   return `<li><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div></li>`}).join("")}</ul></div>`}
-const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り"};
+const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
+ const exit=c.kind==="exit_capture";
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
-  <div class="acts"><button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
- return `<div class="ch" id="choice-${c.id}"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
-  <div class="opts">${opts}</div><div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div></div>`}).join("")}
+  <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
+ const tail=exit?`<input id="note-${c.id}" placeholder="違和感の一言（例: 余白が詰まって見える）。入れて画面の「違和感」を押す" maxlength="300"><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button>`
+  :`<input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button>`;
+ return `<div class="ch" id="choice-${c.id}"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",sub.artifact_url?link(sub.artifact_url,"CI の成果物"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
+  <div class="opts">${opts}</div><div class="acts">${tail}</div></div>`}).join("")}
 function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||"")];
  if(i.job_id)meta.push(`ジョブ ${i.job_id}${i.kind&&i.kind!=="implement"?"（"+esc(i.kind)+"）":""}${i.attempt>1?" 試行"+i.attempt:""}`);
  if(i.rank)meta.push(`${i.rank} 番目`);if(i.held)meta.push("保留中");
@@ -480,7 +498,7 @@ function card(i){const lv=i.level||"p2";let meta=[link(i.pr_url||i.url,i.ref||""
  return `<div class="it ${lv}${i.held?" held":""}"><div class="t">${i.priority!=null?`<span class="badge ${lv}">${esc(lv)}</span>`:""}${esc(i.title||"（題名なし）")}</div><div class="m">${meta.filter(Boolean).join(" · ")}</div>${acts(i)}</div>`}
 function scaleView(sc,l){if(!sc)return"";const d=sc.desired,r=sc.running,n=(v)=>v==null?"?":v,paused=l&&l.draining;
  const who=sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）";
- return `<span class="stat ${paused?"bad":""}" title="流量（いま / 宣言）。${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b></span>`}
+ return `<span class="stat ${paused?"bad":""}" title="流量（いま / 宣言）。${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b> · 窓口 <b>${n(r.desk)} / ${d.desk}</b></span>`}
 function lineView(l){if(!l)return"";const w=[l.running.length?`実行中 ${l.running.length} 件の終わり待ち`:"",l.shipping.length?`出荷 ${l.shipping.length} 件の処理待ち`:""].filter(Boolean).join("・");
  return `<label class="stat sw ${l.draining&&!l.ready?"bad":""}" title="オフにすると順番待ちを取り出さない（実行中のジョブは最後まで流す）。工場の入れ替えのとき">ライン <input type="checkbox" role="switch" id="line" ${l.draining?"":"checked"}><b class="${l.draining?"":"on"}">${l.draining?(l.ready?"一時停止中（入れ替えてよい）":"一時停止中（"+w+"）"):"流している"}</b></label>`}
 async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
@@ -503,8 +521,9 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
 document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.id==="line")return post(t.checked?"/api/factory/resume":"/api/factory/drain",{reason:"操業コンソール"});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
- if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
+ if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else if(s.dataset.ship==="reseed")post("/api/releases/reseed",{repo:s.dataset.repo});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c,note=(document.getElementById("note-"+id)||{}).value||"";
+ if(b.dataset.ch==="seen")return post(`/api/choices/${id}/seen`,{reason:note});
  if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});
  if(b.dataset.ch==="flag"){if(!note.trim())return toast("違和感の一言を入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
  if(!note.trim())return toast("戻す理由を一言入れてください");post(`/api/choices/${id}/return`,{reason:note})});

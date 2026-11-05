@@ -1,6 +1,6 @@
 """Learn ループの Retrospective（ADR 0013 の 1・2）。
 
-教師信号を制御プレーンの記録（artifacts の Judgment、events の judgment.graded・sendback.*）から集め、signature で束ねる。
+教師信号を制御プレーンの記録（artifacts の Judgment、events の judgment.graded・taste.flagged・sendback.*）から集め、signature で束ねる。
 決定的（LLM を使わない）。同じ記録と同じ期間には同じ束を返す。Lesson を書く learn ジョブはこの束を入力にする（別の PR）。
 数え方は definitions/learning.yaml（teacher_signals・retrospective・knowledge_stages）に合わせる。
 """
@@ -46,6 +46,15 @@ def collect_signals(cur, frm: datetime, to: datetime) -> list[dict]:
     for r in cur.fetchall():
         out.append({"kind": "human_disagree", "signature": signature_of(r["c"], r["d"]), "pr_url": r["pr"], "ticket": r["correlation_id"],
                     "at": r["occurred_at"], "artifact_id": r["id"], "defect": r["d"]})
+    # 人の違和感の印（taste_flag）。実装後の画面（exit_capture）・画面の案・抜き取りから付く（ADR 0025 の 4）。画面と一言を材料に残す
+    cur.execute("""select occurred_at, correlation_id, payload from events where name='taste.flagged' and occurred_at >= %s and occurred_at < %s
+                    order by id""", (frm, to))
+    for r in cur.fetchall():
+        p, sub = r["payload"], r["payload"].get("subject") or {}
+        where = " ".join(x for x in (sub.get("app"), p.get("option_label"), f"({p['option_note']})" if p.get("option_note") else None) if x)
+        out.append({"kind": "taste_flag", "signature": p.get("signature") or "taste:?", "pr_url": sub.get("pr_url"), "ticket": r["correlation_id"],
+                    "at": r["occurred_at"], "artifact_id": p.get("artifact_id"),
+                    "defect": {"evidence": p.get("note"), "location": where or None, "remediation_hint": None}})
     return [s for s in out if not s["signature"].startswith(OVERLAY_PREFIX)]
 
 

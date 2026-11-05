@@ -93,8 +93,8 @@ phases:
       - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff と Ticket の生産", measure: { manual: todo } }
       - { id: opportunity_to_ticket, ja: "テーマ 1 つから人が触らずに Requirements と段の束（依存つき）が出る", measure: { manual: todo } }   # ADR 0025 の完了条件 1
       - { id: design_variants, ja: "画面を含む段は要素と振る舞いが決まった UXSpec を持って実装に流れ、案はデザイン検査役が承認する（新しい画面・ブランド・低確信だけ人）", measure: { manual: todo } }   # ADR 0025 の 2・3
-      - { id: consult_desk, ja: "外（顧客の Claude Desktop など）から窓口の API・MCP でプランナーに曖昧な依頼を壁打ちし、確定した依頼がタスクのまとまりになって指定の優先度でラインに入った", measure: { manual: todo } }   # ADR 0030 の順番 1〜3。何を流すかは外が決める。順番 1（API・会話の記録・トークン・明確な指示）は済み
-      - { id: screen_capture_taste, ja: "実装後の画面のキャプチャが PR に付き、人の違和感の印が教師信号として Learn に入る", measure: { manual: todo } }   # ADR 0025 の 4
+      - { id: consult_desk, ja: "外（顧客の Claude Desktop など）から窓口の API・MCP でプランナーに曖昧な依頼を壁打ちし、確定した依頼がタスクのまとまりになって指定の優先度でラインに入った", measure: { manual: todo } }   # ADR 0030 の順番 1〜3。何を流すかは外が決める。順番 1（API・会話の記録・トークン・明確な指示）と順番 2（相談役の往復・タスクのまとまりの下書き・確認 1 回で起票）・順番 3（stdio の MCP、desk-mcp/）は済み。実際の依頼で 1 本通したら done
+      - { id: screen_capture_taste, ja: "実装後の画面のキャプチャが PR に付き、人の違和感の印が教師信号として Learn に入る", measure: { manual: todo } }   # ADR 0025 の 4。経路は exit_capture.py（CI の成果物 → PR の本文・受信トレイ「実装後の画面」→ taste.flagged → learn の taste_flag）。実際の PR で 1 件通したら done
       # 要求者ペルソナ 10 人それぞれの最新の結果のうち、確定・往復 3 回以内・意図と一致（採点役）の人数。8 人で満点（仮置き）
       # 一巡させるのは orchestrator/scripts/clarify-bench.sh
       - id: clarify_3_rounds
@@ -117,7 +117,7 @@ phases:
     items:
       - { id: mac_runner, ja: "Mac ランナーが工場から呼べる（iOS シミュレーターの起動・インストール・画面の取得・操作・ログの回収をジョブから）", measure: { manual: todo } }   # Mac 上の MCP サーバー＋常駐。対話は要らないので Remote Control ではない。Gen1 は dispatcher から直接でもよい
       - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す
-      - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { manual: todo } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env
+      - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { db: { target: 1, sql: "select count(distinct payload->>'release_id') from events where name = 'release.touchable' and (payload->>'reachable_from_phone')::boolean" } } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env。factoryctl env up（orchestrator/README の「触れる環境」）。スマートフォンから届く入口を出した Release を数える
       - id: user_story
         ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）がプランナーの出力に加わり、既存機能に 3 本以上遡って書かれた"
         measure: { github_files: { repo: guccyon/rally, path: specs/stories, target: 3 } }   # P4 typed_upstream と同じ PR で型を足す。最初の 3 本: コーチが新しい相談に返事する（rally #895）、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う

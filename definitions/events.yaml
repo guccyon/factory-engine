@@ -214,14 +214,38 @@ events:
     source: control_plane
     required: [conversation_id, by]
     note: "ADR 0030。相談を閉じた"
+  desk.drafted:
+    source: control_plane
+    required: [conversation_id, draft_id, status, tasks]
+    note: "ADR 0030 の 3。相談役がタスクのまとまりの下書きを出した（artifacts の TaskSetDraft）。status は clarified | unresolved（問いを使い切って未確定が残る）。questions_asked・overlaps・cost_usd も"
+  desk.consult_skipped:
+    source: control_plane
+    required: [conversation_id, reason]
+    note: "ADR 0030 の 6。相談役を動かさなかった。reason は cost_limit（相談 1 件の上限 DESK_CONSULT_MAX_USD）| not_a_factory_repo"
   desk.request_confirmed:
     source: control_plane
-    required: [conversation_id, by]
-    note: "ADR 0030。依頼者が下書きを確認した（順番 2 から）"
+    required: [conversation_id, by, draft_id, level]
+    note: "ADR 0030。依頼者が下書きを確認した（確認 1 回で投入）。level はチケットに付ける優先度。起票は dispatcher が次の周回で行う"
+  desk.ticket_filed:
+    source: control_plane
+    required: [conversation_id, draft_id, key, number]
+    note: "ADR 0030 の 3。下書きのタスク 1 つを製品の Issue に起票した（途中で止まっても、次の周回で残りから続けるための印）。label は factory:plan | factory:desk-waiting"
+  desk.file_failed:
+    source: control_plane
+    required: [conversation_id, draft_id]
+    note: "ADR 0030 の 3。起票に失敗した（次の周回で続ける）。会話に知らせる"
   desk.tickets_created:
     source: control_plane
-    required: [conversation_id, tickets]
-    note: "ADR 0030。確定した依頼からチケットを作った（tickets.source は desk、desk_conversation_id を持つ。順番 2 から）"
+    required: [conversation_id, draft_id, tickets]
+    note: "ADR 0030。確定した依頼からチケットを作った。入口は今のラインと同じ GitHub の Issue（tickets.source は github）で、desk_conversation_id と依頼者の優先度（priority_set_by は desk:<名前>）を持つ"
+  desk.task_released:
+    source: control_plane
+    required: [repo, issue, after]
+    note: "ADR 0030 の 3。窓口から起票したタスクの依存がすべて閉じたので、factory:desk-waiting から factory:plan（プランナーの着手判定）に替えた"
+  desk.imported:
+    source: control_plane
+    required: [conversation_id, repo, issue, by]
+    note: "ADR 0030 の 3。GitHub の Issue の依頼（clarify で確定したものなど）を窓口の依頼として開き直した（factoryctl desk from-issue）"
   desk.priority_changed:
     source: control_plane
     required: [ticket_id, from, to, by]
@@ -229,7 +253,7 @@ events:
   line.scaled:
     source: control_plane
     required: [workers, tickets, governance, by]
-    note: "ADR 0029。ラインの流量の宣言（factoryctl line scale・操業コンソール）。最後のものが正本。dispatcher と supervisor が周回ごとに読む。reason は任意"
+    note: "ADR 0029。ラインの流量の宣言（factoryctl line scale・操業コンソール）。最後のものが正本。dispatcher と supervisor が周回ごとに読む。reason は任意。desk（窓口の枠。ADR 0030 の 6）は足した後の宣言から入る（ないときは DESK_PARALLEL）"
   factory.drain_allowed:
     source: control_plane
     required: [corrs, by]
@@ -489,7 +513,19 @@ events:
   taste.flagged:
     source: control_plane
     required: [artifact_id, kind, option, note, signature, subject, by]
-    note: "違和感の印。教師信号 taste_flag（learning.yaml）の発生源。signature は taste:<一言を詰めて 40 字>（仮。言語化の候補への寄せは learn が後で行う）"
+    note: "違和感の印。教師信号 taste_flag（learning.yaml）の発生源。signature は taste:<一言を詰めて 40 字>（仮。言語化の候補への寄せは learn が後で行う）。option_label・option_note は印を付けた画面（案）の名前と説明"
+  choice.seen:
+    source: control_plane
+    required: [artifact_id, kind, by, flagged, unflagged, subject, note]
+    note: "ADR 0025 の 4。人が実装後の画面（exit_capture）を見て閉じた。unflagged は印を付けなかった画面（違和感のなかった画面。taste_flag の負例の材料）"
+  choice.closed:
+    source: control_plane
+    required: [artifact_id, kind, status, by, reason]
+    note: "人を待たずに工場が依頼を閉じた（status: superseded＝新しい head のキャプチャで置き換わった、expired＝期限）。人の判断ではないので一致率に数えない"
+  capture.collected:
+    source: control_plane
+    required: [pr_url, head_sha, app]
+    note: "ADR 0025 の 4。工場の PR の head の「画面のキャプチャ / <アプリ>」の状態から CI の成果物（manifest.json と画像）を読んだ（exit_capture.py）。screens は変わった・新しい・消えた画面、choice_id は受信トレイに出した実装後の画面の依頼（変わった画面がなければ null）。成果物が読めなければ error。PR・head・アプリごとに 1 回（dedupe_key）"
   inbox.requested:
     source: control_plane
     required: [key, kind, who, title, url, action, by]

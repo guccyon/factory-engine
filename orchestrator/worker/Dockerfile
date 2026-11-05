@@ -34,6 +34,8 @@ COPY --chown=worker:worker ui_design_review.sh /usr/local/bin/ui_design_review.s
 COPY --chown=worker:worker design_system.sh /usr/local/bin/design_system.sh
 # プランナーのジョブ（ADR 0025・0026。着手判定と経路の振り分け）
 COPY --chown=worker:worker plan.sh /usr/local/bin/plan.sh
+# 窓口の相談役のジョブ（ADR 0030 の 3。依頼の壁打ちとタスクのまとまりの下書き）
+COPY --chown=worker:worker desk_consult.sh /usr/local/bin/desk_consult.sh
 # 知見の委員会のジョブ（ADR 0024）
 COPY --chown=worker:worker committee_review.sh /usr/local/bin/committee_review.sh
 COPY --chown=worker:worker committee_weekly.sh /usr/local/bin/committee_weekly.sh
