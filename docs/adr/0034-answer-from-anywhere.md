@@ -114,7 +114,7 @@ Claude から工場を使うには、受信トレイがあること、どの道�
 
 ## 順番
 
-1. 正本: 各件の `answer`、`inbox.answer`、`inbox.answered`、答え済みの件を閉じる。コンソールのボタンをこの口に寄せる（挙動は今と同じ）
+1. 正本: 各件の `answer`、`inbox.answer`、`inbox.answered`、答え済みの件を閉じる。コンソールのボタンをこの口に寄せる（挙動は今と同じ）。受信トレイの件の上で答えられるようにし、知らせた宛先へ書き戻す（実装済み）
 2. Claude の入口: 窓口 API と MCP に `inbox_list`・`inbox_read`・`inbox_answer`（ADR 0030 の順番 3 の stdio の MCP に足す）。通知の文面に key と「Claude に『受信トレイの ○○ に答えて』と言う」を入れる
 3. GitHub の入口: 件の Issue・PR のコメントを拾う（着手判定の問いの `planner.answered` をこの口に寄せる）。解釈役と聞き返し、書き戻し
 4. 拾えなかった返信と、日報の数

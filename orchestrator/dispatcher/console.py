@@ -17,7 +17,8 @@
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
   POST /api/runners/<id>/uninstall        {"reason"?} そのランナーを外す（次の連絡でランナーが自分の常駐を外し、鍵を捨てる）。/api/state の runners に一覧
   POST /api/runners/pairs/<pair_id>/approve | reject   ペアリングの依頼を許可・拒否する（ADR 0033。Mac 側の y とそろうと繋がる）。/api/state の runner_pairs に一覧
-  POST /api/choices/<id>/choose           {"option", "reason"?} 人の選択（画面の案・抜き取り。ADR 0025）
+  POST /api/inbox/answer                  {"key", "option", "note"?, "on"?} 受信トレイの 1 件にその場で答える（ADR 0034。inbox.answer が唯一の口で、先に答えた方が勝つ）
+  POST /api/choices/<id>/choose           {"option", "reason"?} 人の選択（画面の案・抜き取り。ADR 0025）。下の 4 つも inbox.answer を通る
   POST /api/choices/<id>/return           {"reason"} どの案も選ばず作り手に戻す
   POST /api/choices/<id>/flag             {"note", "option"?} 違和感の印（教師信号 taste_flag）
   POST /api/choices/<id>/seen             {"note"?} 実装後の画面を見て閉じる（exit_capture。ADR 0025 の 4）
@@ -44,7 +45,6 @@ import psycopg
 from psycopg.rows import dict_row
 
 import choice
-import design_line
 import drain
 import line
 import inbox
@@ -64,7 +64,6 @@ PORT = int(ENV.get("CONSOLE_PORT", "8790"))
 ALLOWED_HOSTS = {h.strip() for h in ENV.get("CONSOLE_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()}
 OPERATOR = ENV.get("CONSOLE_OPERATOR", "builder")
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))
-MODEL_TIER = ENV.get("MODEL_TIER", "tier-large")   # 人が案を戻したときに積み直すデザイナー役のモデル（dispatcher と同じ値）
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 段の残りがこれを切ると赤く出す（番人の知らせと同じ値。dispatcher.py）
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TZ = ENV.get("REPORT_TZ", "Asia/Tokyo")
@@ -234,6 +233,14 @@ def releases(cur) -> list[dict]:
 
 
 # ------------------------------------------------------------------ 操作（ops を通す）
+ANSWER_CODES = {"answered": 200, "noted": 200, "not_found": 404, "invalid": 400, "already": 409, "failed": 409}
+
+
+def answered(res: str, msg: str) -> tuple[int, dict]:
+    code = ANSWER_CODES.get(res, 409)
+    return (code, {"result": res, "message": msg}) if code == 200 else (code, {"result": res, "error": msg})
+
+
 def act(cur, path: str, body: dict) -> tuple[int, dict]:
     by = f"console:{OPERATOR}"
     reason = str(body.get("reason") or "")[:500]
@@ -251,9 +258,13 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         else:
             t = ops.set_held(cur, tid, what == "hold", by, reason)
         return (200, {"ticket": {"id": t["id"], "priority": t["priority"], "held": t["held"]}}) if t else (404, {"error": "no such ticket"})
-    if path == "/api/releases/approve":
-        ok, msg = ship.request_approve(cur, str(body.get("release_id") or ""), by, "console")
-        return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/releases/approve":   # 本番に出すのも受信トレイの件（release:<id>）への答え。開いていなければ出荷の側の理由を返す
+        rid = str(body.get("release_id") or "")
+        res, msg = inbox.answer(cur, f"release:{rid}", "approve", by, "console")
+        if res == "not_found":
+            ok, msg = ship.request_approve(cur, rid, by, "console")
+            return (200, {"message": msg}) if ok else (409, {"error": msg})
+        return answered(res, msg)
     if path == "/api/releases/rollback":
         repo, env = str(body.get("repo") or ""), str(body.get("env") or "prod")
         if env not in ("staging", "prod"):
@@ -277,29 +288,20 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             return 400, {"error": "prevent_sleep（true か false）が要る"}
         return 200, {"prevent_sleep": ops.set_keep_awake(cur, body["prevent_sleep"], by, reason)}
     m = re.fullmatch(r"/api/choices/(\d+)/(choose|return|flag|seen)", path)
-    if m:
+    if m:   # 人の選択とレビューページのボタン。答えは受信トレイの口（inbox.answer）を通る（ADR 0034 の決定 1）
         aid, what = int(m.group(1)), m.group(2)
-        c = choice.get(cur, aid)
-        sub = (c or {}).get("subject") or {}
-        design = bool(c and c.get("kind") in ("design_variants", "design_look") and c.get("status") == "open" and sub.get("repo") and str(sub.get("ticket", "")).isdigit())
-        if what == "choose":
-            if design:   # デザインの線に渡す（Issue への反映は dispatcher の周回。体験は ADR 0025、見た目は ADR 0026 の決定 4）
-                pick = design_line.choose if c["kind"] == "design_variants" else design_line.choose_look
-                try:
-                    pick(cur, sub["repo"], int(sub["ticket"]), str(body.get("option") or ""), by, reason)
-                except ValueError as e:
-                    return 409, {"error": str(e)}
-            ok, msg = choice.choose(cur, aid, str(body.get("option") or ""), by, reason)
-        elif what == "return":
-            ok, msg = choice.return_to_maker(cur, aid, by, reason)
-            if ok and design:
-                design_line.return_to_designer(cur, sub["repo"], int(sub["ticket"]), c["correlation_id"], reason, MODEL_TIER)
-        elif what == "seen":
-            ok, msg = choice.mark_seen(cur, aid, by, reason)
-        else:
-            opt = body.get("option")
-            ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, str(opt) if opt else None)
-        return (200, {"message": msg}) if ok else (404 if msg.startswith("no such") else 409, {"error": msg})
+        opt = str(body.get("option") or "")
+        if what == "flag":
+            if choice.get(cur, aid) is None:
+                return 404, {"error": "no such choice"}
+            if not inbox.find(cur, f"choice:{aid}"):   # 閉じた依頼にも印は付けられる（受信トレイの件ではないので印だけ残す）
+                ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, opt or None)
+                return (200, {"message": msg}) if ok else (409, {"error": msg})
+            return answered(*inbox.answer(cur, f"choice:{aid}", "flag", by, "console", note=str(body.get("note") or ""), on=opt or None))
+        return answered(*inbox.answer(cur, f"choice:{aid}", {"choose": opt, "return": "return", "seen": "seen"}[what], by, "console", note=reason))
+    if path == "/api/inbox/answer":   # 受信トレイの件の上のボタン。{"key", "option", "note"?, "on"?}
+        return answered(*inbox.answer(cur, str(body.get("key") or ""), str(body.get("option") or ""), by, "console",
+                                      note=str(body.get("note") or reason), on=str(body["on"]) if body.get("on") else None))
     m = re.fullmatch(r"/api/runners/pairs/([0-9a-f]{32})/(approve|reject)", path)
     if m:
         ok, msg = runners.decide_pair(cur, m.group(1), m.group(2) == "approve", by, reason)
@@ -450,6 +452,7 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 #bell .n{min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#bell.has .n{background:var(--p0);color:#fff}
 #inbox{padding:0 16px}#inbox[hidden]{display:none}.ib{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.ib h2{font-size:14px;margin:0 0 8px}
 .ib a{color:var(--accent)}.ib ul{list-style:none;margin:0;padding:0}.ib li{padding:8px 0;border-top:1px solid var(--line);display:grid;gap:2px}.ib li:first-child{border-top:0}.who{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--sub);margin-right:6px}
+.ans{margin-top:4px}.ans input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(320px,100%)}.ans.done{color:var(--ok);font-size:12px}.ib li.answered{opacity:.7}
 .ch:target,.rel:target,#ship:target{outline:2px solid var(--accent);outline-offset:2px}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 </style></head><body>
@@ -470,7 +473,7 @@ const dur=s=>s==null?"":s<60?s+"秒":s<3600?Math.floor(s/60)+"分":Math.floor(s/
 const link=(u,t)=>u&&/^https:\/\//.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);
 function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3000)}
 async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body||{})});
- const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&path.startsWith("/api/choices/"))force=true;load()}
+ const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"))force=true;load()}
 function acts(i){let h="";
  if(i.ticket_id&&["waiting","ready","queued","running"].includes(i.stage)){
   h+=`<select data-t="${i.ticket_id}" aria-label="優先度">`+Object.entries(levels).map(([k,v])=>`<option value="${k}" ${k===i.level?"selected":""}>${k} ${esc(v.name)}</option>`).join("")+`</select>`;
@@ -501,9 +504,17 @@ function runnersView(rs){if(!rs.length)return"";
   <td>${r.uninstall_pending?"":`<button class="danger" data-runner="${esc(r.id)}">外す</button>`}</td></tr>`).join("")}</table>
   <div class="m">外すと工場とランナーの鍵を捨て、ランナーが自分の常駐（LaunchAgent）を外して止まる。手で外すときはその機械で <code>scripts/macrunner.sh uninstall</code></div></div>`}
 const WHO_ORDER=["owner","po","design_chief","builder","requester"];
-function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
- return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
-  return `<li><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div></li>`}).join("")}</ul></div>`}
+// 受信トレイの 1 件の答え方（ADR 0034 の決定 2）。押したら何が起きるか（effect）を必ず出す。取り返しのつかない作用は 2 度押し
+function answerView(i,n){const a=i.answer;
+ if(i.answered){const w=i.answered;return `<div class="ans done">答え済み: ${esc(w.by||"?")}（${esc({console:"操業コンソール",review_page:"レビューページ",factoryctl:"factoryctl",mcp:"Claude",github:"GitHub",slack:"Slack"}[w.via]||w.via||"")}）が『${esc(w.label||w.option||"")}』と回答。反映を待っている</div>`}
+ if(!a)return "";
+ const k=esc(i.key),note=a.extra.length||a.type==="ack"?`<input data-note="${n}" placeholder="${a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
+ const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
+ const extra=a.extra.map(e=>`<button class="${e.id==="return"?"danger":""}" data-ib="${k}" data-o="${esc(e.id)}" data-n="${n}" data-need="${e.note_required?1:""}">${esc(e.label)}</button>`).join("");
+ return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${opts}${extra}${note}</div></div>`}
+function inboxView(ib){if(!ib.items.length)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
+ return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map((i,n)=>{const t=i.url&&/^(https:\/\/|\/#|\/review\/)/.test(i.url)?(i.url.startsWith("/")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
+  return `<li${i.answered?' class="answered"':""}><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div>${answerView(i,n)}</li>`}).join("")}</ul></div>`}
 const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
@@ -543,7 +554,9 @@ async function load(){if(document.hidden&&!force)return;let s;try{s=await (await
  put("ship",shipView(s.releases||[]));
  put("runners",pairsView(s.runner_pairs||[])+runnersView(s.runners||[]));
  const ib=s.inbox||{count:0,items:[]},bell=document.getElementById("bell");document.getElementById("bell-n").textContent=ib.count;bell.classList.toggle("has",ib.count>0);
- bell.setAttribute("aria-label",`受信トレイ ${ib.count} 件`);document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";put("inbox",inboxView(ib));
+ bell.setAttribute("aria-label",`受信トレイ ${ib.count} 件`);document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";
+ const ie=document.getElementById("inbox"),ibusy=ie.contains(document.activeElement)||[...ie.querySelectorAll("input")].some(i=>i.value.trim());
+ if(!ibusy||force)put("inbox",inboxView(ib));
  // 一言を書きかけ（どこかの欄に文字がある・欄を触っている）の間は人の選択を描き直さない。送った後（force）だけ描き直す
  const ce=document.getElementById("choices"),busy=ce.contains(document.activeElement)||[...ce.querySelectorAll("input")].some(i=>i.value.trim());
  if(!busy||force)put("choices",choicesView(s.choices||[]));force=false;
@@ -554,6 +567,11 @@ document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")re
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else if(s.dataset.ship==="reseed")post("/api/releases/reseed",{repo:s.dataset.repo});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-ib]");if(!b)return;
+ const note=((document.querySelector(`#inbox input[data-note="${b.dataset.n}"]`)||{}).value||"").trim();
+ if(b.dataset.need&&!note)return toast("一言を入れてください");
+ if(b.dataset.irrev&&!b.classList.contains("armed")){b.dataset.label=b.textContent;b.classList.add("armed");b.textContent="もう一度押すと確定";setTimeout(()=>{b.classList.remove("armed");b.textContent=b.dataset.label},4000);return}
+ post("/api/inbox/answer",{key:b.dataset.ib,option:b.dataset.o,note})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-pair]");if(!b)return;post(`/api/runners/pairs/${b.dataset.p}/${b.dataset.pair}`,{reason:"操業コンソール"})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-runner]");if(!b)return;
  if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと外す";setTimeout(()=>{b.classList.remove("armed");b.textContent="外す"},4000);return}

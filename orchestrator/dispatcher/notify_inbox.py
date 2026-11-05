@@ -6,7 +6,9 @@
   なければ今までどおり INBOX_NOTIFY の通知先すべてに送る（log / github-issue / slack＝SLACK_WEBHOOK_URL）
 - 受信トレイ自体は通知先がなくても常にコンソールにある
 - 記録は events だけ: inbox.notified（1 件・1 宛先・1 回ごと。channels に宛先の名前。dedupe_key で二重を防ぐ）、inbox.escalated、
-  inbox.cleared（受信トレイから消えた。待ち時間を SLI に）
+  inbox.cleared（受信トレイから消えた。待ち時間を SLI に）、inbox.written_back（答え済みを知らせ直した。1 つの答え・1 宛先に 1 回）
+- 答え済みの件（inbox.answer。ADR 0034 の決定 5）は、その件を知らせた宛先に「誰が・どこで・何と答えたか。この件は閉じた」を書き戻す。
+  答え済みで反映を待っている件は人の出番ではないので、知らせ直さない（受信トレイの items が除く）
 - 夜間など知らせない時間（宛先の quiet。今までの設定では INBOX_QUIET、例 22-7）は送らず、明けた最初の周回でまとめて送る
 - 通知の失敗でラインを止めない。届かなかった宛先には記録せず、次の周回でもう一度送る
 """
@@ -36,6 +38,9 @@ def _log(*a):
 
 def quiet(now: datetime, spec: str | None = None) -> bool:
     return notify.quiet(now, QUIET if spec is None else spec)
+
+
+WRITE_BACK_HOURS = 48   # これより前の答えは書き戻さない（工場を止めていた間の答えをまとめて流さない）
 
 
 def _events(cur) -> list[dict]:
@@ -128,8 +133,56 @@ def _send(channel, batch: list[tuple[dict, str]]) -> bool:
     return notify.post(dest, render(batch, dest.via, dest))
 
 
-def tick(cur, now: datetime | None = None, channels: list[str] | None = None, sender=None, config: notify.Config | None = None) -> dict:
-    """1 周回ぶん。返り値は数（テストと日報向け）。channels を渡すと、その名前の今までの通知先に送る（テスト向け）"""
+def render_answered(answers: list[dict], channel: str) -> str:
+    slack = channel in ("slack", "slack_webhook", "slack_app")
+    head = f"受信トレイ: 答え済み {len(answers)} 件"
+    lines = [f"*{head}*" if slack else f"**{head}**"]
+    lines += [f"- {a.get('title') or a['key']} — {inbox.answered_text(a)}。この件は閉じました" for a in answers]
+    return "\n".join(lines)
+
+
+def write_back(cur, now: datetime, dests: dict, rows: list[dict], poster) -> int:
+    """答え済みの件を、その件を答えより前に知らせた宛先に書き戻す（ADR 0034 の決定 5）。届かなければ次の周回でもう一度"""
+    cur.execute("select id, occurred_at, payload from events e where name='inbox.answered' and coalesce((payload->>'closes')::boolean, true) "
+                "and occurred_at > %s - make_interval(hours => %s) order by id", (now, WRITE_BACK_HOURS))
+    answers = cur.fetchall()
+    if not answers:
+        return 0
+    cur.execute("select dedupe_key from events where name='inbox.written_back' and occurred_at > %s - make_interval(hours => %s)",
+                (now, WRITE_BACK_HOURS * 2))
+    done = {r["dedupe_key"] for r in cur.fetchall()}
+    notified = [r for r in rows if r["name"] == "inbox.notified"]
+    n = 0
+    for d in dests.values():
+        if notify.quiet(now, d.quiet):
+            continue
+        mine = []
+        for a in answers:
+            keys = {a["payload"].get("key"), *(a["payload"].get("also") or [])}
+            told = any(r["payload"].get("key") in keys and r["occurred_at"] <= a["occurred_at"]
+                       and (r["payload"].get("channels") is None or d.name in r["payload"]["channels"]) for r in notified)
+            if told and f"inbox.written_back:{a['id']}:{d.name}" not in done:
+                mine.append(a)
+        if not mine:
+            continue
+        try:
+            ok = poster(d.name, render_answered([a["payload"] for a in mine], d.via))
+        except Exception as e:  # noqa: BLE001  通知の失敗でラインを止めない
+            _log("write back failed", d.name, repr(e))
+            ok = False
+        if not ok:
+            continue
+        for a in mine:
+            cur.execute("insert into events(name, payload, dedupe_key) values ('inbox.written_back', %s, %s) on conflict (dedupe_key) do nothing",
+                        (Jsonb({"key": a["payload"].get("key"), "answer_id": a["id"], "channels": [d.name]}), f"inbox.written_back:{a['id']}:{d.name}"))
+            n += 1
+    return n
+
+
+def tick(cur, now: datetime | None = None, channels: list[str] | None = None, sender=None, config: notify.Config | None = None,
+         poster=None) -> dict:
+    """1 周回ぶん。返り値は数（テストと日報向け）。channels を渡すと、その名前の今までの通知先に送る（テスト向け）。
+    poster(宛先の名前, 文) は書き戻しの送り手（テスト向け。既定は notify.post）"""
     now = now or datetime.now(timezone.utc)
     if config is None:
         config = notify.implicit(channels, QUIET, MENTIONS) if channels is not None else notify.current(cur)
@@ -147,6 +200,7 @@ def tick(cur, now: datetime | None = None, channels: list[str] | None = None, se
                         (Jsonb({"key": k, "kind": s["payload"].get("kind"), "who": s["payload"].get("who"), "notified": s["count"],
                                 "escalated": s["escalated"], "waited_sec": int((now - s["first"]).total_seconds())}),))
             cleared += 1
+    wrote = write_back(cur, now, dests, rows, poster or (lambda name, text: notify.post(dests[name], text)))
     # 代理が建設者なら、設定のある工場では代理に回さない（建設の判断は建設者が問い合わせて拾う。ADR 0032 の決定 5）
     escalate = not (config.explicit and PROXY == "builder")
     sent_keys: set[str] = set()
@@ -179,7 +233,7 @@ def tick(cur, now: datetime | None = None, channels: list[str] | None = None, se
                         (Jsonb({"key": i["key"], "kind": i["kind"], "who": i["who"], "reason": why, "count": n + 1, "channels": [d.name],
                                 "age_sec": i["age_sec"]}), f"inbox.notified:{i['key']}:{d.name}:{n + 1}:{now:%Y%m%dT%H%M%S}"))
             sent_keys.add(i["key"])
-    out = {"items": len(xs), "sent": len(sent_keys), "cleared": cleared, "quiet": quiet_all}
+    out = {"items": len(xs), "sent": len(sent_keys), "cleared": cleared, "quiet": quiet_all, "written_back": wrote}
     if tried and not ok:
         out["failed"] = True
     if ok:
