@@ -473,7 +473,7 @@ const dur=s=>s==null?"":s<60?s+"秒":s<3600?Math.floor(s/60)+"分":Math.floor(s/
 const link=(u,t)=>u&&/^https:\/\//.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);
 function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3000)}
 async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body||{})});
- const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"))force=true;load()}
+ const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"))force=true;load();return r.ok}
 function acts(i){let h="";
  if(i.ticket_id&&["waiting","ready","queued","running"].includes(i.stage)){
   h+=`<select data-t="${i.ticket_id}" aria-label="優先度">`+Object.entries(levels).map(([k,v])=>`<option value="${k}" ${k===i.level?"selected":""}>${k} ${esc(v.name)}</option>`).join("")+`</select>`;
@@ -508,10 +508,11 @@ const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 function answerView(i,n){const a=i.answer;
  if(i.answered){const w=i.answered;return `<div class="ans done">答え済み: ${esc(w.by||"?")}（${esc({console:"操業コンソール",review_page:"レビューページ",factoryctl:"factoryctl",mcp:"Claude",github:"GitHub",slack:"Slack"}[w.via]||w.via||"")}）が『${esc(w.label||w.option||"")}』と回答。反映を待っている</div>`}
  if(!a)return "";
- const k=esc(i.key),note=a.extra.length||a.type==="ack"?`<input data-note="${n}" placeholder="${a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
+ const agg=i.key==="choice:exit_capture";   // まとめた実装後の画面: 印は画面ごとに下の欄で付ける
+ const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
  const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
  const extra=a.extra.map(e=>`<button class="${e.id==="return"?"danger":""}" data-ib="${k}" data-o="${esc(e.id)}" data-n="${n}" data-need="${e.note_required?1:""}">${esc(e.label)}</button>`).join("");
- return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${opts}${extra}${note}</div></div>`}
+ return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?`<a href="#choices" style="align-self:center">画面ごとに違和感を書く（下の欄へ）</a>`:""}${opts}${extra}${note}</div></div>`}
 function inboxView(ib){if(!ib.items.length)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map((i,n)=>{const t=i.url&&/^(https:\/\/|\/#|\/review\/)/.test(i.url)?(i.url.startsWith("/")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
   return `<li${i.answered?' class="answered"':""}><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div>${answerView(i,n)}</li>`}).join("")}</ul></div>`}
@@ -521,8 +522,8 @@ function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  const exit=c.kind==="exit_capture";
  const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
-  <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感</button></div></div>`).join("");
- const tail=exit?`<input id="note-${c.id}" placeholder="違和感の一言（例: 余白が詰まって見える）。入れて画面の「違和感」を押す" maxlength="300"><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button>`
+  <div class="acts">${exit?`<input data-fnote="${c.id}" data-o="${esc(o.id)}" placeholder="この画面の違和感を一言（Enter で送る）" maxlength="300">`:`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感を送る</button></div></div>`).join("");
+ const tail=exit?`<span class="m">違和感は画面ごとの欄に一言書いて「違和感を送る」（例: 余白が詰まって見える）。全部見終えたら</span><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button>`
   :`<input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button data-ch="return" data-c="${c.id}">どれも違う（戻す）</button>`;
  return `<div class="ch" id="choice-${c.id}"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",sub.artifact_url?link(sub.artifact_url,"CI の成果物"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>
   <div class="opts">${opts}</div><div class="acts">${tail}</div></div>`}).join("")}
@@ -576,10 +577,14 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-pair
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-runner]");if(!b)return;
  if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと外す";setTimeout(()=>{b.classList.remove("armed");b.textContent="外す"},4000);return}
  post(`/api/runners/${b.dataset.runner}/uninstall`,{reason:"操業コンソール"})});
-document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c,note=(document.getElementById("note-"+id)||{}).value||"";
+document.addEventListener("keydown",e=>{const t=e.target;if(e.key!=="Enter"||e.isComposing||!t.matches("input[data-fnote]"))return;e.preventDefault();
+ const b=document.querySelector(`button[data-ch=flag][data-c="${t.dataset.fnote}"][data-o="${t.dataset.o}"]`);if(b)b.click()});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c;
+ const fin=b.dataset.o?document.querySelector(`input[data-fnote="${id}"][data-o="${b.dataset.o}"]`):null;   // 実装後の画面は画面ごとの欄
+ const note=((fin||document.getElementById("note-"+id)||{}).value)||"";
  if(b.dataset.ch==="seen")return post(`/api/choices/${id}/seen`,{reason:note});
  if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});
- if(b.dataset.ch==="flag"){if(!note.trim())return toast("違和感の一言を入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
+ if(b.dataset.ch==="flag"){if(!note.trim()){if(fin)fin.focus();return toast("違和感の一言を入れてください")}return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note}).then(ok=>{if(ok&&fin){fin.value="";fin.placeholder="送りました。ほかにもあれば一言（Enter で送る）"}})}
  if(!note.trim())return toast("戻す理由を一言入れてください");post(`/api/choices/${id}/return`,{reason:note})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b)return;
  if(b.dataset.a==="stop"){if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと止める";setTimeout(()=>{b.classList.remove("armed");b.textContent="止める"},4000);return}
