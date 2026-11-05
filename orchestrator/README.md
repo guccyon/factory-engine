@@ -151,6 +151,10 @@ docker compose exec dispatcher factoryctl swap status <id>   # 段ごとの記�
 - 着手できないときは、理由と選択肢つきの問いを Issue のコメントに書いて `factory:needs-info`。問いのコメントより後に返事が付くと、dispatcher の周回が判定し直しを積む（問いは 2 回まで）。Gen1 は建設者がオーナーの代理で答える
 - 判断の根拠は後で見返せるように残す: artifacts の `Plan` に 3 層（根拠・解釈・確信度）、役ごとの理由、とらなかった並びと理由、当てた決まりと印、入力の版（Engine と製品のコミット、定義とプロンプトの版）。events の `plan.decided`（経路・手間・費用）・`plan.asked`・`plan.answered`。`factoryctl plan list` / `plan show owner/repo#123` で見る
 - 今の入口（`factory:planned`・`factory:implement`・`factory:design`）はそのまま使える。新しいチケットは `factory:plan` から入れる
+- 判定と結果の突き合わせ（ADR 0036 の 4a）: 工場の PR がマージされた・閉じたら、supervisor の周回が最新の Plan と実績（実装のジョブの数・ターン・費用・途中終了・続きの理由、PR で変わったファイルと層、見込みのファイルの再現率と適合率、経路の覆り、judge が人に回したか）を突き合わせて `plan.outcome` に残す（`plan_outcome.py`、決定的）。判定は `ok`・`undersized`（実績が切る基準を超えた・途中終了した）・`misrouted`（経路が覆った）・`oversized`（切った子が小さすぎた）。プランナーを通らなかったチケットも `planned=false` で残す。層と基準の値は `definitions/planner.yaml` の `sizing`
+  - `factoryctl plan outcomes [--repo owner/repo] [--days 14]`: 突き合わせの一覧。`--backfill` で過去の PR も GitHub から引いて残す（初回に 1 回。`GH_TOKEN` が要る）
+  - `factoryctl plan sizes [--repo owner/repo] [--days 60]`: 実績の表（層の組ごとのファイル数・ターン・途中終了・費用）。プランナーの見積もりの材料（順番 2 でプランナーの入力に渡す）
+  - `factoryctl plan pass [--repo owner/repo]`: 合格線の実績の 4 つ（途中終了の率・ターンの中央値と 90 パーセンタイル・見込みのファイルの再現率・経路の覆りの率）を直近 14 日で測る。チケットが 10 件に満たなければ参考の値
 
 ## デザインシステムのデザイナー役（ADR 0025・0026）
 

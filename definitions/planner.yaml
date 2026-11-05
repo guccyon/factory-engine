@@ -83,3 +83,30 @@ planner:
     - "受け入れ条件がない・何を作るかが読めないチケットは ask にする（中身を推測で埋めない）"
     - "作業の量とトークンの量が小さい経路を選ぶ。上位の役が要らない仕事に上位の役を当てない"
     - "design_system の後の implement は、正本のファイルを置くこととテーマ・基本の部品を合わせること以外の実装があるときだけ入れる（それは design_system の仕事の中で実装役が行う）"
+
+# 大きさの見積もりと、結果との突き合わせ（ADR 0036）。数値は仮置き（2026-11-05 オーナー承認。値は運用パラメータとして工場が調整してよい）
+# 順番 1 で使うのは layers・split（実績の判定）・bands・pass_lines。プランナーの見積もりと切る判定は順番 2 で足す。
+# dispatcher の plan_outcome.py が同じ値を写して持つ（食い違いはテストで見る）
+sizing:
+  layers:                            # 変わったファイルから層を決める（上から順に当て、最初に当たった層。どれにも当たらなければ other）。製品ごとの上書きは順番 2 で manifest から
+    - {layer: db,       globs: ["**/migrations/**"]}
+    - {layer: contract, globs: ["specs/contracts/**"]}
+    - {layer: docs,     globs: ["specs/**", "docs/**", "changelog.d/**", "**/*.md"]}
+    - {layer: backend,  globs: ["apps/backend/**", "backend/**", "server/**"]}
+    - {layer: web,      globs: ["apps/*-web/**", "web/**"]}
+    - {layer: mobile,   globs: ["apps/*-app/**", "mobile/**"]}
+  uncounted_layers: [docs, other]    # 切る基準の層の数に数えない
+  split:                             # 実装役に回す仕事 1 件が、どれか 1 つに当たれば切る（ADR 0036 の 2）。実績にも同じ基準を当てて undersized を判定する
+    min_layers: 3
+    max_files: 30
+    max_turns: 60                    # 実装のターンの合計（衝突の解消の続きを除く）。ターン上限 120 の半分
+  min_turns: 10                      # 切った子がこれ未満で終わったら切りすぎ（oversized）
+  bands: {S: 30, M: 60, L: 90}       # 見込みのターンの帯の上限。L を超えると XL
+  pass_lines:                        # 合格線（ADR 0036 の 4c）。実績の 4 つ。直近 window_days にチケットが min_tickets 以上あるときに測る
+    window_days: 14
+    min_tickets: 10
+    incomplete_rate_max: 0.10
+    turns_median_max: 60
+    turns_p90_max: 120
+    recall_median_min: 0.6
+    misrouted_rate_max: 0.10
