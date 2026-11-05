@@ -234,3 +234,23 @@ def test_rejudge_without_escalation_clears_needs_judgment(cur, monkeypatch, fake
     dispatcher.act_on_judgment(cur, REPO, P["corr"], None, P["url"], summary(defects=()), "attended")
     assert swaps[-1][0] == ["factory:needs-judgment"] and "factory:needs-judgment" not in swaps[-1][1]
     assert f"judge:{P['url']}" not in stoppage.open_keys(cur, "judge:")
+
+
+def test_merge_waits_for_body_fix(cur):
+    """judge が積んだ本文の直し（body_fix）が終わるまで、検査役は承認しない（2026-11-05 rally #911）"""
+    sha = "abc"
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('supervisor.inspect_enqueued',%s,%s,%s)",
+                (P["corr"], Jsonb({"pr_url": P["url"], "head_sha": sha}), f"supervisor.inspect:{P['url']}@{sha}"))
+    cur.execute("insert into events(name, correlation_id, payload) values ('gate.evaluated',%s,%s)", (P["corr"], Jsonb({"pr_url": P["url"]})))
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('supervisor.judge_enqueued',%s,%s,%s)",
+                (P["corr"], Jsonb({"pr_url": P["url"], "head_sha": sha}), f"supervisor.judge:{P['url']}@{sha}"))
+    cur.execute("insert into events(name, correlation_id, payload) values ('judgment.judged',%s,%s)",
+                (P["corr"], Jsonb({"pr_url": P["url"], "verdict": "adopt"})))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values (%s,%s,%s,'body_fix','running') returning id",
+                (P["corr"], REPO, P["number"]))
+    jid = cur.fetchone()["id"]
+    ok, basis = supervisor.inspector_approved(cur, P["url"], sha)
+    assert not ok and "body_fix" in basis
+    cur.execute("update jobs set state='succeeded', finished_at=now() where id=%s", (jid,))
+    ok, _ = supervisor.inspector_approved(cur, P["url"], sha)
+    assert ok
