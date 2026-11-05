@@ -1,0 +1,57 @@
+# ユーザーストーリーの型（ADR 0028 の user_story）
+# QA が保証するのは機能の正しさより「利用者の流れ」。その流れを、タスクより前に製品の資産として書いておく型。
+# ここは Engine の標準（何を書くか）。値はプロダクトのリポジトリの specs/stories/ に 1 本 1 ファイルで置く。
+#
+# 使い方:
+# - QA 役は Release の変更から、変更した機能が出てくるストーリーを選び、シナリオ（手順・前提のデータ・時間の進め・期待）に落として流す
+# - タスクは「どのストーリーを増やす・変える・守るか」を宣言する（プランナーの出力に組み込むのは P4 の typed_upstream）
+# - 1 つの機能は複数のストーリーに出る。1 つのストーリーは複数の機能をまたぐ
+# - 既存の機能は遡って書く。書いた時点で満たしていないところは known_gaps に書き、ストーリー自体は「あるべき流れ」で書く
+#
+# 2026-11-05 オーナー: 型と製品の最初の 3 本を、typed_upstream より先に切り離して足す。
+
+schema_version: "0.1"
+status: draft
+
+# 置き場とファイル名
+location:
+  dir: "specs/stories/"
+  file: "<id>.yaml（1 本 1 ファイル。id とファイル名を揃える）"
+  actors: "specs/stories/actors.yaml（製品の利用者の種類。actor と reader はここの id）"
+
+fields:
+  type:      { required: true,  ja: "UserStory 固定（ストーリーのファイルとほかの YAML を分ける目印）" }
+  id:        { required: true,  ja: "英小文字と - の id。ファイル名と同じ" }
+  title:     { required: true,  ja: "「<誰が>が<何>できる」の 1 文。利用者の言葉で、画面や API の名前を使わない" }
+  actor:     { required: true,  ja: "誰が（actors.yaml の id）。流れの途中で別の利用者が動くときは steps の by に書く" }
+  goal:      { required: true,  ja: "何のために。その利用者にとっての意味（機能ではなく、困りごとや得たいもの）" }
+  reader:    { required: true,  ja: "読み手（actors.yaml の id の配列）。画面と文言を読む人で、言葉の基準（語彙・敬語・専門用語）を選ぶ元。CS が生徒に説明するなら [cs, student]" }
+  entry:     { required: true,  ja: "どこから入るか。きっかけ（通知・問い合わせ・思い立ち）と最初に開く場所（アプリと画面）" }
+  exit:      { required: true,  ja: "どこで終わるか。利用者が目で確かめられる終わりの状態（QA の期待の元）。内部の状態ではなく見えるもの" }
+  steps:
+    required: true
+    ja: "流れ。1 歩ごとに by（actors.yaml の id。省けば actor）・where（アプリと画面）・do（すること）・sees（そのとき見えるべきもの）"
+  must_not:
+    required: true
+    ja: "してはいけないこと（認可の裏返しと、流れを壊す失敗）。1 件以上。QA の否定のシナリオの元"
+  preconditions: { required: false, ja: "前提のデータ（シードの状態）。誰がどんな契約・予約・スレッドを持っているか" }
+  time:          { required: false, ja: "時間や再起動をまたぐか（例: 翌日、再起動のあと、暦月の境）。ADR 0028 の scenario_time の元" }
+  touches:
+    required: false
+    ja: "出てくる機能の手がかり。回帰でストーリーを選ぶのに使う。製品の正本の id だけを書く"
+    keys:
+      apps: "アプリの id（specs/contracts/api/<app>/）"
+      contexts: "context-map.yaml の id"
+      terms: "glossary.yaml の id"
+      operations: "<app>.<operationId>（specs/contracts/api/<app>/openapi.yaml）"
+      events: "analytics/events.yaml の name"
+  origin:      { required: false, ja: "起点。ストーリーを書いたきっかけの Issue・PR・変更シナリオ（例: guccyon/rally#895）。遡って書いたものは retro: true" }
+  known_gaps:  { required: false, ja: "書いた時点で満たしていないところ。1 件ごとに step（steps の何歩目か、または exit）と note。直したら消す" }
+  status:      { required: false, ja: "active（既定。QA が流す）| draft（まだ流さない）| retired（機能をやめた）" }
+
+# 書き方の約束
+rules:
+  - "1 本は 1 つの終わり（exit）に向かう流れ。経路の違い（失敗・取り消し）は must_not か別のストーリーにする"
+  - "steps の sees は「画面にこう出る」で書く。API の応答や DB の行ではなく、利用者が見るもの"
+  - "別の利用者が絡む流れ（生徒が送り、コーチが受ける）は 1 本に書く。#895 のように、相手側の操作を含めて初めて落ちる不具合を拾うため"
+  - "touches には正本にある id だけを書く。推測で名前を作らない（製品の検査が確かめる）"

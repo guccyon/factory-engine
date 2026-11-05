@@ -90,7 +90,7 @@ phases:
     items:
       - { id: intake_clarify, ja: "intake / clarify の窓口と要求者ペルソナ", measure: { manual: done } }   # 窓口と 10 人のペルソナ。収束は clarify_3_rounds で測る
       - { id: design_system, ja: "製品にデザインシステム（トークン・状態つきの部品の一覧・画面の型）があり、新しいプロダクトでは開始時の段として工場が作る", measure: { manual: todo } }   # ADR 0025 の完了条件 0（2026-10-31 オーナー決定）
-      - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff と Ticket の生産", measure: { manual: todo } }
+      - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff / UserStory と Ticket の生産", measure: { manual: todo } }   # UserStory の型と最初の 3 本は P5a の user_story で先に入れた（2026-11-05 オーナー）。ここではプランナーの出力にストーリー（増やす・変える・守る）を加える
       - { id: opportunity_to_ticket, ja: "テーマ 1 つから人が触らずに Requirements と段の束（依存つき）が出る", measure: { manual: todo } }   # ADR 0025 の完了条件 1
       - { id: design_variants, ja: "画面を含む段は要素と振る舞いが決まった UXSpec を持って実装に流れ、案はデザイン検査役が承認する（新しい画面・ブランド・低確信だけ人）", measure: { manual: todo } }   # ADR 0025 の 2・3
       - { id: consult_desk, ja: "外（顧客の Claude Desktop など）から窓口の API・MCP でプランナーに曖昧な依頼を壁打ちし、確定した依頼がタスクのまとまりになって指定の優先度でラインに入った", measure: { manual: todo } }   # ADR 0030 の順番 1〜3。何を流すかは外が決める。順番 1（API・会話の記録・トークン・明確な指示）は済み
@@ -119,8 +119,8 @@ phases:
       - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す
       - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { manual: todo } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env
       - id: user_story
-        ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）がプランナーの出力に加わり、既存機能に 3 本以上遡って書かれた"
-        measure: { github_files: { repo: guccyon/rally, path: specs/stories, target: 3 } }   # P4 typed_upstream と同じ PR で型を足す。最初の 3 本: コーチが新しい相談に返事する（rally #895）、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う
+        ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）の型があり、既存機能に 3 本以上遡って書かれた"
+        measure: { github_files: { repo: guccyon/rally, path: specs/stories, where: { type: UserStory }, target: 3 } }   # 型は definitions/user_story.yaml。2026-11-05 オーナー: typed_upstream を待たずに型と 3 本を先に入れる（プランナーの出力への組み込みは P4 の typed_upstream）。最初の 3 本: コーチが新しい相談に返事する（rally #895）、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う
       - id: qa_verdict
         ja: "QA 役が Release 候補にシナリオを流し Verdict（judge と同じ型）を出し、hold なら Defect を起票して差し戻した実績"
         measure: { db: { target: 5, sql: "select count(*) from events where name = 'qa.verdict'" } }
