@@ -227,13 +227,12 @@ def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> 
 
 
 # ------------------------------------------------------------------ 確認した下書きを起票する
-def issue_body(cid: int, draft_id: int, req: dict, t: dict, deps: list[int], who: str) -> str:
+def task_sections(t: dict, deps: list[int]) -> list[str]:
+    """タスク 1 件の本文の節（先に読むもの・やること・やらないこと・触るファイル・受け入れ条件・関係・依存）。
+    窓口の下書きと、プランナーが切ったタスクのまとまり（ADR 0036）が同じ形で書く。依存の行は advance_waiting が読む"""
     def items(xs):
         return [f"- {x}" for x in xs or [] if isinstance(x, str) and x.strip()]
-    lines = [f"タスク（{KIND_JA.get(t.get('kind'), t.get('kind'))}）。窓口の依頼（相談 {cid}、依頼者 {who}）から切ったタスクのまとまりの {t['key']}。"
-             f"{t.get('summary') or ''}", "", "## 依頼（確定した Request）",
-             f"- 何を: {req.get('what') or ''}", f"- 何のために: {req.get('why') or ''}",
-             f"- いつまでに: {req.get('by_when') or ''}", f"- どの精度で: {req.get('precision') or ''}"]
+    lines = []
     for head, key in (("先に読むもの", "read_first"), ("やること", "do"), ("やらないこと", "dont"), ("触るファイルの見込み", "expected_files"),
                       ("受け入れ条件", "acceptance")):
         if items(t.get(key)):
@@ -242,6 +241,27 @@ def issue_body(cid: int, draft_id: int, req: dict, t: dict, deps: list[int], who
         lines += ["", "## 関係する Issue", "- " + " ".join(t["related"])]
     if deps:
         lines += ["", "依存: " + " ".join(f"#{n}" for n in deps)]
+    return lines
+
+
+def file_task(cur, gh, repo: str, title: str, body: str, deps: list[int], labels: list[str]) -> dict:
+    """タスク 1 件を製品の Issue に起票し、チケット（依存と待ち）を作る。依存があれば待ちのラベル、なければプランナーの入口。
+    返り値は {number, url, label, ticket}。窓口の起票とプランナーの切り分け（ADR 0036）が使う"""
+    label = WAITING_LABEL if deps else TRIGGER_LABEL
+    it = gh("POST", f"repos/{repo}/issues", {"title": title[:200], "body": body, "labels": [label] + list(labels)}) or {}
+    if not it.get("number"):
+        raise RuntimeError(f"Issue を作れなかった（{title[:40]}）")
+    tk = ops.upsert_ticket(cur, "github", f"{repo}#{it['number']}", repo, title=title[:200], url=it.get("html_url"),
+                           state="active", depends_on=[f"{repo}#{x}" for x in deps], waiting_on=[f"{repo}#{x}" for x in deps])
+    return {"number": int(it["number"]), "url": it.get("html_url"), "label": label, "ticket": tk}
+
+
+def issue_body(cid: int, draft_id: int, req: dict, t: dict, deps: list[int], who: str) -> str:
+    lines = [f"タスク（{KIND_JA.get(t.get('kind'), t.get('kind'))}）。窓口の依頼（相談 {cid}、依頼者 {who}）から切ったタスクのまとまりの {t['key']}。"
+             f"{t.get('summary') or ''}", "", "## 依頼（確定した Request）",
+             f"- 何を: {req.get('what') or ''}", f"- 何のために: {req.get('why') or ''}",
+             f"- いつまでに: {req.get('by_when') or ''}", f"- どの精度で: {req.get('precision') or ''}"]
+    lines += task_sections(t, deps)
     lines += ["", f"<sub>窓口の下書き {draft_id}・手間の見込み {EFFORT_JA.get(t.get('effort'), t.get('effort'))}</sub>",
               MARKER.format(cid=cid, draft=draft_id, key=t["key"])]
     return "\n".join(lines)
@@ -286,17 +306,12 @@ def file_confirmed(cur, gh, repos: list[str]) -> int:
             for t in d.get("tasks") or []:
                 deps = [numbers[k] for k in t.get("depends_on") or [] if k in numbers]
                 if t["key"] not in numbers:
-                    label = WAITING_LABEL if deps else TRIGGER_LABEL
-                    it = gh("POST", f"repos/{repo}/issues", {"title": t["title"][:200],
-                                                            "body": issue_body(cid, draft_id, d.get("request") or {}, t, deps, c["opened_by"]),
-                                                            "labels": [label, f"{ops.PRIORITY_LABEL_PREFIX}{level}"]}) or {}
-                    if not it.get("number"):
-                        raise RuntimeError(f"Issue を作れなかった（{t['key']}）")
-                    numbers[t["key"]] = int(it["number"])
+                    it = file_task(cur, gh, repo, t["title"], issue_body(cid, draft_id, d.get("request") or {}, t, deps, c["opened_by"]), deps,
+                                   [f"{ops.PRIORITY_LABEL_PREFIX}{level}"])
+                    numbers[t["key"]] = it["number"]
                     _event(cur, "desk.ticket_filed", corr, {"conversation_id": cid, "draft_id": draft_id, "key": t["key"], "number": it["number"],
-                                                            "url": it.get("html_url"), "label": label}, f"desk.ticket_filed:{draft_id}:{t['key']}")
-                    tk = ops.upsert_ticket(cur, "github", f"{repo}#{it['number']}", repo, title=t["title"][:200], url=it.get("html_url"),
-                                           state="active", depends_on=[f"{repo}#{x}" for x in deps], waiting_on=[f"{repo}#{x}" for x in deps])
+                                                            "url": it["url"], "label": it["label"]}, f"desk.ticket_filed:{draft_id}:{t['key']}")
+                    tk = it["ticket"]
                     cur.execute("update tickets set desk_conversation_id=%s where id=%s", (cid, tk["id"]))
                     ops.set_priority(cur, tk["id"], ops.LEVELS[level][0], by, f"窓口の依頼（相談 {cid}）")
                 filed.append({"key": t["key"], "ref": f"{repo}#{numbers[t['key']]}", "number": numbers[t["key"]], "title": t["title"],
