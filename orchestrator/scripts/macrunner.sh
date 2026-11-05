@@ -26,6 +26,10 @@ case "${1:-status}" in
       echo "トークンを作った: $token_file（.env の MAC_RUNNER_TOKEN に写す: scripts/macrunner.sh token）"
     fi
     chmod 600 "$token_file"
+    # pip3 install --user fb-idb は idb を ~/Library/Python/<版>/bin に入れ、そこは普段の PATH の外。launchd に渡す PATH に足す
+    for d in "$HOME"/Library/Python/*/bin; do
+      [ -x "$d/idb" ] && case ":$PATH:" in *":$d:"*) ;; *) PATH="$PATH:$d" ;; esac
+    done
     mkdir -p "$(dirname "$plist")" "$HOME/Library/Logs/factory-macrunner"
     cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

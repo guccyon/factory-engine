@@ -75,6 +75,7 @@ REF = re.compile(r"^(?!-)[A-Za-z0-9._/\-]{1,200}$")
 BUILD_ID = re.compile(r"^b-[0-9a-f]{12}$")
 DEFINE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 URL = re.compile(r"^[a-z][a-z0-9+.\-]{1,31}://[^\s]{1,2000}$")
+IDB_RETRIES, IDB_RETRY_SEC = 4, 5
 KEYS = {"return": "40", "delete": "42", "escape": "41", "tab": "43", "space": "44", "home": None}
 
 
@@ -293,7 +294,7 @@ TOOLS = [
     tool("screenshot", "画面を撮って PNG で返す", {"udid": S_UDID}, ["udid"]),
     tool("open_url", "URL（Web かアプリのディープリンク）を開く", {"udid": S_UDID, "url": {"type": "string"}}, ["udid", "url"]),
     tool("push", "プッシュ通知を送る（APNs の payload の JSON）", {"udid": S_UDID, "bundle_id": {"type": "string"}, "payload": {"type": "object"}}, ["udid", "bundle_id", "payload"]),
-    tool("logs", "直近のログ（アプリのプロセス）を返す", {"udid": S_UDID, "seconds": {"type": "integer", "minimum": 1, "maximum": 600}, "process": {"type": "string", "description": "既定 Runner"}}, ["udid"]),
+    tool("logs", "直近のログ（アプリのプロセス。com.apple. の部品のログは除く）を返す", {"udid": S_UDID, "seconds": {"type": "integer", "minimum": 1, "maximum": 600}, "process": {"type": "string", "description": "既定 Runner"}}, ["udid"]),
     tool("ui_describe", "画面のアクセシビリティの木（要素・文言・座標）を返す。idb が要る", {"udid": S_UDID}, ["udid"]),
     tool("ui_tap", "画面の座標（ポイント）を押す。idb が要る", {"udid": S_UDID, "x": {"type": "number"}, "y": {"type": "number"}}, ["udid", "x", "y"]),
     tool("ui_swipe", "画面をなぞる（始点から終点へ）。idb が要る",
@@ -311,7 +312,14 @@ class Runner:
         self.builds = Builds(cfg)
 
     def idb(self, *args, **kw):
-        return run([self.cfg["idb"], *args], **kw)
+        """idb を呼ぶ。起動の直後は画面の読み取りの窓口がまだ答えないことがあるので、そのときだけ間を置いて読み直す。"""
+        for attempt in range(IDB_RETRIES):
+            try:
+                return run([self.cfg["idb"], *args], **kw)
+            except ToolError as e:
+                if "did not answer" not in str(e) or attempt == IDB_RETRIES - 1:
+                    raise
+                time.sleep(IDB_RETRY_SEC)
 
     def call(self, name, args):
         """道具を 1 つ動かす。返り値は MCP の content の配列。"""
@@ -345,6 +353,11 @@ class Runner:
         except ToolError as e:
             if "Shutdown" not in str(e):
                 raise
+        # idb は端末ごとに idb_companion を残すので、止めた端末の分は片付ける（夜間に回すと端末の数だけ残る）
+        try:
+            run(["pkill", "-f", f"idb_companion.*{udid}"])
+        except ToolError:
+            pass   # 残っていない（pkill は 1 を返す）
         return text({"udid": udid, "state": "Shutdown"})
 
     def t_sim_erase(self, a):
@@ -431,7 +444,7 @@ class Runner:
         if not isinstance(process, str) or not re.match(r"^[A-Za-z0-9_.\-]{1,64}$", process):
             raise ToolError("process の形が違う")
         out = simctl("spawn", udid, "log", "show", "--style", "compact", "--last", f"{seconds}s",
-                     "--predicate", f'process == "{process}"', timeout=120).decode("utf-8", "replace")
+                     "--predicate", f'process == "{process}" AND NOT subsystem BEGINSWITH "com.apple."', timeout=120).decode("utf-8", "replace")
         return [{"type": "text", "text": out[-20000:] or "（ログなし）"}]
 
     def t_ui_describe(self, a):
