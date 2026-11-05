@@ -1,0 +1,70 @@
+# 工場の前段（ADR 0035）。工場をインターネットに置くとき（パイロットの EC2 など）だけ、compose.yaml に重ねて使う。
+#   .env に COMPOSE_FILE=compose.yaml:compose.edge.yaml を書くと、docker compose と入れ替え役（ADR 0031）がこのファイルも読む
+#   外すときは COMPOSE_FILE からこのファイルを抜いて docker compose up -d --remove-orphans（compose.yaml と工場のコードは変わらない）
+#
+# 入口は 3 つ（ホスト名は EDGE_DOMAIN の下）。HTTPS は Caddy が Let's Encrypt で取る:
+#   console.<EDGE_DOMAIN>  操業コンソール。oauth2-proxy の GitHub ログインを通った人だけ（EDGE_GITHUB_USERS に書いたアカウント）
+#   proto.<EDGE_DOMAIN>    動くプロトタイプの配り口（別オリジン）。コンソールと同じログイン
+#   desk.<EDGE_DOMAIN>     事業部の窓口の API（AI 越しの口）。ログインの画面は通さず、1 人 1 本の窓口のトークン（Bearer）で入る
+# 不特定多数を遮るのはクラウドのファイアウォール（EC2 のセキュリティグループ）の IP 制限が先。EDGE_ALLOW_CIDRS は同じ制限の二重目
+# 手順は edge/README.md
+
+services:
+  edge:
+    image: caddy:2.11.7-alpine   # 版を固定する。上げるときはここを変える PR で
+    depends_on: [oauth2-proxy, console, desk]
+    environment:
+      EDGE_DOMAIN: ${EDGE_DOMAIN:?前段のホスト名の親（例 factory.example.com。edge/README.md）}
+      EDGE_SCHEME: ${EDGE_SCHEME:-https}                 # ロードバランサーで TLS を終えるときだけ http（edge/README.md の「ロードバランサーを使うとき」）
+      EDGE_ALLOW_CIDRS: ${EDGE_ALLOW_CIDRS:-0.0.0.0/0 ::/0}   # 通す送信元（空白区切り）。セキュリティグループと同じ値を入れる
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - edgedata:/data       # 証明書。消すと取り直しになる（Let's Encrypt の回数の上限に当たらないよう残す）
+      - edgeconfig:/config
+    ports:
+      - "${EDGE_HTTP_PORT:-80}:80"     # 証明書の取得（HTTP-01）と HTTPS への転送だけ
+      - "${EDGE_HTTPS_PORT:-443}:443"
+    restart: unless-stopped
+
+  # GitHub の OAuth App でログインさせ、EDGE_GITHUB_USERS のアカウントだけを通す。edge が要求ごとに /oauth2/auth で確かめる（forward_auth）
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5
+    environment:
+      OAUTH2_PROXY_PROVIDER: github
+      OAUTH2_PROXY_CLIENT_ID: ${EDGE_GITHUB_CLIENT_ID:?GitHub の OAuth App の Client ID（.env）}
+      OAUTH2_PROXY_CLIENT_SECRET: ${EDGE_GITHUB_CLIENT_SECRET:?GitHub の OAuth App の Client secret（.env）}
+      OAUTH2_PROXY_COOKIE_SECRET: ${EDGE_COOKIE_SECRET:?ログインの Cookie の鍵（.env。作り方は edge/README.md）}
+      OAUTH2_PROXY_GITHUB_USERS: ${EDGE_GITHUB_USERS:?通す GitHub アカウント（カンマ区切り。.env）}
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"                    # メールでは絞らない（絞るのは上の GitHub アカウント）
+      OAUTH2_PROXY_SCOPE: user:email                     # 求める権限はプロフィールとメールだけ（組織は見ない）
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_TRUSTED_PROXY_IPS: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16   # X-Forwarded-* を信じるのは compose の網の中（edge）からだけ。ポートは外に出さない
+      OAUTH2_PROXY_UPSTREAMS: static://202                # 中身は edge が配る。ここは確かめるだけ
+      OAUTH2_PROXY_REDIRECT_URL: https://console.${EDGE_DOMAIN}/oauth2/callback
+      OAUTH2_PROXY_COOKIE_DOMAINS: .${EDGE_DOMAIN}        # console と proto で同じログインを使う
+      OAUTH2_PROXY_WHITELIST_DOMAINS: .${EDGE_DOMAIN}     # ログインのあと戻ってよい先
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      # none にするのは、プロトタイプ（CSP の sandbox で不透明なオリジン）が読む CSS・画像の要求にも Cookie を付けるため。
+      # コンソールの操作は画面に埋めた合言葉のヘッダーで他サイトからの要求を断っている（console.py）ので、none でも操作は通らない
+      OAUTH2_PROXY_COOKIE_SAMESITE: ${EDGE_COOKIE_SAMESITE:-none}
+      OAUTH2_PROXY_COOKIE_EXPIRE: ${EDGE_COOKIE_EXPIRE:-24h}   # アカウントを EDGE_GITHUB_USERS から外しても、ログイン済みの人はこの時間まで入れる
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"               # 確かめた人を X-Auth-Request-User で返す（今のコンソールは読まない。ADR 0035）
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+    restart: unless-stopped
+
+  # 前段から見える名前を、コンソール・窓口の開いてよいホスト名と、通知のリンクに足す（DNS リバインディングよけは今のまま効く）
+  console:
+    environment:
+      CONSOLE_ALLOWED_HOSTS: ${CONSOLE_ALLOWED_HOSTS:-localhost,127.0.0.1},console.${EDGE_DOMAIN},proto.${EDGE_DOMAIN}
+      PROTOTYPE_PUBLIC_URL: https://proto.${EDGE_DOMAIN}
+  desk:
+    environment:
+      DESK_ALLOWED_HOSTS: ${DESK_ALLOWED_HOSTS:-localhost,127.0.0.1},desk.${EDGE_DOMAIN}
+  dispatcher:
+    environment:
+      CONSOLE_URL: https://console.${EDGE_DOMAIN}
+
+volumes:
+  edgedata:
+  edgeconfig:

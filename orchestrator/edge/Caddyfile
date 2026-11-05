@@ -1,0 +1,56 @@
+# 工場の前段（ADR 0035）。compose.edge.yaml から読む。値は環境変数（{$...}）で渡し、ここには書かない
+#
+# - 送信元の IP が EDGE_ALLOW_CIDRS になければ 403（セキュリティグループの二重目）
+# - console と proto は oauth2-proxy に確かめてから通す。未ログインならログインへ回す
+# - desk はログインを通さない（AI 越しの口。窓口のトークンで desk_api.py が確かめる）
+# - 利用者から来た X-Auth-Request-* は捨てる（前段が確かめた人の名前を、後で各エンドポイントが信じられるように）
+
+(allow_ips) {
+	@outside not client_ip {$EDGE_ALLOW_CIDRS}
+	respond @outside "forbidden" 403
+}
+
+(github_login) {
+	request_header -X-Auth-Request-*
+	handle /oauth2/* {
+		reverse_proxy oauth2-proxy:4180 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Uri {uri}
+		}
+	}
+	handle {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			header_up X-Real-IP {remote_host}
+			copy_headers X-Auth-Request-User X-Auth-Request-Email
+			@unauthorized status 401
+			handle_response @unauthorized {
+				redir * https://console.{$EDGE_DOMAIN}/oauth2/start?rd=https://{host}{uri} 302
+			}
+		}
+		reverse_proxy {args[0]}
+	}
+}
+
+# route の中は書いた順に動く（IP の確かめを必ず先に）
+{$EDGE_SCHEME}://console.{$EDGE_DOMAIN} {
+	route {
+		import allow_ips
+		import github_login console:8790
+	}
+}
+
+{$EDGE_SCHEME}://proto.{$EDGE_DOMAIN} {
+	route {
+		import allow_ips
+		import github_login console:8791
+	}
+}
+
+{$EDGE_SCHEME}://desk.{$EDGE_DOMAIN} {
+	route {
+		import allow_ips
+		request_header -X-Auth-Request-*
+		reverse_proxy desk:8792
+	}
+}

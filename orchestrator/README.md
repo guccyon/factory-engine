@@ -258,6 +258,10 @@ docker compose exec dispatcher factoryctl desk show 1                           
 
 相談役のジョブは基本のワーカーのイメージに入っている `desk_consult.sh` で動くので、順番 2 を入れるときはワーカーのイメージと dispatcher を作り直す（`build.sh`）。
 
+## 工場の前段（ADR 0035。工場をインターネットに置くとき）
+
+パイロットの EC2 などに工場を置くときは、`compose.edge.yaml` を重ねて前段（Caddy ＋ oauth2-proxy）を足す。操業コンソールとプロトタイプは GitHub のログイン（許したアカウントだけ）、窓口は 1 人 1 本の窓口のトークンで入り、どれも HTTPS とセキュリティグループの IP 制限の内側に置く。`compose.yaml` と工場のコードは変えず、`.env` の `COMPOSE_FILE=compose.yaml:compose.edge.yaml` を抜けば外れる。手順は `edge/README.md`。Mac の工場では使わない。
+
 ## PR の見張り（ADR 0015）
 
 工場の PR に起きた動き（push、CI の結果、衝突、レビュー）を GitHub から拾い、抽象化したイベント（`pr.head_updated` / `pr.ci_failed` / `pr.ci_passed` / `pr.conflicted` / `pr.review_submitted`）として events に発行する、決定論的なモジュール（`dispatcher/pr_events.py`。dispatcher の中のスレッド）。オーケストレーター（supervisor）は GitHub を見ずにこのイベントを読む。
