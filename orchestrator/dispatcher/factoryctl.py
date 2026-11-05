@@ -603,7 +603,7 @@ def main(argv):
                 return 2
         st = line.status(cur)
         d, r = st["desired"], st["running"]
-        print(f"ラインのワーカー: {r['workers']} / {d['workers']}　委員会の枠: {r['governance']} / {d['governance']}　同時に流すチケット: {d['tickets']}")
+        print(f"ラインのワーカー: {r['workers']} / {d['workers']}　委員会の枠: {r['governance']} / {d['governance']}　同時に流すチケット: {'?' if r.get('tickets') is None else r['tickets']} / {d['tickets']}")
         print(f"宣言: {st['by']}{'（' + st['reason'] + '）' if st['reason'] else ''}{' ' + st['at'] if st['at'] else '（環境変数の値）'}")
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")

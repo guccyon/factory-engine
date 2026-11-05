@@ -91,6 +91,14 @@ def claim_governance(cur) -> dict | None:
     return _claim(cur, True)
 
 
+def tickets_inflight(cur) -> int | None:
+    """同時に流しているチケットの数（supervisor が周回ごとに heartbeat に残す値。開いた PR も数えるので GitHub を見る supervisor が数える）"""
+    cur.execute("select (payload->>'tickets_inflight')::int as n from events where name='supervisor.heartbeat' and payload ? 'tickets_inflight' "
+                "order by occurred_at desc limit 1")
+    row = cur.fetchone()
+    return row["n"] if row else None
+
+
 def status(cur) -> dict:
-    s, r = spec(cur), running(cur)
+    s, r = spec(cur), {**running(cur), "tickets": tickets_inflight(cur)}
     return {"desired": {k: s[k] for k in FIELDS}, "running": r, "by": s["by"], "reason": s["reason"], "at": s["at"]}
