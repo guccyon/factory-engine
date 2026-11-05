@@ -49,6 +49,7 @@ import line
 import learn
 import version
 import ops
+import plan_outcome
 import process_learn
 import report
 import serialize
@@ -1051,6 +1052,14 @@ def committee_weekly_step(cur, now: datetime | None = None):
         log("committee weekly enqueued", repo, week, "job", jid)
 
 
+def plan_outcome_step(cur):
+    """結果の出た工場の PR を、最新の Plan と突き合わせて plan.outcome に残す（ADR 0036 の 4a。決定的）"""
+    try:
+        plan_outcome.step(cur, gh, log=log)
+    except Exception as e:  # noqa: BLE001  突き合わせの失敗でラインを止めない
+        log("plan outcome step error", repr(e)[:200])
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
@@ -1058,6 +1067,7 @@ def tick():
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
+        plan_outcome_step(cur)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
         stage_step(cur, manifests)

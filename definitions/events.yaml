@@ -478,6 +478,10 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, child, steps]
     note: "ADR 0026。経路の最初の役がデザインシステムで、後ろにほかの役が続くので、デザインシステムの仕事を別のチケット（child）に切った。元のチケットは factory:waiting-steps で待つ"
+  plan.outcome:
+    source: control_plane
+    required: [repo, issue, pr_url, merged, plan_id, planned, judgment, jobs, turns, turns_max, cost_usd, incomplete, continues, files, layers, expected_recall, expected_precision, route_changed, needs_judgment]
+    note: "ADR 0036 の 4a。工場の PR がマージされた・閉じたときに、最新の Plan と実績（実装のジョブの数・ターン・費用・途中終了・続きの理由・変わったファイルと層・見込みのファイルの再現率と適合率・経路の覆り・judge が人に回したか）を突き合わせた。judgment は ok / undersized（切る基準を実績が超えた・途中終了した）/ oversized（切った子が min_turns 未満）/ misrouted（経路が覆った）。プランナーを通らなかったチケットは planned=false で同じように残す（切るべきだったかの出発点）。dedupe は plan.outcome:<pr_url>。実績の表（factoryctl plan sizes）と合格線（factoryctl plan pass）の材料"
   plan.advanced:
     source: control_plane
     required: [plan_id, repo, issue, after, role]

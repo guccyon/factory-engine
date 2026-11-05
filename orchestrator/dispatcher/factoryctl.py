@@ -76,6 +76,9 @@
 プランナー（ADR 0025・0026）。判定の根拠を後で見返す:
   factoryctl plan list [--days 7]                          # 最近の判定（経路・当てた決まり・印・確信度・費用）
   factoryctl plan show <owner/repo#123>                    # そのチケットの判定の履歴（役ごとの理由、とらなかった経路、根拠・解釈、入力の版）
+  factoryctl plan outcomes [--repo owner/repo] [--days 14] [--backfill]   # 判定と結果の突き合わせ（ADR 0036。--backfill は過去の PR も GitHub から引いて残す）
+  factoryctl plan sizes [--repo owner/repo] [--days 60]    # 実績の表（層の組ごとのファイル数・ターン・途中終了。プランナーの見積もりの材料）
+  factoryctl plan pass [--repo owner/repo]                 # 合格線（実績の 4 つ。直近 14 日）を満たしているか
 
 知見の制限付きの保管先（ADR 0024 の 5）。利用者の情報をどうしても含む知見の根拠を専用スキーマ restricted に置き、git の知見からは restricted: R-NNNN で指す。
 保管先の専用の利用者（factory_restricted）で繋ぐ。合言葉は管理者だけが持ち（.env に置かない）、使うときに RESTRICTED_DATABASE_URL で渡す。読むたびに誰が・何のために読んだかを残す:
@@ -112,6 +115,7 @@ import usage
 import judgment
 import learn
 import ops
+import plan_outcome
 import planner
 import process_learn
 import restricted
@@ -143,6 +147,42 @@ def split_ref(ref: str) -> tuple[str, int]:
     return repo, int(n)
 
 
+def plan_outcome_cmd(cur, argv, sub: str) -> int:
+    """判定と結果の突き合わせ・実績の表・合格線（ADR 0036 の 4）"""
+    repo = opt(argv, "--repo", None)
+    if sub == "outcomes":
+        if "--backfill" in argv:
+            import ghapi
+
+            def gh(method, path, body=None):
+                return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+            n = plan_outcome.step(cur, gh, days=None, limit=None, log=lambda *a: print(*a, flush=True))
+            print(f"{n} 本の PR を突き合わせました")
+        for o in plan_outcome.outcomes(cur, repo, int(opt(argv, "--days", "14"))):
+            rec = "-" if o.get("expected_recall") is None else o["expected_recall"]
+            print(f"{o['at']:%m-%d %H:%M} {o.get('repo')}#{o.get('issue')} {o.get('judgment'):<10} {','.join(o.get('reasons') or []):<22} "
+                  f"plan={'y' if o.get('planned') else 'n'} jobs={o.get('jobs')} turns={o.get('turns')} files={o.get('files')} "
+                  f"layers={o.get('layers_key')} recall={rec} ${o.get('cost_usd') or 0}")
+        return 0
+    rows = plan_outcome.outcomes(cur, repo, int(opt(argv, "--days", "60" if sub == "sizes" else str(plan_outcome.PASS_LINES["window_days"]))))
+    if sub == "sizes":
+        print(f"{'製品':<20} {'層の組':<28} {'件数':>4} {'ファイル':>8} {'ターン':>6} {'p90':>5} {'途中終了':>8} {'費用':>7}")
+        for t in plan_outcome.size_table(rows):
+            print(f"{t['repo']:<20} {t['layers']:<28} {t['n']:>4} {t['files_median']:>8} {t['turns_median']:>6} {t['turns_p90']:>5} {t['incomplete']:>8} ${t['cost_median']:>6}")
+        return 0
+    st = plan_outcome.pass_status(rows)
+    ja = {"incomplete_rate": "実装の途中終了の率", "turns_median": "1 チケットのターン（中央値）", "turns_p90": "1 チケットのターン（90 パーセンタイル）",
+          "recall_median": "見込みのファイルの再現率（中央値）", "misrouted_rate": "経路の覆りの率"}
+    print(f"直近 {plan_outcome.PASS_LINES['window_days']} 日: 実装のチケット {st['tickets']} 件（プランナーを通った {st['planned']} 件）"
+          + ("" if st["measured"] else f"。{plan_outcome.PASS_LINES['min_tickets']} 件に満たないので参考の値"))
+    for k, m in st["metrics"].items():
+        line_ = f"{m['max']} 以下" if "max" in m else f"{m['min']} 以上"
+        mark = "-" if m["ok"] is None else ("ok" if m["ok"] else "NG")
+        print(f"  {mark:<3} {ja[k]}: {m['value']}（合格線 {line_}）")
+    print("判定の内訳: " + "、".join(f"{k} {v}" for k, v in st["judgments"].items()))
+    return 0 if st["ok"] or not st["measured"] else 1
+
+
 def plan_cmd(cur, argv) -> int:
     sub = argv[2] if len(argv) > 2 else "list"
     if sub == "show" and len(argv) > 3:
@@ -168,6 +208,8 @@ def plan_cmd(cur, argv) -> int:
         for s in serialize.serialized(cur, f"github:{repo}#{n}"):
             print(f"並べた（{s['at']:%m-%d %H:%M}）: {s.get('why')}")
         return 0
+    if sub in ("outcomes", "sizes", "pass"):
+        return plan_outcome_cmd(cur, argv, sub)
     days = int(opt(argv, "--days", "7"))
     cur.execute("select correlation_id, payload, created_at from artifacts where type='Plan' and created_at > now() - make_interval(days => %s) "
                 "order by id desc limit 100", (days,))
