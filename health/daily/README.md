@@ -11,7 +11,7 @@ python3 health/daily/status_report.py --publish     # 固定 Issue（factory:con
 - 取得元: GitHub（リポジトリ単位のエンドポイントだけ）、制御プレーンの Postgres（`DATABASE_URL`）、建設作業フォルダ（`BUILD_WORK_DIR`）
 - 届かない取得元の項目は「不明」と出し、進捗は 0 で数える
 - Gen1 の完了の見込み（`gen1_forecast`）: ロードマップ（P0a〜P6）を終える日を、これまでの平均のペースとその半分の 2 本で出す。フェーズは順に片付くとみなす粗い見込み
-- 商品化の条件: `roadmap.yaml` の `commercial` を並べる。P6 を終えても Gen1 の完了にすぎず、商品化はその先。測り方（`measure`）が決まるまで日付の見込みは出さない
+- 商品化の条件: `roadmap.yaml` の `commercial` を並べる。P6 を終えても Gen1 の完了にすぎず、商品化はその先。条件ごとに観点（`views`）と、いま測れるか（`state`: `measured`＝測れる / `partial`＝一部 / `none`＝未計測）を出す。合格線（`measure`）が決まるまで日付の見込みは出さない
 - 頼みたいことの「承認待ちの PR」は、ラベル `factory:needs-approval`（supervisor の判定、`REPORT_REPOS`）と、マージに必ず人の承認が要るリポジトリ（`HUMAN_MERGE_REPOS`、既定 `guccyon/factory-engine`）の下書きでない開いた PR。待っている日数の長い順
 - 使用量: スナップショットの `usage` に、操業コンソールの `/usage` と同じ集計（orchestrator/dispatcher/usage.py）を入れ、日報に契約の週の消費とアカウントを足すかの判断の材料を出す。朝の報告の「工場の操業」はこれを読む
 - ふだんは supervisor が 1 日 1 回走らせる（orchestrator/README.md）
