@@ -221,7 +221,8 @@ def roadmap_progress(conn) -> dict:
         phases.append({"id": ph["id"], "ja": ph["ja"], "weight": ph["weight_weeks"], "progress": round(p, 3), "items": items})
         wsum += ph["weight_weeks"]
         acc += ph["weight_weeks"] * p
-    return {"overall": round(acc / wsum, 3) if wsum else 0.0, "phases": phases, "commercial": spec.get("commercial", [])}
+    return {"overall": round(acc / wsum, 3) if wsum else 0.0, "phases": phases, "commercial": spec.get("commercial", []),
+            "commercial_note": spec.get("commercial_note", "")}
 
 
 def gen1_forecast(progress: dict, today: str, start: str = START_DATE) -> list[dict]:
