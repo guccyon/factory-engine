@@ -48,6 +48,7 @@ import pr_events
 import process_learn
 import reattach
 import stoppage
+import swap
 import tidy
 
 ENV = os.environ
@@ -103,6 +104,7 @@ SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
+SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の入れ替えの依頼を見る間隔（ADR 0031）
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
@@ -1150,6 +1152,17 @@ def tidy_loop():
         time.sleep(tidy.TIDY_INTERVAL)
 
 
+def swap_loop():
+    """工場の入れ替え（ADR 0031）。受けた依頼の時刻になったら、使い捨ての入れ替え役のコンテナを起動する。入れ替え役が消えていたら人に回す"""
+    while True:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                swap.tick(cur, log)
+        except Exception as e:  # noqa: BLE001  入れ替えの失敗でラインを止めない
+            log("swap tick error", repr(e))
+        time.sleep(SWAP_INTERVAL)
+
+
 # ------------------------------------------------------------------ Webhook（任意）
 class Hook(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
@@ -1216,6 +1229,8 @@ def main():
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
     reattached = recover()
+    with db() as conn, conn.cursor() as cur:   # 上がった印。入れ替え役が新しい版で上がったかを見る（ADR 0031）
+        record_event(cur, "dispatcher.started", None, None, {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "reattaching": len(reattached)})
     if not store.bucket_exists(BUCKET):
         store.make_bucket(BUCKET)
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
@@ -1226,6 +1241,8 @@ def main():
         threading.Thread(target=watch_loop, daemon=True).start()
     if tidy.TIDY_ENABLED:
         threading.Thread(target=tidy_loop, daemon=True).start()
+    if ENV.get("SWAP_ENABLED", "1") == "1":
+        threading.Thread(target=swap_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)

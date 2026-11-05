@@ -100,6 +100,28 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 - 操業コンソールの上の「ライン」のトグルでも同じ操作ができる（API は `POST /api/factory/drain`・`/api/factory/resume`、状態は `GET /api/state` の `factory.line`）
 - 再開を忘れたら、番人が `WATCH_DRAIN_MIN` 分（既定 30）で停止 `drain:` を開く（分類 human）。再開すると閉じる
 
+### 入れ替え役に任せる（ADR 0031）
+
+上の手順を、dispatcher が入れ替えのたびに起動する使い捨ての入れ替え役（コンテナ `factory-swap-<id>`、`--rm`）が行う。手で打つのは 1 行だけ:
+
+```bash
+docker compose exec dispatcher factoryctl swap run main      # main の先頭に入れ替える（コミットも渡せる。main に入っているものだけ）
+docker compose exec dispatcher factoryctl swap status <id>   # 段ごとの記録。dispatcher を上げ直す間は答えないので、ホストでは docker logs -f factory-swap-<id>
+```
+
+- 事前の確かめ（ラインは止めない）: 作業ツリーがきれい、`target` が main に入っていて今の版から早送りできる、差分から種類を判定し直す（`definitions/swap.yaml`。申告より軽くしない）、
+  出荷の処理中でない、新しい版の `compose.yaml` が今の `.env` で通る。今のイメージに前の版の名前（`factory-dispatcher:p0-<コミット>` など）を付けてから、新しい版の `scripts/build.sh` でイメージを作る
+- `control_plane`（`compose.yaml` の変更）だけ一時停止し、入れ替えてよくなるまで待つ。`code` は一時停止しない（つなぎ直し）
+- 作業ツリーを早送りし、`docker compose up -d --no-build --remove-orphans` ですべてのサービスを上げる
+- 確かめ（既定 5 分）: すべてのサービスが新しい版で動きヘルスチェックが通る、`dispatcher.started` と `supervisor.heartbeat` が新しい版で出る、コンソールと窓口が応える、実行中だったジョブがつなぎ直された
+- 通らなければ前の版（作業ツリーと前の版の名前のイメージ）に戻して確かめ直す。戻せたら再開し、受信トレイに建設者への知らせを出す（同じ版では自動で入れ替えない）。戻しても通らなければ一時停止のまま停止 `swap:<id>` で人に回す
+- 人に回すもの: DB の変更（`postgres/init/`）を含む版は事前の確かめで止め、受信トレイに流す SQL を出す（承認ボタンで流すのは順番 5。それまでは一時停止して手で流し、`swap run` をやり直す）。
+  秘密情報・権限を広げる変更（ソケットのマウント・トークン・ポートを外に開く）、今の `.env` に足りない環境変数も人へ
+- 入れ替え役は作業ツリーを同じ絶対パスでマウントする（場所は compose が付けるラベルから読む。`SWAP_ROOT` で上書き）。`git worktree` の作業ツリーなら、指している git の置き場もマウントする（足りなければ `SWAP_EXTRA_MOUNTS`）。
+  入れ替え役のコンテナには ssh の鍵がないので、`origin` が ssh でも https で取り込む（工場のリポジトリは公開）
+- 入れ替え役を含む版を初めて入れるときは、入れ替え役がまだないので上の手順（`build.sh` → `up -d` → `version --expect`）で入れる。次から `swap run` が使える
+- 時刻の合意（建設者の依頼にプランナーが時刻を提案する）と Issue の郵便受けは順番 3・4。`SWAP_ENABLED=0` で dispatcher は入れ替え役を起動しない
+
 ## 試験運転（GitHub にも Claude にも触らない）
 
 `.env` に `WORKER_DRY_RUN=20` を入れて上げると、ポーリングとラベル操作を止め、ワーカーは 20 秒数えて偽の結果を返す。

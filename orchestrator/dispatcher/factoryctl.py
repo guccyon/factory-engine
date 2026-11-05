@@ -22,6 +22,12 @@
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
+工場の入れ替えの自律化（ADR 0031）。dispatcher が使い捨ての入れ替え役（コンテナ factory-swap-<id>）を起動し、事前の確かめ → 一時停止（control_plane のとき）→
+すべてのサービスの上げ直し → 確かめ → 再開を行う。確かめに通らなければ前の版に戻す。DB の変更・秘密情報と権限を含む版は人に回す:
+  factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま入れ替える（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
+  factoryctl swap status [<id>]                    # 直近の入れ替えの一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
+  factoryctl swap cancel <id> [--reason ..]        # 入れ替え役を起動する前だけ取り消せる
+
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
   factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--woken-by pr_event|watcher|schedule|human] [--quiet]   # --quiet は通知しない（過去分の取り込み）。--woken-by は builder を起こしたもの（D8）
@@ -102,6 +108,7 @@ import restricted
 import serialize
 import ship
 import stoppage
+import swap
 
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
@@ -492,6 +499,36 @@ def desk_cmd(cur, argv):
     return 2
 
 
+def swap_cmd(cur, argv) -> int:
+    sub = argv[2] if len(argv) > 2 else "status"
+    if sub == "run" and len(argv) > 3:
+        try:
+            sid = swap.request(cur, argv[3], opt(argv, "--by", "builder"), kind=opt(argv, "--kind", "code"), note=opt(argv, "--note", ""))
+        except swap.SwapError as e:
+            print(e)
+            return 1
+        print(f"入れ替え {sid} を受けた（{argv[3]}）。dispatcher が {swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで入れ替え役を起動する")
+        print(f"進み具合: factoryctl swap status {sid}（dispatcher を上げ直す間は答えないことがある）。ホストでは docker logs -f {swap.container(sid)}")
+        return 0
+    if sub == "cancel" and len(argv) > 3 and argv[3].isdigit():
+        ok = swap.cancel(cur, int(argv[3]), opt(argv, "--by", "builder"), opt(argv, "--reason", ""))
+        print("取り消した" if ok else "取り消せない（入れ替え役がもう動いているか、終わっている）")
+        return 0 if ok else 1
+    if sub == "status" and len(argv) > 3 and argv[3].isdigit():
+        s = swap.get(cur, int(argv[3]))
+        if not s:
+            print("no such swap"); return 1
+        print(swap.summary(s))
+        print("\n".join(swap.event_lines(s)))
+        return 0 if s["status"] == "completed" else 1
+    if sub == "status":
+        rows = swap.recent(cur)
+        print("\n".join(swap.summary(s) for s in rows) if rows else "入れ替えの記録はまだない")
+        return 0
+    print(__doc__)
+    return 2
+
+
 def restricted_conn():
     """保管先の専用の利用者で繋ぐ。合言葉は管理者が使うときに RESTRICTED_DATABASE_URL で渡す"""
     url = os.environ.get("RESTRICTED_DATABASE_URL", "")
@@ -763,6 +800,8 @@ def main(argv):
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":
         return release_status(cur, argv[3])
+    elif cmd == "swap":
+        return swap_cmd(cur, argv)
     elif cmd == "desk":
         return desk_cmd(cur, argv)
     elif cmd == "restricted":
