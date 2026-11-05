@@ -251,3 +251,28 @@ def test_attach_sizes_adds_the_product_table(cur):
     inp = pn.attach_sizes(cur, REPO, {"round": 2})
     assert inp["round"] == 2 and inp["size_table"][0]["layers"] == "contract+backend+web" and inp["size_table"][0]["turns_median"] == 181
     assert pn.attach_sizes(cur, "other/repo", {})["size_table"] == []
+
+
+@needs_db
+def test_pre_implement_only_once_and_parent_deps_carry(cur):
+    from psycopg.types.json import Jsonb
+    r = res(steps=["ui_design", "implement"], marks=["split_after_design"])
+    run(cur, Calls(), r)
+    assert pn.wants_pre_implement(cur, CORR)
+    jid = pn.enqueue_pre_implement(cur, REPO, ISSUE, CORR, "design_handed_off")
+    cur.execute("select payload from events where name='job.enqueued' and job_id=%s", (jid,))
+    assert cur.fetchone()["payload"]["input"]["phase"] == "implement"
+    cur.execute("update jobs set state='succeeded' where id=%s", (jid,))
+    r2 = res(decision="split", steps=["implement"], guards=["oversized"])
+    r2["phase"], r2["tasks"] = "implement", [T("t1", "contract"), T("t2", deps=["t1"])]
+    gh = SplitGH()
+    gh_get = gh.__call__
+
+    def with_deps(method, path, body=None):   # 親の本文に足りない部品の依存がある
+        if method == "GET" and path.endswith(f"/issues/{ISSUE}"):
+            return {"labels": [], "body": "UXSpec\n依存: #9"}
+        return gh_get(method, path, body)
+    run(cur, Calls(), r2, with_deps)
+    assert "依存: #9" in gh.posts[0]["body"] and "依存: #9 #41" in gh.posts[1]["body"]
+    assert gh.posts[0]["labels"] == ["factory:desk-waiting"]
+    assert not pn.wants_pre_implement(cur, CORR)   # 実装の手前の判定は 1 度だけ

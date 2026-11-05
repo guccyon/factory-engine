@@ -198,7 +198,19 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
 PROMPT_VERSION = "4"   # 問いの文を変えたら上げる（判断の入力の版として残す）
 
 
-def prompt(defs: dict, f: dict, round_: int) -> str:
+def phase_note(inp: dict) -> str:
+    """実装の手前の判定（ADR 0036 の 3・6）で、プロンプトに足す前置き"""
+    if inp.get("phase") != "implement":
+        return ""
+    lines = ["これは実装の手前の判定です。画面の設計（本文の UXSpec）はもう決まっています。経路は implement だけにし、",
+             "UXSpec の contract_needs・screens・changes も材料にして、実装役に回す仕事の大きさを見積もり直してください。"]
+    if inp.get("continuing_pr"):
+        lines.append(f"途中まで実装したドラフト PR（{inp['continuing_pr']}）があり、続きのジョブも途中終了しました。残りの仕事だけを見積もり、"
+                     "切るときは、ドラフト PR の中身を仕上げるタスクを t1 にし、残りを後ろに並べてください。")
+    return "\n".join(lines) + "\n"
+
+
+def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
     p = defs["planner"]
     roles = "\n".join(f"- {k}（{v['ja']}）: {v['does']}" for k, v in defs["roles"].items())
     examples = "\n".join(f"- {' → '.join(e['steps'])}: {e['when']}" for e in defs["examples"])
@@ -213,7 +225,7 @@ def prompt(defs: dict, f: dict, round_: int) -> str:
     kinds = "、".join(f"{k}（{v['ja']}）" for k, v in desk_defs()["task_kinds"].items())
     return f"""あなたは仮想開発事業部のプランナーです。入ってきたチケットを読み、着手できるかと、どの役をどの順で通すかを決めます。
 これは {round_} 回目の判定です。
-
+{phase_note(inp or {})}
 作業ディレクトリに材料があります。読むだけにし、何も書き換えないでください。
 - issue.md: チケットの本文
 - comments.md: これまでのコメント（工場からの問いと、起票者の返事）
@@ -293,10 +305,14 @@ def plan(issue: dict, inp: dict, defs: dict, repo_dir: Path | None) -> dict:
         cwd = os.getcwd()
         os.chdir(root)   # agent_runner はカレントディレクトリでエージェントを動かす
         try:
-            res = agent_runner.run("plan", prompt(defs, f, round_), schema=schema(defs), max_turns=defs["planner"]["max_turns"])
+            res = agent_runner.run("plan", prompt(defs, f, round_, inp), schema=schema(defs), max_turns=defs["planner"]["max_turns"])
         finally:
             os.chdir(cwd)
     out = res.output if isinstance(res.output, dict) else {}
+    if inp.get("phase") == "implement":   # 画面はもう決まっている（ADR 0036 の 3）。デザインの役を通し直さない
+        impl = [st for st in out.get("steps") or [] if isinstance(st, dict) and st.get("role") == "implement"]
+        if impl:
+            out["steps"] = impl
     decision, steps, guards, marks = decide(out, f, round_, defs)
     decision, g2, m2, tasks = size_check(out, decision, steps, defs, inp.get("phase"))
     guards, marks = guards + g2, marks + m2

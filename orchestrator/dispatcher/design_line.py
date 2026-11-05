@@ -400,13 +400,16 @@ def handoff(cur, gh, comment, repo: str, issue: int, corr: str, d: dict, variant
     it = gh("GET", f"repos/{repo}/issues/{issue}") or {}
     body = replace_section(it.get("body") or "", issue_section(issue, spec, variant, decided_by, gaps_issue, html, look=look))
     gh("PATCH", f"repos/{repo}/issues/{issue}", {"body": body})
-    swap(gh, repo, issue, [RUNNING_LABEL, CHOICE_LABEL, TRIGGER_LABEL], [AFTER_LABEL])
+    import planner   # 大きいチケットは、実装の手前でプランナーが切る（ADR 0036 の 3）
+    pre = planner.wants_pre_implement(cur, corr) and planner.enqueue_pre_implement(cur, repo, issue, corr, "design_handed_off")
+    swap(gh, repo, issue, [RUNNING_LABEL, CHOICE_LABEL, TRIGGER_LABEL], [planner.QUEUED_LABEL if pre else AFTER_LABEL])
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('ui_design.handed_off',%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (corr, Jsonb({"repo": repo, "issue": issue, "design_artifact_id": d.get("id"), "verdict_id": verdict_id, "variant": variant,
                               "decided_by": decided_by, "gaps_issue": gaps_issue, "look": look,
                               "look_decided": chosen_look(cur, d.get("id")) is not None}), f"ui_design.handed_off:{d.get('id')}"))
     close_review(cur, d.get("id"), decided_by, f"chosen:{variant}")
-    comment(repo, issue, f"画面の設計が決まりました（案 `{variant}`、{DECIDED_JA.get(decided_by, decided_by)}）。UXSpec を本文に足して、投入待ち（{AFTER_LABEL}）に戻しました。"
+    comment(repo, issue, f"画面の設計が決まりました（案 `{variant}`、{DECIDED_JA.get(decided_by, decided_by)}）。UXSpec を本文に足して、"
+                         + (f"実装の手前のプランナーの判定（ジョブ {pre}。大きければタスクのまとまりに切る）に回しました。" if pre else f"投入待ち（{AFTER_LABEL}）に戻しました。")
                          + (f"\nデザインシステムに足りない部品は #{gaps_issue} で先に足します（このタスクの依存）。" if gaps_issue else ""))
 
 

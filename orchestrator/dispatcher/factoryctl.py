@@ -3,7 +3,7 @@
 
   docker compose exec dispatcher factoryctl list [--all]
   docker compose exec dispatcher factoryctl stop <job_id>
-  docker compose exec dispatcher factoryctl rerun <job_id> [--continue]   # 続きのジョブは続きとして積み直す。--continue: 途中終了のドラフト PR のブランチから続ける
+  docker compose exec dispatcher factoryctl rerun <job_id> [--continue]   # 続きのジョブは続きとして積み直す。--continue: 途中終了のドラフト PR のブランチから続ける（1 回まで。2 回目は plan resplit か --force）
   docker compose exec dispatcher factoryctl enqueue <repo> <issue> [--tier tier-small]
   docker compose exec dispatcher factoryctl events <job_id>
 
@@ -79,6 +79,7 @@
   factoryctl plan outcomes [--repo owner/repo] [--days 14] [--backfill]   # 判定と結果の突き合わせ（ADR 0036。--backfill は過去の PR も GitHub から引いて残す）
   factoryctl plan sizes [--repo owner/repo] [--days 60]    # 実績の表（層の組ごとのファイル数・ターン・途中終了。プランナーの見積もりの材料）
   factoryctl plan pass [--repo owner/repo]                 # 合格線（実績の 4 つ。直近 14 日）を満たしているか
+  factoryctl plan resplit <owner/repo#123>                 # 途中終了を繰り返したチケットの残りを、プランナーに見積もり直させて切る（ADR 0036 の 6）
 
 知見の制限付きの保管先（ADR 0024 の 5）。利用者の情報をどうしても含む知見の根拠を専用スキーマ restricted に置き、git の知見からは restricted: R-NNNN で指す。
 保管先の専用の利用者（factory_restricted）で繋ぐ。合言葉は管理者だけが持ち（.env に置かない）、使うときに RESTRICTED_DATABASE_URL で渡す。読むたびに誰が・何のために読んだかを残す:
@@ -147,6 +148,28 @@ def split_ref(ref: str) -> tuple[str, int]:
     return repo, int(n)
 
 
+INCOMPLETE_CONTINUE_MAX = 1   # 途中終了の続きは 1 回まで（ADR 0036 の 6）
+
+
+def incomplete_count(cur, corr: str) -> int:
+    """そのチケットの実装役のジョブが途中終了した回数"""
+    cur.execute("select count(*) as n from jobs where correlation_id=%s and kind='implement' and coalesce((result->>'incomplete')::boolean, false)", (corr,))
+    return int(cur.fetchone()["n"])
+
+
+def plan_resplit(cur, argv) -> int:
+    """途中終了を繰り返したチケットの残りを、実装の手前の判定としてプランナーに切らせる（ADR 0036 の 6）"""
+    repo, n = split_ref(argv[3])
+    corr = f"github:{repo}#{n}"
+    cur.execute("select result->>'pr_url' as pr from jobs where correlation_id=%s and kind='implement' and result->>'pr_url' is not null order by id desc limit 1", (corr,))
+    pr = (cur.fetchone() or {}).get("pr")
+    jid = planner.enqueue_pre_implement(cur, repo, n, corr, "incomplete_repeated", {"continuing_pr": pr} if pr else {})
+    if not jid:
+        print("an active job already exists for this issue"); return 1
+    print(f"enqueued plan job {jid}（実装の手前の判定。残りを見積もり、大きければ切る）")
+    return 0
+
+
 def plan_outcome_cmd(cur, argv, sub: str) -> int:
     """判定と結果の突き合わせ・実績の表・合格線（ADR 0036 の 4）"""
     repo = opt(argv, "--repo", None)
@@ -210,6 +233,8 @@ def plan_cmd(cur, argv) -> int:
         return 0
     if sub in ("outcomes", "sizes", "pass"):
         return plan_outcome_cmd(cur, argv, sub)
+    if sub == "resplit" and len(argv) > 3:
+        return plan_resplit(cur, argv)
     days = int(opt(argv, "--days", "7"))
     cur.execute("select correlation_id, payload, created_at from artifacts where type='Plan' and created_at > now() - make_interval(days => %s) "
                 "order by id desc limit 100", (days,))
@@ -698,6 +723,11 @@ def main(argv):
                 print("--continue needs an implement job that left a PR"); return 1
             cont = {"branch": f"factory/issue-{j['issue_number']}-job-{job_id}", "pr_number": int(res["pr_number"]), "reason": "incomplete"}
             carried = {"continue": cont}
+        if cont and cont.get("reason") == "incomplete" and "--force" not in argv:
+            n_inc = incomplete_count(cur, corr)
+            if n_inc > INCOMPLETE_CONTINUE_MAX:   # 続きも途中終了した（ADR 0036 の 6）。同じ大きさのまま積み直さない
+                print(f"途中終了が {n_inc} 回あります（続きは {INCOMPLETE_CONTINUE_MAX} 回まで。ADR 0036 の 6）。"
+                      f"残りをプランナーに切らせるなら factoryctl plan resplit {j['repo']}#{j['issue_number']}、それでも続けるなら --force"); return 1
         try:
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,'rerun',%s,%s,%s,%s) returning id",
