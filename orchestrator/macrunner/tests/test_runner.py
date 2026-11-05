@@ -205,4 +205,54 @@ def test_idb_retries_until_accessibility_answers(tmp_path, monkeypatch):
 def test_shutdown_cleans_companion(server, calls):
     url, _ = server
     assert not call(url, "sim_shutdown", {"udid": UDID})["isError"]
-    assert calls[-1] == ["pkill", "-f", f"idb_companion.*{UDID}"]
+    assert calls[-2] == ["pkill", "-f", f"idb_companion.*{UDID}"]
+    assert calls[-1] == ["idb", "disconnect", UDID]   # idb の記録からも外す（起動し直した端末で繋がらなくなるので）
+
+
+@pytest.mark.parametrize("name,args,msg", [
+    ("app_launch", {"udid": UDID, "bundle_id": "com.apple.Preferences"}, "操作を許していない"),
+    ("push", {"udid": UDID, "bundle_id": "com.apple.mobilesafari", "payload": {"aps": {}}}, "操作を許していない"),
+    ("open_url", {"udid": UDID, "url": "https://example.com/"}, "http(s) だけ"),
+    ("open_url", {"udid": UDID, "url": "tel://123"}, "は開かない"),
+])
+def test_scope_limits_apps_and_urls(server, calls, name, args, msg):
+    url, _ = server
+    res = call(url, name, args)
+    assert res["isError"] and msg in res["content"][0]["text"]
+
+
+def test_scope_allows_allowed_app_and_local_url(server, calls):
+    url, _ = server
+    assert not call(url, "app_launch", {"udid": UDID, "bundle_id": "jp.rally.rallyStudentApp"})["isError"]
+    assert not call(url, "open_url", {"udid": UDID, "url": "http://127.0.0.1:8081/login"})["isError"]
+
+
+def test_initialize_declares_scope(server):
+    url, _ = server
+    _, init = post(url, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert "しない: 署名" in init["result"]["instructions"]
+
+
+def test_checkin_and_self_uninstall(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path))
+    monkeypatch.setattr(runner, "run", lambda argv, **kw: json.dumps(DEVICES).encode() if "list" in argv else b"")
+    cfg = runner.config()
+    rid = runner.runner_id(cfg)
+    assert rid == runner.runner_id(cfg) and len(rid) == 32   # 置き場に残して同じ id を使う
+    asked = []
+
+    class Resp:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def read(self): return self.body
+
+    def opener(u, timeout=10):
+        asked.append(u)
+        return Resp(b'{"uninstall": true}')
+    assert runner.checkin(cfg, rid, opener=opener) is True
+    assert "/api/runners/checkin?" in asked[0] and f"id={rid}" in asked[0] and "scope=" in asked[0]
+
+    def down(u, timeout=10):
+        raise OSError("refused")
+    assert runner.checkin(cfg, rid, opener=down) is False   # 工場が止まっていてもランナーは動き続ける

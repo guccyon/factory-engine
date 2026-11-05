@@ -40,14 +40,23 @@ docker compose exec dispatcher factoryctl runner check
 
 製品に `ios/` がまだなければ（rally の生徒アプリは今ない）、ビルドの作業場の中だけで `flutter create --platforms=ios` を走らせる。製品のリポジトリには書かない。署名の設定と配布は出荷側のアダプタ（P5b の `preview_distribution`）。
 
+## できることの範囲
+
+顧客の機械にも置くものなので、範囲は [SCOPE.md](SCOPE.md) に宣言する。広げるときは SCOPE.md と道具を同じ PR で変え、オーナーの承認を通す。
+
+## 登録済みのランナーと外し方
+
+ランナーは 1 分ごとに操業コンソールへ連絡し、コンソールの「登録済みのランナー」に機械・状態・版・置き場・できることが出る。「外す」を押すと、次の連絡でランナーが自分の LaunchAgent を外して止まる。手で外すときはその機械で `scripts/macrunner.sh uninstall`。トークン・ビルドの作業場・ログは残す（消すのは人）。
+
 ## 守り
 
 工場の外の機械に、ジョブ（LLM が組み立てる引数）からの操作を通す初めての経路なので、次の線を引く。
 
 - **道具は決まった一覧だけ**。任意のシェル・任意のコマンドの道具はない。サブプロセスは argv の配列で呼び、シェルを通さない
 - **引数は形を確かめる**（UDID・bundle id・ref・URL・座標の範囲、知らない引数は断る）。`file:` と `javascript:` の URL は開かない
-- **ビルドするのはマージ済みのコミットだけ**。ビルドは製品のコード（依存のパッケージのフックや Xcode のスクリプトを含む）をホストで動かすので、検査と judge を通って既定ブランチに入ったものに限る。PR のブランチを夜間に回したくなったら `MAC_RUNNER_ALLOW_UNMERGED=1` で外せるが、外すのは人の判断
-- **ビルドしてよいアプリは許したものだけ**（`MAC_RUNNER_APPS=<owner/repo>:<パス>:<bundle id>` のカンマ区切り）
+- **ビルドするのはマージ済みのコミットだけ**。ビルドは製品のコード（依存のパッケージのフックや Xcode のスクリプトを含む）をホストで動かすので、検査と judge を通って既定ブランチに入ったものに限る。外す設定は置かない
+- **ビルドと操作ができるアプリは許したものだけ**（`MAC_RUNNER_APPS=<owner/repo>:<パス>:<bundle id>` のカンマ区切り）。起動・停止・プッシュ通知もそのアプリだけで、端末の標準のアプリやほかのアプリには触らない
+- **開ける URL は許したものだけ**（`MAC_RUNNER_URL_HOSTS` の http(s) と `MAC_RUNNER_URL_SCHEMES` のスキーム）
 - **認証はトークン**（`~/.config/factory/macrunner.token`、0600）。待ち受けは `127.0.0.1` だけ（Docker Desktop の `host.docker.internal` はホストの loopback に届く）。`/health` だけはトークンなしで生死だけ返す
 - **署名の鍵は扱わない**。debug・署名なし（`--no-codesign`）だけ。署名と TestFlight は日中に人の Mac のキーチェーンで通す（ADR 0028 の決定 3）
 - **呼ばれた道具はすべて記録**（`~/Library/Logs/factory-macrunner/calls.jsonl`。打った文字と通知の中身は長さだけ）
@@ -59,7 +68,9 @@ docker compose exec dispatcher factoryctl runner check
 | `MAC_RUNNER_PORT` | 8793 | |
 | `MAC_RUNNER_BIND` | 127.0.0.1 | |
 | `MAC_RUNNER_APPS` | `guccyon/rally:apps/student-app:jp.rally.rallyStudentApp` | bundle id は ios/ がないときに作る値。ビルドしたものの Info.plist の値を優先する |
-| `MAC_RUNNER_ALLOW_UNMERGED` | 空 | 1 でマージ前のコミットもビルドする |
+| `MAC_RUNNER_URL_HOSTS` | 127.0.0.1,localhost | open_url で開ける http(s) のホスト（触れる環境） |
+| `MAC_RUNNER_URL_SCHEMES` | 空 | open_url で開けるアプリのスキーム（ディープリンク） |
+| `MAC_RUNNER_CONSOLE_URL` | http://127.0.0.1:8790 | 登録済みのランナーの一覧に連絡する先（1 分ごと）。空で連絡しない |
 | `MAC_RUNNER_HOME` | `~/Library/Application Support/factory-macrunner` | リポジトリの写しとビルドの作業場（新しい 3 本だけ残す） |
 | `MAC_RUNNER_BUILD_TIMEOUT_SEC` | 1800 | |
 

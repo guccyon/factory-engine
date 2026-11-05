@@ -7,7 +7,9 @@
 - 道具は決まった一覧だけ（下の TOOLS）。任意のシェルは受けない。引数は形を確かめ、サブプロセスは argv の配列で呼ぶ（シェルを通さない）
 - 認証はトークン（Authorization: Bearer）。トークンは install のときに作って ~/.config/factory/macrunner.token（0600）に置く
 - ビルドするのは許したリポジトリの、既定ブランチに入った（マージ済みの）コミットだけ。ビルドは製品のコードをホストで動かすので、
-  検査と judge を通る前のコードは既定で受けない（MAC_RUNNER_ALLOW_UNMERGED=1 で外せる。外すのは人の判断）
+  検査と judge を通る前のコードは受けない（外す設定は置かない）
+- 操作できるアプリは許したアプリだけ、開ける URL は許したホストの http(s) と許したスキームだけ（範囲の宣言は SCOPE.md と SCOPE）
+- 1 分ごとに操業コンソールへ連絡し（登録済みのランナーの一覧）、外す依頼があれば自分の LaunchAgent を外して止まる
 - 呼ばれた道具は ~/Library/Logs/factory-macrunner/calls.jsonl に 1 行ずつ残す（入力する文字は長さだけ）
 - 対話は要らないので Remote Control ではない。macOS 標準の python3（3.9）で動くよう標準ライブラリだけで書く
 
@@ -29,7 +31,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 PROTOCOL_VERSION = "2025-06-18"
 HOME = os.path.expanduser("~")
 
@@ -49,7 +51,14 @@ def config():
         "log_dir": env("MAC_RUNNER_LOG_DIR", os.path.join(HOME, "Library", "Logs", "factory-macrunner")),
         # ビルドしてよいアプリ: <owner/repo>:<リポジトリの中のパス>:<bundle id> をカンマ区切り
         "apps": parse_apps(env("MAC_RUNNER_APPS", "guccyon/rally:apps/student-app:jp.rally.rallyStudentApp")),
-        "allow_unmerged": env("MAC_RUNNER_ALLOW_UNMERGED", "") == "1",
+        # 開ける URL: このホストの http(s)（触れる環境）と、このスキーム（アプリのディープリンク）だけ
+        "url_hosts": [h.strip() for h in env("MAC_RUNNER_URL_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()],
+        "url_schemes": [x.strip() for x in env("MAC_RUNNER_URL_SCHEMES", "").split(",") if x.strip()],
+        # 登録済みのランナーの一覧（操業コンソール）へ連絡する先。空で連絡しない
+        "console": env("MAC_RUNNER_CONSOLE_URL", "http://127.0.0.1:8790").rstrip("/"),
+        "checkin_sec": int(env("MAC_RUNNER_CHECKIN_SEC", "60")),
+        "label": env("MAC_RUNNER_LABEL", "local.factory.macrunner"),
+        "plist": env("MAC_RUNNER_PLIST", os.path.join(HOME, "Library", "LaunchAgents", "local.factory.macrunner.plist")),
         "flutter": env("MAC_RUNNER_FLUTTER", "flutter"),
         "idb": env("MAC_RUNNER_IDB", "idb"),
         "build_timeout": int(env("MAC_RUNNER_BUILD_TIMEOUT_SEC", "1800")),
@@ -197,11 +206,10 @@ class Builds:
         run(["git", "-C", repo_dir, "fetch", "--prune", "origin"], timeout=600)
         default = run(["git", "-C", repo_dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).decode().strip() or "origin/main"
         sha = resolve(repo_dir, ref)
-        if not self.cfg["allow_unmerged"]:
-            try:
-                run(["git", "-C", repo_dir, "merge-base", "--is-ancestor", sha, default])
-            except ToolError:
-                raise ToolError(f"{ref}（{sha[:12]}）は {default} に入っていない。ビルドするのはマージ済みのコミットだけ")
+        try:
+            run(["git", "-C", repo_dir, "merge-base", "--is-ancestor", sha, default])
+        except ToolError:
+            raise ToolError(f"{ref}（{sha[:12]}）は {default} に入っていない。ビルドするのはマージ済みのコミットだけ")
         work = os.path.join(self.cfg["root"], "builds", bid)
         run(["git", "-C", repo_dir, "worktree", "add", "--detach", work, sha], timeout=300)
         app_dir = os.path.join(work, app["path"])
@@ -304,6 +312,11 @@ TOOLS = [
     tool("ui_key", "キーを押す（return / delete / escape / tab / space / home）。idb が要る", {"udid": S_UDID, "key": {"type": "string", "enum": sorted(KEYS)}}, ["udid", "key"]),
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
+# 範囲の宣言（SCOPE.md と同じ中身の要約）。登録済みのランナーの一覧に出す
+SCOPE_SUMMARY = ("できる: iOS シミュレーターの起動・停止・初期化、許したアプリのマージ済みのコミットからの署名なしビルドと入れる・起動・停止、"
+                 "画面の撮影・読み取り・操作、許した URL を開く、プッシュ通知、アプリのログ。"
+                 "しない: 署名・鍵・配布、実機、シミュレーターの外の Mac のファイルとアプリ、任意のコマンド。"
+                 "外と話すのは、工場への連絡と、製品のリポジトリ（GitHub）と依存のパッケージの取得だけ")
 
 
 class Runner:
@@ -358,6 +371,11 @@ class Runner:
             run(["pkill", "-f", f"idb_companion.*{udid}"])
         except ToolError:
             pass   # 残っていない（pkill は 1 を返す）
+        # pkill だけでは idb の記録（/tmp/idb/state）に死んだ補助プロセスが残り、起動し直した端末で ui_* が繋がらない（実機で確認）。idb からも外す
+        try:
+            self.idb("disconnect", udid, timeout=30)
+        except ToolError:
+            pass   # idb がない・繋いでいなかった
         return text({"udid": udid, "state": "Shutdown"})
 
     def t_sim_erase(self, a):
@@ -389,15 +407,23 @@ class Runner:
         simctl("install", udid, b["app_path"], timeout=300)
         return text({"udid": udid, "bundle_id": b["bundle_id"], "sha": b["sha"]})
 
+    def allowed_bundle(self, a):
+        """操作できるアプリは、許したアプリ（MAC_RUNNER_APPS）とそのビルドの bundle id だけ。端末の標準のアプリやほかのアプリは触らない。"""
+        bundle = need(a, "bundle_id", BUNDLE)
+        ok = {x["bundle_id"] for x in self.cfg["apps"].values()} | {b.get("bundle_id") for b in self.builds.items.values() if b.get("state") == "built"}
+        if bundle not in ok:
+            raise ToolError(f"{bundle} は操作を許していない（許しているもの: {', '.join(sorted(x for x in ok if x))}）")
+        return bundle
+
     def t_app_launch(self, a):
         udid = booted_udid(need(a, "udid", UDID))
-        bundle = need(a, "bundle_id", BUNDLE)
+        bundle = self.allowed_bundle(a)
         out = simctl("launch", udid, bundle).decode().strip()
         return text({"udid": udid, "bundle_id": bundle, "launched": out})
 
     def t_app_terminate(self, a):
         udid = booted_udid(need(a, "udid", UDID))
-        bundle = need(a, "bundle_id", BUNDLE)
+        bundle = self.allowed_bundle(a)
         try:
             simctl("terminate", udid, bundle)
         except ToolError as e:
@@ -420,14 +446,19 @@ class Runner:
     def t_open_url(self, a):
         udid = booted_udid(need(a, "udid", UDID))
         url = need(a, "url", URL)
-        if url.split(":", 1)[0] in ("file", "javascript"):
-            raise ToolError("file: と javascript: は開かない")
+        scheme = url.split(":", 1)[0]
+        if scheme in ("http", "https"):
+            host = re.match(r"^https?://([^/:?#@]+)", url)
+            if not host or host.group(1).lower() not in self.cfg["url_hosts"]:
+                raise ToolError(f"開けるのは {', '.join(self.cfg['url_hosts'])} の http(s) だけ（MAC_RUNNER_URL_HOSTS）")
+        elif scheme not in self.cfg["url_schemes"]:
+            raise ToolError(f"{scheme}: は開かない（開けるスキーム: {', '.join(self.cfg['url_schemes']) or 'なし'}。MAC_RUNNER_URL_SCHEMES）")
         simctl("openurl", udid, url)
         return text({"udid": udid, "opened": url})
 
     def t_push(self, a):
         udid = booted_udid(need(a, "udid", UDID))
-        bundle = need(a, "bundle_id", BUNDLE)
+        bundle = self.allowed_bundle(a)
         payload = a.get("payload")
         if not isinstance(payload, dict) or "aps" not in payload:
             raise ToolError("payload は aps を持つオブジェクト")
@@ -520,7 +551,7 @@ def handle_rpc(runner, msg, log):
         return rpc_ok(mid, {"protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
                             "capabilities": {"tools": {"listChanged": False}},
                             "serverInfo": {"name": "factory-macrunner", "version": VERSION},
-                            "instructions": "iOS シミュレーターを動かす Mac ランナー。sim_devices → sim_boot → app_build → build_status → app_install → app_launch → screenshot / ui_* の順に使う"})
+                            "instructions": SCOPE_SUMMARY + "。iOS シミュレーターを動かす Mac ランナー。sim_devices → sim_boot → app_build → build_status → app_install → app_launch → screenshot / ui_* の順に使う"})
     if method == "ping":
         return rpc_ok(mid, {})
     if method == "tools/list":
@@ -627,6 +658,73 @@ def preflight(cfg):
     return notes
 
 
+def runner_id(cfg):
+    """この機械のランナーの id（初めて動いたときに作り、置き場に残す）。登録済みのランナーの一覧の鍵。"""
+    path = os.path.join(cfg["root"], "runner.id")
+    try:
+        with open(path, encoding="utf-8") as f:
+            rid = f.read().strip()
+        if re.match(r"^[0-9a-f]{32}$", rid):
+            return rid
+    except OSError:
+        pass
+    os.makedirs(cfg["root"], exist_ok=True)
+    rid = uuid.uuid4().hex
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(rid)
+    return rid
+
+
+def checkin_info(cfg, rid, state="running"):
+    import platform
+    import socket
+    tools = [n for exe, n in (("xcrun", "Xcode"), (cfg["flutter"], "Flutter"), (cfg["idb"], "idb")) if shutil.which(exe)]
+    try:
+        devices = str(len(list_devices()))
+    except (ToolError, ValueError, KeyError):
+        devices = ""
+    return {"id": rid, "name": socket.gethostname().split(".")[0], "kind": "mac", "version": VERSION, "label": cfg["label"],
+            "path": os.path.abspath(__file__), "port": str(cfg["port"]), "platform": f"macOS {platform.mac_ver()[0]}".strip(),
+            "tools": "・".join(tools), "devices": devices, "home": cfg["root"], "logs": cfg["log_dir"], "state": state,
+            "scope": SCOPE_SUMMARY + "。アプリ: " + "、".join(sorted(cfg["apps"]))}
+
+
+def checkin(cfg, rid, state="running", opener=None):
+    """操業コンソールへ連絡する。返事が外す依頼なら True。届かなければ False（工場が止まっていても動き続ける）。"""
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
+    opener = opener or urlopen
+    q = urlencode(checkin_info(cfg, rid, state))
+    try:
+        with opener(f"{cfg['console']}/api/runners/checkin?{q}", timeout=10) as r:
+            return bool(json.loads(r.read()).get("uninstall"))
+    except (OSError, ValueError):
+        return False
+
+
+def self_uninstall(cfg, rid, log):
+    """外す依頼に応える: LaunchAgent の plist を消し、外したことを知らせてから launchd から外す（ここで止まる）。
+    トークン・ビルドの作業場・ログは残す（消すのは人）。"""
+    log({"at": now(), "tool": "self_uninstall", "args": {}, "error": False, "ms": 0})
+    try:
+        os.unlink(cfg["plist"])
+    except OSError:
+        pass
+    checkin(cfg, rid, "uninstalled")
+    try:
+        run(["launchctl", "bootout", f"gui/{os.getuid()}/{cfg['label']}"])
+    except ToolError:
+        pass
+    os._exit(0)   # launchd の外で動かしていたときも止まる
+
+
+def checkin_loop(cfg, rid, log):
+    while True:
+        if checkin(cfg, rid):
+            self_uninstall(cfg, rid, log)
+        time.sleep(max(cfg["checkin_sec"], 10))
+
+
 def serve():
     cfg = config()
     token = read_token(cfg["token_file"])
@@ -636,12 +734,18 @@ def serve():
         print(f"[macrunner] {n}", file=sys.stderr)
     httpd = ThreadingHTTPServer((cfg["host"], cfg["port"]), make_handler(runner, token, log))
     print(f"[macrunner] {VERSION} listening on {cfg['host']}:{cfg['port']}", file=sys.stderr)
+    if cfg["console"]:
+        threading.Thread(target=checkin_loop, args=(cfg, runner_id(cfg), log), daemon=True).start()
     httpd.serve_forever()
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         serve()
+    elif len(sys.argv) > 1 and sys.argv[1] == "uninstalled":   # scripts/macrunner.sh uninstall が呼ぶ。手で外したことを工場の一覧に知らせる
+        c = config()
+        if c["console"]:
+            checkin(c, runner_id(c), "uninstalled")
     elif len(sys.argv) > 1 and sys.argv[1] == "preflight":
         notes = preflight(config())
         print("\n".join(notes) or "ok")
