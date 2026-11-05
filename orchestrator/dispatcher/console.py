@@ -222,7 +222,7 @@ def releases(cur) -> list[dict]:
         if t:   # 触れる環境の入口（URL・QR・ログインの手がかり）。QR は工場の中で作る（外部のサービスに依存しない）
             t = {k: t.get(k) for k in ("release_id", "env", "reachable_from_phone", "accounts", "note", "at")} | {
                 "entries": [{**e, "qr_svg": touch.qr_svg(e["url"]) if e.get("qr") else None} for e in t.get("entries") or []]}
-        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(repo), "touch": t,
+        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(cur, repo), "stage": ship.stage_of(cur, repo), "touch": t,
                     "last": {"name": last["name"], "at": iso(last["occurred_at"]), **{k: last["payload"].get(k) for k in
                              ("release_id", "env", "seconds", "from", "error")}} if last else None})
     return out
@@ -466,7 +466,7 @@ const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
  const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
-  if(r.prod_held)b+=`<span class="m">本番には出さない（1st リリース前の development。staging だけ動かす）</span>`;
+  if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
   if(!r.prod_held&&pr.previous&&!pr.rollback_blocked)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前の版に戻す（${VER(pr.previous)} へ）</button>`;
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;

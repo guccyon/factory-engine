@@ -150,7 +150,7 @@ def decide(types: list[str], manifest: dict) -> dict:
         if t.startswith("always:"):
             # always_human_approve（表にない id も承認に倒す）。from: operation_start の項目は運用開始（autonomy.operation_started）までは効かない
             entry = always.get(t.split(":", 1)[1], {})
-            dormant = entry.get("from") == "operation_start" and not au.get("operation_started")
+            dormant = entry.get("from") == "operation_start" and not operation_started(manifest)
             v = "auto" if dormant else "human_approve"
         else:
             v = (matrix.get(t) or {}).get("merge", "human_approve")                   # 表にない種別は承認に倒す（unanswered_default: hold）
@@ -168,11 +168,17 @@ def load_rules() -> dict:
         return yaml.safe_load(f)
 
 
-def judge_constraints(au: dict) -> str:
+def operation_started(manifest: dict) -> bool:
+    """運用開始か。製品の段階（product_stage）が operating なら運用開始（definitions/product_stages.yaml）。
+    段階の欄がなかった頃の autonomy.operation_started も読む"""
+    return bool(ship.STAGES.get(ship.declared_stage(manifest), {}).get("operation_started")) or bool(manifest.get("autonomy", {}).get("operation_started"))
+
+
+def judge_constraints(au: dict, started: bool | None = None) -> str:
     """judge に渡す manifest の制約。from: operation_start の常時承認は、運用開始（autonomy.operation_started）までは
     マージの判定（上の always_human_approve の扱い）と同じく効かせないので、judge にも「今は人に回さない」と分けて渡す。
     以前は全項目を効いているものとして渡し、開発中の identity の変更を judge が人に回していた（rally #130）"""
-    started = bool(au.get("operation_started"))
+    started = bool(au.get("operation_started")) if started is None else started
     active, dormant = [], []
     for a in au.get("always_human_approve", []):
         (dormant if a.get("from") == "operation_start" and not started else active).append(f"{a['id']}（{a.get('ja', '')}）")
@@ -500,7 +506,7 @@ def judge_step(cur, manifests: dict):
         if repo not in manifests:
             manifests[repo] = load_manifest(repo)
         au = manifests[repo].get("autonomy", {})
-        constraints = judge_constraints(au)
+        constraints = judge_constraints(au, operation_started(manifests[repo]))
         inp = judgment.judge_input(cur, r["pr_url"], mode, constraints)
         nothing = not inp["provisional"] and not inp["defects"]
         if not record(cur, "supervisor.judge_enqueued", r["corr"], {"pr_url": r["pr_url"], "head_sha": r["sha"], "mode": mode, "mode_basis": basis,
@@ -662,6 +668,20 @@ def daily_report_step(cur):
     r = subprocess.run([sys.executable, DAILY_REPORT, "--publish"], capture_output=True, text=True, timeout=300,
                        env={**ENV, "GH_TOKEN": GH_TOKEN})
     log("daily report", r.returncode, (r.stdout or r.stderr).strip()[-300:])
+
+
+def stage_step(cur, manifests: dict):
+    """製品の段階の宣言（manifest.yaml の product_stage）を読み、変わったときだけ product.stage_observed に残す（ADR 0028 の決定 4）。
+    shipper・コンソール・受け箱は GitHub を見ずにこの記録を読む。manifest を読めない製品（Engine など）は飛ばし、記録がなければ development に倒す"""
+    for repo in dict.fromkeys(RELEASE_TRAIN + REPOS):
+        try:
+            if repo not in manifests:
+                manifests[repo] = load_manifest(repo)
+        except Exception:  # noqa: BLE001, S112  manifest がない・読めないときは前の記録のまま
+            continue
+        stage = ship.declared_stage(manifests[repo])
+        if ship.observe_stage(cur, repo, stage):
+            log("product stage", repo, stage or "(未宣言)", "→", ship.stage_of(cur, repo)["stage"])
 
 
 def release_train_step(cur):
@@ -1019,6 +1039,7 @@ def tick():
         open_prs = merge_step(cur, rules, manifests)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
+        stage_step(cur, manifests)
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
         daily_report_step(cur)

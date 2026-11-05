@@ -1,0 +1,35 @@
+# 製品の段階（ADR 0028 の決定 4、ADR 0012 の拡張）
+# 工場が製品ごとに「いまどの段階か」を持ち、段階で出荷先と承認が決まる（リリース管理）。
+# 製品側の宣言は .factory-config/manifest.yaml の product_stage（Blueprint の product_stage の写し）。
+# manifest の変更は憲法の変更（constitution）なので、段階の切り替えは人の承認付き PR で行う。工場は自分で段階を進めない。
+#
+# 読み方: supervisor が周回ごとに既定ブランチの manifest を読み、変わったときだけ events の product.stage_observed に残す。
+# shipper・操業コンソール・人の受け箱は events の最新を読む（GitHub に触らない）。
+# 宣言が一度も読めていない製品は default（development）に倒す。本番を立てない側に倒しておけば、読めなくても事故にならない。
+# dispatcher のコンテナには definitions/ がないので、ship.py の STAGES に同じ値を写す（食い違いはテストで見る）。
+
+schema_version: "0.1"
+status: draft
+default: development
+
+stages:
+  development:
+    ja: 開発中（1st リリース前）
+    ship_to: [staging]            # 本番は立てない。承認ボタンも本番の戻しも受け付けない。出荷の列車は staging に出し続ける
+    operation_started: false
+    note: "利用者（合成でない人）にはまだ出していない。staging だけ動かし、シードも staging だけ"
+  launch:
+    ja: 公開の準備（本番を立てて、最初の利用者に出すまで）
+    ship_to: [staging, prod]      # prod は承認ボタンで出す（ship.yaml の environments.prod.approval）
+    operation_started: false
+    note: "本番を空から立てて確かめる。招待した少数の利用者に出した時点で operating に切り替える"
+  operating:
+    ja: 運用中（利用者に出した後）
+    ship_to: [staging, prod]
+    operation_started: true       # manifest の autonomy.operation_started と同じ意味。from: operation_start の常時承認が効き始める
+    note: "運用開始は「プロダクトを利用者（合成でない人）に出した時点」（2026-10-27 戦略会議 D4）"
+
+# 段階の切り替え
+switch:
+  by: human                        # manifest.yaml の product_stage を変える PR を人が承認する
+  note: "ふつうは development → launch → operating の順。operating から development に戻すのは、利用者に出した製品から本番を外すことなので、段階の切り替えでなく障害対応か閉鎖として人が決める"

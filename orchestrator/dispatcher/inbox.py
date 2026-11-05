@@ -131,8 +131,8 @@ def _releases(cur) -> list[dict]:
     cur.execute("select distinct payload->>'repo' as repo from events where name='release.created' order by 1")
     out = []
     for repo in [r["repo"] for r in cur.fetchall()]:
-        if ship.prod_held(repo):
-            continue   # 本番に出さない製品（development）は本番待ちにしない
+        if ship.prod_held(cur, repo):
+            continue   # 本番に出さない段階（development）の製品は本番待ちにしない
         envs = ship.status(cur, repo)["environments"]
         st, pr = envs.get("staging") or {}, envs.get("prod") or {}
         rid = st.get("release_id")

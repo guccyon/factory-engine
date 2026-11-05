@@ -1,7 +1,7 @@
 # ADR 0028: QA と実行環境のケイパビリティと、P5 の 2 段への分割
 
 - 状態: 承認（2026-11-04 オーナー。P5 を 2 段に分ける案をカードで選択。アーキテクチャに触れる点は本文で承認、実装は各 PR）
-- 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ）
+- 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ。段階に置き換えた: ADR 0012 の追記 2026-11-05）
 - 検討の記録: 50_build-work/strategy/qa-and-runtime-2026-11-04.md（発散）、strategy/qa-model/、strategy/capability-model/、strategy/roadmap-qa-runtime/（図）、capability-model-knowledge-2026-11-04.md（知見）
 
 ## 文脈
@@ -48,6 +48,7 @@ P5b は既存の 4 項目に `severity_budget`、`release_train`、`ephemeral_en
 
 - 品質方針: アクセシビリティのレベル、扱うデータの種類、サポート対象の表（OS 版 × 端末 × ブラウザ × 支援設定）、言葉の指針、S1（止める）の条件。値は Gen1 では建設者が代理で仮置き
 - 製品の段階: development / launch / operating。段階で出荷先と承認が決まる（development は production を立てない）。切り替えは人。#160 の `SHIP_PROD_HOLD` はこれができるまでのつなぎ
+- 欄の型は `definitions/quality_policy.yaml` と `definitions/product_stages.yaml`（2026-11-05）。製品側は `.factory-config/quality_policy.yaml` と manifest の `product_stage`
 
 ### 5. Defect と Incident を events の型に足す
 
