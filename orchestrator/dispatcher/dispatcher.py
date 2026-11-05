@@ -984,7 +984,7 @@ def classify_failure(p: dict) -> tuple[str, str, str] | None:
     if err == "timeout":
         return "budget", f"時間の上限（{JOB_TIMEOUT // 60} 分）で打ち切られた", "チケットの分割か rerun"
     if err.startswith("incomplete"):
-        return "budget", "ターンか時間の上限で途中終了した（ドラフト PR）", "建設者の仕上げか rerun"
+        return "budget", "ターンか時間の上限で途中終了した（ドラフト PR）", "続き 1 回（rerun --continue）か、残りをプランナーに切らせる（plan resplit。ADR 0036 の 6）"
     if err == "unresolved_after_max_rounds":
         return "ticket", "要求が質問の上限まで往復しても確定しなかった", "要求者か建設者の判断"
     return "factory-bug", "ジョブが失敗した（未分類。人が分類を直す）", "原因の調査と rerun"

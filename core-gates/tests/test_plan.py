@@ -175,3 +175,18 @@ def test_size_check_waits_for_design_and_marks_missing_size():
     assert pl.size_check(O(steps=["implement"]), "ready", ["implement"], DEFS) == ("ready", [], ["no_size"], [])
     assert pl.size_check(O(steps=["design_system"]), "ready", ["design_system"], DEFS) == ("ready", [], [], [])   # 実装役を通らない経路は見ない
     assert pl.size_check(SZ(band="XL"), "ask", ["implement"], DEFS)[0] == "ask"
+
+
+def test_pre_implement_phase_keeps_only_the_implementer(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(step, prompt, **k):
+        seen["prompt"] = prompt
+        return agent_runner.Result(output={**SZ(steps=("ui_design", "implement")), "summary": "s", "evidence": [], "interpretation": "i"},
+                                   cost_usd=0.01, model="m")
+    monkeypatch.setattr(agent_runner, "run", fake)
+    out = pl.plan({"title": "t", "body": "b"}, {"phase": "implement", "continuing_pr": "https://github.com/o/r/pull/9"}, DEFS, None)
+    assert out["steps"] == ["implement"] and out["phase"] == "implement"
+    assert "実装の手前の判定" in seen["prompt"] and "pull/9" in seen["prompt"] and "t1 にし" in seen["prompt"]
+    out = pl.plan({"title": "t", "body": "b"}, {}, DEFS, None)
+    assert out["steps"] == ["ui_design", "implement"] and "実装の手前の判定" not in seen["prompt"]

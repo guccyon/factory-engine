@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from psycopg.types.json import Jsonb
 
 import desk_line
@@ -122,16 +124,38 @@ def attach_sizes(cur, repo: str, inp: dict) -> dict:
     return {**(inp or {}), "size_table": table}
 
 
+PRE_IMPLEMENT_MARK = "split_after_design"
+
+
+def wants_pre_implement(cur, corr: str) -> bool:
+    """最後に着手できると決めた判定が「画面が決まってから切る」の印を付けていて、まだ実装の手前の判定をしていない（ADR 0036 の 3）"""
+    cur.execute("select payload from artifacts where type='Plan' and correlation_id=%s and payload->>'decision' in ('ready','split') "
+                "order by id desc limit 1", (corr,))
+    r = cur.fetchone()
+    p = (r or {}).get("payload") or {}
+    return PRE_IMPLEMENT_MARK in (p.get("advisories") or []) and p.get("phase") != "implement"
+
+
+def enqueue_pre_implement(cur, repo: str, issue: int, corr: str, why: str, extra: dict | None = None) -> int | None:
+    """実装の手前の判定を積む（phase=implement）。画面が決まった後と、途中終了を 2 回したとき（ADR 0036 の 3・6）"""
+    jid = enqueue(cur, repo, issue, corr, "tier-small", {"round": 1, "phase": "implement", **(extra or {})})
+    if jid:
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.pre_implement',%s,%s,%s)",
+                    (corr, jid, Jsonb({"repo": repo, "issue": issue, "why": why, **(extra or {})})))
+    return jid
+
+
 def split_tasks(cur, gh, repo: str, issue: int, corr: str, plan_id: int, title: str, tasks: list[dict], p: dict) -> list[dict]:
     """大きなチケットを、タスクのまとまり（依存つき）として子のチケットに切る（ADR 0036 の 2）。起票は窓口と同じ（desk_line.file_task）。
     途中で失敗しても、起票した子は plan.task_filed で覚えているので、判定し直しても同じ子を 2 度作らない"""
     cur.execute("select payload from events where name='plan.task_filed' and correlation_id=%s and payload->>'plan_id'=%s", (corr, str(plan_id)))
     numbers = {e["payload"]["key"]: int(e["payload"]["number"]) for e in cur.fetchall()}
     parent = gh("GET", f"repos/{repo}/issues/{issue}") or {}
+    parent_deps = [int(x) for m in desk_line.DEP_RE.finditer(parent.get("body") or "") for x in re.findall(r"#(\d+)", m.group(1))]   # 親の依存（足りない部品の仕事など）は子にも付ける
     prio = [l["name"] for l in parent.get("labels") or [] if isinstance(l, dict) and (l.get("name") or "").startswith("factory:priority:")]
     filed = []
     for t in tasks:
-        deps = [numbers[k] for k in t.get("depends_on") or [] if k in numbers]
+        deps = parent_deps + [numbers[k] for k in t.get("depends_on") or [] if k in numbers]
         if t["key"] not in numbers:
             kind = desk_line.KIND_JA.get(t.get("kind"), t.get("kind"))
             body = "\n".join([f"#{issue}（{title}）が大きいので、プランナーが切ったタスクのまとまりの {t['key']}（{kind}）です。{t.get('summary') or ''}",

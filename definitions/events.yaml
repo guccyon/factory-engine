@@ -478,6 +478,10 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, child, steps]
     note: "ADR 0026。経路の最初の役がデザインシステムで、後ろにほかの役が続くので、デザインシステムの仕事を別のチケット（child）に切った。元のチケットは factory:waiting-steps で待つ。ADR 0036 の 2: kind=tasks のときは、大きすぎるのでタスクのまとまりに切った（children に子の番号、oversize に当たった基準。child は null）。子がすべて閉じたら元のチケットを閉じる（plan.advanced の role=done）"
+  plan.pre_implement:
+    source: control_plane
+    required: [repo, issue, why]
+    note: "ADR 0036 の 3・6。実装の手前のプランナーの判定（input の phase=implement）を積んだ。why は design_handed_off（大きいが画面が先だったチケットの画面が決まった。最後の判定に印 split_after_design）か incomplete_repeated（途中終了の続きも途中終了した。factoryctl plan resplit。continuing_pr にドラフト PR）"
   plan.task_filed:
     source: control_plane
     required: [plan_id, repo, issue, key, number, label]
