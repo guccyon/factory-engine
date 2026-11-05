@@ -42,7 +42,7 @@ KINDS = {
     "report.factory_health": {"parties": ("provider", "business_owner"),
                               "defaults": {"provider": ("provider",), "business_owner": ("business_owner", "provider")}, "status": "ready"},
     "report.product": {"parties": ("provider", "business_owner"),
-                       "defaults": {"provider": ("business_owner", "provider"), "business_owner": ("business_owner", "provider")}, "status": "later"},
+                       "defaults": {"provider": ("business_owner", "provider"), "business_owner": ("business_owner", "provider")}, "status": "ready"},
     "request.inbox": {"parties": ("business_owner",),
                       "defaults": {"provider": ("business_owner",), "business_owner": ("business_owner",)}, "status": "ready"},
     "done.task": {"parties": ("provider", "business_owner"), "defaults": {"provider": (), "business_owner": ()}, "status": "later"},

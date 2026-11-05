@@ -13,3 +13,12 @@ reports:
       - { id: jobs,  ja: ジョブ,     parties: [provider, business_owner] }   # 終わったジョブの成否
       - { id: inbox, ja: 人の判断待ち, parties: [provider, business_owner] }   # 受信トレイに残っている件数、判断までの待ち時間
       - { id: cost,  ja: 費用,       parties: [provider, business_owner] }   # API 単価に換算した消費、予算の上限で止まった時間（R5: 健康のレポートにだけ載せる）
+  report.product:
+    status: provisional      # 2026-11-05。ロードマップの進捗を工場のチケットから仮に出す（正式な中身は別のタスクで決める）
+    period: day
+    sections:
+      - { id: roadmap,  ja: ロードマップ,   parties: [provider, business_owner] }   # チケットの済み・進行中・投入待ちの数と進み具合
+      - { id: done,     ja: 済んだもの,     parties: [provider, business_owner] }   # 期間に済んだチケットとマージした PR
+      - { id: doing,    ja: 進めているもの, parties: [provider, business_owner] }   # 進行中のチケット
+      - { id: next,     ja: 次に流すもの,   parties: [provider, business_owner] }   # 投入待ちのチケット（優先度の高い順）
+      - { id: releases, ja: 版,             parties: [provider, business_owner] }   # 期間に切った版

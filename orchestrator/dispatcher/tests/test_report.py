@@ -14,6 +14,7 @@ os.environ.setdefault("NOTIFIER", "log")
 import notify  # noqa: E402
 import report  # noqa: E402
 import report_health  # noqa: E402
+import report_product  # noqa: E402
 import stoppage  # noqa: E402
 from report import Report, Section, entry, metric, note  # noqa: E402
 
@@ -29,10 +30,11 @@ DOC = {
 }
 
 
-def test_sections_match_definitions():
-    d = yaml.safe_load(DEFS.read_text())["reports"]["report.factory_health"]
+@pytest.mark.parametrize("mod", [report_health, report_product])
+def test_sections_match_definitions(mod):
+    d = yaml.safe_load(DEFS.read_text())["reports"][mod.KIND]
     assert d["status"] == "provisional"
-    assert [(s["id"], s["ja"], tuple(s["parties"])) for s in d["sections"]] == [(k, t, p) for k, (t, p) in report_health.SECTIONS.items()]
+    assert [(s["id"], s["ja"], tuple(s["parties"])) for s in d["sections"]] == [(k, t, p) for k, (t, p) in mod.SECTIONS.items()]
 
 
 def sample() -> Report:
@@ -114,18 +116,44 @@ def test_daily_step_builds_once_and_delivers_per_destination(cur):
     early = report.daily_step(cur, datetime(2026, 11, 5, 4, 0, tzinfo=JST), cfg, poster=poster)
     assert early == {}                                                   # 5 時より前は出さない
     r = report.daily_step(cur, now, cfg, poster=poster)
+    assert set(r) == {"report.factory_health", "report.product"}
     assert r["report.factory_health"]["sent"] == ["owner_ops"] and r["report.factory_health"]["failed"] == ["provider_ops"]
     r = report.daily_step(cur, now + timedelta(minutes=1), cfg, poster=poster)
     assert r["report.factory_health"]["sent"] == ["provider_ops"]       # 失敗した宛先だけ送り直す
     assert report.daily_step(cur, now + timedelta(minutes=2), cfg, poster=poster)["report.factory_health"]["sent"] == []
     cur.execute("select count(*) as n from events where name='report.built'")
-    assert cur.fetchone()["n"] == 1                                       # 組み立ては 1 日 1 回
-    assert sorted(n for n, _ in posted) == ["owner_ops", "provider_ops"]
+    assert cur.fetchone()["n"] == 2                                       # 組み立ては種類ごとに 1 日 1 回
+    assert sorted(n for n, _ in posted if "健康" in _) == ["owner_ops", "provider_ops"]
 
 
 def test_daily_step_without_config_only_records(cur):
     r = report.daily_step(cur, datetime(2026, 11, 5, 6, 0, tzinfo=JST), notify.implicit(["log"]), poster=lambda d, t: pytest.fail("送らない"))
     assert r["report.factory_health"]["sent"] == []
-    cur.execute("select payload from events where name='report.built'")
-    [b] = cur.fetchall()
-    assert b["payload"]["kind"] == "report.factory_health" and b["payload"]["provisional"]
+    cur.execute("select payload from events where name='report.built' order by id")
+    assert [b["payload"]["kind"] for b in cur.fetchall()] == ["report.factory_health", "report.product"]
+
+
+def test_product_build_reads_tickets_and_merges(cur):
+    h = lambda x: START + timedelta(hours=x)   # noqa: E731
+    t = "insert into tickets(source, source_ref, repo, title, url, state, priority, held, waiting_on, created_at, updated_at) " \
+        "values ('github', %s, split_part(%s, '#', 1), %s, %s, %s, %s, %s, %s, %s, %s)"
+    cur.execute(t, ("o/p#1", "o/p#1", "D1: 前からある", "https://github.com/o/p/issues/1", "closed", 50, False, [], h(-48), h(-24)))
+    cur.execute(t, ("o/p#2", "o/p#2", "D2: きのう済んだ", "https://github.com/o/p/issues/2", "closed", 50, False, [], h(-30), h(9)))
+    cur.execute(t, ("o/p#3", "o/p#3", "D3: 進行中", "https://github.com/o/p/issues/3", "active", 60, False, [], h(-5), h(10)))
+    cur.execute(t, ("o/p#4", "o/p#4", "D4: 次", "https://github.com/o/p/issues/4", "planned", 70, False, ["o/p#3"], h(-5), h(-5)))
+    cur.execute(t, ("o/p#5", "o/p#5", "D5: 保留", "https://github.com/o/p/issues/5", "planned", 90, True, [], h(-5), h(-5)))
+    cur.execute(t, ("x/y#1", "x/y#1", "別の製品", "", "closed", 50, False, [], h(-5), h(9)))
+    ev(cur, "release.created", {"repo": "o/p", "app_version": "0.8.0", "prs": ["a", "b"]}, h(12))
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.merged', 'github:o/p#2', %s, %s)", (Jsonb({}), h(9)))
+    rep = report_product.build(cur, START, END, "o/p")
+    sec = {s.id: s.items for s in rep.sections}
+    m = {i.label: i.value for s in rep.sections for i in s.items if i.kind == "metric"}
+    assert m["済んだ"] == 2 and m["進めている"] == 1 and m["投入待ち"] == 2 and m["保留中"] == 1 and m["進み具合（済んだチケットの割合）"] == 40.0
+    assert m["済んだチケット"] == 1 and m["マージした PR"] == 1
+    assert [i.label for i in sec["done"] if i.kind == "entry"] == ["D2: きのう済んだ"]
+    assert [i.label for i in sec["doing"]] == ["D3: 進行中"]
+    assert [(i.label, i.state) for i in sec["next"]] == [("D4: 次", "1 件の完了待ち")]   # 保留は次に流すものに出さない
+    assert [i.label for i in sec["releases"]] == ["版 0.8.0"]
+    text = report.render(rep, "slack_webhook", "business_owner")
+    assert "<https://github.com/o/p/issues/2|D2: きのう済んだ>" in text and "別の製品" not in text

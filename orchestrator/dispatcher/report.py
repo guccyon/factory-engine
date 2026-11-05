@@ -215,7 +215,8 @@ def daily_step(cur, now: datetime | None = None, config: notify.Config | None = 
         return {}
     if builders is None:
         import report_health
-        builders = {"report.factory_health": report_health.build}
+        import report_product
+        builders = {"report.factory_health": report_health.build, "report.product": report_product.build}
     config = config or notify.current(cur)
     start, end = previous_day(now)
     out = {}
