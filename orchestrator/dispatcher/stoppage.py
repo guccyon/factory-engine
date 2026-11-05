@@ -42,7 +42,7 @@ def open_stoppage(cur, key: str, category: str, what: str, *, waiting_for: str =
     if category not in CATEGORIES:
         raise ValueError(f"category must be one of {CATEGORIES}")
     payload = {"key": key, "category": category, "what": what, "waiting_for": waiting_for, "cause": cause,
-               "detected_by": detected_by, "started_at": _iso(started_at), "prevention": prevention}
+               "detected_by": detected_by, "started_at": _iso(started_at), "prevention": prevention, "notified": not quiet}
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('stoppage.opened',%s,%s,%s,%s) "
                 "on conflict (dedupe_key) do nothing returning id", (correlation_id, job_id, Jsonb(payload), f"stoppage.opened:{key}"))
     opened = cur.fetchone() is not None
@@ -61,10 +61,18 @@ def close_stoppage(cur, key: str, *, remedy: str = "", prevention: str = "", end
     cur.execute("insert into events(name, payload, dedupe_key) values ('stoppage.closed',%s,%s) on conflict (dedupe_key) do nothing returning id",
                 (Jsonb({k: v for k, v in payload.items() if v is not None}), f"stoppage.closed:{key}"))
     closed = cur.fetchone() is not None
-    if closed and not quiet:
+    # 始まりを通知した停止は、--quiet でも終わりを通知する（#181）。始まりと終わりの組が崩れると、朝の報告が開いたままと数える。
+    # --quiet が効くのは始まりも通知していない停止（過去分の取り込み）だけ。notified がない古い記録は通知済みとみなす
+    if closed and (not quiet or _opened_notified(cur, key)):
         cur.execute("select * from stoppages where key=%s", (key,))
         notify("closed", cur.fetchone() or payload, cur)
     return closed
+
+
+def _opened_notified(cur, key: str) -> bool:
+    cur.execute("select payload->>'notified' as n from events where name='stoppage.opened' and payload->>'key'=%s order by id desc limit 1", (key,))
+    row = cur.fetchone()
+    return row is not None and row["n"] != "false"
 
 
 def open_keys(cur, prefix: str = "") -> list[str]:

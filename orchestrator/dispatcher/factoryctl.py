@@ -30,7 +30,7 @@
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
-  factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--woken-by pr_event|watcher|schedule|human] [--quiet]   # --quiet は通知しない（過去分の取り込み）。--woken-by は builder を起こしたもの（D8）
+  factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--woken-by pr_event|watcher|schedule|human] [--quiet]   # --quiet は通知しない（過去分の取り込み）。始まりを通知した停止は --quiet でも終わりを通知する（#181）。--woken-by は builder を起こしたもの（D8）
   factoryctl stoppage list [--open]
   factoryctl report stoppages [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # Markdown。既定は直近 7 日。週次レポートの stoppages.md はこの出力
 
