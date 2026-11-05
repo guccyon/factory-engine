@@ -302,7 +302,7 @@ TOOLS = [
     tool("screenshot", "画面を撮って PNG で返す", {"udid": S_UDID}, ["udid"]),
     tool("open_url", "URL（Web かアプリのディープリンク）を開く", {"udid": S_UDID, "url": {"type": "string"}}, ["udid", "url"]),
     tool("push", "プッシュ通知を送る（APNs の payload の JSON）", {"udid": S_UDID, "bundle_id": {"type": "string"}, "payload": {"type": "object"}}, ["udid", "bundle_id", "payload"]),
-    tool("logs", "直近のログ（アプリのプロセス。com.apple. の部品のログは除く）を返す", {"udid": S_UDID, "seconds": {"type": "integer", "minimum": 1, "maximum": 600}, "process": {"type": "string", "description": "既定 Runner"}}, ["udid"]),
+    tool("logs", "直近のログ（許したアプリのプロセスだけ。com.apple. の部品のログは除く）を返す", {"udid": S_UDID, "seconds": {"type": "integer", "minimum": 1, "maximum": 600}}, ["udid"]),
     tool("ui_describe", "画面のアクセシビリティの木（要素・文言・座標）を返す。idb が要る", {"udid": S_UDID}, ["udid"]),
     tool("ui_tap", "画面の座標（ポイント）を押す。idb が要る", {"udid": S_UDID, "x": {"type": "number"}, "y": {"type": "number"}}, ["udid", "x", "y"]),
     tool("ui_swipe", "画面をなぞる（始点から終点へ）。idb が要る",
@@ -471,9 +471,7 @@ class Runner:
     def t_logs(self, a):
         udid = booted_udid(need(a, "udid", UDID))
         seconds = int(number(a, "seconds", 1, 600, 60))
-        process = a.get("process", "Runner")
-        if not isinstance(process, str) or not re.match(r"^[A-Za-z0-9_.\-]{1,64}$", process):
-            raise ToolError("process の形が違う")
+        process = "Runner"   # 許したアプリ（Flutter の iOS アプリのプロセス名）だけ。ほかのプロセスのログは読まない
         out = simctl("spawn", udid, "log", "show", "--style", "compact", "--last", f"{seconds}s",
                      "--predicate", f'process == "{process}" AND NOT subsystem BEGINSWITH "com.apple."', timeout=120).decode("utf-8", "replace")
         return [{"type": "text", "text": out[-20000:] or "（ログなし）"}]
