@@ -22,7 +22,7 @@ kinds:
     defaults:
       provider: [business_owner, provider]
       business_owner: [business_owner, provider]
-    status: later      # 順番 4
+    status: ready      # 順番 4（中身は reports.yaml の仮置き）
   request.inbox:
     ja: 受信トレイの人の出番（承認依頼）
     parties: [business_owner]     # 事業主の判断が要るものだけ。誰の出番かで絞る（決定 5）
