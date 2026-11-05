@@ -38,6 +38,11 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       objectstore: { condition: service_started }
+    # 通知の設定（製品の .factory-config/notifications.yaml、ADR 0032）の secret: env:NAME を引くため、.env の値をそのまま渡す。
+    # 下の environment が先に効く（今までの値は変わらない）
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
       OBJECTSTORE_ENDPOINT: objectstore:7070
@@ -89,6 +94,9 @@ services:
       CONSOLE_URL: ${CONSOLE_URL:-http://localhost:8790} # 通知のリンクの前に付ける（コンソールの中の選択・出荷へのリンク）
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}          # slack を選ぶときだけ。値は .env に置き、リポジトリに書かない
       INBOX_SLACK_MENTIONS: ${INBOX_SLACK_MENTIONS:-}    # 誰の出番かごとのメンション（例 po=<@U…>,design_chief=<@U…>）。.env に置く
+      # 通知の出し分け（ADR 0032）。製品の .factory-config/notifications.yaml があればそれに従い、なければ上の INBOX_* のまま
+      NOTIFY_CONFIG_REPO: ${NOTIFY_CONFIG_REPO:-}        # 設定を読む製品のリポジトリ。空なら FACTORY_REPOS の先頭
+      NOTIFY_CONFIG_POLL_SEC: ${NOTIFY_CONFIG_POLL_SEC:-300}
       # 来歴（ADR 0007）。Engine の版はイメージに焼き込む（scripts/build.sh が ENGINE_VERSION を渡す。ADR 0031）。.env には書かない
       FACTORY_MODE: ${FACTORY_MODE:-}
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}             # 例: unattended=22:00-08:00（Asia/Tokyo）。factoryctl mode set が優先
