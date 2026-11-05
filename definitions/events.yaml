@@ -297,19 +297,19 @@ events:
   restricted.added:
     source: approval_log
     required: [id, product, knowledge_ids, by]
-    note: "ADR 0024 の 5。管理者が知見の制限付きの保管先に記録を置いた（factoryctl restricted add）。id は R-NNNN。中身は暗号にして restricted_records に置き、ここには書かない"
+    note: "ADR 0024 の 5。管理者が知見の制限付きの保管先に記録を置いた（factoryctl restricted add）。id は R-NNNN。中身は専用スキーマの restricted.records に置き、ここには書かない"
   restricted.read:
     source: approval_log
     required: [id, by, purpose]
-    note: "ADR 0024 の 5。制限付きの保管先の中身を読んだ（factoryctl restricted show）。誰が・何のために。restricted_reads にも同じ記録。中身は書かない"
-  restricted.read_failed:
-    source: approval_log
-    required: [id, by]
-    note: "ADR 0024 の 5。中身を読もうとしたが鍵が違って復号できなかった。読もうとした記録（restricted.read）は先に残る"
+    note: "ADR 0024 の 5。制限付きの保管先の中身を読んだ（factoryctl restricted show）。誰が・何のために。restricted.reads にも同じ記録。中身は書かない"
   restricted.retired:
     source: approval_log
     required: [id, by, reason]
     note: "ADR 0024 の 5。制限付きの記録を retired にし、中身を消した。id は再利用しない"
+  knowledge.used:
+    source: control_plane
+    required: [repo, issue, role, ids]
+    note: "ADR 0024 の 6。implement のワーカーが、委員会が採用した active で確認済み以上の知見（core-gates/knowledge_context.py が選ぶ）を文脈に渡した。ids は K-NNNN。pr_url と continue_reason を添える。知見に従った作業の差し戻しや、60 日使われない知見を数えるのは測る側。dedupe はジョブごと"
   committee.revise:
     source: control_plane
     required: [pr_url, head_sha, votes]

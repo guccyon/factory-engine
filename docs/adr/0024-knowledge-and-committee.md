@@ -42,8 +42,8 @@ ADR 0023 で、学習の対象を 8 テーマに分け、事例型の分析役�
 2. 製品に置き場を作り、CI で `knowledge_check.py` を走らせる（製品の CI は Engine の固定した版のこのファイルだけを取る。rally #397、済み）
 3. 事例の分析の結果から、知見の変更セットの PR を工場のラインが作る流れ（supervisor の `knowledge_issue_step` が Issue を起票し、implement ジョブが PR を書く。PR は変更種別 `knowledge` で、4 ができるまでは人の承認）
 4. 委員会の 4 役の審査と議決の記録、週 1 の定例（出来事ごとの審査は supervisor の `enqueue_committee` とワーカーの `core-gates/committee_review.py`。議決の集め方は `definitions/knowledge.yaml` の `committee.aggregation`。週 1 の定例は supervisor の `committee_weekly_step` とワーカーの `core-gates/committee_weekly.py`。日時と上限は `knowledge.yaml` の `committee.weekly`）
-5. 制限付きの保管先（制御プレーンの DB。管理者だけ。`postgres/init/005_restricted.sql` と `dispatcher/restricted.py`、`factoryctl restricted`。済み）
-6. エージェントに知見を渡す経路（オーナーの承認）
+5. 制限付きの保管先（制御プレーンの DB の専用スキーマと専用の利用者。`postgres/init/005_restricted.sql` と `dispatcher/restricted.py`、`factoryctl restricted`。済み）
+6. エージェントに知見を渡す経路（オーナーの承認。implement から。`core-gates/knowledge_context.py`、ワーカーの `entrypoint.sh`、events の `knowledge.used`）
 
 ## 選ばなかった案
 
@@ -79,12 +79,24 @@ ADR 0023 で、学習の対象を 8 テーマに分け、事例型の分析役�
   - 知見の PR のジョブ（起票した知見の Issue を書く・衝突の解消と番号の付け直し・検査・judge）
 - ラインの枠も、空いていればこれらを取ってよい。止めたいときは `GOVERNANCE_PARALLEL=0` にし、ラインの一時停止と合わせる
 
-## 追記（2026-11-05）: 制限付きの保管先は鍵で守る
+## 追記（2026-11-05）: 制限付きの保管先は利用者で分ける
 
-段取り 5 を作るときに、ワーカーのジョブの DB（ADR 0003 の後の `job_<id>`）が制御プレーンと同じ Postgres の上に、同じ利用者で作られていることが分かった。DB の権限で「管理者だけ」に限ると、implement のワーカー（とその中のエージェント）が制御プレーンの DB に繋げば読めてしまう。そこで次のようにする。
+段取り 5 を作るときに、ワーカーのジョブの DB（`job_<id>`）が制御プレーンと同じ Postgres の上に、同じ管理者の利用者で作られていることが分かった。implement のワーカー（とその中のエージェント）が制御プレーンの DB に繋げば、events も窓口の会話も保管先も読めてしまう。
+最初は中身を管理者の鍵で暗号にした（#169）が、オーナーの指摘（テーブル単位の細かい制御は難しく管理しづらい。スキーマを分け、ジョブ側と別の利用者だけが触れるようにする）で、次のように直した。
 
-- 中身は管理者だけが持つ鍵（`RESTRICTED_STORE_KEY`）で pgcrypto の対称鍵暗号にして `restricted_records` に置く。鍵は `.env` にもサービスの環境にも置かず、使うときに factoryctl に渡す。鍵をなくすと中身は戻せない
-- 一覧（`factoryctl restricted list`）には id・製品・指している知見・読んだ回数だけを出し、中身も見出しも出さない。読む（`show`）には何のために読むかを必ず添え、`restricted_reads` と events の `restricted.read` に残す。鍵が違って読めなかった試みも `restricted.read_failed` に残す
+- ジョブの DB は管理者でない専用の利用者 `factory_job`（LOGIN と CREATEDB だけ）の持ち物にし、制御プレーンの DB の CONNECT を PUBLIC から外す（`dispatcher/jobdb.py`）。保管先に限らず、ワーカーは制御プレーンを読めなくなる
+- 保管先は専用のスキーマ `restricted` に置き、保管先の専用の利用者 `factory_restricted` の持ち物にする。PUBLIC からは何もできない。合言葉は管理者だけが持ち、factoryctl に `RESTRICTED_DATABASE_URL` で渡す。中身は平文（暗号はやめた）
+- 一覧（`factoryctl restricted list`）には id・製品・指している知見・読んだ回数だけを出す。読む（`show`）には何のために読むかを必ず添え、`restricted.reads` と events の `restricted.read` に残す
 - 要らなくなった記録は retired にして中身を消す。id と記録は残し、再利用しない
 - ワーカー・操業コンソール・窓口の API には出さない。エージェントに知見を渡す経路（段取り 6）にも入れない
-- 残る弱さ: ワーカーのジョブの DB の利用者が Postgres の管理者のままなので、制御プレーンの他の表（events など）はワーカーから読める。ジョブの DB を権限の狭い利用者に分けるのは、権限設定の変更として別に扱う
+- 残る弱さ: 制御プレーンのサービス（dispatcher・supervisor など）は今も Postgres の管理者の利用者で動くので、そこからは保管先も見える。サービスごとに利用者を分けるのは影響が大きいので別の段で扱う
+
+## 追記（2026-11-05）: 知見を implement のワーカーに渡す
+
+段取り 6。決定 7 のとおり、委員会が採用した知見をワーカーの文脈に入れる。まず implement の役割だけにつなぐ。
+
+- 選ぶのは決定論（`core-gates/knowledge_context.py`）。status が active で confidence が confirmed か settled、settled で決定論の担保が効いているものは除く。加えて、review_by を過ぎたもの（再確認待ち）と、機密区分が client のものは渡さない。scope.roles が空か implement を含むもの。確認日の新しい順に 12 件・12,000 字まで（仮置き）
+- 渡し方は、作業の文脈のファイル（`/work/context/knowledge.md`）に確かさと確認日を付けて置き、プロンプトでは場所と扱い方だけを伝える。目の前のコードや specs/ と食い違うときは目の前の事実を優先し、食い違いを PR の「## 補足」に知見の id を添えて書く。Issue と約束が知見より優先する
+- 渡した id はワーカーの結果の `knowledge_ids` に載せ、dispatcher が events の `knowledge.used` に残す（ジョブごと）。差し戻しとの突き合わせや 60 日使われない知見の検出は測る側（後で）
+- 止めるときは dispatcher の環境の `KNOWLEDGE_CONTEXT=0`。機械の取りまとめ（CHANGELOG・衝突なしの取り込み）では渡さない
+- 2026-11-05 の時点で rally の知見 4 件はどれも hypothesis なので、渡るものはまだない。confirmed に上がった（独立した事例 2 件で再現、または人の承認）ものから渡り始める

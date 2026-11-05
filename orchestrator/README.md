@@ -303,16 +303,20 @@ supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を�
 docker compose exec dispatcher factoryctl report learning --days 30
 ```
 
-知見の制限付きの保管先（ADR 0024 の 5）: 障害対応などで利用者の情報をどうしても含む知見の中身は、git に置かず制御プレーンの `restricted_records` に置き、git の知見からは evidence の `restricted: R-NNNN` で指すだけにする。中身は管理者だけが持つ鍵 `RESTRICTED_STORE_KEY` で pgcrypto の対称鍵暗号にする。鍵は `.env` にもサービスの環境にも置かない（ワーカーのジョブの DB は同じ Postgres の上にあるので、DB の権限だけでは管理者に限れない）。鍵をなくすと中身は戻せないので、管理者のパスワード管理に置く。
-一覧には中身も見出しも出さず、読むたびに誰が・何のために読んだかを `restricted_reads` と events の `restricted.read` に残す。ワーカー・操業コンソール・窓口の API には出さない（factoryctl だけ）。
+知見をワーカーに渡す（ADR 0024 の 6）: implement のワーカーは、製品の知見のうち active で確認済み以上（settled で決定論の担保が効いているもの・再確認の期限を過ぎたもの・client の区分は除く）を `core-gates/knowledge_context.py` で選び、確かさと確認日を付けて `/work/context/knowledge.md` に置く。プロンプトには場所と扱い方（目の前の事実を優先し、食い違いは「## 補足」に書く）だけを書く。渡した id は events の `knowledge.used` に残る。`KNOWLEDGE_CONTEXT=0` で止める。
+
+知見の制限付きの保管先（ADR 0024 の 5）: 障害対応などで利用者の情報をどうしても含む知見の根拠は、git に置かず制御プレーンの Postgres の専用スキーマ `restricted` に置き、git の知見からは evidence の `restricted: R-NNNN` で指すだけにする。
+守り方は利用者を分けること。`restricted` は保管先の専用の利用者 `factory_restricted` の持ち物で、ほかの利用者（PUBLIC）からは何もできない。`factory_restricted` は最初は NOLOGIN で、管理者が合言葉を決めて有効にし、合言葉は管理者だけが持つ（`.env` に置かない）。ワーカーのジョブの DB は別の利用者 `factory_job` で、制御プレーンの DB には繋げない（「ジョブ用の DB」）。
+一覧には中身を出さず、読むたびに誰が・何のために読んだかを `restricted.reads` と events の `restricted.read` に残す。ワーカー・操業コンソール・窓口の API には出さない（factoryctl だけ）。制御プレーンのサービスは今も Postgres の管理者で動くので、そこからは見える（サービスの利用者を分けるのは別の段）。
 
 ```bash
-docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/005_restricted.sql   # 既存の DB に表を足す（冪等）
-export RESTRICTED_STORE_KEY=...   # 管理者の手元の鍵（16 文字以上）。シェルの履歴に残さない
-docker compose exec -T -e RESTRICTED_STORE_KEY dispatcher factoryctl restricted add guccyon/rally --knowledge K-0012 < incident.md   # R-NNNN が出る
-docker compose exec dispatcher factoryctl restricted list
-docker compose exec -e RESTRICTED_STORE_KEY dispatcher factoryctl restricted show R-0001 --purpose "再発の確認"
-docker compose exec dispatcher factoryctl restricted retire R-0001 --reason "保管の期限"   # 中身を消し、id と記録は残す
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/005_restricted.sql   # 既存の DB にスキーマと利用者を足す（冪等）
+docker compose exec postgres psql -U factory -c "alter role factory_restricted login password '...'"   # 管理者が 1 度だけ。合言葉は手元に
+export RESTRICTED_DATABASE_URL='postgresql://factory_restricted:...@postgres:5432/factory'   # シェルの履歴に残さない
+docker compose exec -T -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted add guccyon/rally --knowledge K-0012 < incident.md   # R-NNNN が出る
+docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted list
+docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted show R-0001 --purpose "再発の確認"
+docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted retire R-0001 --reason "保管の期限"   # 中身を消し、id と記録は残す
 ```
 
 ## 建設状況の日次レポート（ADR 0008）
@@ -328,6 +332,7 @@ docker compose exec supervisor python /health/daily/status_report.py --publish -
 ## ジョブ用の DB
 
 dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<id>` を作り、ワーカーに `DATABASE_URL` で渡す（終了時に落とす）。ワーカーは自前で DB を立てずに DB のテストを動かせる。`JOB_DB_ENABLED=0` で止められる。
+ジョブの DB は管理者でない専用の利用者 `factory_job`（LOGIN と CREATEDB だけ。合言葉は `JOB_DB_PASSWORD`）の持ち物にし、制御プレーンの DB（`factory`）の CONNECT は PUBLIC から外す（`dispatcher/jobdb.py`。dispatcher が最初のジョブの DB を作るときに利用者を作るかそろえる）。ワーカーとその中のエージェントは、制御プレーンの events や窓口の会話、知見の保管先を読めない。CREATEDB は rally の `sqlx::test` がテストごとに DB を作るため。
 
 ## 守っていること
 

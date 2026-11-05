@@ -44,6 +44,9 @@ context_for_agents:
   include: "status=active かつ confidence が confirmed か settled（settled で deterministic の担保が効いているものは渡さない）"
   attach: [confidence, verified_at]
   usage_event: knowledge.used   # 渡した記録。数えるのは測る側
+  selector: core-gates/knowledge_context.py   # 決定論で選ぶ。review_by を過ぎたもの・client の区分は渡さない。役割は scope.roles（空ならすべて）
+  roles_wired: [implement]                    # 今つないでいる役割（2026-11-05）。検査・judge などはつなぐときに足す
+  limits: { items: 12, chars: 12000 }         # 仮置き。確認日の新しい順
 
 # 失効のきっかけ（決定論で見るもの）
 invalidation:
@@ -90,4 +93,4 @@ committee:
 personal_data:
   git: forbidden
   guards: ["変更セットの CI の決定論の検出（core-gates/knowledge_check.py）", "委員会の根拠の担当"]
-  restricted_store: "利用者の情報をどうしても含む知見は、制御プレーンの制限付きの保管先（システムの管理者だけ、読んだ記録を残す）に置き、git からは restricted:R-NNNN で指すだけ"
+  restricted_store: "利用者の情報をどうしても含む知見は、制御プレーンの制限付きの保管先（専用スキーマ restricted、専用の利用者 factory_restricted だけ、読んだ記録を残す。factoryctl restricted）に置き、git からは restricted:R-NNNN で指すだけ"

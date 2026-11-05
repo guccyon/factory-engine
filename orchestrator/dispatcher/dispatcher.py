@@ -39,6 +39,7 @@ import design_line
 import design_system_line
 import planner
 import drain
+import jobdb
 import judgment
 import line
 import notify_inbox
@@ -79,7 +80,9 @@ BUCKET = ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts")
 JOB_DB_ENABLED = ENV.get("JOB_DB_ENABLED", "1") == "1"
 JOB_DB_HOST = ENV.get("JOB_DB_HOST", "postgres")          # ワーカーコンテナから見たホスト名（compose のネットワーク上）
 JOB_DB_NETWORK = ENV.get("JOB_DB_NETWORK", "factory_default")
-JOB_DB_USER, JOB_DB_PASSWORD = "factory", ENV.get("POSTGRES_PASSWORD", "factory")
+# ジョブの DB は管理者でない専用の利用者の持ち物にし、制御プレーンの DB には繋がせない（jobdb.py。2026-11-05 オーナー）
+JOB_DB_USER, JOB_DB_PASSWORD = ENV.get("JOB_DB_USER", "factory_job"), ENV.get("JOB_DB_PASSWORD", "factory-job")
+CONTROL_DB = ENV.get("CONTROL_DB_NAME", "factory")
 # 番人（ADR 0005）。閾値は仮置き（委任の範囲。運用で調整）
 WATCH_INTERVAL = int(ENV.get("WATCH_INTERVAL_SEC", "60"))
 IDLE_MIN = int(ENV.get("WATCH_IDLE_MIN", "20"))              # 実行中 0 かつ投入可能 0 がこの分数続いたら停止
@@ -191,6 +194,14 @@ def comment(repo: str, issue: int, text: str):
 
 
 # ------------------------------------------------------------------ キュー（薄いワークフロー I/F：enqueue / claim / finish / cancel）
+def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: dict | None):
+    """ワーカーが文脈に渡した知見（ADR 0024 の 6）を knowledge.used に残す。使われ方（差し戻し・60 日使われない）は測る側が数える"""
+    ids = [i for i in (result.get("knowledge_ids") or []) if isinstance(i, str)][:50]
+    if ids:
+        record_event(cur, "knowledge.used", corr, job_id, {"repo": repo, "issue": issue, "role": "implement", "ids": ids, "pr_url": result.get("pr_url"),
+                                                          "continue_reason": (cont or {}).get("reason")}, dedupe_key=f"knowledge.used:{job_id}")
+
+
 def record_event(cur, name: str, correlation_id: str | None, job_id: int | None, payload: dict, dedupe_key: str | None = None):
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values (%s,%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (name, correlation_id, job_id, Jsonb(payload), dedupe_key))
@@ -351,8 +362,8 @@ def run_job(job: dict, reattaching: bool = False):
             job_db_url = None
             if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system") and not reattaching:
                 dbname = f"job_{job_id}"
-                cur.execute(f'drop database if exists "{dbname}"')
-                cur.execute(f'create database "{dbname}"')
+                jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
+                jobdb.create(cur, dbname, JOB_DB_USER)
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
             cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突・CI 落ち・検査の指摘）
             signaled = bool(cont and cont["reason"] in continuation.SIGNALED)   # 合図の中身（CI のチェック名・指摘）を標準入力で渡す
@@ -365,6 +376,7 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"JOB_ID={job_id}", "-e", f"REPO={repo}", "-e", f"ISSUE_NUMBER={issue}",
                    "-e", f"JOB_DEADLINE={int(time.time()) + JOB_TIMEOUT}",   # 打ち切りの時刻（epoch 秒）。ワーカーはエージェントをこれより前に止め、後処理の時間を残す
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
+                   "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
@@ -624,6 +636,7 @@ def run_job(job: dict, reattaching: bool = False):
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
                                                   "change_types": result.get("change_types", ["code_change"]), "provenance": prov}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"]}, dedupe_key=f"pr.opened:{result['pr_url']}")
+                record_knowledge_used(cur, corr, job_id, repo, issue, result, cont)
                 for text in (result.get("lessons") or [])[:3]:   # ワーカーの「## 知見」を episodic の Lesson として残す（P0 は記録のみ。採用はしない）
                     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Lesson',%s,%s,'learn',%s)",
                                 (corr, job_id, Jsonb({"knowledge_stage": "episodic", "teacher_signal": "worker_self_report", "summary": text,
@@ -638,6 +651,7 @@ def run_job(job: dict, reattaching: bool = False):
                             (corr, job_id, Jsonb({"repo": repo, "ticket_ids": [issue], "pr_url": result["pr_url"], "number": result.get("pr_number"),
                                                   "change_types": result.get("change_types", ["code_change"]), "provenance": prov, "incomplete": True}), blob_key))
                 record_event(cur, "pr.opened", corr, job_id, {"pr_url": result["pr_url"], "incomplete": True}, dedupe_key=f"pr.opened:{result['pr_url']}")
+                record_knowledge_used(cur, corr, job_id, repo, issue, result, cont)
                 swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                 comment(repo, issue, f"ジョブ {job_id} は途中で終了しました（{err}）。差分はドラフト PR {result['pr_url']} に残してあります。範囲を満たしていれば建設者がドラフトを外してマージ、足りなければ `factoryctl rerun {job_id} --continue` でこのブランチから続きを（最初からやり直さない）。")
             else:
