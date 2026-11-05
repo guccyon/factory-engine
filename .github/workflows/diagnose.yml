@@ -1,5 +1,6 @@
 # PR ごとの診断（依存・静的解析・秘密情報）。factory-engine の templates/ci/diagnose.yml を写したもの（ADR 0028 の ci_diagnose）。
 # 写すときに変えてよいのは ENGINE_REF の行だけ（Engine の固定した版。factory-engine 自身は self で自分の木の版を使う）。
+# action は commit の SHA で固定する（タグは付け替えられるため。semgrep の github-actions-mutable-action-tag）。
 # shadow: 結果は Job Summary と成果物 diagnose に出すだけで、PR は落とさない。必須チェックにもしない。
 # - 静的解析: semgrep（p/default）を --baseline-commit で base との差分だけにする
 # - 依存: osv-scanner で base と head のロックファイルを測り、head にだけある脆弱性を出す
@@ -34,7 +35,7 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
       - name: まとめ役を取る
@@ -85,7 +86,7 @@ jobs:
             --sast "$RUNNER_TEMP/semgrep.json" --secrets "$RUNNER_TEMP/gitleaks.json" \
             --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}" \
             --base "$BASE_SHA" --head "$HEAD_SHA" --out diagnose.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: diagnose
