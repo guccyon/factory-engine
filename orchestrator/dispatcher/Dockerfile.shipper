@@ -9,5 +9,6 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY *.py /app/
 ARG ENGINE_VERSION=unknown
 ENV ENGINE_VERSION=$ENGINE_VERSION
+RUN echo "$ENGINE_VERSION" > /app/ENGINE_VERSION   # env_file の .env で上書きされても版を誤らないよう、ファイルにも置く
 LABEL factory.engine_version=$ENGINE_VERSION
 CMD ["python", "ship.py"]

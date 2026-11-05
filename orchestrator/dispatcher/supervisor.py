@@ -47,6 +47,7 @@ import design
 import judgment
 import line
 import learn
+import version
 import ops
 import process_learn
 import report
@@ -1049,7 +1050,7 @@ def committee_weekly_step(cur, now: datetime | None = None):
 def tick():
     with db() as conn, conn.cursor() as cur:
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
-                    (Jsonb({"repos": REPOS, "engine_version": ENV.get("ENGINE_VERSION") or "unknown"}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
+                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
