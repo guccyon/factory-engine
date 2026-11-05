@@ -93,4 +93,4 @@ committee:
 personal_data:
   git: forbidden
   guards: ["変更セットの CI の決定論の検出（core-gates/knowledge_check.py）", "委員会の根拠の担当"]
-  restricted_store: "利用者の情報をどうしても含む知見は、制御プレーンの制限付きの保管先（システムの管理者だけ、読んだ記録を残す）に置き、git からは restricted:R-NNNN で指すだけ"
+  restricted_store: "利用者の情報をどうしても含む知見は、制御プレーンの制限付きの保管先（専用スキーマ restricted、専用の利用者 factory_restricted だけ、読んだ記録を残す。factoryctl restricted）に置き、git からは restricted:R-NNNN で指すだけ"

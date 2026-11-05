@@ -39,6 +39,7 @@ import design_line
 import design_system_line
 import planner
 import drain
+import jobdb
 import judgment
 import line
 import notify_inbox
@@ -79,7 +80,9 @@ BUCKET = ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts")
 JOB_DB_ENABLED = ENV.get("JOB_DB_ENABLED", "1") == "1"
 JOB_DB_HOST = ENV.get("JOB_DB_HOST", "postgres")          # ワーカーコンテナから見たホスト名（compose のネットワーク上）
 JOB_DB_NETWORK = ENV.get("JOB_DB_NETWORK", "factory_default")
-JOB_DB_USER, JOB_DB_PASSWORD = "factory", ENV.get("POSTGRES_PASSWORD", "factory")
+# ジョブの DB は管理者でない専用の利用者の持ち物にし、制御プレーンの DB には繋がせない（jobdb.py。2026-11-05 オーナー）
+JOB_DB_USER, JOB_DB_PASSWORD = ENV.get("JOB_DB_USER", "factory_job"), ENV.get("JOB_DB_PASSWORD", "factory-job")
+CONTROL_DB = ENV.get("CONTROL_DB_NAME", "factory")
 # 番人（ADR 0005）。閾値は仮置き（委任の範囲。運用で調整）
 WATCH_INTERVAL = int(ENV.get("WATCH_INTERVAL_SEC", "60"))
 IDLE_MIN = int(ENV.get("WATCH_IDLE_MIN", "20"))              # 実行中 0 かつ投入可能 0 がこの分数続いたら停止
@@ -359,8 +362,8 @@ def run_job(job: dict, reattaching: bool = False):
             job_db_url = None
             if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system") and not reattaching:
                 dbname = f"job_{job_id}"
-                cur.execute(f'drop database if exists "{dbname}"')
-                cur.execute(f'create database "{dbname}"')
+                jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
+                jobdb.create(cur, dbname, JOB_DB_USER)
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
             cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突・CI 落ち・検査の指摘）
             signaled = bool(cont and cont["reason"] in continuation.SIGNALED)   # 合図の中身（CI のチェック名・指摘）を標準入力で渡す
