@@ -430,8 +430,21 @@ def inspector_approved(cur, pr_url: str, sha: str) -> tuple[bool, str]:
         return False, "judge が人に回した判断の待ち"
     if continuation.pending(cur, pr_url, sha, "review_fix"):
         return False, "採用した指摘を同じ担当が直している（ADR 0017）"
+    if body_fix_pending(cur, pr_url):
+        return False, "採用した本文の指摘を直している（body_fix）"
     n_adopt = sum(1 for v in verdicts if v == "adopt")
     return True, f"judge が {len(verdicts)} 件を裁いた（採用 {n_adopt}。採用した指摘は続きのジョブか差し戻しで直す）"
+
+
+def body_fix_pending(cur, pr_url: str) -> bool:
+    """その PR の本文の直し（judge が積む body_fix）が順番待ちか作業中か。終わる前にマージすると、直しがマージの後の本文に入る
+    （2026-11-05 rally #911: マージが body_fix の終わりより 2 秒早かった）"""
+    m = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)$", pr_url)
+    if not m:
+        return False
+    cur.execute("select 1 from jobs where repo=%s and issue_number=%s and kind='body_fix' and state in ('queued','running') limit 1",
+                (m[1], int(m[2])))
+    return cur.fetchone() is not None
 
 
 def enqueue_inspect(cur, p: dict, sha: str):
