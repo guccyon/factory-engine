@@ -56,12 +56,14 @@ EOF
   uninstall)
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
     rm -f "$plist"
+    "$py" "$runner" uninstalled 2>/dev/null   # 工場の「登録済みのランナー」から外す（工場が止まっていれば何もしない）
     echo "外した: $label"
     ;;
   token)
     cat "$token_file"
     ;;
   status)
+    for d in "$HOME"/Library/Python/*/bin; do [ -x "$d/idb" ] && PATH="$PATH:$d"; done   # install と同じ PATH で調べる（launchd のランナーが見る PATH）
     if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then echo "常駐: あり"; else echo "常駐: なし（install する）"; fi
     curl -fsS "http://127.0.0.1:$port/health" && echo || echo "/health に答えない（~/Library/Logs/factory-macrunner/runner.log を見る）"
     "$py" "$runner" preflight
