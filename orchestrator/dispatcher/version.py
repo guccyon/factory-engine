@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 LABEL = "factory.engine_version"
@@ -14,6 +15,23 @@ SERVICE_LABEL = "com.docker.compose.service"
 JOB_LABEL = "factory.job"
 UNKNOWN = "unknown"
 OWN_IMAGE_PREFIX = "factory-"   # 工場が作るイメージ（factory-dispatcher・factory-shipper・factory-worker）
+
+
+VERSION_FILE = "/app/ENGINE_VERSION"   # scripts/build.sh が作るときに焼き込む（Dockerfile）
+
+
+def engine_version(env=None) -> str:
+    """このプロセスの Engine の版。イメージに焼き込んだファイルを先に読む。
+    compose の env_file: .env で古い ENGINE_VERSION が渡っても、イメージの版を誤らないため（2026-11-05、.env に c9fe85b が残っていた）"""
+    try:
+        with open(VERSION_FILE) as f:
+            v = f.read().strip()
+        if v and v != UNKNOWN:
+            return v
+    except OSError:
+        pass
+    env = os.environ if env is None else env
+    return env.get("ENGINE_VERSION") or UNKNOWN
 
 
 def _docker(args: list[str]) -> str:

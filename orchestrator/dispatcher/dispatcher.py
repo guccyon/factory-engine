@@ -39,6 +39,7 @@ import design_line
 import design_system_line
 import desk_line
 import planner
+import version
 import drain
 import exit_capture
 import jobdb
@@ -176,7 +177,7 @@ def continue_target(cur, job_id: int, repo: str, issue: int) -> dict | None:
 
 def provenance(repo: str, image: str) -> dict:
     """製造の来歴（ADR 0007）。全部 optional。取れなければ unknown にして、ラインは止めない"""
-    prov = {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "worker_image": image, "worker_image_id": "unknown",
+    prov = {"engine_version": version.engine_version(ENV), "worker_image": image, "worker_image_id": "unknown",
             "product_sha": "unknown", "mode": "unknown", "model_tier": MODEL_TIER}
     try:
         r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=20)
@@ -1277,7 +1278,7 @@ def main():
         cur.execute("select 1")
     reattached = recover()
     with db() as conn, conn.cursor() as cur:   # 上がった印。入れ替え役が新しい版で上がったかを見る（ADR 0031）
-        record_event(cur, "dispatcher.started", None, None, {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "reattaching": len(reattached)})
+        record_event(cur, "dispatcher.started", None, None, {"engine_version": version.engine_version(ENV), "reattaching": len(reattached)})
     if not store.bucket_exists(BUCKET):
         store.make_bucket(BUCKET)
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")

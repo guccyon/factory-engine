@@ -12,5 +12,6 @@ ENV PYTHONUNBUFFERED=1
 # Engine の版（ADR 0031）。scripts/build.sh が作るときに渡す。.env には書かない（古い値が残って来歴を誤るため）
 ARG ENGINE_VERSION=unknown
 ENV ENGINE_VERSION=$ENGINE_VERSION
+RUN echo "$ENGINE_VERSION" > /app/ENGINE_VERSION   # env_file の .env で上書きされても版を誤らないよう、ファイルにも置く
 LABEL factory.engine_version=$ENGINE_VERSION
 CMD ["python", "dispatcher.py"]
