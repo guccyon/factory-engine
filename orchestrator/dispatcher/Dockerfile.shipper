@@ -4,4 +4,7 @@
 FROM factory-dispatcher:p0
 RUN apt-get update && apt-get install -y --no-install-recommends git docker-compose docker-buildx && rm -rf /var/lib/apt/lists/*
 COPY *.py /app/
+ARG ENGINE_VERSION=unknown
+ENV ENGINE_VERSION=$ENGINE_VERSION
+LABEL factory.engine_version=$ENGINE_VERSION
 CMD ["python", "ship.py"]

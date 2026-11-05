@@ -87,8 +87,7 @@ services:
       CONSOLE_URL: ${CONSOLE_URL:-http://localhost:8790} # 通知のリンクの前に付ける（コンソールの中の選択・出荷へのリンク）
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}          # slack を選ぶときだけ。値は .env に置き、リポジトリに書かない
       INBOX_SLACK_MENTIONS: ${INBOX_SLACK_MENTIONS:-}    # 誰の出番かごとのメンション（例 po=<@U…>,design_chief=<@U…>）。.env に置く
-      # 来歴（ADR 0007）。上げ直すときに Engine の版（git rev-parse --short HEAD）を入れる。モードは judge（ADR 0006 後半）まで unknown
-      ENGINE_VERSION: ${ENGINE_VERSION:-unknown}
+      # 来歴（ADR 0007）。Engine の版はイメージに焼き込む（scripts/build.sh が ENGINE_VERSION を渡す。ADR 0031）。.env には書かない
       FACTORY_MODE: ${FACTORY_MODE:-}
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}             # 例: unattended=22:00-08:00（Asia/Tokyo）。factoryctl mode set が優先
       # 差し戻し（ADR 0006 / D5）。上限は仮置き

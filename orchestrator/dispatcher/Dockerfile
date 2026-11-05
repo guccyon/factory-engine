@@ -9,4 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 RUN ln -s /app/factoryctl.py /usr/local/bin/factoryctl && chmod +x /app/factoryctl.py
 ENV PYTHONUNBUFFERED=1
+# Engine の版（ADR 0031）。scripts/build.sh が作るときに渡す。.env には書かない（古い値が残って来歴を誤るため）
+ARG ENGINE_VERSION=unknown
+ENV ENGINE_VERSION=$ENGINE_VERSION
+LABEL factory.engine_version=$ENGINE_VERSION
 CMD ["python", "dispatcher.py"]
