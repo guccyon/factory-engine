@@ -1,35 +1,34 @@
 #!/bin/sh
-# Mac ランナー（ADR 0028 の決定 3）をホスト（macOS）に常駐させる。工場のコンテナから host.docker.internal 越しに呼ばれる。
+# Mac ランナー（ADR 0028 の決定 3、ADR 0033）をホスト（macOS）に常駐させる。ランナーは工場のランナーの窓口へ仕事を取りに行く（待ち受けない）。
 # 使い方:
-#   scripts/macrunner.sh install     トークンを作り（なければ）、ログインのたびに launchd が常駐させる（落ちても起こし直す）
-#   scripts/macrunner.sh uninstall   元に戻す（LaunchAgent を外して消す。トークンとビルドの作業場は残す）
-#   scripts/macrunner.sh status      常駐しているか、/health に答えるか、足りない道具
-#   scripts/macrunner.sh token       トークンを出す（.env の MAC_RUNNER_TOKEN に写す）
+#   scripts/macrunner.sh install     工場とペアリングし（まだなら）、ログインのたびに launchd が常駐させる（落ちても起こし直す）
+#   scripts/macrunner.sh pair        ペアリングだけやり直す（常駐はそのまま。鍵を作り直す）
+#   scripts/macrunner.sh uninstall   元に戻す（LaunchAgent を外し、工場に知らせて鍵を捨てる。ビルドの作業場とログは残す）
+#   scripts/macrunner.sh status      常駐しているか、ペアリング済みか、足りない道具
+# 窓口の場所は MAC_RUNNER_GATE（既定 https://127.0.0.1:8794。別の Mac の工場なら https://<その Mac の名前か IP>:8794）
 # install のときの PATH（Flutter・idb の場所）を launchd に渡す。Flutter を入れ直したら install し直す
 # macOS 以外では何もしない
 [ "$(uname)" = "Darwin" ] || { echo "macOS だけで動く"; exit 0; }
 
 label="local.factory.macrunner"
 plist="$HOME/Library/LaunchAgents/$label.plist"
-token_file="${MAC_RUNNER_TOKEN_FILE:-$HOME/.config/factory/macrunner.token}"
-port="${MAC_RUNNER_PORT:-8793}"
 apps="${MAC_RUNNER_APPS:-guccyon/rally:apps/student-app:jp.rally.rallyStudentApp}"
+gate="${MAC_RUNNER_GATE:-https://127.0.0.1:8794}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 runner="$here/macrunner/runner.py"
 py="${MAC_RUNNER_PYTHON:-/usr/bin/python3}"
+# pip3 install --user fb-idb は idb を ~/Library/Python/<版>/bin に入れ、そこは普段の PATH の外。launchd に渡す PATH と調べる PATH に足す
+for d in "$HOME"/Library/Python/*/bin; do
+  [ -x "$d/idb" ] && case ":$PATH:" in *":$d:"*) ;; *) PATH="$PATH:$d" ;; esac
+done
+export MAC_RUNNER_GATE="$gate" MAC_RUNNER_APPS="$apps"
 
 case "${1:-status}" in
-  install)
-    if [ ! -s "$token_file" ]; then
-      mkdir -p "$(dirname "$token_file")"
-      (umask 077; "$py" -c 'import secrets; print(secrets.token_hex(32))' >"$token_file")
-      echo "トークンを作った: ${token_file}（.env の MAC_RUNNER_TOKEN に写す: scripts/macrunner.sh token）"
+  install|pair)
+    if [ "$1" = "pair" ] || ! "$py" "$runner" paired; then
+      "$py" "$runner" pair || { echo "ペアリングできなかった（工場の操業コンソールを開いて、もう一度 install する）"; exit 1; }
     fi
-    chmod 600 "$token_file"
-    # pip3 install --user fb-idb は idb を ~/Library/Python/<版>/bin に入れ、そこは普段の PATH の外。launchd に渡す PATH に足す
-    for d in "$HOME"/Library/Python/*/bin; do
-      [ -x "$d/idb" ] && case ":$PATH:" in *":$d:"*) ;; *) PATH="$PATH:$d" ;; esac
-    done
+    [ "$1" = "pair" ] && { launchctl kickstart -k "gui/$(id -u)/$label" 2>/dev/null; exit 0; }
     mkdir -p "$(dirname "$plist")" "$HOME/Library/Logs/factory-macrunner"
     cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -39,9 +38,7 @@ case "${1:-status}" in
   <key>ProgramArguments</key><array><string>$py</string><string>$runner</string><string>serve</string></array>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>$PATH</string>
-    <key>MAC_RUNNER_PORT</key><string>$port</string>
     <key>MAC_RUNNER_APPS</key><string>$apps</string>
-    <key>MAC_RUNNER_TOKEN_FILE</key><string>$token_file</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -50,25 +47,22 @@ case "${1:-status}" in
 EOF
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
     launchctl bootstrap "gui/$(id -u)" "$plist"
-    PATH="$PATH" "$py" "$runner" preflight || echo "（足りない道具があっても常駐はする。足りない道具を使うと失敗を返す）"
-    echo "常駐させた: ${label}（127.0.0.1:${port}）"
+    "$py" "$runner" preflight || echo "（足りない道具があっても常駐はする。足りない道具を使うと失敗を返す）"
+    echo "常駐させた: ${label}（工場の窓口 ${gate} へ取りに行く）"
     ;;
   uninstall)
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
     rm -f "$plist"
-    "$py" "$runner" uninstalled 2>/dev/null   # 工場の「登録済みのランナー」から外す（工場が止まっていれば何もしない）
+    "$py" "$runner" bye   # 工場に知らせて、両側の鍵を捨てる（工場が止まっていれば、こちらの鍵だけ捨てる）
     echo "外した: $label"
     ;;
-  token)
-    cat "$token_file"
-    ;;
   status)
-    for d in "$HOME"/Library/Python/*/bin; do [ -x "$d/idb" ] && PATH="$PATH:$d"; done   # install と同じ PATH で調べる（launchd のランナーが見る PATH）
     if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then echo "常駐: あり"; else echo "常駐: なし（install する）"; fi
-    curl -fsS "http://127.0.0.1:$port/health" && echo || echo "/health に答えない（~/Library/Logs/factory-macrunner/runner.log を見る）"
+    if "$py" "$runner" paired; then echo "ペアリング: 済み"; else echo "ペアリング: まだ（install する）"; fi
+    tail -n 3 "$HOME/Library/Logs/factory-macrunner/runner.log" 2>/dev/null
     "$py" "$runner" preflight
     ;;
   *)
-    sed -n '2,8p' "$0"; exit 2
+    sed -n '2,10p' "$0"; exit 2
     ;;
 esac

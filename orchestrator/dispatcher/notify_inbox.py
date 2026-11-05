@@ -75,6 +75,8 @@ def due(items: list[dict], hist: dict[str, dict], now: datetime, escalate: bool 
         s = hist.get(i["key"])
         if not s or not s["count"]:
             out.append((i, "new"))
+        elif i.get("once"):   # 任意の依頼（実装後の画面）は知らせ直さず、代理にも回さない
+            continue
         elif escalate and not s["escalated"] and i["age_sec"] is not None and i["age_sec"] >= ESCALATE_MIN * 60 and i["who"] != PROXY:
             out.append((i, "escalate"))
         elif s["count"] <= MAX_RENOTIFY and (now - s["last"]).total_seconds() >= RENOTIFY_MIN * 60:

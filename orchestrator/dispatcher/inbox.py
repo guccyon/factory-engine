@@ -109,9 +109,12 @@ def _stoppages(cur, now) -> list[dict]:
 
 def _choices(cur) -> list[dict]:
     cur.execute("select id, correlation_id, created_at, payload from artifacts where type='HumanChoice' and payload->>'status'='open' order by id")
-    out = []
+    out, captures = [], []
     for r in cur.fetchall():
         p = r["payload"]
+        if p.get("kind") == "exit_capture":
+            captures.append(r)
+            continue
         design = p.get("kind") in ("design_variants", "design_look")
         # 体験の承認は PO、見た目の判断はデザインのチーフ（ADR 0026 の 4・6。Gen1 はどちらもオーナーが兼ねる）
         # 実装後の画面への違和感の印（ADR 0025 の 4）は見た目の判断なのでデザインのチーフ
@@ -123,6 +126,14 @@ def _choices(cur) -> list[dict]:
                     "action": action,
                     "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1],
                     "uxspec": (p.get("kind"), (p.get("subject") or {}).get("uxspec")) if design else None})
+    if captures:
+        # 実装後の画面は PR・アプリごとに出るので数が多い（入れ替え直後は 40 件を超えた）。印は任意なので 1 件にまとめ、通知も最初の 1 回だけ
+        prs = sorted({(r["payload"].get("subject") or {}).get("pr_url", "").rsplit("/", 1)[-1] for r in captures} - {""}, key=lambda x: int(x) if x.isdigit() else 0)
+        head = "・".join(f"#{n}" for n in prs[-3:]) + (f" ほか {len(prs) - 3} 件" if len(prs) > 3 else "")
+        out.append({"key": "choice:exit_capture", "kind": "choice", "who": "design_chief",
+                    "title": f"{CHOICE_TITLES['exit_capture']}: {len(captures)} 件（{head}）",
+                    "action": "画面を見て、違和感があれば画面ごとに一言の印を付ける。なければ「見た」で閉じる（任意）",
+                    "url": "/#choices", "since": min(r["created_at"] for r in captures), "ref": "", "once": True, "uxspec": None})
     return out
 
 
@@ -197,4 +208,4 @@ def view(cur, now: datetime | None = None) -> dict:
     for i in xs:
         by_who[i["who"]] = by_who.get(i["who"], 0) + 1
     return {"count": len(xs), "by_who": by_who, "who": WHO, "kinds": KINDS,
-            "items": [{**{k: v for k, v in i.items() if k != "announced"}, "since": _iso(i["since"])} for i in xs]}
+            "items": [{**{k: v for k, v in i.items() if k not in ("announced", "once")}, "since": _iso(i["since"])} for i in xs]}

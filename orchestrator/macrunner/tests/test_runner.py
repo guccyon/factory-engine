@@ -1,24 +1,20 @@
-"""Mac ランナー（ADR 0028 の決定 3）: MCP の受け答え、認証、引数の形、決まった道具だけを argv で呼ぶこと。
+"""Mac ランナー（ADR 0028 の決定 3、ADR 0033）: 引数の形、範囲、決まった道具だけを argv で呼ぶこと。
 
 xcrun・idb・flutter は呼ばず、runner.run を差し替えて呼ばれた argv を確かめる（Linux でも動く）。
-工場の側の factoryctl runner check（dispatcher/macrunner_client.py）も、本物の HTTP で同じランナーに当てる。
+窓口から来た呼び出しは runner.execute でこなすので、ここでもそれを直に呼ぶ。窓口との話（ペアリング・署名・取りに行く形）は
+dispatcher/tests/test_runner_gate.py が本物の TLS で確かめる。
 """
 import json
 import os
 import sys
-import threading
-import urllib.error
-import urllib.request
+import types
 
 import pytest
 
 HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(HERE, ".."))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "dispatcher"))
 import runner  # noqa: E402
-import macrunner_client  # noqa: E402
 
-TOKEN = "t" * 64
 UDID = "11111111-2222-3333-4444-555555555555"
 DEVICES = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-1": [{"udid": UDID, "name": "iPhone 17", "state": "Booted"}],
                        "com.apple.CoreSimulator.SimRuntime.watchOS-12-0": [{"udid": "x", "name": "Watch", "state": "Shutdown"}]}}
@@ -43,49 +39,12 @@ def calls(monkeypatch):
 @pytest.fixture
 def server(tmp_path, monkeypatch, calls):
     monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path / "home"))
-    cfg = runner.config()
     logs = []
-    httpd = runner.ThreadingHTTPServer(("127.0.0.1", 0), runner.make_handler(runner.Runner(cfg), TOKEN, logs.append))
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{httpd.server_address[1]}", logs
-    httpd.shutdown()
+    yield types.SimpleNamespace(r=runner.Runner(runner.config()), logs=logs), logs
 
 
-def post(url, body, token=TOKEN):
-    req = urllib.request.Request(url + "/mcp", data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return r.status, (json.loads(r.read()) if r.status == 200 else None)
-
-
-def call(url, name, args=None):
-    _, res = post(url, {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": name, "arguments": args or {}}})
-    return res["result"]
-
-
-def test_health_needs_no_token_but_mcp_does(server):
-    url, _ = server
-    with urllib.request.urlopen(url + "/health") as r:
-        assert json.loads(r.read())["ok"] is True
-    with pytest.raises(urllib.error.HTTPError) as e:
-        post(url, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token="wrong")
-    assert e.value.code == 401
-
-
-def test_initialize_list_and_notification(server):
-    url, _ = server
-    _, init = post(url, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
-    assert init["result"]["serverInfo"]["name"] == "factory-macrunner"
-    assert init["result"]["capabilities"]["tools"]
-    status, _ = post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"})
-    assert status == 202
-    _, lst = post(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-    names = {t["name"] for t in lst["result"]["tools"]}
-    assert {"sim_devices", "app_build", "screenshot", "ui_tap", "logs"} <= names
-    assert not any("shell" in n or "exec" in n for n in names)   # 任意のコマンドの道具はない
-    _, bad = post(url, {"jsonrpc": "2.0", "id": 3, "method": "resources/list"})
-    assert bad["error"]["code"] == -32601
+def call(s, name, args=None):
+    return runner.execute(s.r, name, args or {}, s.logs.append)
 
 
 def test_devices_only_ios(server):
@@ -162,21 +121,6 @@ def test_build_refuses_unmerged_commit(tmp_path, monkeypatch):
     assert not any("flutter" in a[0] or "worktree" in a for a in seen)
 
 
-def test_factoryctl_check_against_runner(server):
-    url, _ = server
-    lines, code = macrunner_client.check({"MAC_RUNNER_URL": url, "MAC_RUNNER_TOKEN": TOKEN})
-    assert code == 0, lines
-    assert any(line.startswith("端末: 1 台（起動中 1）") for line in lines)
-    lines, code = macrunner_client.check({"MAC_RUNNER_URL": url, "MAC_RUNNER_TOKEN": "x" * 64})
-    assert code == 1 and "401" in lines[-1]
-
-
-def test_mcp_config_only_with_token():
-    assert macrunner_client.mcp_config({}) is None
-    cfg = macrunner_client.mcp_config({"MAC_RUNNER_TOKEN": TOKEN})
-    assert cfg["mcpServers"]["macrunner"]["url"] == "http://host.docker.internal:8793/mcp"
-
-
 def test_idb_retries_until_accessibility_answers(tmp_path, monkeypatch):
     """起動の直後は画面の読み取りが答えないことがある（実機で 10 秒後に通った）。その失敗だけ読み直す。"""
     monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path))
@@ -227,32 +171,19 @@ def test_scope_allows_allowed_app_and_local_url(server, calls):
     assert not call(url, "open_url", {"udid": UDID, "url": "http://127.0.0.1:8081/login"})["isError"]
 
 
-def test_initialize_declares_scope(server):
-    url, _ = server
-    _, init = post(url, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    assert "しない: 署名" in init["result"]["instructions"]
+def test_tool_list_is_fixed():
+    """道具の一覧は PROTOCOL.md と SCOPE.md の約束。足すときはこのテストと文書を同じ変更で直し、オーナーの承認を通す。"""
+    assert sorted(runner.TOOL_NAMES) == sorted([
+        "sim_devices", "sim_boot", "sim_shutdown", "sim_erase", "app_build", "build_status", "app_install", "app_launch",
+        "app_terminate", "screenshot", "open_url", "push", "logs", "ui_describe", "ui_tap", "ui_swipe", "ui_text", "ui_key"])
 
 
-def test_checkin_and_self_uninstall(tmp_path, monkeypatch):
+def test_hello_declares_scope(tmp_path, monkeypatch, calls):
     monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path))
-    monkeypatch.setattr(runner, "run", lambda argv, **kw: json.dumps(DEVICES).encode() if "list" in argv else b"")
-    cfg = runner.config()
-    rid = runner.runner_id(cfg)
-    assert rid == runner.runner_id(cfg) and len(rid) == 32   # 置き場に残して同じ id を使う
-    asked = []
+    info = runner.hello_info(runner.config())
+    assert "しない: 署名" in info["scope"] and info["version"] == runner.VERSION and info["devices"] == "1"
 
-    class Resp:
-        def __init__(self, body): self.body = body
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def read(self): return self.body
 
-    def opener(u, timeout=10):
-        asked.append(u)
-        return Resp(b'{"uninstall": true}')
-    assert runner.checkin(cfg, rid, opener=opener) is True
-    assert "/api/runners/checkin?" in asked[0] and f"id={rid}" in asked[0] and "scope=" in asked[0]
-
-    def down(u, timeout=10):
-        raise OSError("refused")
-    assert runner.checkin(cfg, rid, opener=down) is False   # 工場が止まっていてもランナーは動き続ける
+def test_gate_url_must_be_https():
+    with pytest.raises(SystemExit):
+        runner.Gate("http://127.0.0.1:8794")

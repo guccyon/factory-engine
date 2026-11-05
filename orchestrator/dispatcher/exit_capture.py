@@ -34,6 +34,7 @@ APP_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 SCREEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 IMAGE_RE = re.compile(r"^images/([A-Za-z0-9][A-Za-z0-9_-]{0,80})\.(base|head|diff)\.png$")
 WINDOW_H = 48                   # マージ後もこの時間は見る（キャプチャの CI はマージの後に終わることがある）。仮置き
+OPEN_IDLE_H = 48                # 開いている PR も、head がこの時間より前から動いていなければ見ない（人待ちで止まった古い PR を出さない）。仮置き
 EXPIRE_DAYS = 7                 # 人が見ないまま開いている依頼はこの日数で閉じる（受信トレイに溜めない）。仮置き
 MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -257,9 +258,11 @@ def candidates(cur, repos: list[str], now: datetime | None = None, window_h: int
         done = cur.fetchone()
         if done and (done["name"] == "pr.closed_unmerged" or done["occurred_at"] < now - timedelta(hours=window_h)):
             continue
-        cur.execute("select payload->>'head_sha' as sha from events where name='pr.head_updated' and payload->>'pr_url'=%s order by id desc limit 1",
+        cur.execute("select payload->>'head_sha' as sha, occurred_at from events where name='pr.head_updated' and payload->>'pr_url'=%s order by id desc limit 1",
                     (r["url"],))
         h = cur.fetchone()
+        if h and not done and h["occurred_at"] < now - timedelta(hours=OPEN_IDLE_H):
+            continue
         if h and h["sha"]:
             out.append({"repo": m.group(1), "number": int(m.group(2)), "url": r["url"], "corr": r["correlation_id"], "sha": h["sha"]})
     return out

@@ -15,8 +15,8 @@
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の入れ替えのため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
-  GET  /api/runners/checkin?id=..&name=..  工場の外の機械のランナー（Mac ランナー）が 1 分ごとに連絡する。返事は外すように頼まれているか（runners.py）
-  POST /api/runners/<id>/uninstall        {"reason"?} そのランナーを外す（次の連絡でランナーが自分の常駐を外す）。/api/state の runners に一覧
+  POST /api/runners/<id>/uninstall        {"reason"?} そのランナーを外す（次の連絡でランナーが自分の常駐を外し、鍵を捨てる）。/api/state の runners に一覧
+  POST /api/runners/pairs/<pair_id>/approve | reject   ペアリングの依頼を許可・拒否する（ADR 0033。Mac 側の y とそろうと繋がる）。/api/state の runner_pairs に一覧
   POST /api/choices/<id>/choose           {"option", "reason"?} 人の選択（画面の案・抜き取り。ADR 0025）
   POST /api/choices/<id>/return           {"reason"} どの案も選ばず作り手に戻す
   POST /api/choices/<id>/flag             {"note", "option"?} 違和感の印（教師信号 taste_flag）
@@ -187,6 +187,7 @@ def snapshot(cur) -> dict:
     return {
         "releases": releases(cur),
         "runners": runners.view(cur),
+        "runner_pairs": runners.pending_pairs(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur),
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
@@ -299,6 +300,10 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             opt = body.get("option")
             ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, str(opt) if opt else None)
         return (200, {"message": msg}) if ok else (404 if msg.startswith("no such") else 409, {"error": msg})
+    m = re.fullmatch(r"/api/runners/pairs/([0-9a-f]{32})/(approve|reject)", path)
+    if m:
+        ok, msg = runners.decide_pair(cur, m.group(1), m.group(2) == "approve", by, reason)
+        return (200, {"message": msg}) if ok else (409, {"error": msg})
     m = re.fullmatch(r"/api/runners/([0-9a-f]{32})/uninstall", path)
     if m:
         ok, msg = runners.request_uninstall(cur, m.group(1), by, reason)
@@ -366,11 +371,6 @@ class Handler(BaseHTTPRequestHandler):
             host_agent.update(seen=datetime.now(timezone.utc), factory_running=q.get("factory", [""])[0] == "running")
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, {"prevent_sleep": ops.keep_awake(cur)})
-        if url.path == "/api/runners/checkin":   # ランナーから。登録と、外す依頼を返すだけ（keep-awake と同じく合言葉は要らない。開いてよいホストだけ）
-            q = {k: v[0] for k, v in parse_qs(url.query).items()}
-            with db() as conn, conn.cursor() as cur:
-                code, out = runners.checkin(cur, q)
-            return self._json(code, out)
         if self.path == "/healthz":
             return self._json(200, {"ok": True})
         self._json(404, {"error": "not found"})
@@ -489,14 +489,17 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
  const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
  const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
+function pairsView(ps){return ps.map(p=>`<div class="rn" style="border-color:var(--accent)"><h2>新しいランナーの接続の依頼</h2><div><b>${esc(p.name||"?")}</b> <span class="m">${esc(p.platform||"")} · ${esc(p.version||"")}</span></div>
+ <div style="font-size:28px;font-weight:700;letter-spacing:.08em;margin:6px 0">${esc(p.code)}</div><div class="m">Mac のターミナルに同じ番号が出ていれば「許可」を押し、Mac 側でも y を押す。違えば「拒否」。10 分で切れる</div>
+ <div class="acts"><button class="go" data-pair="approve" data-p="${esc(p.pair_id)}">許可</button><button class="danger" data-pair="reject" data-p="${esc(p.pair_id)}">拒否</button></div></div>`).join("")}
 function runnersView(rs){if(!rs.length)return"";
  return `<div class="rn"><h2>登録済みのランナー（工場の外の機械に入れた常駐プロセス）</h2><table><tr><th>機械</th><th>状態</th><th>版・道具</th><th>置き場</th><th></th></tr>${rs.map(r=>`<tr>
   <td><b>${esc(r.name||"?")}</b><div class="m">${esc(r.kind||"")} ${esc(r.platform||"")}</div></td>
   <td><span class="dot ${r.online?"on":""}"></span>${r.uninstall_pending?"外す依頼の処理待ち":r.online?"動いている":r.last_seen_age_sec==null?"連絡待ち":"連絡なし（"+dur(r.last_seen_age_sec)+"前）"}<div class="m">登録 ${esc((r.registered_at||"").slice(0,16).replace("T"," "))}</div></td>
   <td>${esc(r.version||"")}<div class="m">${esc(r.tools||"")}${r.devices?" · 端末 "+esc(r.devices)+" 台":""}</div></td>
-  <td><code>${esc(r.path||"")}</code><div class="m">常駐 ${esc(r.label||"")} · ポート ${esc(r.port||"")}</div><div class="m">できること: ${esc(r.scope||"")}</div><div class="m">外しても残るもの: <code>${esc(r.home||"")}</code>・<code>${esc(r.logs||"")}</code>・トークン</div></td>
+  <td><code>${esc(r.path||"")}</code><div class="m">常駐 ${esc(r.label||"")}${r.xcode?" · "+esc(r.xcode):""}</div><div class="m">できること: ${esc(r.scope||"")}</div><div class="m">外しても残るもの: <code>${esc(r.home||"")}</code>・<code>${esc(r.logs||"")}</code>・トークン</div></td>
   <td>${r.uninstall_pending?"":`<button class="danger" data-runner="${esc(r.id)}">外す</button>`}</td></tr>`).join("")}</table>
-  <div class="m">外すとランナーが自分の常駐（LaunchAgent）を外して止まる。手で外すときはその機械で <code>scripts/macrunner.sh uninstall</code></div></div>`}
+  <div class="m">外すと工場とランナーの鍵を捨て、ランナーが自分の常駐（LaunchAgent）を外して止まる。手で外すときはその機械で <code>scripts/macrunner.sh uninstall</code></div></div>`}
 const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 function inboxView(ib){if(!ib.count)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map(i=>{const t=i.url&&/^(https:\/\/|\/#)/.test(i.url)?(i.url.startsWith("/#")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
@@ -535,7 +538,7 @@ async function load(){let s;try{s=await (await fetch("/api/state")).json()}catch
   lineView(f.line),
   f.host?`<label class="stat sw" title="Mac 上の見張りが ${dur(f.host.agent_age_sec)}前に連絡。オンの間は工場の稼働中に Mac を眠らせない">Mac <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label>`:""].join(" ");
  document.getElementById("ship").innerHTML=shipView(s.releases||[]);
- document.getElementById("runners").innerHTML=runnersView(s.runners||[]);
+ document.getElementById("runners").innerHTML=pairsView(s.runner_pairs||[])+runnersView(s.runners||[]);
  const ib=s.inbox||{count:0,items:[]},bell=document.getElementById("bell");document.getElementById("bell-n").textContent=ib.count;bell.classList.toggle("has",ib.count>0);
  bell.setAttribute("aria-label",`受信トレイ ${ib.count} 件`);document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";document.getElementById("inbox").innerHTML=inboxView(ib);
  const ce=document.getElementById("choices"),typing=ce.contains(document.activeElement);if(!typing)ce.innerHTML=choicesView(s.choices||[]);
@@ -546,6 +549,7 @@ document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")re
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r});else if(s.dataset.ship==="reseed")post("/api/releases/reseed",{repo:s.dataset.repo});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-pair]");if(!b)return;post(`/api/runners/pairs/${b.dataset.p}/${b.dataset.pair}`,{reason:"操業コンソール"})});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-runner]");if(!b)return;
  if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと外す";setTimeout(()=>{b.classList.remove("armed");b.textContent="外す"},4000);return}
  post(`/api/runners/${b.dataset.runner}/uninstall`,{reason:"操業コンソール"})});

@@ -309,3 +309,32 @@ def test_rollback_that_also_fails_keeps_the_line_drained(cur, tmp_path):
     assert swap.get(cur, sid)["status"] == "escalated"
     assert drain.active(cur)   # 壊れた工場では流さない
     assert f"swap:{sid}" in stoppage.open_keys(cur, "swap:")
+
+
+def test_build_removes_only_its_own_worktree(tmp_path):
+    """入れ替え役のコンテナからはホストの他の worktree が見えない。作り終えたあと、見えない worktree の登録を消さない"""
+    import subprocess
+    root = tmp_path / "fe"
+    g = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True, text=True).stdout
+    root.mkdir()
+    g("init", "-q")
+    g("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+    sha = g("rev-parse", "HEAD").strip()
+    hidden = tmp_path / "hidden"
+    g("worktree", "add", "-q", "--detach", str(hidden), sha)
+    shutil.rmtree(hidden)   # このコンテナからは見えない（ホストにはある）worktree
+    (root / "orchestrator").mkdir()
+
+    def run(args, cwd=None, timeout=0, check=True):
+        if args[0] == "git":
+            r = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+            if check and r.returncode:
+                raise RuntimeError(r.stderr)
+            return r
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    s = swapper.Swapper(4242, str(root), "factory", run=run)
+    s.build(sha)
+    listed = g("worktree", "list", "--porcelain")
+    assert str(hidden) in listed
+    assert "swap-src-4242" not in listed and not os.path.exists("/tmp/swap-src-4242")

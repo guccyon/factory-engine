@@ -116,13 +116,12 @@ services:
       SWAP_ENABLED: ${SWAP_ENABLED:-1}
       SWAP_ROOT: ${SWAP_ROOT:-}
       SWAP_EXTRA_MOUNTS: ${SWAP_EXTRA_MOUNTS:-}
-      # Mac ランナー（ADR 0028 の決定 3）。ホストに scripts/macrunner.sh install で常駐させ、トークンを .env に写す。空なら Mac ランナーを使わない
-      MAC_RUNNER_URL: ${MAC_RUNNER_URL:-http://host.docker.internal:8793}
-      MAC_RUNNER_TOKEN: ${MAC_RUNNER_TOKEN:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # Docker Desktop では元からある。Linux の Docker でも同じ名前でホストに届くように
+      # ランナーの窓口（ADR 0033）の工場の中向けの口。合言葉は窓口の置き場のファイル（下のボリュームを読み取り専用で）
+      RUNNER_GATE_URL: http://runner-gate:8795
+      RUNNER_GATE_TOKEN_FILE: /run/runner-gate/internal.token
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - runnergate:/run/runner-gate:ro   # ワーカーにはマウントしない（ジョブはランナーの窓口を直接呼べない）
     ports:
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8787}:8787"
     restart: unless-stopped
@@ -204,6 +203,23 @@ services:
       - "${CONSOLE_BIND:-127.0.0.1}:${PROTOTYPE_HOST_PORT:-8791}:8791"  # 動くプロトタイプ（別オリジン）。ホストのポートを変えたら PROTOTYPE_PUBLIC_URL も合わせる
     restart: unless-stopped
 
+  # ランナーの窓口（ADR 0033）。工場の外の機械のランナー（Mac ランナー）が TLS で仕事を取りに来る。工場からランナーへは繋ぎに行かない。
+  # 証明書・ランナーごとの鍵・中向けの合言葉は runnergate のボリュームにだけ置く（events にも DB にも書かない）。
+  # 既定は Mac の中だけで開く。同じ LAN の別の Mac のランナーを足すときは RUNNER_GATE_BIND=0.0.0.0
+  runner-gate:
+    image: factory-dispatcher:p0
+    command: ["python", "runner_gate.py"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
+      RUNNER_GATE_HOME: /var/lib/runner-gate
+    volumes:
+      - runnergate:/var/lib/runner-gate
+    ports:
+      - "${RUNNER_GATE_BIND:-127.0.0.1}:${RUNNER_GATE_HOST_PORT:-8794}:8794"   # ランナー向け（TLS）。8795 の中向けの口は公開しない
+    restart: unless-stopped
+
   # 事業部の窓口（ADR 0030）。外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口。操業コンソールより狭く、相談と依頼者に許した範囲のチケットの操作だけを受ける。
   # 認証は依頼者ごとのトークン（factoryctl desk token create）。既定は Mac の中だけで開く（http://localhost:8792）。外のマシンで動かすときは TLS と DESK_ALLOWED_HOSTS を足す
   desk:
@@ -258,6 +274,7 @@ services:
     command: ["true"]
 
 volumes:
+  runnergate:
   pgdata:
   shipwork:
   objectdata:
