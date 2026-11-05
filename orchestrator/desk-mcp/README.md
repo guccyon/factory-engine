@@ -4,7 +4,7 @@ ADR 0030 の順番 3。依頼者の手元の Claude Code・Claude Desktop から
 
 - 依存は python3（3.9 以上）の標準ライブラリだけ。このファイル 1 つを手元に写せば動く
 - トークンは窓口の運用主が発行する: `docker compose exec dispatcher factoryctl desk token create <名前> --role requester --product owner/repo`
-- 窓口は既定で Mac の中だけで開く（`http://localhost:8792`）。外のマシンで使うのはパイロット（順番 5: リモートの MCP と OAuth）から
+- 窓口は既定で Mac の中だけで開く（`http://localhost:8792`）。工場をクラウドに置くときは前段（ADR 0035、`orchestrator/edge/README.md`）を通して `FACTORY_DESK_URL=https://desk.<EDGE_DOMAIN>` に向ける。トークンは 1 人 1 本（共用しない）。リモートの MCP と OAuth は ADR 0030 の順番 5
 
 ## 登録
 
