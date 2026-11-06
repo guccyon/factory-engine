@@ -161,6 +161,25 @@ def usage_view(conn) -> dict | None:
         return None
 
 
+def workflow_view(conn, now: datetime | None = None) -> list[str]:
+    """ワークフローの宣言を守らせていたら、止めた・飛ばした・待たせた件数（ADR 0038 の順番 1。前日の 24 時間）。
+    dispatcher の workflow_shadow.py と同じ数え方。数えられなくてもレポートは出す"""
+    if conn is None:
+        return []
+    for d in ("/app", str(Path(__file__).resolve().parents[2] / "orchestrator" / "dispatcher")):
+        if Path(d, "workflow_shadow.py").exists() and d not in sys.path:
+            sys.path.append(d)
+    try:
+        import workflow_shadow
+        from psycopg.rows import dict_row
+        to = now or datetime.now(timezone.utc)
+        with conn.cursor(row_factory=dict_row) as cur:
+            return workflow_shadow.report_lines(workflow_shadow.summary(cur, to - timedelta(days=1), to))
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] ワークフローの宣言を数えられない:", repr(e), file=sys.stderr)
+        return []
+
+
 def db_conn():
     if not DATABASE_URL:
         return None
@@ -633,6 +652,8 @@ def render_daily(snap: dict, prev: dict | None) -> str:
         lines.append(f"- 内部品質: {fmt_quality({repo: hist[-2:] if len(hist) > 1 else hist})[0]}")
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
     lines += fmt_usage(snap.get("usage"))
+    if snap.get("workflow"):
+        lines += ["", "**ワークフローの宣言（記録だけ）**", *[f"- {x}" if not x.startswith("- ") else x for x in snap["workflow"]]]
     return "\n".join(lines)
 
 
@@ -718,7 +739,7 @@ def main() -> int:
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
-            "usage": usage_view(conn)}
+            "usage": usage_view(conn), "workflow": workflow_view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],

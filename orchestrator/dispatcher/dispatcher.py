@@ -455,6 +455,7 @@ def run_job(job: dict, reattaching: bool = False):
                             log("case archive read failed", key, repr(e))
                 if kind == "plan" and not reattaching:   # 製品の実績の表（ADR 0036 の 1。見積もりの材料）
                     judge_inp = planner.attach_sizes(cur, repo, judge_inp)
+                    judge_inp = planner.attach_context(cur, repo, corr, judge_inp)   # 流れているタスクと知見（ADR 0038 の 4b）
                 if kind == "ui_design_review" and not reattaching:   # 案（UXSpec とファイル）はオブジェクトストアから足す（ADR 0025）
                     judge_inp = design_line.review_input(cur, store_get, judge_inp)
             if reattaching:

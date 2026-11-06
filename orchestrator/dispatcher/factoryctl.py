@@ -130,6 +130,7 @@ import planner
 import process_learn
 import restricted
 import serialize
+import workflow_shadow
 import ship
 import stoppage
 import touch
@@ -241,9 +242,17 @@ def plan_cmd(cur, argv) -> int:
                 print(f"問い: {q.get('question')} {q.get('options')}")
             if p.get("expected_files"):
                 print("変わる見込みのファイル: " + ", ".join(p["expected_files"]))
+            for line in planner.workflow_lines(p.get("workflow"), p.get("workflow_marks")):
+                print(line)
             print(f"入力の版: {json.dumps(p.get('versions') or {}, ensure_ascii=False)}\n")
         for s in serialize.serialized(cur, f"github:{repo}#{n}"):
             print(f"並べた（{s['at']:%m-%d %H:%M}）: {s.get('why')}")
+        for s in workflow_shadow.shadows(cur, f"github:{repo}#{n}"):
+            what = (f"{workflow_shadow.CAP_JA.get(s.get('cap'), s.get('cap'))} の上限 {s.get('declared')} を超えた（実績 {s.get('actual')}。守らせていたら"
+                    f"{workflow_shadow.ACTION_JA.get(s.get('action'), s.get('action'))}）") if s.get("kind") == "cap_hit" else \
+                   (f"飛ばす宣言の {s.get('step')} が動いた（ジョブ {s.get('job_id')}）" if s.get("kind") == "would_skip" else
+                    f"start: after（{' '.join(f'#{x}' for x in s.get('after') or [])}）の前に投入した")
+            print(f"宣言との差（{s['at']:%m-%d %H:%M}、記録だけ）: {what}")
         return 0
     if sub in ("outcomes", "sizes", "pass"):
         return plan_outcome_cmd(cur, argv, sub)

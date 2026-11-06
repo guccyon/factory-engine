@@ -1,0 +1,107 @@
+# ワークフローの宣言（ADR 0038）
+#
+# プランナーは、チケットごとに、道（ADR 0037）のひな形から、ステップを動かすか飛ばすか（理由つき）・厚み・上限・後続のループへの渡し方・
+# いつ着手するか（start）を宣言する。宣言は Plan の workflow に残る。
+# dispatcher（supervisor）は宣言を読み、数え、上限で止めるだけ（ADR 0004。判断は持たない）。
+# 順番 1（今）は守らせず記録だけ: 宣言どおりなら何を飛ばし、どこで止めたかを events の workflow.shadow に残す。
+# 決定論の当てはめは core-gates/workflow.py（飛ばせないステップを戻す mandatory_skip、天井に切り詰める cap_clamped、既定値で埋める）。
+# dispatcher の workflow_shadow.py が上限の種類と当たったときの動きを写して持つ（食い違いはテストで見る）。
+# 値は仮置き（2026-11-06 オーナー承認。天井と既定値は運用パラメータとして工場が調整してよい。規則の種類はオーナーの承認）。
+
+schema_version: "0.1"
+status: draft
+
+steps:                               # ステップのカタログ。役を足すときはここに足す
+  design_system: {ja: デザインシステムのデザイナー, kind: upstream}
+  ui_design:     {ja: プロダクトデザイナー, kind: upstream}
+  implement:     {ja: 実装役, kind: build}
+  checks:        {ja: CI と決定論のゲート, kind: safety}
+  inspect:       {ja: 検査役, kind: review}
+  judge:         {ja: judge（仮決めと指摘を裁く）, kind: review}
+  merge:         {ja: マージ（autonomy の表）, kind: safety}
+  qa:            {ja: QA（ユーザーストーリーを流す）, kind: review}
+  ship:          {ja: 出荷, kind: handoff}
+  learn:         {ja: Learn（信号の記録）, kind: handoff}
+  confirm:       {ja: 確認の段（ADR 0037 の 4）, kind: safety}
+  execute:       {ja: 実行, kind: build}
+  reconcile:     {ja: 数の突き合わせ, kind: safety}
+  respond:       {ja: 結果を返す, kind: handoff}
+
+paths:                               # 道（ADR 0037）ごとのひな形。プランナーはここにあるステップだけを並べ、要らないものを飛ばす
+  ticket:      [design_system, ui_design, implement, checks, inspect, judge, merge, qa, ship, learn]
+  direct_line: []                    # 既存のチケットの宣言のまま（優先度だけ変える）
+  operate:     [confirm, execute, respond]
+  quick:       [execute, respond]
+  analysis:    [execute, reconcile, respond]
+
+mandatory:                           # 飛ばせないステップ（決定 3）。always は常に、when は条件に当たるとき。プランナーの宣言で飛ばしても run: true に戻す
+  checks:    {always: true, min_effort: standard}
+  merge:     {always: true}
+  learn:     {always: true}
+  confirm:   {always: true}
+  inspect:   {when: code_change, min_effort: light}     # 差分が docs と changelog.d/ だけなら飛ばせる
+  judge:     {when: questions_or_findings}              # 仮決めか指摘があれば必ず（run: auto）
+  reconcile: {when: precise}                            # 「きっちり」の精度のとき
+
+efforts:                             # 厚み（決定 2）。ステップごとに何が変わるか。deep を付けたら why が必須
+  order: [light, standard, deep]
+  table:
+    upstream:  {light: "既存の画面・部品に倣う 1 案", standard: "2 案", deep: "3 案、ゼロから考える"}
+    implement: {light: "ターン帯 S、tier-small も可", standard: "帯 M", deep: "帯 L、tier-large"}
+    inspect:   {light: "変更種別に当たる観点だけ", standard: "今の観点すべて", deep: "観点すべて＋差分の外の影響（呼び出し元・契約の利用者）"}
+    qa:        {light: "宣言したストーリーの主な流れだけ", standard: "宣言したストーリーの全歩", deep: "関係するストーリー全部と観点すべて"}
+
+caps:                                # 上限（決定 4）。天井 > 既定値 >= 宣言。プランナーは天井の内側でだけ決められる
+  kinds:                             # 上限の種類と、当たったときの動き（決定 7）
+    implement.turns:      {ja: 実装のターン, on_cap: replan}
+    implement.cost_usd:   {ja: 実装の費用, on_cap: human}
+    ticket.cost_usd:      {ja: チケット全体の費用, on_cap: human}
+    retries.conflict:     {ja: 衝突の解消, on_cap: serialize_then_human}
+    retries.ci_fix:       {ja: CI 落ちの直し, on_cap: human}
+    retries.review_fix:   {ja: 検査の指摘の直し, on_cap: human}
+    retries.continue:     {ja: 途中終了の続き, on_cap: replan}
+    retries.qa_rerun:     {ja: QA のやり直し, on_cap: human}
+    retries.judge_rounds: {ja: judge のやり直し, on_cap: human}
+    quick.turns:          {ja: 小さな LLM の仕事のターン, on_cap: offer_analysis}
+    quick.cost_usd:       {ja: 小さな LLM の仕事の費用, on_cap: offer_analysis}
+    analysis.cost_usd:    {ja: 分析役の報告の費用, on_cap: human}
+  ceilings:
+    implement.turns: 120
+    implement.cost_usd: 25
+    ticket.cost_usd: 30
+    retries.conflict: 5
+    retries.ci_fix: 3
+    retries.review_fix: 3
+    retries.continue: 1
+    retries.qa_rerun: 2
+    retries.judge_rounds: 2
+    quick.turns: 8
+    quick.cost_usd: 0.5
+    analysis.cost_usd: 5
+  defaults:                          # 大きさの帯（ADR 0036）から決まる既定値。帯がなければ M
+    S:  {implement.turns: 30, implement.cost_usd: 3,  ticket.cost_usd: 6}
+    M:  {implement.turns: 60, implement.cost_usd: 8,  ticket.cost_usd: 15}
+    L:  {implement.turns: 90, implement.cost_usd: 15, ticket.cost_usd: 25}
+    XL: {implement.turns: 120, implement.cost_usd: 25, ticket.cost_usd: 30}
+    any:                             # 帯によらない
+      retries.conflict: 3
+      retries.ci_fix: 2
+      retries.review_fix: 2
+      retries.continue: 1
+      retries.qa_rerun: 1
+      retries.judge_rounds: 1
+      quick.turns: 8
+      quick.cost_usd: 0.5
+      analysis.cost_usd: 5
+
+handoff:                             # 流れの終わりの渡し先（決定 5）
+  ship: [train, none, expedite]      # 既定 train
+  learn: [signals, case_review]      # 既定 signals（signals は飛ばせない。case_review は加えて分析役に回す）
+
+start:                               # いつ着手するか（決定 4b）。now か after（そのチケットが閉じてから）
+  values: [now, after]
+
+broad_files:                         # 広く触られるファイル（決定 4b）。並べ方ではなく仕組みで解く候補として、レトロスペクティブが束ねる
+  window_days: 7
+  min_share: 0.30                    # 直近 7 日に流したチケットのうち、このファイルに触った割合
+  min_tickets: 5
