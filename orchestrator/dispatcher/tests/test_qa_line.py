@@ -79,6 +79,7 @@ def test_enqueue_makes_fixed_issue_and_job(cur):
     cur.execute("insert into events(name, payload) values ('release.touchable', %s)",
                 (Jsonb({"release_id": "r7", "env": "staging", "accounts": [{"label": "本部", "value": "mock.headquarters.x"}]}),))
     cur.execute("insert into events(name, payload) values ('release.deployed', %s)", (Jsonb({"repo": REPO, "env": "staging", "release_id": "r7", "ok": True}),))
+    cur.execute("insert into events(name, payload) values ('release.built', %s)", (Jsonb({"repo": REPO, "release_id": "r7", "commit": "c0ffee1"}),))
     gh = FakeGH()
     got = qa_line.enqueue(cur, gh, REPO, stories=["s-pass"], priority="p0", env_host="h")
     assert got["issue"] == 101 and got["release_id"] == "r7"
@@ -88,7 +89,7 @@ def test_enqueue_makes_fixed_issue_and_job(cur):
     assert j["kind"] == "qa" and j["issue_number"] == 101 and j["priority"] == qa_line.ops.LEVELS["p0"][0]
     cur.execute("select payload from events where name='job.enqueued'")
     inp = cur.fetchone()["payload"]["input"]
-    assert inp == {"env": "staging", "env_host": "h", "release_id": "r7", "stories": ["s-pass"],
+    assert inp == {"env": "staging", "env_host": "h", "release_id": "r7", "commit": "c0ffee1", "stories": ["s-pass"],
                    "touchable": {"accounts": [{"label": "本部", "value": "mock.headquarters.x"}], "note": None}}
     import psycopg
     with pytest.raises(psycopg.errors.UniqueViolation):   # 同じ固定 Issue に動いているジョブがあれば積まない

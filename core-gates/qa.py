@@ -153,12 +153,20 @@ def relay_config(root: Path, env=os.environ) -> str | None:
 MOBILE = """
 ## iOS シミュレーター（Mac ランナー）
 mcp__macrunner__* の道具で、Mac の iOS シミュレーターを動かせます（この環境の画面と同じ staging のサーバーに繋ぎます）。
-- 生徒アプリ（student-app）のストーリーは、まず iOS で流す。sim_devices → sim_boot → app_build（app: guccyon/rally:apps/student-app、
+- 生徒アプリ（student-app）のストーリーは、まず iOS で流す。sim_devices → sim_boot → app_build（app: guccyon/rally:apps/student-app、{ref}
   dart_defines: {{"RALLY_API_URL": "{api}"}}）→ build_status で built まで待つ → app_install → app_launch → ui_describe / ui_tap / ui_text / screenshot
 - ビルドに 10 分より長くかかる・失敗する・ランナーがいないときは、Web 版（env.json の生徒アプリ）で流し、interpretation にそう書く
 - screenshot の画像は根拠として out/ に保存してよい（ファイル名の決まりは同じ）
 - Mac のシミュレーターから見た staging のサーバーは {api}（Mac の中なので 127.0.0.1）
 """
+
+
+def mobile_ref(inp: dict) -> str:
+    """app_build の ref。環境に出ている版のコミット（release.built）にそろえる。分からなければ main で、そう書かせる"""
+    c = inp.get("commit")
+    if c:
+        return f"ref: {c}（この環境に出ている版 {inp.get('release_id') or ''} のコミット。ほかの ref にしない）、"
+    return "ref は省く（環境の版のコミットが分からないので main。interpretation に「iOS は main でビルドした」と書く）、"
 
 
 # ------------------------------------------------------------------ プロンプト
@@ -192,7 +200,7 @@ def prompt(defs: dict, stories: list[dict], env: dict, inp: dict, mobile: bool =
   代わりに「ログインし直し・再読み込みで残るか」までを確かめて、ストーリー全体の decision は exit まで確かめられた範囲で決める
   （exit そのものが時間をまたぐなら blocked にして、何が足りないかを interpretation に書く）
 
-{MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"]) if mobile else ""}
+{MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"], ref=mobile_ref(inp)) if mobile else ""}
 ## 判定の決まり（definitions/qa.yaml）
 - pass: {defs['decisions']['pass']}
 - hold: {defs['decisions']['hold']}

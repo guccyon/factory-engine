@@ -59,7 +59,12 @@ def build_input(cur, repo: str, env: str, stories: list[str], env_host: str) -> 
     if not rid:
         import ship
         rid = (ship.status(cur, repo)["environments"].get(env) or {}).get("release_id")
-    return {"env": env, "env_host": env_host, "release_id": rid, "stories": stories,
+    commit = None
+    if rid:   # その版を出したときのコミット（shipper の release.built）。iOS のビルドを環境と同じコミットにそろえる
+        cur.execute("select payload->>'commit' as c from events where name='release.built' and payload->>'release_id'=%s order by id desc limit 1", (rid,))
+        r = cur.fetchone()
+        commit = r["c"] if r else None
+    return {"env": env, "env_host": env_host, "release_id": rid, "commit": commit, "stories": stories,
             "touchable": {"accounts": t.get("accounts") or [], "note": t.get("note")}}
 
 
