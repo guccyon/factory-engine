@@ -120,7 +120,29 @@ docker compose exec dispatcher factoryctl swap status <id>   # 段ごとの記�
 - 入れ替え役は作業ツリーを同じ絶対パスでマウントする（場所は compose が付けるラベルから読む。`SWAP_ROOT` で上書き）。`git worktree` の作業ツリーなら、指している git の置き場もマウントする（足りなければ `SWAP_EXTRA_MOUNTS`）。
   入れ替え役のコンテナには ssh の鍵がないので、`origin` が ssh でも https で取り込む（工場のリポジトリは公開）
 - 入れ替え役を含む版を初めて入れるときは、入れ替え役がまだないので上の手順（`build.sh` → `up -d` → `version --expect`）で入れる。次から `swap run` が使える
-- 時刻の合意（建設者の依頼にプランナーが時刻を提案する）と Issue の郵便受けは順番 3・4。`SWAP_ENABLED=0` で dispatcher は入れ替え役を起動しない
+- `SWAP_ENABLED=0` で dispatcher は入れ替え役を起動しない（郵便受けも見ない）
+
+#### Issue で依頼する（郵便受け。ADR 0031 の順番 3）
+
+クラウドの建設者は工場のマシンの中に届かないので、factory-engine に Issue を立てて `factory:swap` を付ける。dispatcher が 1 分ごとに拾い、依頼にして「いま」で受ける。
+進み具合（受けた・起動した・一時停止した・結果）は同じ Issue にコメントで返り、入れ替えたら閉じる（`factory:swapped`）。止まったら `factory:swap-failed` を付けて開いたまま。
+
+```
+target: main            # main かコミット（main に入っているもの）。省けば main
+kind: code              # code / control_plane / db（自己申告。差分から判定し直し、重い方を採る）
+urgency: normal         # normal / urgent
+deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4）
+```
+
+- 拾うのは、ラベルを付けたのが `SWAP_REQUESTERS`（カンマ区切りの GitHub のログイン。既定は郵便受けのリポジトリの持ち主）のものだけ。ほかの人が付けたラベルは黙って飛ばす（リポジトリは公開）
+- 本文は上の形の行だけ読み、値も決まった形（`main` か 16 進のコミットなど）に当たるものだけ受ける。ほかの文は記録だけで、シェルにもプロンプトにも渡さない
+- 同時に 1 件。ほかの入れ替えが終わっていなければ、その旨を 1 回返して待つ
+- 一時停止を伴う入れ替え（申告か判定が `control_plane`・`db`）は、人が並走する時間帯（attended。`FACTORY_MODE`・`MODE_SCHEDULE`・`factoryctl mode`）だけ始める（決めどころ S4）。
+  申告が `code` で判定が重かったときは、入れ替え役が何も変えずに止め、attended に入ったら同じ Issue で依頼し直す。手で打った `swap run` は時間帯で止めない
+- 人に回す条件（DB の変更・秘密情報と権限など）は手で打つときと同じ。入れ替え役を起動する前に Issue を閉じれば取り消す
+- 返すコメントには工場のマシンのパスとホスト名を出さない。`SWAP_MAILBOX_REPO`（既定 `guccyon/factory-engine`）・`SWAP_MAILBOX_INTERVAL_SEC`（既定 60）・`SWAP_MAILBOX=0` で止める。
+  工場の GitHub のトークンに、郵便受けのリポジトリの Issues の読み書きが要る
+- 時刻の合意（建設者の依頼にプランナーが時刻を提案する）は順番 4、窓口の `builder` の役割（`POST /desk/swaps`）は窓口を外に開くとき（表の役割の制約を変える DB の変更を伴う）
 
 ## 試験運転（GitHub にも Claude にも触らない）
 
