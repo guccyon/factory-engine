@@ -206,13 +206,13 @@ class Fake:
         return self.t
 
 
-def make(cur, tmp_path, fake, kind="code"):
+def make(cur, tmp_path, fake, kind="code", source="manual"):
     root = tmp_path / "fe"
     (root / "definitions").mkdir(parents=True)
     (root / "orchestrator" / "scripts").mkdir(parents=True)
     shutil.copy(os.path.join(REPO, "definitions", "swap.yaml"), root / "definitions" / "swap.yaml")
     shutil.copy(os.path.join(REPO, "orchestrator", "scripts", "build.sh"), root / "orchestrator" / "scripts" / "build.sh")
-    sid = swap.request(cur, "main", "builder", kind=kind)
+    sid = swap.request(cur, "main", "builder", kind=kind, source=source)
     swap.record(cur, sid, "swap.launched", {"container": swap.container(sid)})
     import psycopg
     from psycopg.rows import dict_row
@@ -253,6 +253,22 @@ def test_control_plane_swap_drains_and_resumes(cur, tmp_path):
     assert not drain.active(cur)   # 一時停止を解いた
     cur.execute("select payload->>'by' as by from events where name like 'factory.drain%%' order by id")
     assert [r["by"] for r in cur.fetchall()] == ["swapper", "swapper"]
+
+
+@needs_db
+def test_drain_swap_from_the_mailbox_waits_for_attended_hours(cur, tmp_path):
+    import drain
+    cur.execute("insert into events(name, payload) values ('factory.mode_set', '{\"mode\": \"unattended\"}')")
+    fake = Fake(cur, files=["orchestrator/compose.yaml"], diffs={"orchestrator/compose.yaml": "+      MAX_TURNS: 40\n"})
+    sid, sw = make(cur, tmp_path, fake, source="o/factory-engine#5")   # 申告は code、判定は control_plane
+    assert sw.main() == 1
+    last = swap.get(cur, sid)["events"][-1]
+    assert last["name"] == "swap.preflight_failed" and last["payload"]["deferred"] == "unattended" and last["payload"]["judged"] == "control_plane"
+    assert not drain.active(cur) and fake.head == PREV and not any(c[:2] == ["bash", "scripts/build.sh"] for c in fake.calls)   # 何も変えていない
+    # 手で打った swap run は時間帯で止めない（打った人が近くにいる）
+    fake2 = Fake(cur, files=["orchestrator/compose.yaml"], diffs={"orchestrator/compose.yaml": "+      MAX_TURNS: 40\n"})
+    sid2, sw2 = make(cur, tmp_path / "2", fake2)
+    assert sw2.main() == 0 and names(cur, sid2)[-1] == "swap.completed"
 
 
 @needs_db

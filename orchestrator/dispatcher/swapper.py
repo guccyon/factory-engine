@@ -197,6 +197,11 @@ class Swapper:
         with self.db() as conn, conn.cursor() as cur:
             if ship.pending(cur):
                 raise Stop("出荷の処理中（終わってから入れ替える）")
+            if kind != "code" and self.req.get("source", "manual") != "manual" and unattended(cur):
+                # Issue の郵便受けからの依頼で、差分が一時停止を要る種類だった。一時停止を伴う入れ替えは人が並走する時間帯だけ（決めどころ S4）。
+                # 手で打った swap run は、打った人が近くにいるので止めない
+                raise Stop(f"一時停止を伴う入れ替え（判定 {kind}）は、人が並走する時間帯（attended）だけ自動で始める。いまは全面委任の時間帯",
+                           detail={**plan, "deferred": "unattended"})
         self.snapshot_tags(prev[:7])
         self.build(sha)
         return plan
@@ -384,6 +389,11 @@ class Swapper:
 
 
 # ------------------------------------------------------------------ 小さな関数（テストで直接見る）
+def unattended(cur) -> bool:
+    import judgment
+    return judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))[0] == "unattended"
+
+
 def fetch_url(remote: str) -> str:
     """ssh の remote（git@github.com:o/r.git）は https に直す（入れ替え役のコンテナに ssh の鍵はない。工場のリポジトリは公開）"""
     m = re.fullmatch(r"(?:ssh://)?git@github\.com[:/](.+?)(?:\.git)?/?", remote.strip())

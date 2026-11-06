@@ -29,6 +29,7 @@
   factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま入れ替える（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
   factoryctl swap status [<id>]                    # 直近の入れ替えの一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
   factoryctl swap cancel <id> [--reason ..]        # 入れ替え役を起動する前だけ取り消せる
+  （クラウドの建設者は factory-engine の Issue に factory:swap を付けて依頼する。dispatcher が拾い、結果を同じ Issue に返す。orchestrator/README.md）
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]

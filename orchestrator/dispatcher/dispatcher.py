@@ -54,6 +54,7 @@ import process_learn
 import reattach
 import stoppage
 import swap
+import swap_mailbox
 import tidy
 
 ENV = os.environ
@@ -112,6 +113,7 @@ SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
 SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の入れ替えの依頼を見る間隔（ADR 0031）
+SWAP_MAILBOX_INTERVAL = int(ENV.get("SWAP_MAILBOX_INTERVAL_SEC", "60"))   # Issue の郵便受け（factory:swap）を見る間隔。GET は ETag つき
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))
 EXIT_CAPTURE = ENV.get("EXIT_CAPTURE", "1") == "1"   # 実装後の画面のキャプチャを CI の成果物から読み、PR の本文と受信トレイに載せる（ADR 0025 の 4）。0 で止める
 EXIT_CAPTURE_INTERVAL = int(ENV.get("EXIT_CAPTURE_INTERVAL_SEC", "300"))   # 見に行く間隔（状態の取得は ETag つき）。仮置き   # 停止・割り込みを見る間隔（トークンを使わない）
@@ -1268,8 +1270,17 @@ def tidy_loop():
 
 
 def swap_loop():
-    """工場の入れ替え（ADR 0031）。受けた依頼の時刻になったら、使い捨ての入れ替え役のコンテナを起動する。入れ替え役が消えていたら人に回す"""
+    """工場の入れ替え（ADR 0031）。Issue の郵便受け（factory:swap）から依頼を拾い、受けた依頼の時刻になったら、使い捨ての入れ替え役のコンテナを起動する。
+    入れ替え役が消えていたら人に回す。進み具合は依頼の Issue に返す"""
+    last_mail = 0.0
     while True:
+        if swap_mailbox.enabled() and time.time() - last_mail >= SWAP_MAILBOX_INTERVAL:
+            last_mail = time.time()
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    swap_mailbox.poll(cur, gh, comment, swap_label, log)
+            except Exception as e:  # noqa: BLE001  郵便受けの失敗で入れ替えの周回を止めない
+                log("swap mailbox error", repr(e))
         try:
             with db() as conn, conn.cursor() as cur:
                 swap.tick(cur, log)

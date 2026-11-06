@@ -187,6 +187,7 @@
 1. イメージを依存の順に作る `factoryctl swap build`、サービスごとの版の `factoryctl version`、`.env` の `ENGINE_VERSION` の廃止（手で入れ替えるときにもすぐ効く）
 2. 入れ替え役（使い捨てのコンテナ）と手順（決定 4・6）。まず `factoryctl swap run <sha>` で、建設者か運用主が手で 1 回通す（時刻の合意なし）
 3. 依頼の記録と、Issue の郵便受け（決定 2）。窓口のトークンに `builder` の役割
+   - 2026-11-06: Issue の郵便受け（`orchestrator/dispatcher/swap_mailbox.py`）を入れた。時刻の提案（順番 4）までは、受けたら「いま」で始める。一時停止を伴う入れ替えは attended の時間帯だけ（S4）。`builder` の役割は、`desk_tokens` の役割の制約を変える DB の変更を伴うので、窓口を外に開くときに回す
 4. プランナーの時刻の提案（決定 3）と `definitions/swap.yaml`
 5. DB の変更の印と承認ボタン（決定 8）。既存の `001`〜`005` に印を付ける
 6. コンソールと建設日報への表示（決定 9）

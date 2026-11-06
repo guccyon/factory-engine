@@ -5,6 +5,7 @@
 - 入れ替え役は常駐させない。dispatcher が周回で、受けた（confirmed）依頼の時刻になったら使い捨てのコンテナ（factory-swap-<id>）を起動する。
   入れ替え役は compose のサービスではないので、dispatcher を作り直しても止まらない。結果を書かずに消えたら、dispatcher が failed にして人に回す
 - 順番 2 では時刻の合意はまだない（factoryctl swap run が依頼と同時に「いま」で受ける）。プランナーの提案は順番 4
+- 順番 3 で依頼の入口に Issue の郵便受け（swap_mailbox.py）を足した。依頼の source に Issue（owner/repo#n）を残し、結果を同じ Issue に返す
 """
 from __future__ import annotations
 
@@ -54,9 +55,11 @@ def record(cur, sid: int, name: str, payload: dict | None = None) -> None:
 
 
 # ------------------------------------------------------------------ 依頼・取り消し・状態
-def request(cur, target: str, by: str, *, kind: str = "code", urgency: str = "normal", note: str = "", confirm_now: bool = True) -> int:
+def request(cur, target: str, by: str, *, kind: str = "code", urgency: str = "normal", note: str = "", confirm_now: bool = True,
+            source: str = "manual", basis: str = "manual") -> int:
     """入れ替えの依頼。target は main かコミット（main に入っているかは入れ替え役が事前の確かめで見る）。
-    confirm_now は時刻の合意のない手での実行（factoryctl swap run。順番 2）で、依頼と同時に「いま」で受ける"""
+    confirm_now は時刻の合意のない手での実行（factoryctl swap run。順番 2）で、依頼と同時に「いま」で受ける。
+    source は依頼の出どころ（manual か Issue の owner/repo#n）。basis は受けた決め手（confirmed の記録に残す）"""
     target = (target or "").strip().lower() if target != "main" else "main"
     if not REF.match(target):
         raise SwapError("target は main か 7〜40 文字のコミット")
@@ -65,10 +68,10 @@ def request(cur, target: str, by: str, *, kind: str = "code", urgency: str = "no
     if urgency not in ("normal", "urgent"):
         raise SwapError("urgency は normal か urgent")
     with cur.connection.transaction():   # 同時に 2 件出さない（確かめと書き込みを 1 つのトランザクションで、ロックを取って）
-        return _request(cur, target, by, kind, urgency, note, confirm_now)
+        return _request(cur, target, by, kind, urgency, note, confirm_now, source, basis)
 
 
-def _request(cur, target, by, kind, urgency, note, confirm_now) -> int:
+def _request(cur, target, by, kind, urgency, note, confirm_now, source="manual", basis="manual") -> int:
     cur.execute("select pg_advisory_xact_lock(hashtext('swap.request'))")
     act = active(cur)
     if act:
@@ -76,11 +79,11 @@ def _request(cur, target, by, kind, urgency, note, confirm_now) -> int:
     if target != "main" and rolled_back_before(cur, target):
         raise SwapError(f"{target} の入れ替えは前の版に戻った。直した新しい版で依頼する（同じ版では自動で入れ替えない。決定 6）")
     cur.execute("insert into events(name, payload) values ('swap.requested', %s) returning id",
-                (Jsonb({"target": target, "kind": kind, "urgency": urgency, "by": by, "note": note[:300]}),))
+                (Jsonb({"target": target, "kind": kind, "urgency": urgency, "by": by, "note": note[:300], "source": source}),))
     sid = cur.fetchone()["id"]
     cur.execute("update events set correlation_id=%s, payload = payload || %s where id=%s", (corr(sid), Jsonb({"swap_id": sid}), sid))
     if confirm_now:
-        record(cur, sid, "swap.confirmed", {"at": datetime.now(timezone.utc).isoformat(), "by": by, "basis": "manual"})
+        record(cur, sid, "swap.confirmed", {"at": datetime.now(timezone.utc).isoformat(), "by": by, "basis": basis})
     return sid
 
 
@@ -103,7 +106,8 @@ def get(cur, sid: int) -> dict | None:
     last = evs[-1] if evs else {"name": "swap.requested", "occurred_at": r["occurred_at"]}
     p = r["payload"]
     conf = next((e for e in reversed(evs) if e["name"] == "swap.confirmed"), None)
-    return {"id": sid, "target": p.get("target"), "kind": p.get("kind"), "urgency": p.get("urgency"), "by": p.get("by"), "requested_at": r["occurred_at"],
+    return {"id": sid, "target": p.get("target"), "kind": p.get("kind"), "urgency": p.get("urgency"), "by": p.get("by"), "source": p.get("source") or "manual",
+            "requested_at": r["occurred_at"],
             "status": STATUS[last["name"]], "last_at": last["occurred_at"], "at": (conf or {}).get("payload", {}).get("at"), "events": evs}
 
 
@@ -213,7 +217,7 @@ def launch_args(sid: int, root: str, extra_mounts: list[str], image: str, networ
         args += ["-v", f"{m}:{m}"]
     # 値を書かない -e は dispatcher の環境から写す（停止の通知に GH_TOKEN を使う。入れ替え役は子のプロセスには渡さない）
     args += ["-w", f"{root}/orchestrator", "-e", f"SWAP_ROOT={root}", "-e", f"COMPOSE_PROJECT={project}"]
-    for k in ("DATABASE_URL", "GH_TOKEN", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "REPORT_TZ"):
+    for k in ("DATABASE_URL", "GH_TOKEN", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "REPORT_TZ", "FACTORY_MODE", "MODE_SCHEDULE"):
         args += ["-e", k]
     args += [image, "python", "/app/swapper.py", "run", str(sid)]
     return args
