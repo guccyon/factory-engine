@@ -6,6 +6,8 @@ dispatcher・factoryctl・操業コンソール・番人が同じ関数を通る
 """
 from __future__ import annotations
 
+import re
+
 from psycopg.types.json import Jsonb
 
 import line
@@ -37,6 +39,15 @@ def set_drain(cur, on: bool, by: str, reason: str = "") -> bool:
     cur.execute("insert into events(name, payload) values (%s, %s)",
                 ("factory.drain_requested" if on else "factory.drain_released", Jsonb({"by": by, "reason": reason})))
     return True
+
+
+_ISSUE_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/(\d+)/?$")
+
+
+def issue_corr(url: str) -> str | None:
+    """Issue の URL ならチケットの correlation_id（github:<owner>/<repo>#<番号>）。ほかは None"""
+    m = _ISSUE_URL.match(url.strip())
+    return f"github:{m.group(1)}#{m.group(2)}" if m else None
 
 
 def allow(cur, corrs: list[str], by: str, reason: str = "", min_priority: int | None = None) -> bool:
