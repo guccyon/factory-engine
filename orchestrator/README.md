@@ -400,7 +400,7 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally
 
 - ジョブは製品の固定 Issue（`factory:qa`、なければ作る）に `kind=qa` で積む。ワーカーは `factory-worker:design`（Chromium と playwright-core）で `worker/qa.sh` → `core-gates/qa.py`。画面には `host.docker.internal`（`QA_ENV_HOST` で上書き）と ship.yaml の `touch` のポートで届く
 - 記録は `qa.verdict`（ストーリーごと。roadmap の `qa_verdict` が数える）と artifacts の `QAVerdict`。根拠のスクリーンショットはオブジェクトストアの `qa/<job_id>/`
-- hold の Defect は製品の Issue（`factory:qa-defect`・`factory:fix-proposed`）に起票する（1 回 5 件まで。ストーリーの `known_gaps` に書いてあるものは起票せずまとめに載せる）。流すときは差し戻しと同じく `factory:planned` に替える
+- hold の Defect は製品の Issue（`factory:qa-defect`・`factory:fix-proposed`）に起票する（1 回 5 件まで。ストーリーの `known_gaps` に書いてあるものは起票せずまとめに載せる。同じストーリーの同じ歩で開いている Defect があれば、起票せずにその Issue に再現したことを書く）。流すときは差し戻しと同じく `factory:planned` に替える
 - 見た目と言葉の温度は判定しない。印としてまとめに載せて人に出す
 - Mac ランナー（iOS シミュレーター）は、dispatcher の中継（`runner_relay.py`、`one_orchestrator`）越しに QA のワーカーへ MCP の道具として渡す。ワーカーに渡すのはそのジョブだけの合言葉で、ランナーの鍵と窓口の合言葉は渡さない（`macrunner/PROTOCOL.md` の決めたいこと 1）。生徒アプリのストーリーはまず iOS で、ビルドできなければ Web 版で流す。`RUNNER_RELAY=0` で止める
 - まだないもの: 時間をまたぐ手順（`scenario_time`。いまは skipped にする）、ラインを差し止める裁量
