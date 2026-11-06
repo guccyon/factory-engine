@@ -40,6 +40,10 @@ def test_escalations_look_at_added_lines_only():
     esc = swap.escalations(list(diffs), diffs.get, RULES)
     assert [e["id"] for e in esc] == ["secrets_permissions"] and esc[0]["files"] == ["orchestrator/compose.yaml"]
     assert swap.escalations(["orchestrator/dispatcher/dispatcher.py"], lambda f: "+GH_TOKEN = 1", RULES) == []   # 対象のファイルだけ
+    diffs = {"orchestrator/.env.example": "@@\n+# EDGE_ALLOW_CIDRS=0.0.0.0/0 ::/0   # 説明\n+  # EDGE_COOKIE_SECRET=\n"}
+    assert swap.escalations(list(diffs), diffs.get, RULES) == []   # 説明のコメント行は数えない
+    diffs = {"orchestrator/.env.example": "@@\n-# EDGE_COOKIE_SECRET=\n+EDGE_COOKIE_SECRET=\n"}
+    assert [e["id"] for e in swap.escalations(list(diffs), diffs.get, RULES)] == ["secrets_permissions"]   # コメントを外すのは数える
 
 
 def test_git_mounts_for_worktree_and_plain_clone():
