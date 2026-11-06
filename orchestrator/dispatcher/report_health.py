@@ -103,4 +103,20 @@ def build(cur, start: datetime, end: datetime) -> Report:
             from report import note
             items = [note(f"読めなかった（{type(e).__name__}）")]
         rep.sections.append(Section(sid, title, parties, items))
+    rep.summary = summary(rep)
     return rep
+
+
+def summary(rep: Report) -> list[str]:
+    """ひとことの要約（3 行）。Slack の投稿の本文になる。詳しくは添付の報告書"""
+    m = {(s.id, i.label): i.value for s in rep.sections for i in s.items if i.kind == "metric"}
+    v = lambda sid, label, unit="": _v(m.get((sid, label)), unit)   # noqa: E731
+    opened = sum(1 for s in rep.sections if s.id == "line" for i in s.items if i.kind == "entry")
+    return [f"ラインの稼働 {v('line', 'ラインが動いていた割合', '%')}、止まった {v('line', '止まった回数（ラインが空・一時停止を除く）', '件')}"
+            + (f"（開いている停止 {opened} 件）" if opened else ""),
+            f"ジョブ {v('jobs', '終わったジョブ', '件')}、うち失敗 {v('jobs', '失敗したジョブ', '件')}",
+            f"人の判断待ち 残り {v('inbox', '期間の終わりに残っていた件', '件')}、消費 {v('cost', '消費（API 単価に換算）', ' USD')}"]
+
+
+def _v(x, unit: str) -> str:
+    return "不明" if x is None else f"{x}{unit}"

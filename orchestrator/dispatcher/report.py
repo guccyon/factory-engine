@@ -7,6 +7,8 @@
 - 何を載せるか（節の一覧と載せてよい組織）は definitions/reports.yaml。今の中身は仮置き（status: provisional）
 - 組み立てた Report は events の report.built（種類・期間・中身の JSON）に残す。後から何を載せたかを確かめられ、
   ダッシュボードも同じ JSON から描ける（任意の期間は build を期間を変えて呼ぶ）
+- Slack アプリの宛先（slack_app）には、全文を流さず報告書（HTML、report_page）を添付し、本文は数行の要約だけにする（2026-11-06 オーナー）。
+  Incoming Webhook（slack_webhook）はファイルを添付できないので、今までどおり全文を流す
 - 送ったかどうかは宛先ごとに notify.sent。失敗した宛先は次の周回で送り直す（MAX_ATTEMPTS まで）。通知の失敗でラインを止めない
 """
 from __future__ import annotations
@@ -67,6 +69,7 @@ class Report:
     sections: list[Section] = field(default_factory=list)
     provisional: bool = True
     built_at: datetime | None = None
+    summary: list[str] = field(default_factory=list)   # ひとことの要約（数行）。組み立てが詰める。Slack の投稿の本文になる（report_page）
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -80,7 +83,8 @@ class Report:
     def from_dict(cls, d: dict) -> Report:
         secs = [Section(s["id"], s["title"], tuple(s.get("parties") or ()), [Item(**i) for i in s.get("items") or []]) for s in d.get("sections") or []]
         at = lambda v: datetime.fromisoformat(v) if v else None   # noqa: E731
-        return cls(d["kind"], d["title"], at(d["start"]), at(d["end"]), secs, bool(d.get("provisional", True)), at(d.get("built_at")))
+        return cls(d["kind"], d["title"], at(d["start"]), at(d["end"]), secs, bool(d.get("provisional", True)), at(d.get("built_at")),
+                   list(d.get("summary") or []))
 
 
 # ------------------------------------------------------------------ 文面
@@ -171,13 +175,26 @@ def build_and_record(cur, kind: str, builder, start: datetime, end: datetime) ->
 
 
 def _attempts(cur, kind: str, start: datetime) -> dict[str, dict]:
-    cur.execute("select payload from events where name='notify.sent' and payload->>'kind'=%s and payload->>'start'=%s", (kind, start.isoformat()))
+    cur.execute("select payload from events where name='notify.sent' and payload->>'kind'=%s and payload->>'start'=%s "
+                "and not coalesce((payload->>'manual')::boolean, false)", (kind, start.isoformat()))   # 手で送った分（send_now）は毎朝の送信に数えない
     out: dict[str, dict] = {}
     for r in cur.fetchall():
         s = out.setdefault(r["payload"]["destination"], {"ok": False, "tries": 0})
         s["tries"] += 1
         s["ok"] = s["ok"] or bool(r["payload"].get("ok"))
     return out
+
+
+def send(d: notify.Destination, rep: Report, poster=None) -> bool:
+    """1 つの宛先にレポートを送る。Slack アプリには報告書を添付して要約だけ、それ以外は全文"""
+    poster = poster or notify.post
+    factory = ENV.get("FACTORY_NAME", "")
+    if d.via == "slack_app":
+        import report_page
+        page = report_page.render_html(rep, d.party, factory)
+        return poster(d, report_page.comment(rep, d.party, factory),
+                      notify.Attachment(report_page.filename(rep), page.encode(), f"{rep.title}（{report_page.period(rep)}）"))
+    return poster(d, render(rep, d.via, d.party, factory))
 
 
 def deliver(cur, rep: Report, config: notify.Config, now: datetime, poster=None) -> dict:
@@ -198,12 +215,41 @@ def deliver(cur, rep: Report, config: notify.Config, now: datetime, poster=None)
         if not visible(rep, d.party):
             continue
         try:
-            ok = bool(poster(d, render(rep, d.via, d.party, ENV.get("FACTORY_NAME", ""))))
+            ok = bool(send(d, rep, poster))
         except Exception as e:  # noqa: BLE001  通知の失敗でラインを止めない
             notify._log("report send failed", rep.kind, d.name, repr(e)[:200])
             ok = False
         cur.execute("insert into events(name, payload) values ('notify.sent', %s)",
                     (Jsonb({"kind": rep.kind, "start": rep.start.isoformat(), "destination": d.name, "party": d.party, "via": d.via, "ok": ok}),))
+        (out["sent"] if ok else out["failed"]).append(d.name)
+    return out
+
+
+def builders_for() -> dict:
+    import report_health
+    import report_product
+    return {"report.factory_health": report_health.build, "report.product": report_product.build}
+
+
+def send_now(cur, kind: str, start: datetime, end: datetime, to: str | None = None, config: notify.Config | None = None,
+             poster=None) -> dict:
+    """手で送る（factoryctl report send。文面を確かめる試し送り）。今のコードで組み立て直し、report.built には残さない。
+    夜の時間は見ない。送った記録は notify.sent に manual: true で残し、毎朝の送信の数には入れない"""
+    config = config or notify.current(cur)
+    rep = _with_delta(cur, builders_for()[kind](cur, start, end))
+    rep.built_at = datetime.now(timezone.utc)
+    out = {"sent": [], "failed": []}
+    for d in notify.targets(config, kind):
+        if (to and d.name != to) or not visible(rep, d.party):
+            continue
+        try:
+            ok = bool(send(d, rep, poster))
+        except Exception as e:  # noqa: BLE001
+            notify._log("report send failed", kind, d.name, repr(e)[:200])
+            ok = False
+        cur.execute("insert into events(name, payload) values ('notify.sent', %s)",
+                    (Jsonb({"kind": kind, "start": start.isoformat(), "destination": d.name, "party": d.party, "via": d.via, "ok": ok,
+                            "manual": True}),))
         (out["sent"] if ok else out["failed"]).append(d.name)
     return out
 
@@ -214,9 +260,7 @@ def daily_step(cur, now: datetime | None = None, config: notify.Config | None = 
     if now.astimezone(TZ).hour < REPORT_HOUR:
         return {}
     if builders is None:
-        import report_health
-        import report_product
-        builders = {"report.factory_health": report_health.build, "report.product": report_product.build}
+        builders = builders_for()
     config = config or notify.current(cur)
     start, end = previous_day(now)
     out = {}

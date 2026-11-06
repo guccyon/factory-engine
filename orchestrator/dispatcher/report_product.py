@@ -84,4 +84,18 @@ def build(cur, start: datetime, end: datetime, repo: str | None = None) -> Repor
         except Exception as e:  # noqa: BLE001  1 つの節が読めなくても残りは出す
             items = [note(f"読めなかった（{type(e).__name__}）")]
         rep.sections.append(Section(sid, title, parties, items))
+    rep.summary = summary(rep)
     return rep
+
+
+def summary(rep: Report) -> list[str]:
+    """ひとことの要約（3 行）。Slack の投稿の本文になる。詳しくは添付の報告書"""
+    m = {(s.id, i.label): i.value for s in rep.sections for i in s.items if i.kind == "metric"}
+    v = lambda sid, label, unit="": "不明" if m.get((sid, label)) is None else f"{m[(sid, label)]}{unit}"   # noqa: E731
+    doing = [i.label for s in rep.sections if s.id == "doing" for i in s.items if i.kind == "entry"]
+    nxt = [i.label for s in rep.sections if s.id == "next" for i in s.items if i.kind == "entry"]
+    return [f"ロードマップの進み具合 {v('roadmap', '進み具合（済んだチケットの割合）', '%')}"
+            f"（済み {v('roadmap', '済んだ', '件')}・進行中 {v('roadmap', '進めている', '件')}・投入待ち {v('roadmap', '投入待ち', '件')}）",
+            f"期間中に済んだチケット {v('done', '済んだチケット', '件')}、マージした PR {v('done', 'マージした PR', '件')}",
+            (f"進めているもの: {doing[0]}" + (f" ほか {len(doing) - 1} 件" if len(doing) > 1 else "")) if doing else
+            (f"次に流すもの: {nxt[0]}" if nxt else "進めているもの・次に流すものはなし")]
