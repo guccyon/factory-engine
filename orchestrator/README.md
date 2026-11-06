@@ -366,6 +366,23 @@ docker compose exec dispatcher factoryctl env show guccyon/rally          # い�
 - `--fresh` は検証の環境だけ（ship.yaml の `touch.environments` と `seed.environments` の両方に入っている環境）。本番の DB は入れ直さない
 - iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
 
+## QA 役（ADR 0028 の決定 2。P5a の qa_verdict）
+
+触れる環境（Gen1 は staging を兼ねる）に、製品の `specs/stories/` のユーザーストーリーを利用者として流し、ストーリーごとに Verdict（pass・hold・blocked、確信度、根拠）を出す。形と決まりは `definitions/qa.yaml`。
+
+```bash
+docker compose exec dispatcher factoryctl env up guccyon/rally            # 先に触れる環境を立てる（版とログインの手がかりが残る）
+docker compose exec dispatcher factoryctl qa run guccyon/rally --priority p0 [--stories id,id] [--through-pause]
+docker compose exec dispatcher factoryctl qa show guccyon/rally
+```
+
+- ジョブは製品の固定 Issue（`factory:qa`、なければ作る）に `kind=qa` で積む。ワーカーは `factory-worker:design`（Chromium と playwright-core）で `worker/qa.sh` → `core-gates/qa.py`。画面には `host.docker.internal`（`QA_ENV_HOST` で上書き）と ship.yaml の `touch` のポートで届く
+- 記録は `qa.verdict`（ストーリーごと。roadmap の `qa_verdict` が数える）と artifacts の `QAVerdict`。根拠のスクリーンショットはオブジェクトストアの `qa/<job_id>/`
+- hold の Defect は製品の Issue（`factory:qa-defect`・`factory:fix-proposed`）に起票する（1 回 5 件まで。ストーリーの `known_gaps` に書いてあるものは起票せずまとめに載せる）。流すときは差し戻しと同じく `factory:planned` に替える
+- 見た目と言葉の温度は判定しない。印としてまとめに載せて人に出す
+- Mac ランナー（iOS シミュレーター）は、dispatcher の中継（`runner_relay.py`、`one_orchestrator`）越しに QA のワーカーへ MCP の道具として渡す。ワーカーに渡すのはそのジョブだけの合言葉で、ランナーの鍵と窓口の合言葉は渡さない（`macrunner/PROTOCOL.md` の決めたいこと 1）。生徒アプリのストーリーはまず iOS で、ビルドできなければ Web 版で流す。`RUNNER_RELAY=0` で止める
+- まだないもの: 時間をまたぐ手順（`scenario_time`。いまは skipped にする）、ラインを差し止める裁量
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。

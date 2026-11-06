@@ -1,0 +1,133 @@
+"""QA 役（core-gates/qa.py、ADR 0028 の決定 2）: ストーリーの読み込み、環境の入口、Verdict の形の検査、直しの会話、渡すファイル"""
+import json
+import os
+import sys
+from pathlib import Path
+
+import yaml
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import agent_runner
+import qa
+
+DEFS = qa.load_defs()
+STORY = {"type": "UserStory", "id": "coach-replies", "title": "コーチが返事できる", "actor": "coach", "goal": "待たせない",
+         "reader": ["coach"], "entry": "チャットを開く", "exit": "返事が届く",
+         "steps": [{"where": "a", "do": "送る", "sees": "出る"}, {"where": "b", "do": "確かめる", "sees": "出る"}],
+         "must_not": ["他人のスレッドが読める"], "known_gaps": [{"step": 2, "note": "一覧が古い"}]}
+
+
+def product(tmp: Path, stories=(STORY,)) -> Path:
+    d = tmp / "product"
+    (d / "specs" / "stories").mkdir(parents=True)
+    (d / ".factory-config").mkdir()
+    for s in stories:
+        (d / "specs" / "stories" / f"{s['id']}.yaml").write_text(yaml.safe_dump(s, allow_unicode=True), encoding="utf-8")
+    (d / "specs" / "stories" / "actors.yaml").write_text("actors: []\n", encoding="utf-8")
+    (d / ".factory-config" / "ship.yaml").write_text(yaml.safe_dump({
+        "environments": {"staging": {"env": {"BACKEND_PORT": 18080, "ADMIN_WEB_PORT": 13000, "STUDENT_WEB_PORT": 13100}}},
+        "touch": {"environments": ["staging"], "entries": [{"label": "生徒", "port_env": "STUDENT_WEB_PORT", "path": "/"},
+                                                           {"label": "管理", "port_env": "ADMIN_WEB_PORT", "path": "/"}]}},
+        allow_unicode=True), encoding="utf-8")
+    return d
+
+
+def verdict(**kw):
+    v = {"story_id": "coach-replies", "decision": "hold", "confidence": 0.8,
+         "steps": [{"n": 1, "result": "ok", "saw": "出た"}, {"n": 2, "result": "ng", "saw": "出ない"}],
+         "evidence": ["一覧が古い"], "interpretation": "2 歩目で止まった",
+         "defects": [{"title": "一覧が古い", "step": 2, "viewpoint": "flow", "severity": "s2", "actual": "まだメッセージはありません"}]}
+    v.update(kw)
+    return v
+
+
+def test_load_stories_only_active_and_type(tmp_path):
+    d = product(tmp_path, [STORY, {**STORY, "id": "draft-one", "status": "draft"}])
+    assert [s["id"] for s in qa.load_stories(d)] == ["coach-replies"]   # actors.yaml と draft は流さない
+    assert qa.load_stories(d, ["nope"]) == []
+
+
+def test_env_entries_use_worker_host_and_touch_ports(tmp_path):
+    e = qa.env_entries(product(tmp_path), "staging", "host.docker.internal")
+    assert [x["url"] for x in e["entries"]] == ["http://host.docker.internal:13100/", "http://host.docker.internal:13000/"]
+    assert qa.env_entries(product(tmp_path / "x"), "prod", "h")["entries"] == []
+
+
+def test_validate_ok_and_errors(tmp_path):
+    assert qa.validate({"verdicts": [verdict()]}, [STORY], DEFS) == []
+    assert qa.validate({"verdicts": [verdict(decision="pass", defects=[])]}, [STORY], DEFS) == []
+    errs = qa.validate({"verdicts": [verdict(decision="maybe", confidence=2, steps=[{"n": 1, "result": "ok"}], defects=[])]}, [STORY], DEFS)
+    assert any("decision" in e for e in errs) and any("confidence" in e for e in errs) and any("2 歩" in e for e in errs)
+    assert any("defects が 1 件以上" in e for e in qa.validate({"verdicts": [verdict(defects=[])]}, [STORY], DEFS))
+    assert any("判定のないストーリー" in e for e in qa.validate({"verdicts": []}, [STORY], DEFS))
+    assert any("severity" in e for e in qa.validate({"verdicts": [verdict(defects=[{"title": "x", "actual": "y", "viewpoint": "flow"}])]}, [STORY], DEFS))
+    assert any("flags" in e for e in qa.validate({"verdicts": [verdict(flags=[{"viewpoint": "ui", "note": "x"}])]}, [STORY], DEFS))
+    # blocked は根拠がなくてもよい（確かめられなかった）
+    assert qa.validate({"verdicts": [verdict(decision="blocked", evidence=[], defects=[])]}, [STORY], DEFS) == []
+    # 根拠に挙げたスクリーンショットは out/ にあること
+    assert any("01-a.png" in e for e in qa.validate({"verdicts": [verdict(evidence=["01-a.png"])]}, [STORY], DEFS, tmp_path))
+
+
+def test_run_retries_once_and_returns_verdicts_with_known_gaps(tmp_path, monkeypatch):
+    d = product(tmp_path)
+    calls, seen = [], {}
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        seen["mcp"] = mcp_config
+        calls.append(text)
+        out = Path(cwd) / "out"
+        env = json.loads((Path(cwd) / "env.json").read_text())
+        assert env["accounts"] == [{"label": "本部", "value": "mock.headquarters.x"}]
+        if len(calls) == 1:
+            (out / "verdicts.yaml").write_text("verdicts: [{story_id: coach-replies}]\n")
+        else:
+            (out / "01-list.png").write_bytes(b"\x89PNG")
+            (out / "bad name.png").write_bytes(b"x")
+            (out / "verdicts.yaml").write_text(yaml.safe_dump({"verdicts": [verdict(evidence=["01-list.png"])]}, allow_unicode=True))
+        return sys.modules["agent_runner"].Result(output="", cost_usd=1.0, usage={"input_tokens": 10}, model="m", num_turns=3)
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)   # test_agent_runner が sys.modules を差し替えることがある
+    res = qa.run(d, {"release_id": "r1", "touchable": {"accounts": [{"label": "本部", "value": "mock.headquarters.x"}]}}, tmp_path / "o", DEFS)
+    assert res["ok"] and len(calls) == 2 and "崩れ" in calls[1]
+    assert res["files"] == ["01-list.png"] and (tmp_path / "o" / "01-list.png").is_file()
+    assert res["verdicts"][0]["known_gaps"] == STORY["known_gaps"] and res["cost_usd"] == 2.0 and res["release_id"] == "r1"
+    assert "coach-replies" in calls[0] and "host.docker.internal:13100" in calls[0]
+
+
+def test_run_without_stories_or_entries(tmp_path):
+    d = product(tmp_path, [])
+    assert not qa.run(d, {}, tmp_path / "o", DEFS)["ok"]
+    d2 = product(tmp_path / "b")
+    assert "入口" in qa.run(d2, {"env": "prod"}, tmp_path / "o", DEFS)["errors"][0]
+
+
+def test_rally_stories_load_if_present():
+    rally = Path(__file__).resolve().parents[3] / "rally"
+    if (rally / "specs" / "stories").is_dir():
+        ids = [s["id"] for s in qa.load_stories(rally)]
+        assert len(ids) >= 3
+        assert qa.env_entries(rally, "staging", "h")["entries"]
+
+
+def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
+    assert qa.relay_config(tmp_path, {}) is None
+    p = qa.relay_config(tmp_path, {"RUNNER_RELAY_URL": "http://dispatcher:8796/mcp", "RUNNER_RELAY_TOKEN": "t0k"})
+    cfg = json.loads(Path(p).read_text())["mcpServers"]["macrunner"]
+    assert cfg == {"type": "http", "url": "http://dispatcher:8796/mcp", "headers": {"Authorization": "Bearer t0k"}}
+    assert oct(Path(p).stat().st_mode & 0o777) == "0o600"
+    text = qa.prompt(DEFS, [STORY], {"entries": []}, {}, mobile=True)
+    assert "mcp__macrunner__" in text and '"RALLY_API_URL": "http://127.0.0.1:18080"' in text
+    assert "mcp__macrunner__" not in qa.prompt(DEFS, [STORY], {"entries": []}, {})
+    d = product(tmp_path / "p")
+    seen = {}
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        seen["mcp"] = mcp_config
+        (Path(cwd) / "out" / "verdicts.yaml").write_text(yaml.safe_dump({"verdicts": [verdict()]}, allow_unicode=True))
+        return sys.modules["agent_runner"].Result(output="")
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)
+    monkeypatch.setenv("RUNNER_RELAY_URL", "http://dispatcher:8796/mcp")
+    monkeypatch.setenv("RUNNER_RELAY_TOKEN", "t0k")
+    res = qa.run(d, {}, tmp_path / "o", DEFS)
+    assert res["ok"] and res["mobile"] and seen["mcp"].endswith(".mcp-relay.json")
