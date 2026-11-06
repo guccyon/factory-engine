@@ -477,11 +477,15 @@ events:
   plan.decided:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]
-    note: "ADR 0025・0026・0036。decision は ready / ask / escalate / split。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
+    note: "ADR 0025・0026・0036・0038。workflow はワークフローの宣言の要約（skip・deep・caps・start・after・handoff）、workflow_marks は決まりで直した印（mandatory_skip・cap_clamped・no_workflow など）。decision は ready / ask / escalate / split。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
   plan.serialized:
     source: control_plane
     required: [file, behind, hot, why]
     note: "ADR 0027 の 2。supervisor が投入の直前に、よく衝突するファイル（工程の信号 conflict_fix の束で、7 日に 3 回以上・解消の費用 $5 以上。CHANGELOG.md は除く）に触る見込みのタスクを、同じファイルに触る流れているチケット（behind）が終わるまで投入しなかった。見込みは Plan の expected_files とチケットの本文のパス。人の判断を待つ PR では並べない。dedupe は plan.serialized:<チケット>:<ファイル>:<behind>。factoryctl plan show に出る"
+  workflow.shadow:
+    source: control_plane
+    required: [kind, repo, issue, plan_id]
+    note: "ADR 0038 の順番 1（記録だけ。ラインの動きは変えない）。プランナーの宣言（Plan の workflow）と実績の差。kind=cap_hit は実績が宣言の上限を超えた（cap・declared・actual・action＝守らせていたら取った動き・declared_by_planner）、would_skip は飛ばす宣言のステップ（inspect・qa）のジョブが動いた（step・job_id）、would_wait は start: after の前のチケット（after）が開いているうちに投入した（files・why）。supervisor の workflow_shadow_step と enqueue_step が残す。dedupe は workflow.shadow:<cap|skip|wait>:<チケット>:<plan_id>[:<種類>]。factoryctl plan show と建設状況の日報に出る。上限に当たった事例はプランナーの入力（caps.md）に戻る"
   plan.asked:
     source: control_plane
     required: [plan_id, repo, issue, round, questions]
