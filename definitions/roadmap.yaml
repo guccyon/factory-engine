@@ -129,9 +129,9 @@ phases:
         ja: "夜間に無人で探索テストが回り、朝の報告に Defect と印が出た夜"
         measure: { db: { target: 3, sql: "select count(distinct date(created_at)) from events where name = 'qa.explore'" } }   # unattended。夜間の予算の枠に入れる。印は人が採点して Golden Set へ
       - { id: defect_metrics, ja: "Defect が「どの Release・どの変更・どこで見つけた・原因の工程・観点」つきで events に残り、日報に流出防止率と発見工程の分布が出る", measure: { manual: todo } }
-      - { id: quality_policy, ja: "Blueprint に品質方針の欄（アクセシビリティのレベル、扱うデータ、サポート対象の表、言葉の指針、S1 の条件）があり、rally の値が入っている", measure: { manual: todo } }   # 値は建設者が代理で仮置き。欄の型は definitions/quality_policy.yaml、rally は .factory-config/quality_policy.yaml
-      - { id: product_stage, ja: "製品の段階（development / launch / operating）を Blueprint に持ち、段階で出荷先と承認が決まる（#160 の SHIP_PROD_HOLD を置き換えた）", measure: { manual: todo } }   # ADR 0012 の拡張。段階の切り替えは人。表は definitions/product_stages.yaml、記録は events の product.stage_observed
-      - { id: ci_diagnose, ja: "PR ごとの依存・静的解析・秘密情報の診断が CI テンプレートで rally と factory-engine の両方に入り、shadow で結果が出ている", measure: { manual: todo } }
+      - { id: quality_policy, ja: "Blueprint に品質方針の欄（アクセシビリティのレベル、扱うデータ、サポート対象の表、言葉の指針、S1 の条件）があり、rally の値が入っている", measure: { manual: done } }   # 済み（2026-11-06）: 型は factory-engine #188、rally の値は rally #926（provisional: true のまま）。値は建設者が代理で仮置き。欄の型は definitions/quality_policy.yaml、rally は .factory-config/quality_policy.yaml
+      - { id: product_stage, ja: "製品の段階（development / launch / operating）を Blueprint に持ち、段階で出荷先と承認が決まる（#160 の SHIP_PROD_HOLD を置き換えた）", measure: { manual: done } }   # 済み（2026-11-06）: factory-engine #188（ship.py が段階で出荷先を決める）、rally #926（development を宣言）。 ADR 0012 の拡張。段階の切り替えは人。表は definitions/product_stages.yaml、記録は events の product.stage_observed
+      - { id: ci_diagnose, ja: "PR ごとの依存・静的解析・秘密情報の診断が CI テンプレートで rally と factory-engine の両方に入り、shadow で結果が出ている", measure: { manual: done } }   # 済み（2026-11-06）: テンプレートと factory-engine は #187、rally は rally #925。両方の PR で diagnose が continue-on-error で走り、結果が出ている
 
   - id: P5b
     ja: Operate
