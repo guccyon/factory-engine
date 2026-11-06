@@ -10,6 +10,9 @@
     split:    大きすぎる（ADR 0036 の 2）。タスクのまとまりを子のチケットとして起票し（窓口と同じ起票。依存のないものから factory:plan）、
               このチケットは factory:waiting-steps で待つ。子がすべて閉じたら advance_steps がこのチケットを閉じる
 
+着手できる判定（ready・split）では、型つきの上流の成果物（P4 の typed_upstream）として、要件（Requirements）と
+このタスクが増やす・変える・守るユーザーストーリーを artifacts（Requirements）に残し、Issue の本文の節に書く。後の役は本文を読む。
+
 判断の根拠（3 層・とらなかった経路・入力の版・当てた guard と印）は Plan と plan.decided に残し、経路ごとの結果と突き合わせて
 後で見返す（factoryctl plan show）。状態は制御プレーンの artifacts（Plan）と events（plan.*）に置く（ADR 0020）。
 定義は definitions/planner.yaml。
@@ -36,7 +39,13 @@ GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方�
             "oversized": "大きすぎる（切る基準に当たる）"}
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
                "design_after_implement": "実装の後にデザインの役がある", "no_size": "大きさの見積もりがない",
-               "split_after_design": "大きいので、画面が決まってから実装の手前で切る"}
+               "split_after_design": "大きいので、画面が決まってから実装の手前で切る", "no_requirements": "要件（受け入れ条件）がない",
+               "no_stories": "画面を含むのにユーザーストーリーの宣言がない", "unknown_story": "製品にないストーリーの id を落とした",
+               "story_exists": "増やすストーリーの id がもうあるので、変えるにした"}
+# definitions/planner.yaml の upstream と同じ値
+REQ_MARK, REQ_MARK_END = "<!-- factory-requirements:v1 -->", "<!-- /factory-requirements -->"
+STORY_ACTION_JA = {"add": "増やす", "change": "変える", "keep": "守る"}
+STORIES_DIR = "specs/stories/"
 SIZE_TABLE_DAYS = 60     # プランナーに渡す実績の表の期間（ADR 0036 の 1）
 LAYER_JA = {"db": "DB", "contract": "契約", "backend": "backend", "web": "Web", "mobile": "モバイル", "docs": "文書", "other": "その他"}
 OVERSIZE_JA = {"layers": "触る層が多い", "files": "変わる見込みのファイルが多い", "turns": "見込みのターンが多い"}
@@ -61,16 +70,23 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                "evidence": p.get("evidence") or [], "expected_files": p.get("expected_files") or [], "interpretation": p.get("interpretation"), "confidence": p.get("confidence"),
                "agent_ready": p.get("ready"), "versions": result.get("versions") or {},
                "size": p.get("size"), "oversize": result.get("oversize") or [], "tasks": result.get("tasks") or [], "phase": result.get("phase"),
+               "requirements": result.get("requirements"), "stories": result.get("stories") or [],
                "model": result.get("model"), "cost_usd": result.get("cost_usd"), "num_turns": result.get("num_turns")}
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Plan',%s,%s,'plan',%s) returning id",
                 (corr, job_id, Jsonb(payload)))
     pid = cur.fetchone()["id"]
+    req = result.get("requirements")
+    if isinstance(req, dict) and req.get("acceptance_criteria"):   # 型つきの上流の成果物（artifacts.yaml の Requirements）
+        cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Requirements',%s,%s,'plan',%s)",
+                    (corr, job_id, Jsonb({"repo": repo, "issue": issue, "plan_id": pid, **req, "stories": payload["stories"]})))
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.decided',%s,%s,%s)",
                 (corr, job_id, Jsonb({"plan_id": pid, "repo": repo, "issue": issue, "round": payload["round"], "decision": payload["decision"],
                                       "steps": payload["steps"], "efforts": [s.get("effort") for s in payload["step_details"] if isinstance(s, dict)],
                                       "design_scale": payload["design_scale"], "guards": payload["guards"], "advisories": payload["advisories"],
                                       "alternatives": len(payload["alternatives"]), "confidence": payload["confidence"],
                                       "size": payload["size"], "oversize": payload["oversize"], "tasks": len(payload["tasks"]), "phase": payload["phase"],
+                                      "requirements": bool(isinstance(req, dict) and req.get("acceptance_criteria")),
+                                      "stories": [{"action": x.get("action"), "id": x.get("id")} for x in payload["stories"] if isinstance(x, dict)],
                                       "versions": payload["versions"], "model": payload["model"], "cost_usd": payload["cost_usd"]})))
     return pid
 
@@ -85,6 +101,52 @@ def rationale(p: dict, steps: list[str]) -> list[str]:
     if alts:
         lines += ["", "とらなかった経路:"] + [f"- {path_ja(a.get('steps') or [])}: {a.get('why_not') or ''}" for a in alts]
     return lines
+
+
+def requirements_section(plan_id: int, req: dict | None, stories: list[dict]) -> str:
+    """Issue の本文に書く「要件とユーザーストーリー」の節（後の役が本文から読む）"""
+    lines = [REQ_MARK, "## 要件とユーザーストーリー（プランナー）", ""]
+    if req:
+        lines += ["受け入れ条件:"] + [f"- {a}" for a in req.get("acceptance_criteria") or []]
+        if req.get("non_goals"):
+            lines += ["", "やらないこと:"] + [f"- {a}" for a in req["non_goals"]]
+        if req.get("success_definition"):
+            lines += ["", f"できあがりの定義: {req['success_definition']}"]
+        lines.append("")
+    if stories:
+        lines.append("ユーザーストーリー:")
+        for st in stories:
+            head = f"- {STORY_ACTION_JA.get(st.get('action'), st.get('action'))} `{st.get('id')}`"
+            if st.get("action") == "add" and (st.get("title") or st.get("actor")):
+                head += f"（新規: {st.get('title') or ''}{'・' + st['actor'] if st.get('actor') else ''}）"
+            lines.append(f"{head}: {st.get('why') or ''}")
+        lines += ["", f"実装役へ: 増やす・変えるストーリーは、この変更と同じ PR で `{STORIES_DIR}<id>.yaml` に書く（既存のストーリーと actors.yaml の書き方に合わせる）。"
+                  "守るストーリーの流れは壊さない（QA 役が回帰で流す）。", ""]
+    lines += [f"<sub>Plan {plan_id}</sub>", REQ_MARK_END]
+    return "\n".join(lines)
+
+
+def replace_requirements(body: str, section: str) -> str:
+    pat = re.compile(re.escape(REQ_MARK) + r".*?" + re.escape(REQ_MARK_END), re.S)
+    if pat.search(body):
+        return pat.sub(lambda _: section, body, count=1)
+    return (body.rstrip() + "\n\n" if body.strip() else "") + section + "\n"
+
+
+def write_requirements(gh, repo: str, issue: int, plan_id: int, result: dict) -> bool:
+    """要件とストーリーを Issue の本文の節に書く（前の判定の節は置き換える）。出すものがなければ書かない"""
+    req, stories = result.get("requirements"), result.get("stories") or []
+    if not gh or not ((isinstance(req, dict) and req.get("acceptance_criteria")) or stories):
+        return False
+    it = gh("GET", f"repos/{repo}/issues/{issue}") or {}
+    gh("PATCH", f"repos/{repo}/issues/{issue}", {"body": replace_requirements(it.get("body") or "", requirements_section(plan_id, req, stories))})
+    return True
+
+
+def upstream_note(result: dict) -> str:
+    st = result.get("stories") or []
+    by = "、".join(f"{STORY_ACTION_JA.get(x.get('action'), x.get('action'))} `{x.get('id')}`" for x in st) or "なし"
+    return f"要件とユーザーストーリーを本文の「要件とユーザーストーリー（プランナー）」の節に書きました（ストーリー: {by}）。"
 
 
 def questions_comment(plan_id: int, round_: int, max_rounds: int, summary: str, questions: list[dict], guards: list[str]) -> str:
@@ -159,7 +221,7 @@ def split_tasks(cur, gh, repo: str, issue: int, corr: str, plan_id: int, title: 
         if t["key"] not in numbers:
             kind = desk_line.KIND_JA.get(t.get("kind"), t.get("kind"))
             body = "\n".join([f"#{issue}（{title}）が大きいので、プランナーが切ったタスクのまとまりの {t['key']}（{kind}）です。{t.get('summary') or ''}",
-                              "", f"もとのチケットの本文（画面の設計 UXSpec・受け入れ条件があればそれも）を正とし、このタスクではその範囲のうち下の「やること」だけを行います。"]
+                              "", "もとのチケットの本文（要件とユーザーストーリー・画面の設計 UXSpec・受け入れ条件があればそれも）を正とし、このタスクではその範囲のうち下の「やること」だけを行います。"]
                              + desk_line.task_sections(t, deps)
                              + ["", f"<sub>Plan {plan_id}・手間の見込み {desk_line.EFFORT_JA.get(t.get('effort'), t.get('effort'))}</sub>",
                                 f"<!-- factory:plan-split parent={issue} plan={plan_id} task={t['key']} -->"])
@@ -178,6 +240,8 @@ def split_tasks(cur, gh, repo: str, issue: int, corr: str, plan_id: int, title: 
 def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result: dict, swap_label, comment, gh=None, title: str = ""):
     decision, steps = result.get("decision"), [r for r in result.get("steps") or [] if r in ROLE_LABELS]
     p, guards, marks = result.get("plan") or {}, result.get("guards") or [], result.get("advisories") or []
+    wrote = decision in ("ready", "split") and bool(steps) and write_requirements(gh, repo, issue, plan_id, result)   # 子を切る前に書く（子は親の本文を正として読む）
+    note = [""] + [upstream_note(result)] if wrote else []
     if decision == "ready" and steps:
         if steps[0] == "design_system" and len(steps) > 1 and gh:   # デザインシステムの仕事は別のチケットにして、このチケットは待つ
             child = split_design_system(cur, gh, repo, issue, corr, plan_id, title, steps, p)
@@ -188,6 +252,7 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
             lead = ""
         body = [f"プランナー（ジョブ {job_id}）: 着手できます。経路は **{path_ja(steps)}** です。{lead}", "",
                 p.get("summary") or "", ""] + rationale(p, steps)
+        body += note
         if marks:
             body += ["", "見返すための印: " + _ja(marks)]
         comment(repo, issue, "\n".join(body + ["", f"<sub>Plan {plan_id}</sub>"]))
@@ -201,7 +266,7 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
                 f"見込み {sz.get('turns_band') or '-'}、変わる見込みのファイル {len(p.get('expected_files') or [])}）、{len(filed)} 件のタスクに切りました。"
                 "依存のないものからプランナーの着手判定に回ります。すべて閉じたら、このチケットを閉じます。", ""]
         body += [f"- #{f['number']} {f['title']}" + (f"（{' '.join(f'#{d}' for d in f['depends_on'])} の後）" if f["depends_on"] else "") for f in filed]
-        body += ["", p.get("summary") or "", "", f"見積もりの根拠: {sz.get('basis') or '-'}", "", f"<sub>Plan {plan_id}</sub>"]
+        body += ["", p.get("summary") or "", "", f"見積もりの根拠: {sz.get('basis') or '-'}"] + note + ["", f"<sub>Plan {plan_id}</sub>"]
         comment(repo, issue, "\n".join(body))
         return
     if decision == "ask":

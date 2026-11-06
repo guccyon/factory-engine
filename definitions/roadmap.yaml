@@ -90,7 +90,7 @@ phases:
     items:
       - { id: intake_clarify, ja: "intake / clarify の窓口と要求者ペルソナ", measure: { manual: done } }   # 窓口と 10 人のペルソナ。収束は clarify_3_rounds で測る
       - { id: design_system, ja: "製品にデザインシステム（トークン・状態つきの部品の一覧・画面の型）があり、新しいプロダクトでは開始時の段として工場が作る", measure: { manual: todo } }   # ADR 0025 の完了条件 0（2026-10-31 オーナー決定）
-      - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff / UserStory と Ticket の生産", measure: { manual: todo } }   # UserStory の型と最初の 3 本は P5a の user_story で先に入れた（2026-11-05 オーナー）。ここではプランナーの出力にストーリー（増やす・変える・守る）を加える
+      - { id: typed_upstream, ja: "Requirements / UXSpec / ADR / ContractDiff / UserStory と Ticket の生産", measure: { manual: todo } }   # UserStory の型と最初の 3 本は P5a の user_story で先に入れた（2026-11-05 オーナー）。プランナーの出力に Requirements とストーリー（増やす・変える・守る）を加えた（planner.yaml の upstream）。UXSpec はデザイナー役が出す。残りは ADR / ContractDiff と、実際のチケットで通した確認
       - { id: opportunity_to_ticket, ja: "テーマ 1 つから人が触らずに Requirements と段の束（依存つき）が出る", measure: { manual: todo } }   # ADR 0025 の完了条件 1
       - { id: design_variants, ja: "画面を含む段は要素と振る舞いが決まった UXSpec を持って実装に流れ、案はデザイン検査役が承認する（新しい画面・ブランド・低確信だけ人）", measure: { manual: todo } }   # ADR 0025 の 2・3
       - { id: consult_desk, ja: "外（顧客の Claude Desktop など）から窓口の API・MCP でプランナーに曖昧な依頼を壁打ちし、確定した依頼がタスクのまとまりになって指定の優先度でラインに入った", measure: { manual: todo } }   # ADR 0030 の順番 1〜3。何を流すかは外が決める。順番 1（API・会話の記録・トークン・明確な指示）と順番 2（相談役の往復・タスクのまとまりの下書き・確認 1 回で起票）・順番 3（stdio の MCP、desk-mcp/）は済み。実際の依頼で 1 本通したら done

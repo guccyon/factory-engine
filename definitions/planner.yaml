@@ -67,6 +67,10 @@ advisories:                          # 経路は変えず、見返すための�
   design_after_implement: "実装の後にデザインの役がある"
   no_size: "実装役を通すのに大きさの見積もり（size）がない"
   split_after_design: "大きいが、実装役の前にデザインの役があるので、画面が決まってから実装の手前で切る（ADR 0036 の 3）"
+  no_requirements: "着手できるのに要件（受け入れ条件）がない"
+  no_stories: "画面を含む変更なのに、増やす・変える・守るユーザーストーリーがない"
+  unknown_story: "変える・守るとしたストーリーの id が製品の specs/stories/ にない（その宣言は落とす）"
+  story_exists: "増やすとしたストーリーの id がもうある（変えるとして扱う）"
 
 asking:
   max_rounds: 2                      # 起票者への問いは 2 回まで。3 回目の判定でも決まらなければ人へ
@@ -89,6 +93,26 @@ planner:
     - "design_system の後の implement は、正本のファイルを置くこととテーマ・基本の部品を合わせること以外の実装があるときだけ入れる（それは design_system の仕事の中で実装役が行う）"
     - "経路に implement があれば、実装役に回す仕事の大きさ（size）を見積もる。sizes.md の実績の表で、似た層の組の過去のチケットのファイル数とターンを見て帯を選ぶ（勘で選ばない）"
     - "大きさが切る基準に当たるなら、タスクのまとまりに切る（tasks）。1 回の実装でターン上限に当たる大きさのまま回さない（ADR 0036）"
+    - "着手できるなら、要件（requirements）を書く。受け入れ条件はチケットに書いてあることを、利用者から見て確かめられる文に整える（中身を足さない）"
+    - "着手できるなら、このタスクがどのユーザーストーリーを増やす・変える・守るか（stories）を書く。製品の specs/stories/ を読み、既存の id はそのまま使う"
+
+# 型つきの上流の成果物（P4 の typed_upstream。ADR 0025 の E5、ADR 0028 のユーザーストーリー）
+# プランナーは着手できると決めたとき（ready・split）に、要件（artifacts.yaml の Requirements）と、
+# このタスクが触るユーザーストーリーの宣言を出す。dispatcher が Requirements として残し、Issue の本文の節（markers の間）に書く。
+# 後の役（プロダクトデザイナー・実装役）は Issue の本文を読むので、この節が受け入れ条件とストーリーを渡す。
+# 増やす・変えるストーリーのファイル（specs/stories/<id>.yaml）は実装役が同じ PR で書く（プランナーは製品を書き換えない）。
+# 守るストーリーは QA 役が回帰で流す候補（ADR 0028）。実装の手前の判定（phase=implement）では出し直さない（最初の判定のものを使う）
+upstream:
+  requirements:
+    required: [acceptance_criteria, non_goals, success_definition]   # artifacts.yaml の Requirements と同じ
+    max_acceptance: 10
+  story_actions:                     # ストーリーへの作用（ADR 0028「タスクは どのストーリーを増やす・変える・守るか を宣言する」）
+    add: "新しい利用者の流れができる。ストーリーを specs/stories/ に足す（実装役が同じ PR で書く）"
+    change: "既存のストーリーの流れ（steps・exit・must_not）が変わる。実装役が同じ PR で直す"
+    keep: "流れは変えないが、この変更で壊してはいけない（QA 役が回帰で流す）"
+  max_stories: 6
+  stories_dir: specs/stories/        # definitions/user_story.yaml の location.dir
+  markers: ["<!-- factory-requirements:v1 -->", "<!-- /factory-requirements -->"]
 
 # 大きさの見積もりと、結果との突き合わせ（ADR 0036）。数値は仮置き（2026-11-05 オーナー承認。値は運用パラメータとして工場が調整してよい）
 # layers・split（実績の判定と、プランナーの見積もりに当てる基準）・bands・pass_lines。切ったタスクの型は definitions/desk.yaml の task_kinds（窓口と同じ）。

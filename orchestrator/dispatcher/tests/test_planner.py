@@ -33,6 +33,23 @@ def test_constants_match_definitions():
     assert pn.ROLE_JA == {k: v["ja"] for k, v in DEFS["roles"].items()}
     assert set(pn.GUARD_JA) == set(DEFS["guards"]) and set(pn.ADVISORY_JA) == set(DEFS["advisories"])
     assert (pn.MAX_ROUNDS, pn.MARKER) == (DEFS["asking"]["max_rounds"], DEFS["asking"]["answer_marker"])
+    u = DEFS["upstream"]
+    assert [pn.REQ_MARK, pn.REQ_MARK_END] == u["markers"] and set(pn.STORY_ACTION_JA) == set(u["story_actions"]) and pn.STORIES_DIR == u["stories_dir"]
+
+
+def test_requirements_section_replaces_the_previous_one():
+    req = {"acceptance_criteria": ["通知が届く"], "non_goals": ["メール"], "success_definition": "届く"}
+    st = [{"action": "add", "id": "student-gets-reminder", "why": "新しい流れ", "title": "生徒が前日に知らせを受け取れる", "actor": "student"},
+          {"action": "keep", "id": "coach-replies", "why": "隣の流れ"}]
+    sec = pn.requirements_section(3, req, st)
+    assert sec.startswith(pn.REQ_MARK) and sec.endswith(pn.REQ_MARK_END) and "- 通知が届く" in sec and "やらないこと:" in sec
+    assert "- 増やす `student-gets-reminder`（新規: 生徒が前日に知らせを受け取れる・student）: 新しい流れ" in sec and "- 守る `coach-replies`: 隣の流れ" in sec
+    assert "specs/stories/<id>.yaml" in sec
+    body = pn.replace_requirements("本文", sec)
+    assert body.startswith("本文\n\n") and body.count(pn.REQ_MARK) == 1
+    again = pn.replace_requirements(body + "\n<!-- factory-uxspec:v1 -->x<!-- /factory-uxspec -->", pn.requirements_section(4, req, []))
+    assert again.count(pn.REQ_MARK) == 1 and "Plan 4" in again and "Plan 3" not in again and "factory-uxspec" in again
+    assert "ユーザーストーリー:" not in pn.requirements_section(5, req, [])
 
 
 def test_questions_comment_has_marker_and_options():
@@ -276,3 +293,48 @@ def test_pre_implement_only_once_and_parent_deps_carry(cur):
     assert "依存: #9" in gh.posts[0]["body"] and "依存: #9 #41" in gh.posts[1]["body"]
     assert gh.posts[0]["labels"] == ["factory:desk-waiting"]
     assert not pn.wants_pre_implement(cur, CORR)   # 実装の手前の判定は 1 度だけ
+
+
+class BodyGH:
+    def __init__(self, body="もとの本文"):
+        self.body, self.patches = body, []
+
+    def __call__(self, method, path, body=None):
+        if method == "GET" and path.endswith(f"/issues/{ISSUE}"):
+            return {"body": self.body, "labels": []}
+        if method == "PATCH":
+            self.patches.append(body)
+            self.body = body["body"]
+        return {}
+
+
+@needs_db
+def test_ready_records_requirements_and_writes_the_section(cur):
+    c, gh = Calls(), BodyGH()
+    r = res(steps=["ui_design", "implement"])
+    r["requirements"] = {"acceptance_criteria": ["通知が届く"], "non_goals": [], "success_definition": "届く"}
+    r["stories"] = [{"action": "keep", "id": "coach-replies", "why": "隣の流れ"}]
+    pid = run(cur, c, r, gh)
+    assert gh.body.startswith("もとの本文\n\n" + pn.REQ_MARK) and "- 通知が届く" in gh.body and "守る `coach-replies`" in gh.body
+    assert "本文の「要件とユーザーストーリー（プランナー）」の節に書きました（ストーリー: 守る `coach-replies`）" in c.comments[0]
+    cur.execute("select payload from artifacts where type='Requirements'")
+    [a] = [x["payload"] for x in cur.fetchall()]
+    assert (a["plan_id"], a["acceptance_criteria"], a["stories"][0]["id"]) == (pid, ["通知が届く"], "coach-replies")
+    cur.execute("select payload from events where name='plan.decided'")
+    ev = cur.fetchone()["payload"]
+    assert ev["requirements"] is True and ev["stories"] == [{"action": "keep", "id": "coach-replies"}]
+    # 判定し直したら節を置き換える（2 つにしない）
+    r["stories"] = []
+    run(cur, c, r, gh)
+    assert gh.body.count(pn.REQ_MARK) == 1 and "coach-replies" not in gh.body and len(gh.patches) == 2
+
+
+@needs_db
+def test_ask_does_not_write_requirements(cur):
+    c, gh = Calls(), BodyGH()
+    r = res(decision="ask", questions=Q)
+    r["requirements"] = None
+    run(cur, c, r, gh)
+    assert gh.patches == []
+    cur.execute("select count(*) as n from artifacts where type='Requirements'")
+    assert cur.fetchone()["n"] == 0

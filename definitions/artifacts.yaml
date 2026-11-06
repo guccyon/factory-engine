@@ -36,6 +36,8 @@ types:
   Requirements:
     stage: define
     required: [acceptance_criteria, non_goals, success_definition]
+    optional: [stories]
+    note: "P4 の typed_upstream。プランナーが着手できると決めたときに出し、dispatcher が artifacts（produced_by plan）に残して Issue の本文の節に書く。stories は このタスクが増やす（add）・変える（change）・守る（keep）ユーザーストーリーの宣言（id は製品の specs/stories/。形は definitions/planner.yaml の upstream）"
   Ticket:
     stage: design
     required: [title, scope, acceptance_criteria, bounded_context]
@@ -132,7 +134,7 @@ types:
 # 補助の型（ステージ表に出てくるもの）
 auxiliary_types:
   Rejection:        { stage: triage, required: [request, reason] }
-  UserStory:        { stage: define, required: [type, id, title, actor, goal, reader, entry, exit, steps, must_not] }   # ADR 0028。利用者の流れ。形は definitions/user_story.yaml、値は製品の specs/stories/。QA 役がシナリオに落として流す。プランナーの出力に加えるのは P4 の typed_upstream
+  UserStory:        { stage: define, required: [type, id, title, actor, goal, reader, entry, exit, steps, must_not] }   # ADR 0028。利用者の流れ。形は definitions/user_story.yaml、値は製品の specs/stories/。QA 役がシナリオに落として流す。タスクが増やす・変える・守るストーリーはプランナーが Requirements の stories で宣言する（P4 の typed_upstream）
   UXSpec:           { stage: design, required: [screens, states, design_system_constraints, design_system_gaps, uxspec, files, round] }   # ADR 0025。デザイナー役の案 1 回分。uxspec は definitions/ui_design.yaml の形、files は案のファイルのオブジェクトストアのキー
   DesignVerdict:    { stage: design, required: [design_artifact_id, round, decision, inspector_decision, chosen_variant, findings, evidence, interpretation, score, decided_by] }   # ADR 0025。デザイン検査役の判断（approve・revise・human）を judge と同じ 3 層で
   ADR:              { stage: design, required: [title, status, context, decision, alternatives, consequences] }
