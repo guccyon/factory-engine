@@ -59,5 +59,8 @@ steps:
     tier: tier-judge
   committee_weekly:           # 知見の委員会の週 1 の定例の議長（core-gates/committee_weekly.py。材料の写しを読むだけ。ADR 0024）
     tier: tier-judge
+  qa:                         # QA 役（core-gates/qa.py。触れる環境にユーザーストーリーを流し、ストーリーごとに Verdict を返す。製品は読むだけ。ADR 0028 の決定 2）
+    tier: tier-judge
+    mode: agentic
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge

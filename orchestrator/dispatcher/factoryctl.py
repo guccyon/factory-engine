@@ -49,6 +49,11 @@
   factoryctl env up <repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]   # 版がなければ未 Release の PR から切る。--fresh は DB を空にしてシードから入れ直す
   factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
 
+QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー（specs/stories/）を流し、ストーリーごとに Verdict を出す:
+  factoryctl qa run <repo> [--stories id,id] [--env staging] [--priority p0|p1|p2|p3] [--through-pause] [--by ..]
+      # 製品の固定 Issue（factory:qa）に積む。--stories を省けば active な全部（上限 6）。--through-pause はラインの一時停止の間もこれだけ流す
+  factoryctl qa show <repo> [--limit 10]                     # 最近の判定
+
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
   factoryctl desk token list
@@ -131,7 +136,7 @@ import swap
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult")
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa")
 
 
 def carried_input(cur, job_id: int, kind: str) -> dict:
@@ -717,6 +722,45 @@ def restricted_cmd(cur, argv):
         return 2
 
 
+def qa_cmd(cur, argv) -> int:
+    """factoryctl qa run|show（ADR 0028 の決定 2）"""
+    import qa_line
+    sub = argv[2] if len(argv) > 2 else ""
+    repo = argv[3] if len(argv) > 3 else ""
+    if sub not in ("run", "show") or "/" not in repo:
+        print("factoryctl qa run|show <owner/repo> ..."); return 2
+    if sub == "show":
+        rows = qa_line.latest(cur, repo, int(opt(argv, "--limit", "10")))
+        for r in rows:
+            print(f"{r['at']:%m-%d %H:%M} job {r['job_id']} {r.get('release_id') or '-'} {r['story_id']}: {r['decision']}"
+                  f"（確信度 {r.get('confidence')}・Defect {r.get('defects')}・印 {r.get('flags')}）")
+        if not rows:
+            print("判定の記録がない（factoryctl qa run で流す）")
+        return 0 if rows else 1
+    level = opt(argv, "--priority", "p1")
+    if level not in ops.LEVELS:
+        print(f"--priority は {'・'.join(ops.LEVELS)} のどれか"); return 2
+    import ghapi
+
+    def gh(method, path, body=None):
+        return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+    stories = [x for x in (opt(argv, "--stories", "") or "").split(",") if x]
+    try:
+        got = qa_line.enqueue(cur, gh, repo, env=opt(argv, "--env", "staging"), stories=stories, by=opt(argv, "--by", "factoryctl"), priority=level)
+    except psycopg.errors.UniqueViolation:
+        print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
+    print(f"enqueued job {got['job_id']}（QA 役・{repo}#{got['issue']}・版 {got['release_id'] or '不明'}・{level}）")
+    if not got["release_id"]:
+        print("  ※ 環境に出ている版の記録がない。先に factoryctl env up で触れる環境を立てる")
+    if drain.active(cur):
+        if "--through-pause" in argv:
+            drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "QA の判定（factoryctl qa run --through-pause）")
+            print("  ラインは一時停止中。このジョブだけ流す（drain allow）")
+        else:
+            print("  ラインは一時停止中なので、再開するまで流れない（このジョブだけ流すなら --through-pause を付けて積み直す）")
+    return 0
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "version":   # サービスごとの版（ADR 0031）。DB を使わない。--expect <コミット> で、ずれたら終了コード 1
         import version
@@ -965,6 +1009,8 @@ def main(argv):
         t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
         print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")
         return 0 if t else 1
+    elif cmd == "qa":
+        return qa_cmd(cur, argv)
     elif cmd == "swap":
         return swap_cmd(cur, argv)
     elif cmd == "desk":

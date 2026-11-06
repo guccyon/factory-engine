@@ -36,6 +36,8 @@ COPY --chown=worker:worker design_system.sh /usr/local/bin/design_system.sh
 COPY --chown=worker:worker plan.sh /usr/local/bin/plan.sh
 # 窓口の相談役のジョブ（ADR 0030 の 3。依頼の壁打ちとタスクのまとまりの下書き）
 COPY --chown=worker:worker desk_consult.sh /usr/local/bin/desk_consult.sh
+# QA 役（ADR 0028 の決定 2）。画面を動かすので factory-worker:design の上で動かす（playwright-core は Dockerfile.design）
+COPY --chown=worker:worker qa.sh /usr/local/bin/qa.sh
 # 知見の委員会のジョブ（ADR 0024）
 COPY --chown=worker:worker committee_review.sh /usr/local/bin/committee_review.sh
 COPY --chown=worker:worker committee_weekly.sh /usr/local/bin/committee_weekly.sh

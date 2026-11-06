@@ -123,7 +123,7 @@ phases:
         measure: { github_files: { repo: guccyon/rally, path: specs/stories, where: { type: UserStory }, target: 3 } }   # 型は definitions/user_story.yaml。2026-11-05 オーナー: typed_upstream を待たずに型と 3 本を先に入れる（プランナーの出力への組み込みは P4 の typed_upstream）。最初の 3 本: コーチが新しい相談に返事する（rally #895）、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う
       - id: qa_verdict
         ja: "QA 役が Release 候補にシナリオを流し Verdict（judge と同じ型）を出し、hold なら Defect を起票して差し戻した実績"
-        measure: { db: { target: 5, sql: "select count(*) from events where name = 'qa.verdict'" } }
+        measure: { db: { target: 5, sql: "select count(*) from events where name = 'qa.verdict'" } }   # 2026-11-06 QA 役（definitions/qa.yaml、factoryctl qa run）。Web の触れる環境で流す。Mac ランナーの中継は one_orchestrator
       - { id: scenario_time, ja: "時間をまたぐシナリオ（契約 → 再起動 → 翌日の再ログイン → 契約が残っている）が 1 本回る", measure: { manual: todo } }   # 環境の再起動と時計の進めを QA が起こせること
       - id: nightly_explore
         ja: "夜間に無人で探索テストが回り、朝の報告に Defect と印が出た夜"

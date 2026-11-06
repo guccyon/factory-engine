@@ -135,6 +135,7 @@ auxiliary_types:
   UserStory:        { stage: define, required: [type, id, title, actor, goal, reader, entry, exit, steps, must_not] }   # ADR 0028。利用者の流れ。形は definitions/user_story.yaml、値は製品の specs/stories/。QA 役がシナリオに落として流す。プランナーの出力に加えるのは P4 の typed_upstream
   UXSpec:           { stage: design, required: [screens, states, design_system_constraints, design_system_gaps, uxspec, files, round] }   # ADR 0025。デザイナー役の案 1 回分。uxspec は definitions/ui_design.yaml の形、files は案のファイルのオブジェクトストアのキー
   DesignVerdict:    { stage: design, required: [design_artifact_id, round, decision, inspector_decision, chosen_variant, findings, evidence, interpretation, score, decided_by] }   # ADR 0025。デザイン検査役の判断（approve・revise・human）を judge と同じ 3 層で
+  QAVerdict:        { stage: verify, required: [repo, release_id, env, story_id, decision, confidence, steps, evidence, interpretation, defects, flags] }   # ADR 0028 の決定 2。QA 役がストーリー 1 本を流した判断（pass・hold・blocked）を judge と同じ 3 層で。形は definitions/qa.yaml
   ADR:              { stage: design, required: [title, status, context, decision, alternatives, consequences] }
   ContractDiff:     { stage: design, required: [contract, kind, compat_impact] }
   SchemaDiff:       { stage: design, required: [tables, kind, destructive] }
