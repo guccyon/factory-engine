@@ -86,15 +86,23 @@ def test_stage_copies_materials(tmp_path):
     (repo / "docs" / "adr").mkdir(parents=True)
     (repo / "docs" / "adr" / "0001.md").write_text("# ADR\n")
     (repo / "CLAUDE.md").write_text("決まり\n")
+    (repo / "apps" / "admin-web" / "src").mkdir(parents=True)
+    (repo / "apps" / "admin-web" / "src" / "page.tsx").write_text("x")
+    (repo / "apps" / "admin-web" / "node_modules").mkdir()
+    (repo / "apps" / "admin-web" / "node_modules" / "dep.js").write_text("x")
     root = tmp_path / "root"
     root.mkdir()
     inp = {"product": "guccyon/rally", "wanted": {"level": "p1"}, "previous_draft": {"tasks": [T("t1")]},
            "messages": [{"role": "requester", "body": "通知を先に", "at": "t"}, {"role": "planner", "kind": "question", "body": "どれ？", "options": ["a"]}],
-           "tickets": [{"ref": "guccyon/rally#5", "title": "x", "state": "planned", "level": "p2", "waiting_on": ["guccyon/rally#4"]}]}
+           "tickets": [{"ref": "guccyon/rally#5", "title": "x", "state": "planned", "level": "p2", "waiting_on": ["guccyon/rally#4"]}],
+           "recently_closed": [{"ref": "guccyon/rally#3", "title": "済んだ", "closed_at": "2026-11-06"}]}
     dc.stage(root, inp, repo, [{"number": 9, "title": "開いている", "labels": ["factory:planned"]}])
     conv = (root / "conversation.md").read_text()
     assert "通知を先に" in conv and "窓口（相談役）" in conv and "- a" in conv and "p1" in conv
     assert "依存待ち guccyon/rally#4" in (root / "tickets.md").read_text()
+    assert "guccyon/rally#3 [closed 2026-11-06] 済んだ" in (root / "tickets.md").read_text()
+    tree = (root / "app_tree.md").read_text()
+    assert "apps/admin-web/src/page.tsx" in tree and "node_modules" not in tree and "glossary.yaml" not in tree
     assert "#9 [factory:planned] 開いている" in (root / "open_issues.md").read_text()
     assert (root / "specs" / "glossary.yaml").exists() and (root / "docs" / "adr" / "0001.md").exists() and (root / "CLAUDE.md").exists()
     assert json.loads((root / "previous_draft.json").read_text())["tasks"][0]["key"] == "t1"

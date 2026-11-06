@@ -75,7 +75,11 @@ def consult_input(cur, c: dict) -> dict:
                 "order by priority desc, created_at limit 80")
     tickets = [{"ref": t["source_ref"], "title": t["title"], "state": t["state"], "level": ops.level_of(t["priority"]),
                 "waiting_on": t["waiting_on"]} for t in cur.fetchall()]
-    return {"conversation_id": c["id"], "product": c["product"], "wanted": c["wanted"] or {},
+    # 最近閉じたチケット（済んだ仕事を依存や「待ち」に挙げないため。2026-11-06 相談 1 で、閉じた #455 を待つ下書きが出た）
+    cur.execute("select source_ref, title, updated_at from tickets where state='closed' and repo=%s and updated_at > now() - interval '30 days' "
+                "order by updated_at desc limit 60", (c["product"],))
+    closed = [{"ref": t["source_ref"], "title": t["title"], "closed_at": t["updated_at"].date().isoformat()} for t in cur.fetchall()]
+    return {"conversation_id": c["id"], "product": c["product"], "wanted": c["wanted"] or {}, "recently_closed": closed,
             "messages": [{k: m.get(k) for k in ("author", "role", "kind", "body", "at", "options")} for m in msgs],
             "questions_asked": questions_asked(msgs), "force_draft": False, "tickets": tickets,
             "previous_draft": ({k: d["payload"].get(k) for k in ("request", "tasks", "unresolved", "overlaps")} if d else None)}
