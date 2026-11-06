@@ -117,6 +117,9 @@ def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
     assert oct(Path(p).stat().st_mode & 0o777) == "0o600"
     text = qa.prompt(DEFS, [STORY], {"entries": []}, {}, mobile=True)
     assert "mcp__macrunner__" in text and '"RALLY_API_URL": "http://127.0.0.1:18080"' in text
+    assert "ref は省く" in text
+    pinned = qa.prompt(DEFS, [STORY], {"entries": []}, {"commit": "abc123", "release_id": "guccyon/rally@0.9.0"}, mobile=True)
+    assert "ref: abc123" in pinned
     assert "mcp__macrunner__" not in qa.prompt(DEFS, [STORY], {"entries": []}, {})
     d = product(tmp_path / "p")
     seen = {}
