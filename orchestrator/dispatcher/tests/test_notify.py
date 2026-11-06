@@ -47,12 +47,12 @@ def test_parse_rejects_problems_together():
     bad = {"operated_by": "x",
            "connections": {"a": {"party": "provider", "via": "slack_webhook", "secret": "https://hooks.slack.com/services/T/B/x"},
                            "b": {"party": "business_owner", "via": "slack_app", "secret": "aws-sm:x"}},
-           "destinations": {"d1": {"connection": "a", "channel": "#x"}, "d2": {"connection": "nope"}, "d3": {"connection": "b", "channel": "#gen1"}},
+           "destinations": {"d1": {"connection": "a", "channel": "#x"}, "d2": {"connection": "nope"}, "d3": {"connection": "b", "channel": "factory gen1"}},
            "routes": {"request.inbox": [{"to": "d1"}], "report.unknown": []}}
     with pytest.raises(notify.ConfigError) as e:
         notify.parse(bad)
     text = " ".join(e.value.problems)
-    for want in ("operated_by", "値そのもの", "aws-sm はまだ", "チャンネルの ID", "Webhook は URL ごと", "連携 'nope'", "出せない種類", "report.unknown"):
+    for want in ("operated_by", "値そのもの", "aws-sm はまだ", "チャンネルの名前", "Webhook は URL ごと", "連携 'nope'", "出せない種類", "report.unknown"):
         assert want in text, want
 
 
@@ -194,6 +194,11 @@ class FakeSlack:
 
             def do_GET(self):
                 fake.calls.append(("GET", self.path, self.headers.get("Authorization"), b""))
+                if self.path.startswith("/conversations.list"):
+                    first = "cursor=&" in self.path or self.path.endswith("cursor=")
+                    self._reply({"ok": True, "channels": [{"id": "C000OTHER", "name": "general"}] if first else [{"id": "C0GEN1XYZ", "name": "factory-gen1"}],
+                                 "response_metadata": {"next_cursor": "n2" if first else ""}})
+                    return
                 self._reply({"ok": True, "upload_url": f"http://127.0.0.1:{fake.port}/upload/F1", "file_id": "F1"})
 
             def do_POST(self):
@@ -249,5 +254,24 @@ def test_slack_app_fails_on_ok_false_and_skips_without_token(monkeypatch):
         monkeypatch.setenv("SLACK_BOT_TOKEN_TEST", "xoxb-test")
         with pytest.raises(RuntimeError, match="not_in_channel"):
             notify.post(d, "x")
+    finally:
+        fake.close()
+
+
+def test_slack_app_resolves_channel_name_once(monkeypatch):
+    fake = FakeSlack()
+    monkeypatch.setattr(notify, "SLACK_API", f"http://127.0.0.1:{fake.port}")
+    monkeypatch.setattr(notify, "_channels", {})
+    monkeypatch.setenv("SLACK_BOT_TOKEN_TEST", "xoxb-test")
+    doc = {**APP, "destinations": {"gen1_reports": {"connection": "app", "channel": "#factory-gen1"}}}
+    d = notify.parse(doc).destinations["gen1_reports"]
+    try:
+        att = notify.Attachment("a.html", b"x", "t")
+        assert notify.post(d, "本文", att) and notify.post(d, "本文", att)
+        lists = [c for c in fake.calls if c[1].startswith("/conversations.list")]
+        assert len(lists) == 2                                                  # 2 ページ目で見つかり、2 回目は引き直さない
+        done = [json.loads(c[3]) for c in fake.calls if c[1] == "/files.completeUploadExternal"]
+        assert [x["channel_id"] for x in done] == ["C0GEN1XYZ", "C0GEN1XYZ"]
+        assert notify.channel_id("xoxb-test", "C0123ABCD") == "C0123ABCD"
     finally:
         fake.close()

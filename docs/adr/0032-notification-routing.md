@@ -201,7 +201,7 @@ routes:                      # 書かない種類は operated_by から決まる
 初めて Slack に届いた定期レポートは全文がテキストで展開され、情報が多くて読めなかった（オーナー 2026-11-06「artifact に届くもののように HTML で可視化されたものが良いので報告書を添付する方式に。添付された報告書と三行サマリくらいのひとことコメントを投稿してほしい」）。
 
 - 定期レポートは、報告書（1 枚で完結する HTML。外部の CSS・JS を読まない）を添付し、本文は見出しと数行の要約だけにする。報告書の描き方は `report_page.py`（文面と同じく種類を知らず型だけを見る）、要約の行は組み立てが `Report.summary` に詰める（`report.built` にも残る）
-- Incoming Webhook はファイルを添付できないので、順番 5 の `slack_app`（ボットのトークン、`chat:write`・`files:write`）を前倒しで使えるようにする。添付は `files.getUploadURLExternal` → 送り先へ上げる → `files.completeUploadExternal`（`initial_comment` に本文）。チャンネルは ID で書く（添付の API が名前を受けないため。決定 1 の「チャンネル名か ID」を ID に絞る）
+- Incoming Webhook はファイルを添付できないので、順番 5 の `slack_app`（ボットのトークン、`chat:write`・`files:write`・`channels:read`）を前倒しで使えるようにする。添付は `files.getUploadURLExternal` → 送り先へ上げる → `files.completeUploadExternal`（`initial_comment` に本文）。チャンネルは名前か ID で書く。添付の API は ID しか受けないので、名前なら `conversations.list` で ID に引く（ボットに `channels:read`。オーナー 2026-11-06「チャンネル名は設定値としてリポジトリに入れてよい」）
 - `slack_webhook` の宛先へは今までどおり全文を流す（添付できないため）。受信トレイ（`request.inbox`）は `slack_app` の宛先なら `chat.postMessage` で本文を送る
 - 試し送りは `factoryctl report send <種類|all> [--date] [--to]`。今のコードで組み立て直して送り、`notify.sent` に `manual: true` で残す（毎朝の送信には数えない）。`--html` は送らずに報告書を書き出す
 - 報告書の項目と要約の中身は仮置きのまま。中身を決めるタスクで組み立てと一緒に見直す

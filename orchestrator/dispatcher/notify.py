@@ -35,7 +35,8 @@ PARTIES = ("provider", "business_owner")                    # 提供元 / 事業
 VIAS = ("slack_webhook", "slack_app", "github-issue", "log")
 READY_VIAS = ("slack_webhook", "slack_app", "github-issue", "log")   # slack_app はレポートの報告書を添付するため前倒し（2026-11-06）
 SLACK_API = ENV.get("SLACK_API_URL", "https://slack.com/api")
-CHANNEL_ID = re.compile(r"^[CG][A-Z0-9]{6,}$")              # ファイルの添付（files.completeUploadExternal）はチャンネル名を受けないので ID で書く
+CHANNEL_ID = re.compile(r"^[CG][A-Z0-9]{6,}$")              # チャンネルの ID。名前（#factory-gen1）で書けば conversations.list で ID に引く
+CHANNEL_NAME = re.compile(r"^#?[a-z0-9][a-z0-9_\-]{0,79}$")
 SECRET_STORES = ("env",)                                    # aws-sm（AWS Secrets Manager）などは後で足す
 SECRET_REF = re.compile(r"^([a-z][a-z0-9-]*):(.+)$")
 NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
@@ -141,8 +142,8 @@ def parse(doc) -> Config:
             continue
         if c.get("via") == "slack_app" and not d.get("channel"):
             p.append(f"宛先 {n}: Slack アプリの連携には channel が要る")
-        elif c.get("via") == "slack_app" and not CHANNEL_ID.match(str(d.get("channel"))):
-            p.append(f"宛先 {n}: channel はチャンネルの ID（C で始まる。チャンネルの詳細の下にある）で書く（{d.get('channel')!r}）")
+        elif c.get("via") == "slack_app" and not (CHANNEL_ID.match(str(d.get("channel"))) or CHANNEL_NAME.match(str(d.get("channel")))):
+            p.append(f"宛先 {n}: channel はチャンネルの名前（#factory-gen1）か ID（C で始まる）で書く（{d.get('channel')!r}）")
         if c.get("via") == "slack_webhook" and d.get("channel"):
             p.append(f"宛先 {n}: Webhook は URL ごとにチャンネルが決まるので channel を書かない")
         q = str(d.get("quiet") or "")
@@ -240,6 +241,34 @@ def _slack(token: str, method: str, data: dict) -> dict:
     return body
 
 
+_channels: dict[tuple[str, str], str] = {}   # (トークンの指紋, 名前) → ID
+
+
+def channel_id(token: str, channel: str) -> str:
+    """チャンネルの名前を ID に引く（ファイルの添付の API は ID しか受けない）。ID ならそのまま。ボットに channels:read が要る"""
+    if CHANNEL_ID.match(channel):
+        return channel
+    name, key = channel.lstrip("#"), (hashlib.sha256(token.encode()).hexdigest()[:12], channel.lstrip("#"))
+    if key in _channels:
+        return _channels[key]
+    cursor = ""
+    for _ in range(50):
+        q = urllib.parse.urlencode({"types": "public_channel,private_channel", "exclude_archived": "true", "limit": 1000, "cursor": cursor})
+        req = urllib.request.Request(f"{SLACK_API}/conversations.list?{q}", method="GET", headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = json.loads(r.read() or b"{}")
+        if not body.get("ok"):
+            raise RuntimeError(f"slack conversations.list: {body.get('error', 'unknown')}")
+        for c in body.get("channels") or []:
+            if c.get("name") == name:
+                _channels[key] = c["id"]
+                return c["id"]
+        cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+        if not cursor:
+            break
+    raise RuntimeError(f"slack: チャンネル #{name} が見つからない（名前の誤りか、非公開でボットが招かれていない）")
+
+
 def _slack_upload(token: str, channel: str, text: str, att: Attachment) -> None:
     """ファイルを添付して投稿する（files.upload の後継の 3 手順）。本文は initial_comment に"""
     q = urllib.parse.urlencode({"filename": att.filename, "length": len(att.content)})
@@ -252,7 +281,7 @@ def _slack_upload(token: str, channel: str, text: str, att: Attachment) -> None:
     with urllib.request.urlopen(up, timeout=60):
         pass
     _slack(token, "files.completeUploadExternal",
-           {"files": [{"id": got["file_id"], "title": att.title or att.filename}], "channel_id": channel, "initial_comment": text})
+           {"files": [{"id": got["file_id"], "title": att.title or att.filename}], "channel_id": channel_id(token, channel), "initial_comment": text})
 
 
 def post(dest: Destination, text: str, attachment: Attachment | None = None) -> bool:
