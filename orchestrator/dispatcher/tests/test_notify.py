@@ -1,4 +1,5 @@
 """通知のルーティング（ADR 0032）。設定の検査・宛先の決め方は DB なしで、写しと受信トレイの出し分けは TEST_DATABASE_URL の Postgres で確かめる。"""
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -46,12 +47,12 @@ def test_parse_rejects_problems_together():
     bad = {"operated_by": "x",
            "connections": {"a": {"party": "provider", "via": "slack_webhook", "secret": "https://hooks.slack.com/services/T/B/x"},
                            "b": {"party": "business_owner", "via": "slack_app", "secret": "aws-sm:x"}},
-           "destinations": {"d1": {"connection": "a", "channel": "#x"}, "d2": {"connection": "nope"}},
+           "destinations": {"d1": {"connection": "a", "channel": "#x"}, "d2": {"connection": "nope"}, "d3": {"connection": "b", "channel": "#gen1"}},
            "routes": {"request.inbox": [{"to": "d1"}], "report.unknown": []}}
     with pytest.raises(notify.ConfigError) as e:
         notify.parse(bad)
     text = " ".join(e.value.problems)
-    for want in ("operated_by", "値そのもの", "slack_app はまだ", "Webhook は URL ごと", "連携 'nope'", "出せない種類", "report.unknown"):
+    for want in ("operated_by", "値そのもの", "aws-sm はまだ", "チャンネルの ID", "Webhook は URL ごと", "連携 'nope'", "出せない種類", "report.unknown"):
         assert want in text, want
 
 
@@ -170,3 +171,83 @@ def test_template_passes():
     doc = yaml.safe_load((Path(__file__).resolve().parents[3] / "templates" / "notifications.example.yaml").read_text())
     cfg = notify.parse(doc)
     assert [d.name for d in notify.targets(cfg, "request.inbox", "po")] == ["owner_dev"]
+
+
+class FakeSlack:
+    """Slack の Web API の代わり（files の 3 手順と chat.postMessage）。受けた呼び出しを残す"""
+
+    def __init__(self, fail=None):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        self.calls, fake = [], self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _reply(self, body):
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                fake.calls.append(("GET", self.path, self.headers.get("Authorization"), b""))
+                self._reply({"ok": True, "upload_url": f"http://127.0.0.1:{fake.port}/upload/F1", "file_id": "F1"})
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                fake.calls.append(("POST", self.path, self.headers.get("Authorization"), body))
+                if self.path.startswith("/upload/"):
+                    self.send_response(200)
+                    self.end_headers()
+                    return
+                self._reply({"ok": False, "error": fail} if fail else {"ok": True})
+
+        self.srv = HTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+
+
+APP = {"operated_by": "business_owner",
+       "connections": {"app": {"party": "business_owner", "via": "slack_app", "secret": "env:SLACK_BOT_TOKEN_TEST"}},
+       "destinations": {"gen1_reports": {"connection": "app", "channel": "C0123ABCD"}}}
+
+
+def test_slack_app_uploads_attachment_and_posts_text(monkeypatch):
+    fake = FakeSlack()
+    monkeypatch.setattr(notify, "SLACK_API", f"http://127.0.0.1:{fake.port}")
+    monkeypatch.setenv("SLACK_BOT_TOKEN_TEST", "xoxb-test")
+    d = notify.parse(APP).destinations["gen1_reports"]
+    try:
+        assert notify.post(d, "*見出し*\n• 1 行目", notify.Attachment("factory-health-2026-11-05.html", b"<html>x</html>", "工場の健康状態"))
+        paths = [c[1].split("?")[0] for c in fake.calls]
+        assert paths == ["/files.getUploadURLExternal", "/upload/F1", "/files.completeUploadExternal"]
+        assert all(c[2] == "Bearer xoxb-test" for c in fake.calls if not c[1].startswith("/upload/"))
+        assert "filename=factory-health-2026-11-05.html" in fake.calls[0][1] and "length=14" in fake.calls[0][1]
+        assert fake.calls[1][3] == b"<html>x</html>"
+        done = json.loads(fake.calls[2][3])
+        assert done == {"files": [{"id": "F1", "title": "工場の健康状態"}], "channel_id": "C0123ABCD", "initial_comment": "*見出し*\n• 1 行目"}
+        fake.calls.clear()
+        assert notify.post(d, "受信トレイ")                                   # 添付がなければ本文だけ
+        assert [c[1] for c in fake.calls] == ["/chat.postMessage"] and json.loads(fake.calls[0][3])["channel"] == "C0123ABCD"
+    finally:
+        fake.close()
+
+
+def test_slack_app_fails_on_ok_false_and_skips_without_token(monkeypatch):
+    fake = FakeSlack(fail="not_in_channel")
+    monkeypatch.setattr(notify, "SLACK_API", f"http://127.0.0.1:{fake.port}")
+    d = notify.parse(APP).destinations["gen1_reports"]
+    try:
+        monkeypatch.delenv("SLACK_BOT_TOKEN_TEST", raising=False)
+        assert notify.post(d, "x") is False and fake.calls == []             # トークンがなければ送らない
+        monkeypatch.setenv("SLACK_BOT_TOKEN_TEST", "xoxb-test")
+        with pytest.raises(RuntimeError, match="not_in_channel"):
+            notify.post(d, "x")
+    finally:
+        fake.close()

@@ -92,6 +92,8 @@
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
   factoryctl report usage [--days 14] [--json]    # 使用量（トークンの消費と費用、日ごと・役割・モデル・契約の週、アカウントを足すかの判断の材料）。コンソールの /usage と同じ
+  factoryctl report send <report.factory_health|report.product|all> [--date YYYY-MM-DD] [--to 宛先] [--html 出力先]
+                                                  # 定期レポート（ADR 0032）を今のコードで組み立て、通知の設定の宛先に今すぐ送る（試し送り。既定は前日の分）。--html は送らずに報告書を書き出す
   factoryctl report process [--days 7]            # 工程の信号の束（ADR 0027 の 3。衝突の解消・やり直し・費用の外れ値・待ち・停止）。前の窓との比較つき
   factoryctl learn backfill-conflicts [--days 7]  # 衝突の解消のジョブのログ（オブジェクトストア）から、衝突したファイルの記録（conflict.files）を埋める
 """
@@ -309,6 +311,37 @@ def design_cmd(cur, argv) -> int:
 
 def opt(argv, name, default=None):
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
+
+
+def report_send(cur, argv):
+    import report as rpt
+    import report_page
+    kinds = list(rpt.builders_for()) if len(argv) < 4 or argv[3] in ("all", "") or argv[3].startswith("--") else [argv[3]]
+    unknown = [k for k in kinds if k not in rpt.builders_for()]
+    if unknown:
+        print(f"種類 {unknown[0]} はない（{', '.join(rpt.builders_for())}）")
+        return 2
+    date = opt(argv, "--date")
+    if date:
+        start = datetime.combine(datetime.strptime(date, "%Y-%m-%d").date(), datetime.min.time(), tzinfo=rpt.TZ)
+        end = start + timedelta(days=1)
+    else:
+        start, end = rpt.previous_day(datetime.now(timezone.utc))
+    if opt(argv, "--html"):
+        for kind in kinds:
+            rep = rpt.builders_for()[kind](cur, start, end)
+            path = os.path.join(opt(argv, "--html"), report_page.filename(rep)) if os.path.isdir(opt(argv, "--html")) else opt(argv, "--html")
+            with open(path, "w") as f:
+                f.write(report_page.render_html(rep, "provider", os.environ.get("FACTORY_NAME", "")))
+            print(f"{kind}: {path}")
+            print(report_page.comment(rep, "provider", os.environ.get("FACTORY_NAME", "")))
+        return 0
+    code = 0
+    for kind in kinds:
+        r = rpt.send_now(cur, kind, start, end, opt(argv, "--to"))
+        print(f"{kind}（{start:%Y-%m-%d}）: 送れた {', '.join(r['sent']) or 'なし'} / 送れなかった {', '.join(r['failed']) or 'なし'}")
+        code = code or (1 if r["failed"] or not r["sent"] else 0)
+    return code
 
 
 def report_stoppages(cur, argv):
@@ -862,6 +895,8 @@ def main(argv):
         else:
             print("\n".join([f"# 工場の使用量（{v['generated_at'][:16]} 時点、制御プレーンから生成）", "",
                              "生成: `factoryctl report usage`。費用は API 単価に換算した消費の物差しで、定額の契約の実請求ではない", ""] + usage.report_lines(v)))
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "send":
+        return report_send(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "process":
         retro = process_learn.retrospect(cur, window_days=int(opt(argv, "--days", str(process_learn.WINDOW_DAYS))))
         print("\n".join([f"# 工程の信号（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",

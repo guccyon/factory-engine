@@ -56,6 +56,38 @@ def test_roundtrip_and_render_hides_provider_sections():
     assert prov.startswith("**[rally] 工場の健康状態") and "内部の数: 3件" in prov
 
 
+def test_page_shows_summary_and_visible_sections_only():
+    import report_page
+    rep = sample()
+    rep.sections[0].items.append(entry("<script>x</script>", "開", "https://github.com/o/p/issues/1"))
+    page = report_page.render_html(rep, "business_owner", "rally")
+    assert page.startswith("<!doctype html>") and "提供元だけ" not in page and "内部の数" not in page
+    assert "&lt;script&gt;" in page and "<script>" not in page                       # 文字はエスケープ
+    assert 'href="https://github.com/o/p/issues/1"' in page and "前日比 -1.5%" in page and "不明" in page
+    assert "中身は仮置き" in page and "<link" not in page and "src=" not in page      # 外のものを読まない 1 枚
+    assert "提供元だけ" in report_page.render_html(rep, "provider")
+    rep.summary = ["一", "二", "三", "四"]
+    c = report_page.comment(rep, "provider", "rally")
+    assert c.splitlines()[:4] == ["*[rally] 工場の健康状態（2026-11-04）*", "• 一", "• 二", "• 三"] and "四" not in c
+    assert report_page.filename(rep) == "factory-health-2026-11-04.html"
+    rep.summary = []
+    assert report_page.summary(rep, "business_owner") == ["ライン: 動いていた割合 97.5%", "ジョブ: 失敗の割合 不明"]   # 組み立てが詰めていなければ節の先頭の数から
+
+
+def test_send_attaches_page_only_for_slack_app():
+    rep = sample()
+    rep.summary = ["稼働 97.5%"]
+    got = []
+    poster = lambda d, text, att=None: got.append((d.via, text, att)) or True   # noqa: E731
+    app = notify.Destination("a", "business_owner", "slack_app", "env:X", "C0123ABCD")
+    hook = notify.Destination("h", "business_owner", "slack_webhook", "env:Y")
+    assert report.send(app, rep, poster) and report.send(hook, rep, poster)
+    (v1, t1, a1), (v2, t2, a2) = got
+    assert a1.filename == "factory-health-2026-11-04.html" and b"<!doctype html>" in a1.content and "• 稼働 97.5%" in t1
+    assert "動いていた割合" not in t1                                                   # 本文に全文を流さない
+    assert a2 is None and "動いていた割合: 97.5%" in t2                                  # Webhook は添付できないので今までどおり全文
+
+
 @pytest.fixture
 def cur():
     if not URL:
@@ -99,6 +131,7 @@ def test_health_build_counts_the_day(cur):
     assert got[("inbox", "期間の終わりに残っていた件")] == 1
     assert got[("cost", "消費（API 単価に換算）")] == 2.0
     assert any(i.kind == "entry" and "マージ待ち" in i.label for s in rep.sections for i in s.items)
+    assert rep.summary == ["ラインの稼働 66.7%、止まった 2件（開いている停止 1 件）", "ジョブ 2件、うち失敗 1件", "人の判断待ち 残り 1件、消費 2.0 USD"]
 
 
 def test_daily_step_builds_once_and_delivers_per_destination(cur):
@@ -155,5 +188,16 @@ def test_product_build_reads_tickets_and_merges(cur):
     assert [i.label for i in sec["doing"]] == ["D3: 進行中"]
     assert [(i.label, i.state) for i in sec["next"]] == [("D4: 次", "1 件の完了待ち")]   # 保留は次に流すものに出さない
     assert [i.label for i in sec["releases"]] == ["版 0.8.0"]
+    assert rep.summary[1] == "期間中に済んだチケット 1件、マージした PR 1件" and rep.summary[2] == "進めているもの: D3: 進行中"
     text = report.render(rep, "slack_webhook", "business_owner")
     assert "<https://github.com/o/p/issues/2|D2: きのう済んだ>" in text and "別の製品" not in text
+
+
+def test_send_now_does_not_count_for_the_morning(cur):
+    cfg = notify.parse(DOC)
+    sent = []
+    r = report.send_now(cur, "report.factory_health", START, END, "owner_ops", cfg, poster=lambda d, t: sent.append(d.name) or True)
+    assert r == {"sent": ["owner_ops"], "failed": []} and sent == ["owner_ops"]
+    cur.execute("select count(*) as n from events where name='report.built'")
+    assert cur.fetchone()["n"] == 0                                          # 試し送りは組み立てを残さない
+    assert report._attempts(cur, "report.factory_health", START) == {}       # 毎朝の送信は手で送った分を数えない
