@@ -38,6 +38,8 @@ class Item:
     state: str = ""                 # entry の状態
     url: str = ""                   # entry のリンク
     text: str = ""                  # note の本文
+    level: str = ""                 # 見立て（assess）: "" / warn（注意）/ bad（危険）。報告書でハイライトする
+    series: list = field(default_factory=list)   # metric の推移（Report.days と同じ並び、古い順。最後が対象の期間）
 
 
 def metric(label: str, value, unit: str = "", delta=None) -> Item:
@@ -69,7 +71,11 @@ class Report:
     sections: list[Section] = field(default_factory=list)
     provisional: bool = True
     built_at: datetime | None = None
-    summary: list[str] = field(default_factory=list)   # ひとことの要約（数行）。組み立てが詰める。Slack の投稿の本文になる（report_page）
+    summary: list[str] = field(default_factory=list)   # ひとことの所感（数行）。見立て（assess）が詰める。Slack の投稿の本文になる（report_page）
+    level: str = ""                 # 全体の見立て: ok（順調）/ warn（注意）/ bad（危険）
+    findings: list[dict] = field(default_factory=list)   # 兆候と打ち手 [{"level", "text", "action"}]。重い順
+    days: list[str] = field(default_factory=list)        # 推移の日付（YYYY-MM-DD、古い順）
+    charts: list[dict] = field(default_factory=list)     # 大きく描く推移 [{"section", "label", "title"}]
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -84,7 +90,8 @@ class Report:
         secs = [Section(s["id"], s["title"], tuple(s.get("parties") or ()), [Item(**i) for i in s.get("items") or []]) for s in d.get("sections") or []]
         at = lambda v: datetime.fromisoformat(v) if v else None   # noqa: E731
         return cls(d["kind"], d["title"], at(d["start"]), at(d["end"]), secs, bool(d.get("provisional", True)), at(d.get("built_at")),
-                   list(d.get("summary") or []))
+                   list(d.get("summary") or []), d.get("level") or "", list(d.get("findings") or []), list(d.get("days") or []),
+                   list(d.get("charts") or []))
 
 
 # ------------------------------------------------------------------ 文面
@@ -115,7 +122,7 @@ def render(report: Report, via: str, party: str = "provider", factory: str = "")
     period = report.start.astimezone(TZ).strftime("%m/%d") if report.end - report.start <= timedelta(days=1) else \
         f"{report.start.astimezone(TZ):%m/%d}〜{(report.end - timedelta(seconds=1)).astimezone(TZ):%m/%d}"
     head = f"{f'[{factory}] ' if factory and party == 'provider' else ''}{report.title}（{period}）"
-    lines = [b(head)]
+    lines = [b(head)] + [f"• {t}" for t in report.summary[:3]]
     if report.provisional:
         lines.append("中身は仮置きです（決まりしだい変わります）")
     for s in visible(report, party):
@@ -141,20 +148,47 @@ def previous_day(now: datetime) -> tuple[datetime, datetime]:
     return end - timedelta(days=1), end
 
 
-def _with_delta(cur, rep: Report) -> Report:
-    """前の期間の report.built があれば、数の前日比を付ける"""
+TREND_DAYS = int(ENV.get("REPORT_TREND_DAYS", "14"))   # 推移に並べる期間の数（対象の期間を含む）
+
+
+def _with_trend(cur, rep: Report, builder, periods: int = TREND_DAYS) -> Report:
+    """同じ組み立てを前の期間にも当てて、数の推移（series）と前の期間との差（delta）を付ける。
+    組み立ては制御プレーンを読むだけなので、期間をずらして呼べば同じ物差しで並ぶ"""
     span = rep.end - rep.start
-    cur.execute("select payload from events where name='report.built' and payload->>'kind'=%s and payload->>'start'=%s order by id desc limit 1",
-                (rep.kind, (rep.start - span).isoformat()))
-    r = cur.fetchone()
-    if not r:
-        return rep
-    prev = {(s["id"], i["label"]): i.get("value") for s in r["payload"]["report"]["sections"] for i in s["items"] if i["kind"] == "metric"}
+    past = []
+    for k in range(periods - 1, 0, -1):
+        try:
+            p = builder(cur, rep.start - k * span, rep.end - k * span)
+            past.append({(s.id, i.label): i.value for s in p.sections for i in s.items if i.kind == "metric"})
+        except Exception as e:  # noqa: BLE001  推移が取れなくても対象の期間は出す
+            notify._log("report trend failed", rep.kind, repr(e)[:200])
+            past.append({})
+    rep.days = [f"{(rep.start - k * span).astimezone(TZ):%Y-%m-%d}" for k in range(periods - 1, -1, -1)]
     for s in rep.sections:
         for i in s.items:
-            p = prev.get((s.id, i.label))
-            if i.kind == "metric" and isinstance(i.value, (int, float)) and isinstance(p, (int, float)):
-                i.delta = round(i.value - p, 3)
+            if i.kind != "metric":
+                continue
+            i.series = [p.get((s.id, i.label)) for p in past] + [i.value]
+            prev = i.series[-2] if len(i.series) > 1 else None
+            if isinstance(i.value, (int, float)) and isinstance(prev, (int, float)):
+                i.delta = round(i.value - prev, 3)
+    return rep
+
+
+def _assessor(kind: str):
+    """種類ごとの見立て（所感・兆候と打ち手・異常のしるし）。組み立てのモジュールに assess(rep) があれば使う"""
+    import report_health
+    import report_product
+    return {"report.factory_health": report_health.assess, "report.product": report_product.assess}.get(kind)
+
+
+def compose(cur, kind: str, builder, start: datetime, end: datetime) -> Report:
+    """組み立て → 推移 → 見立て。毎朝の送信と試し送りで同じ手順"""
+    rep = _with_trend(cur, builder(cur, start, end), builder)
+    a = _assessor(kind)
+    if a:
+        a(rep)
+    rep.built_at = datetime.now(timezone.utc)
     return rep
 
 
@@ -166,8 +200,7 @@ def built(cur, kind: str, start: datetime) -> Report | None:
 
 
 def build_and_record(cur, kind: str, builder, start: datetime, end: datetime) -> Report:
-    rep = _with_delta(cur, builder(cur, start, end))
-    rep.built_at = datetime.now(timezone.utc)
+    rep = compose(cur, kind, builder, start, end)
     cur.execute("insert into events(name, payload, dedupe_key) values ('report.built', %s, %s) on conflict (dedupe_key) do nothing",
                 (Jsonb({"kind": kind, "start": start.isoformat(), "end": end.isoformat(), "provisional": rep.provisional, "report": rep.to_dict()}),
                  f"report.built:{kind}:{start.isoformat()}"))
@@ -236,8 +269,7 @@ def send_now(cur, kind: str, start: datetime, end: datetime, to: str | None = No
     """手で送る（factoryctl report send。文面を確かめる試し送り）。今のコードで組み立て直し、report.built には残さない。
     夜の時間は見ない。送った記録は notify.sent に manual: true で残し、毎朝の送信の数には入れない"""
     config = config or notify.current(cur)
-    rep = _with_delta(cur, builders_for()[kind](cur, start, end))
-    rep.built_at = datetime.now(timezone.utc)
+    rep = compose(cur, kind, builders_for()[kind], start, end)
     out = {"sent": [], "failed": []}
     for d in notify.targets(config, kind):
         if (to and d.name != to) or not visible(rep, d.party):

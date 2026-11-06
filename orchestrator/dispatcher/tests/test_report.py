@@ -64,12 +64,14 @@ def test_page_shows_summary_and_visible_sections_only():
     assert page.startswith("<!doctype html>") and "提供元だけ" not in page and "内部の数" not in page
     assert "&lt;script&gt;" in page and "<script>" not in page                       # 文字はエスケープ
     assert 'href="https://github.com/o/p/issues/1"' in page and "前日比 -1.5%" in page and "不明" in page
-    assert "中身は仮置き" in page and "<link" not in page and "src=" not in page      # 外のものを読まない 1 枚
+    assert "項目と閾値は仮置き" in page and "<link" not in page and "src=" not in page      # 外のものを読まない 1 枚
     assert "提供元だけ" in report_page.render_html(rep, "provider")
     rep.summary = ["一", "二", "三", "四"]
     c = report_page.comment(rep, "provider", "rally")
     assert c.splitlines()[:4] == ["*[rally] 工場の健康状態（2026-11-04）*", "• 一", "• 二", "• 三"] and "四" not in c
-    assert report_page.filename(rep) == "factory-health-2026-11-04.html"
+    assert report_page.filename(rep) == "factory-operations-2026-11-04.html"
+    rep.level = "warn"
+    assert report_page.comment(rep).startswith(":large_yellow_circle: *注意* *工場の健康状態")
     rep.summary = []
     assert report_page.summary(rep, "business_owner") == ["ライン: 動いていた割合 97.5%", "ジョブ: 失敗の割合 不明"]   # 組み立てが詰めていなければ節の先頭の数から
 
@@ -83,7 +85,7 @@ def test_send_attaches_page_only_for_slack_app():
     hook = notify.Destination("h", "business_owner", "slack_webhook", "env:Y")
     assert report.send(app, rep, poster) and report.send(hook, rep, poster)
     (v1, t1, a1), (v2, t2, a2) = got
-    assert a1.filename == "factory-health-2026-11-04.html" and b"<!doctype html>" in a1.content and "• 稼働 97.5%" in t1
+    assert a1.filename == "factory-operations-2026-11-04.html" and b"<!doctype html>" in a1.content and "• 稼働 97.5%" in t1
     assert "動いていた割合" not in t1                                                   # 本文に全文を流さない
     assert a2 is None and "動いていた割合: 97.5%" in t2                                  # Webhook は添付できないので今までどおり全文
 
@@ -131,7 +133,26 @@ def test_health_build_counts_the_day(cur):
     assert got[("inbox", "期間の終わりに残っていた件")] == 1
     assert got[("cost", "消費（API 単価に換算）")] == 2.0
     assert any(i.kind == "entry" and "マージ待ち" in i.label for s in rep.sections for i in s.items)
-    assert rep.summary == ["ラインの稼働 66.7%、止まった 2件（開いている停止 1 件）", "ジョブ 2件、うち失敗 1件", "人の判断待ち 残り 1件、消費 2.0 USD"]
+    assert got[("line", "人の対応待ちで止まっていた時間")] == 240                   # マージ待ち 20〜24 時（一時停止は数えない）
+    assert got[("jobs", "途中終了したジョブ（ターンの上限など）")] == 0 and got[("ship", "マージした PR")] == 0
+    report_health.assess(rep)
+    assert rep.level == "warn" and [f["text"] for f in rep.findings] == ["ラインが動いていたのは 66.7% だけ"]   # 失敗の割合は 2 件なので見ない
+    assert rep.summary[0] == "注意が 1 点あります。ラインの稼働 66.7%、ジョブ 2件、マージ 0件" and "止まっていた理由" in rep.summary[1]
+    lv = {(s.id, i.label): i.level for s in rep.sections for i in s.items if i.kind == "metric"}
+    assert lv[("line", "ラインが動いていた割合")] == "warn" and lv[("jobs", "失敗の割合")] == ""
+
+
+def test_compose_adds_trend_and_page_draws_it(cur):
+    import report_page
+    ev(cur, "job.finished", {"state": "succeeded", "cost_usd": 3}, START - timedelta(days=2, hours=-3))
+    ev(cur, "job.finished", {"state": "succeeded", "cost_usd": 1}, START + timedelta(hours=3))
+    rep = report.compose(cur, "report.factory_health", report_health.build, START, END)
+    i = {(s.id, x.label): x for s in rep.sections for x in s.items if x.kind == "metric"}[("jobs", "終わったジョブ")]
+    assert len(rep.days) == report.TREND_DAYS and rep.days[-1] == "2026-11-04" and len(i.series) == report.TREND_DAYS
+    assert i.series[-3:] == [1, 0, 1] and i.delta == 1                                    # 前の期間との差は推移から
+    assert rep.level in ("ok", "warn", "bad") and rep.summary
+    page = report_page.render_html(rep, "business_owner")
+    assert page.count('class="chart"') == len(report_health.CHARTS) and 'class="b last"' in page and "<title>2026-11-02: 1件</title>" in page
 
 
 def test_daily_step_builds_once_and_delivers_per_destination(cur):
@@ -156,7 +177,7 @@ def test_daily_step_builds_once_and_delivers_per_destination(cur):
     assert report.daily_step(cur, now + timedelta(minutes=2), cfg, poster=poster)["report.factory_health"]["sent"] == []
     cur.execute("select count(*) as n from events where name='report.built'")
     assert cur.fetchone()["n"] == 2                                       # 組み立ては種類ごとに 1 日 1 回
-    assert sorted(n for n, _ in posted if "健康" in _) == ["owner_ops", "provider_ops"]
+    assert sorted(n for n, _ in posted if "操業" in _) == ["owner_ops", "provider_ops"]
 
 
 def test_daily_step_without_config_only_records(cur):
@@ -188,7 +209,11 @@ def test_product_build_reads_tickets_and_merges(cur):
     assert [i.label for i in sec["doing"]] == ["D3: 進行中"]
     assert [(i.label, i.state) for i in sec["next"]] == [("D4: 次", "1 件の完了待ち")]   # 保留は次に流すものに出さない
     assert [i.label for i in sec["releases"]] == ["版 0.8.0"]
-    assert rep.summary[1] == "期間中に済んだチケット 1件、マージした PR 1件" and rep.summary[2] == "進めているもの: D3: 進行中"
+    assert m["残り（進めている＋投入待ち）"] == 3 and m["消化のペース（直近 7 日の 1 日あたり）"] == 0.3
+    assert m["進めているもののうち最も長く動いていない"] == 0.6 and m["期間に増えたチケット"] == 0
+    report_product.assess(rep)
+    assert rep.level == "warn" and rep.findings[0]["text"] == "次に流すものがすべて、ほかのチケットの完了待ち"
+    assert rep.summary[0].startswith("注意が 1 点あります。進み具合 40.0%、残り 3件") and sec["next"][0].level == "warn"
     text = report.render(rep, "slack_webhook", "business_owner")
     assert "<https://github.com/o/p/issues/2|D2: きのう済んだ>" in text and "別の製品" not in text
 
