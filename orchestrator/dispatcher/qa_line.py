@@ -159,6 +159,30 @@ def summary(job_id: int, result: dict, recorded: list[dict], filed: dict[tuple, 
     return "\n".join(lines)
 
 
+STORY_RE = re.compile(r"ユーザーストーリー `([A-Za-z0-9_-]+)` を止めた")
+STEP_RE = re.compile(r"歩: (\S+)")
+
+
+def defect_key(story_id: str, step, title: str = "") -> str:
+    """同じ不具合とみなす目印。ストーリーと歩（同じ歩で止まったものは、言い方が違っても同じ不具合として 1 本にまとめる）。
+    歩がなければ題（起票した Issue の題の「QA: 」の後ろ）で"""
+    if step in (None, "", "-"):
+        return f"{story_id}#title:{str(title)[:90]}"
+    return f"{story_id}#{step}"
+
+
+def open_defects(gh, repo: str, label: str) -> dict[str, str]:
+    """開いている QA の Defect の Issue を、目印 → URL で。本文の決まった行から読む（中身の文は使わない）"""
+    out = {}
+    for it in gh("GET", f"repos/{repo}/issues?state=open&labels={label}&per_page=100") or []:
+        body = it.get("body") or ""
+        m, st = STORY_RE.search(body), STEP_RE.search(body)
+        if m:
+            title = (it.get("title") or "").removeprefix("QA: ")
+            out.setdefault(defect_key(m.group(1), st.group(1) if st else None, title), it.get("html_url") or f"#{it.get('number')}")
+    return out
+
+
 def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result: dict, recorded: list[dict],
         keys: dict[str, str], defs: dict | None = None) -> dict:
     """hold の Defect を起票し（known_gaps と上限を超えたものは除く）、固定 Issue にまとめを書く。返り値 {filed, skipped}"""
@@ -166,6 +190,10 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
     limit = int(defs["act"]["defects_per_run_max"])
     filed: dict[tuple, str] = {}
     skipped: list[str] = []
+    try:
+        known = open_defects(gh, repo, defs["act"]["defect_labels"][0])
+    except Exception:  # noqa: BLE001  読めなければまとめずに起票する（取りこぼすより重なる方を選ぶ）
+        known = {}
     for r in recorded:
         v = r["verdict"]
         if v["decision"] != "hold":
@@ -173,7 +201,19 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
         for i, d in enumerate(v.get("defects") or []):
             if d.get("known_gap") and not defs["act"].get("known_gap_issue"):
                 continue
-            if len(filed) >= limit:
+            key = defect_key(v["story_id"], d.get("step"), d.get("title") or "")
+            if key in known:   # 同じストーリーの同じ歩で開いている Defect がある: 起票せず、再現したことをその Issue に書く
+                url = known[key]
+                filed[(r["verdict_id"], i)] = f"{url}（既存）"
+                num = url.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
+                if num.isdigit():
+                    comment(repo, int(num), f"QA 役の判定（ジョブ {job_id}・版 {v.get('release_id') or '不明'}・判定 {r['verdict_id']}）で、同じところでまた止まりました。"
+                                            f"まとめは #{issue}。\n\n> {str(d.get('actual') or '')[:500]}")
+                cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('qa.defect_seen',%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
+                            (corr, job_id, Jsonb({"repo": repo, "release_id": v.get("release_id"), "story_id": v["story_id"], "verdict_id": r["verdict_id"],
+                                                  "key": key, "issue": url}), f"qa.defect_seen:{r['verdict_id']}:{i}"))
+                continue
+            if sum(1 for u in filed.values() if not u.endswith("（既存）")) >= limit:
                 skipped.append(str(d.get("title"))[:60])
                 continue
             got = gh("POST", f"repos/{repo}/issues", {"title": f"QA: {str(d.get('title'))[:90]}",
@@ -181,12 +221,14 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
                                                       "labels": list(defs["act"]["defect_labels"])})
             url = got.get("html_url") or f"#{got.get('number')}"
             filed[(r["verdict_id"], i)] = url
+            known[key] = url
             cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('qa.defect_filed',%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                         (corr, job_id, Jsonb({"repo": repo, "release_id": v.get("release_id"), "story_id": v["story_id"], "verdict_id": r["verdict_id"],
                                               "title": d.get("title"), "severity": d.get("severity"), "viewpoint": d.get("viewpoint"), "issue": url}),
                          f"qa.defect_filed:{r['verdict_id']}:{i}"))
     comment(repo, issue, summary(job_id, result, recorded, filed, skipped, keys))
-    return {"filed": list(filed.values()), "skipped": skipped}
+    return {"filed": [u for u in filed.values() if not u.endswith("（既存）")],
+            "seen": [u[: -len("（既存）")] for u in filed.values() if u.endswith("（既存）")], "skipped": skipped}
 
 
 def latest(cur, repo: str, limit: int = 10) -> list[dict]:

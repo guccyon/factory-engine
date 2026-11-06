@@ -34,11 +34,13 @@ def test_dispatcher_and_factoryctl_know_the_kind():
 
 
 class FakeGH:
-    def __init__(self, existing=None):
-        self.calls, self.n, self.existing = [], 100, existing
+    def __init__(self, existing=None, defects=None):
+        self.calls, self.n, self.existing, self.defects = [], 100, existing, defects or []
 
     def __call__(self, method, path, body=None):
         self.calls.append((method, path, body))
+        if method == "GET" and "factory:qa-defect" in path:
+            return self.defects
         if method == "GET":
             return [{"number": self.existing}] if self.existing else []
         self.n += 1
@@ -131,3 +133,24 @@ def test_act_caps_defects(cur):
     gh, said = FakeGH(), []
     out = qa_line.act(cur, gh, lambda *a: said.append(a), REPO, 5, "c", 1, r, recorded, {})
     assert len(out["filed"]) == 5 and len(out["skipped"]) == 2 and "上限" in said[0][2]
+
+
+def test_act_does_not_refile_same_story_and_step(cur):
+    job(cur, 2)
+    r = result()
+    body = qa_line.defect_body(REPO, {**r["verdicts"][1], "env": "staging", "release_id": "r7"}, r["verdicts"][1]["defects"][0], 1, 5)
+    assert qa_line.STORY_RE.search(body).group(1) == "s-hold" and qa_line.STEP_RE.search(body).group(1) == "1"
+    r["verdicts"][1]["defects"].append({"title": "言い方が違う同じ不具合", "step": 1, "viewpoint": "flow", "severity": "s2", "actual": "y"})
+    recorded = qa_line.record(cur, REPO, "c", 2, r, {})
+    gh, said = FakeGH(defects=[{"number": 50, "html_url": f"https://github.com/{REPO}/issues/50", "body": body}]), []
+    out = qa_line.act(cur, gh, lambda *a: said.append(a), REPO, 5, "c", 2, r, recorded, {})
+    assert out["filed"] == [] and out["seen"] == [f"https://github.com/{REPO}/issues/50"] * 2
+    assert not [c for c in gh.calls if c[0] == "POST"]
+    assert [a[1] for a in said] == [50, 50, 5] and "また止まりました" in said[0][2]
+    cur.execute("select count(*) as n from events where name='qa.defect_seen'")
+    assert cur.fetchone()["n"] == 2
+    # 同じ回の中でも、同じ歩の 2 件目は 1 件目にまとめる
+    recorded2 = qa_line.record(cur, REPO, "c", 1, r, {})
+    gh2 = FakeGH()
+    out2 = qa_line.act(cur, gh2, lambda *a: None, REPO, 5, "c", 1, r, recorded2, {})
+    assert len(out2["filed"]) == 1 and len(out2["seen"]) == 1

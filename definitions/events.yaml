@@ -466,6 +466,10 @@ events:
     source: control_plane
     required: [repo, release_id, env, story_id, decision, confidence, defects, flags, verdict_id, model]
     note: "ADR 0028 の決定 2。QA 役がストーリー 1 本を流した判断（pass / hold / blocked）。同じ中身を artifacts の QAVerdict に残す。roadmap の qa_verdict はこの件数を数える。dedupe は qa.verdict:<job_id>:<story_id>"
+  qa.defect_seen:
+    source: control_plane
+    required: [repo, release_id, story_id, verdict_id, key, issue]
+    note: "ADR 0028 の決定 2。hold の Defect が、同じストーリーの同じ歩で開いている QA の Defect の Issue（key は <story_id>#<歩>）に当たったので、起票せずにその Issue に再現したことを書いた"
   runner.relayed:
     source: control_plane
     required: [tool, ok, runner, ms, args_len, n]
