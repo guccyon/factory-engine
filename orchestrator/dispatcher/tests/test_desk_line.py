@@ -120,12 +120,15 @@ def test_desk_slot_is_separate_from_line(cur):
 
 def test_enqueue_once_and_again_after_reply(cur):
     who = requester(cur)
+    cur.execute("insert into tickets(source, source_ref, repo, title, state) values ('github',%s,%s,'済んだお休み','closed'), "
+                "('github','other/x#1','other/x','ほかの製品','closed')", (f"{REPO}#455", REPO))
     c = open_request(cur, who)
     [jid] = desk_line.enqueue(cur, "tier-small", [REPO])
     assert desk_line.enqueue(cur, "tier-small", [REPO]) == []    # 動いている間は積まない
     cur.execute("select payload from events where name='job.enqueued' and job_id=%s", (jid,))
     inp = cur.fetchone()["payload"]["input"]
     assert inp["messages"][0]["body"] == "予約まわりの通知を先に進めて" and inp["questions_asked"] == 0 and inp["previous_draft"] is None
+    assert [t["ref"] for t in inp["recently_closed"]] == [f"{REPO}#455"]   # 済んだ仕事を「待ち」に挙げないための材料（製品ごと）
     run(cur, jid, QUESTION)
     cur.execute("select state from desk_conversations where id=%s", (c["id"],))
     assert cur.fetchone()["state"] == "waiting_requester"

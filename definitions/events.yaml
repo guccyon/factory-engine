@@ -458,6 +458,22 @@ events:
     source: control_plane
     required: [repo, week, sha, summary, strengths, findings, checked]
     note: "ADR 0022。設計の診断の所見。dispatcher が記録し、固定 Issue の本文（ページのスナップショット付き）を書き換える。人が読むためのもので、ワーカーのプロンプトには入れない。dedupe は design.reviewed:<repo>:<ISO 週>。同じ中身を artifacts の DesignReview に残す"
+  qa.enqueued:
+    source: control_plane
+    required: [repo, issue, release_id, env, stories, job_id, by]
+    note: "ADR 0028 の決定 2。QA 役のジョブ（kind=qa）を固定 Issue（factory:qa）に積んだ（factoryctl qa run）。release_id はそのときの環境の版（なければ null）"
+  qa.verdict:
+    source: control_plane
+    required: [repo, release_id, env, story_id, decision, confidence, defects, flags, verdict_id, model]
+    note: "ADR 0028 の決定 2。QA 役がストーリー 1 本を流した判断（pass / hold / blocked）。同じ中身を artifacts の QAVerdict に残す。roadmap の qa_verdict はこの件数を数える。dedupe は qa.verdict:<job_id>:<story_id>"
+  runner.relayed:
+    source: control_plane
+    required: [tool, ok, runner, ms, args_len, n]
+    note: "ADR 0028 の one_orchestrator。ジョブ（job_id）のワーカーが、dispatcher の中継（runner_relay.py）越しに Mac ランナーの道具を 1 回呼んだ。引数は長さだけ残す（打った文字は残さない）。通す道具は definitions/qa.yaml の runner_tools"
+  qa.defect_filed:
+    source: control_plane
+    required: [repo, release_id, story_id, verdict_id, title, severity, issue]
+    note: "ADR 0028 の決定 2。hold の Defect を製品の Issue（factory:qa-defect・factory:fix-proposed）にした。known_gaps に当たったものと 1 回の上限を超えたものは起票せず、固定 Issue のまとめに載せる"
   plan.decided:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]

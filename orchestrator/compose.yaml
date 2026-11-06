@@ -120,6 +120,8 @@ services:
       # ランナーの窓口（ADR 0033）の工場の中向けの口。合言葉は窓口の置き場のファイル（下のボリュームを読み取り専用で）
       RUNNER_GATE_URL: http://runner-gate:8795
       RUNNER_GATE_TOKEN_FILE: /run/runner-gate/internal.token
+      # ジョブごとの Mac ランナーへの中継（ADR 0028 の one_orchestrator）。QA のワーカーに compose の網の中（dispatcher:8796）で渡す。公開しない。0 で止める
+      RUNNER_RELAY: ${RUNNER_RELAY:-1}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runnergate:/run/runner-gate:ro   # ワーカーにはマウントしない（ジョブはランナーの窓口を直接呼べない）

@@ -1,0 +1,62 @@
+# QA 役（ADR 0028 の決定 2。P5a の qa_verdict）
+#
+# QA の定義は「プロダクトの利用者（エンドユーザー、カスタマーサポート、運営担当）にとって使いやすいシステムであるかの品質を担保する」。
+# 保証の対象は機能の正しさより「利用者の流れ」で、入力は製品の specs/stories/ のユーザーストーリー（型は user_story.yaml）。
+# Gen1 は QA 役 1 つが観点を切り替える。診断役と障害対応役は P5b で分ける。
+#
+# 流れ: factoryctl qa run（または固定 Issue の factory:qa）→ dispatcher が qa のジョブを積む → ワーカー（worker/qa.sh、core-gates/qa.py）が
+# 触れる環境（staging を兼ねる）にストーリーを流し、ストーリーごとに Verdict を返す → dispatcher が qa.verdict と QAVerdict を残し、
+# hold の Defect を Issue に起票し、固定 Issue にまとめを書く（dispatcher/qa_line.py）。
+#
+# 見た目（aesthetic、ADR 0025 の E4）と言葉の温度は判定しない。印（flags）として人に出す。
+
+schema_version: "0.1"
+status: draft
+
+# 判定（Verdict）。judge と同じ判断の型（決定・確信度・根拠。judgments.yaml の record）で残す
+decisions:
+  pass:    "流れが exit まで通り、must_not のどれにも当たらなかった"
+  hold:    "流れが途中で止まった・exit の見えるものが違った・must_not に当たった。Defect を 1 件以上付ける"
+  blocked: "環境・データ・道具が足りず、流れを確かめられなかった（例: 時間をまたぐ手順、Mac ランナーがない）。Defect ではなく、何が足りないかを書く"
+
+# Verdict 1 件の形（core-gates/qa.py が検査する。ワーカーは out/verdicts.yaml にストーリーの数だけ書く）
+verdict:
+  required: [story_id, decision, confidence, steps, evidence, interpretation]
+  steps: "ストーリーの steps と同じ数。1 歩ごとに {n, result: ok | ng | skipped, saw: 実際に見えたもの}"
+  evidence: "根拠の配列。画面の文言・URL・API の応答の要点・スクリーンショットのファイル名（out/ の下）"
+  interpretation: "根拠をどう読んで決定に至ったか"
+  confidence: "自己申告の確信度 0〜1"
+  defects: "hold のとき 1 件以上。{title, step, must_not, viewpoint, severity, reproduce, expected, actual, known_gap}"
+  flags: "任意。見た目と言葉の温度の印 {viewpoint: aesthetic | tone, where, note}。判定に使わない"
+
+# 観点（ADR 0028 の文脈）。Gen1 で流すのは flow・authz・persistence・words。端末・アクセシビリティ・脆弱性は P5b と ci_diagnose
+viewpoints:
+  flow:        "利用者の流れ（steps の sees と exit）"
+  authz:       "してはいけないこと（must_not の認可の裏返し。別の利用者として試す）"
+  persistence: "データの持続（再読み込み・ログインし直し・時間をまたぐ）"
+  words:       "言葉と文脈（reader に合った語・内部のコードが出ていないか）"
+
+# 重要度（P5b の severity_budget までの仮置き）。s1 は「止める」条件の候補（quality_policy.yaml の stop_conditions）
+severities:
+  s1: "個人情報・他人のデータが見える、お金・契約が消える"
+  s2: "流れが exit まで通らない"
+  s3: "通るが、見えるもの・言葉が違う"
+  s4: "気づきにくい小さな食い違い"
+
+worker:
+  max_turns: 80                 # ブラウザで 3 本を流す。足りなければ blocked で返す
+  stories_max: 6                # 1 回に流す本数の上限
+  env_host: host.docker.internal   # ワーカーのコンテナから工場の機械（触れる環境）に届く名前。dispatcher の QA_ENV_HOST で上書き
+  mobile_api_url: "http://127.0.0.1:18080"   # Mac のシミュレーターから見た staging の backend（Gen1 は工場と Mac が同じ機械。BIND_HOST の 127.0.0.1 に届く）
+
+# Mac ランナー（ADR 0028 の one_orchestrator）。dispatcher がジョブごとに中継（dispatcher/runner_relay.py）を立て、合言葉をワーカーに渡す。
+# ランナーの鍵と窓口の合言葉はワーカーに渡さない。通すのは下の道具だけ（sim_erase・sim_shutdown は通さない）。呼んだ道具は events の runner.relayed
+runner_tools: [sim_devices, sim_boot, app_build, build_status, app_install, app_launch, app_terminate, screenshot, open_url, push, logs,
+               ui_describe, ui_tap, ui_swipe, ui_text, ui_key]
+
+# dispatcher の作用
+act:
+  issue_label: "factory:qa"                     # 固定 Issue（QA の判定。閉じない）。まとめをコメントする
+  defect_labels: ["factory:qa-defect", "factory:fix-proposed"]   # hold の Defect。流すときは人が factory:fix-proposed を factory:planned に替える（差し戻しと同じ）
+  defects_per_run_max: 5        # 1 回の判定で起票する Defect の上限（残りはまとめに載せるだけ）
+  known_gap_issue: false        # known_gaps に当たった Defect は起票しない（ストーリーに既に書いてある。まとめに載せる）

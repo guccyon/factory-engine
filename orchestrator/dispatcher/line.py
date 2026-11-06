@@ -69,12 +69,21 @@ def running(cur) -> dict:
     return {"workers": r["w"], "governance": r["g"], "desk": r["d"]}
 
 
-def _claim(cur, where: str, corrs: list[str] | None = None) -> dict | None:
-    extra = " and q.correlation_id = any(%(corrs)s)" if corrs is not None else ""
+# チケットの優先度が下限以上のジョブ。プランナーのジョブは ticket_id を持たないので、correlation_id（github:<owner/repo#n>）でもチケットを引く
+MIN_PRIORITY_WHERE = ("(q.priority >= %(minp)s or exists (select 1 from tickets t where t.priority >= %(minp)s and "
+                      "(t.id = q.ticket_id or (t.source = 'github' and 'github:' || t.source_ref = q.correlation_id))))")
+
+
+def _claim(cur, where: str, corrs: list[str] | None = None, min_priority: int | None = None) -> dict | None:
+    """corrs か min_priority を渡すと、そのどちらかに当たるジョブに絞る（一時停止中の drain allow）"""
+    conds = (["q.correlation_id = any(%(corrs)s)"] if corrs else []) + ([MIN_PRIORITY_WHERE] if min_priority is not None else [])
+    if corrs is not None and not conds:
+        conds = ["false"]
+    extra = f" and ({' or '.join(conds)})" if conds else ""
     cur.execute(f"""select q.id from jobs q where q.state='queued' and not q.cancel_requested and {where}{extra}
                       and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held)
                     order by q.priority desc, q.enqueued_at for update skip locked limit 1""",
-                {**ARGS, "corrs": corrs or []})
+                {**ARGS, "corrs": corrs or [], "minp": min_priority})
     r = cur.fetchone()
     if not r:
         return None
@@ -82,11 +91,13 @@ def _claim(cur, where: str, corrs: list[str] | None = None) -> dict | None:
     return cur.fetchone()
 
 
-def claim_line(cur, corrs: list[str] | None = None) -> dict | None:
-    """ラインの枠に空きがあれば、ラインのジョブを 1 つ取り出す。corrs を渡すとその correlation_id に絞る（一時停止中の drain allow）"""
+def claim_line(cur, corrs: list[str] | None = None, min_priority: int | None = None) -> dict | None:
+    """ラインの枠に空きがあれば、ラインのジョブを 1 つ取り出す。corrs・min_priority を渡すとそれに絞る（一時停止中の drain allow）"""
     if running(cur)["workers"] >= spec(cur)["workers"]:
         return None
-    return _claim(cur, LINE_WHERE, corrs)
+    if min_priority is not None and corrs is None:
+        corrs = []
+    return _claim(cur, LINE_WHERE, corrs, min_priority)
 
 
 def claim_governance(cur) -> dict | None:

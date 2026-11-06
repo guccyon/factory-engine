@@ -1,4 +1,4 @@
-# デザイナー役のワーカー（ADR 0025。P4-6）: ベースの worker に、案のモックを撮るヘッドレスの Chromium と同梱の書体を足す。
+# デザイナー役と QA 役のワーカー（ADR 0025。P4-6。ADR 0028 の決定 2）: ベースの worker に、案のモックを撮るヘッドレスの Chromium と同梱の書体を足す。
 # 工場の環境は Web フォントを読めないので、日本語の書体（Noto CJK）はイメージに入れる。モックは外部の資源を読まない。
 # docker build -f Dockerfile.design -t factory-worker:design .   （先に factory-worker:p0 を作る）
 FROM factory-worker:p0
@@ -6,5 +6,8 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends chromium fonts-noto-cjk fonts-noto-color-emoji \
  && rm -rf /var/lib/apt/lists/*
 ENV CHROMIUM_BIN=/usr/bin/chromium
+# QA 役（ADR 0028 の決定 2）が画面を動かす。ブラウザは上の chromium を使うので、playwright-core だけ（ブラウザを落とさない）
+RUN npm install -g playwright-core@1.48.2
+ENV NODE_PATH=/usr/local/lib/node_modules
 USER worker
 WORKDIR /work

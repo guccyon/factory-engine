@@ -194,6 +194,9 @@ class FakeSlack:
 
             def do_GET(self):
                 fake.calls.append(("GET", self.path, self.headers.get("Authorization"), b""))
+                if self.path.startswith("/conversations.list") and "private_channel" in self.path:
+                    self._reply({"ok": False, "error": "missing_scope"})   # groups:read がない
+                    return
                 if self.path.startswith("/conversations.list"):
                     first = "cursor=&" in self.path or self.path.endswith("cursor=")
                     self._reply({"ok": True, "channels": [{"id": "C000OTHER", "name": "general"}] if first else [{"id": "C0GEN1XYZ", "name": "factory-gen1"}],
@@ -269,9 +272,20 @@ def test_slack_app_resolves_channel_name_once(monkeypatch):
         att = notify.Attachment("a.html", b"x", "t")
         assert notify.post(d, "本文", att) and notify.post(d, "本文", att)
         lists = [c for c in fake.calls if c[1].startswith("/conversations.list")]
-        assert len(lists) == 2                                                  # 2 ページ目で見つかり、2 回目は引き直さない
+        assert len(lists) == 2 and all("types=public_channel&" in c[1] for c in lists)   # 公開の 2 ページ目で見つかり、2 回目は引き直さない
         done = [json.loads(c[3]) for c in fake.calls if c[1] == "/files.completeUploadExternal"]
         assert [x["channel_id"] for x in done] == ["C0GEN1XYZ", "C0GEN1XYZ"]
         assert notify.channel_id("xoxb-test", "C0123ABCD") == "C0123ABCD"
+    finally:
+        fake.close()
+
+
+def test_slack_app_channel_not_found_without_private_scope(monkeypatch):
+    fake = FakeSlack()
+    monkeypatch.setattr(notify, "SLACK_API", f"http://127.0.0.1:{fake.port}")
+    monkeypatch.setattr(notify, "_channels", {})
+    try:
+        with pytest.raises(RuntimeError, match="見つからない"):
+            notify.channel_id("xoxb-test", "#nowhere")                         # 非公開を見る権限がなくても、見つからないと言う
     finally:
         fake.close()
