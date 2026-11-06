@@ -251,21 +251,25 @@ def channel_id(token: str, channel: str) -> str:
     name, key = channel.lstrip("#"), (hashlib.sha256(token.encode()).hexdigest()[:12], channel.lstrip("#"))
     if key in _channels:
         return _channels[key]
-    cursor = ""
-    for _ in range(50):
-        q = urllib.parse.urlencode({"types": "public_channel,private_channel", "exclude_archived": "true", "limit": 1000, "cursor": cursor})
-        req = urllib.request.Request(f"{SLACK_API}/conversations.list?{q}", method="GET", headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            body = json.loads(r.read() or b"{}")
-        if not body.get("ok"):
-            raise RuntimeError(f"slack conversations.list: {body.get('error', 'unknown')}")
-        for c in body.get("channels") or []:
-            if c.get("name") == name:
-                _channels[key] = c["id"]
-                return c["id"]
-        cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
-        if not cursor:
-            break
+    # 公開チャンネル（channels:read）を先に見る。非公開は groups:read がいるので、権限がなければ飛ばす
+    for types in ("public_channel", "private_channel"):
+        cursor = ""
+        for _ in range(50):
+            q = urllib.parse.urlencode({"types": types, "exclude_archived": "true", "limit": 1000, "cursor": cursor})
+            req = urllib.request.Request(f"{SLACK_API}/conversations.list?{q}", method="GET", headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                body = json.loads(r.read() or b"{}")
+            if not body.get("ok"):
+                if types == "private_channel" and body.get("error") == "missing_scope":
+                    break
+                raise RuntimeError(f"slack conversations.list: {body.get('error', 'unknown')}")
+            for c in body.get("channels") or []:
+                if c.get("name") == name:
+                    _channels[key] = c["id"]
+                    return c["id"]
+            cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+            if not cursor:
+                break
     raise RuntimeError(f"slack: チャンネル #{name} が見つからない（名前の誤りか、非公開でボットが招かれていない）")
 
 
