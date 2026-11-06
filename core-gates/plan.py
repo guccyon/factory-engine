@@ -195,7 +195,7 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
             "prompt": PROMPT_VERSION}
 
 
-PROMPT_VERSION = "5"   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "6"   # 問いの文を変えたら上げる（判断の入力の版として残す）
 
 
 def phase_note(inp: dict) -> str:
@@ -256,6 +256,7 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
 - summary: 何をするチケットで、なぜその経路か（2〜3 文）
 - questions: 1 つの問いに why（何を決めると着手できるか）、options（2〜4 つ）、recommended（推す選択肢の番号、0 から）
 - expected_files: このチケットで変わる見込みのファイル（リポジトリのルートからのパス。分からなければファイル名だけ）。
+  文書・changelog・試験・画面の撮影の値は挙げなくてよい。そのかわり、触る本体のファイル（契約・migration・domain から interface までと画面の部品）は漏れなく挙げる。
   契約（specs/contracts/）・生成した型・画面の一覧・ルーティングのような、機能を足すたびに 1 か所へ追記する登録の箇所を必ず挙げる。
   工場はこれを、同時に流しているタスクとの衝突を避ける並べ方に使う（ADR 0027 の 2）
 - size: 実装役に回す仕事の大きさ（経路に implement があるときは必ず書く）。layers は触る層（{layers}）、

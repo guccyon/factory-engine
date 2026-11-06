@@ -182,13 +182,18 @@ def plan_outcome_cmd(cur, argv, sub: str) -> int:
     """判定と結果の突き合わせ・実績の表・合格線（ADR 0036 の 4）"""
     repo = opt(argv, "--repo", None)
     if sub == "outcomes":
-        if "--backfill" in argv:
+        if "--backfill" in argv or "--rescore" in argv:
             import ghapi
 
             def gh(method, path, body=None):
                 return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
-            n = plan_outcome.step(cur, gh, days=None, limit=None, log=lambda *a: print(*a, flush=True))
-            print(f"{n} 本の PR を突き合わせました")
+            log = lambda *a: print(*a, flush=True)  # noqa: E731
+            if "--rescore" in argv:   # 数え方を変えたあと、残した突き合わせを組み立て直す
+                n = plan_outcome.rescore(cur, gh, log=log)
+                print(f"{n} 本の突き合わせを組み立て直しました")
+            else:
+                n = plan_outcome.step(cur, gh, days=None, limit=None, log=log)
+                print(f"{n} 本の PR を突き合わせました")
         for o in plan_outcome.outcomes(cur, repo, int(opt(argv, "--days", "14"))):
             rec = "-" if o.get("expected_recall") is None else o["expected_recall"]
             print(f"{o['at']:%m-%d %H:%M} {o.get('repo')}#{o.get('issue')} {o.get('judgment'):<10} {','.join(o.get('reasons') or []):<22} "

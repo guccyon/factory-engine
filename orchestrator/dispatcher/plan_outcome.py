@@ -98,14 +98,21 @@ def _matches(expected: str, actual: str) -> bool:
     return bool(e) and (e == actual or ("/" not in e and PurePosixPath(actual).name == e))
 
 
+def body_files(files: list[str]) -> list[str]:
+    """本体のファイル（文書・追従のファイルを除く）。見込みの再現率の分母（2026-11-05 オーナー決定）"""
+    return [f for f in files if layer_of(f) != "docs" and not is_follow(f)]
+
+
 def expected_scores(expected: list[str], actual: list[str]) -> tuple[float | None, float | None]:
-    """(再現率: 変わったファイルのうち見込みにあった割合, 適合率: 見込みのうち実際に変わった割合)。見込みも実績もなければ None"""
+    """(再現率: 変わった本体のファイルのうち見込みにあった割合, 適合率: 見込みのうち実際に変わった割合)。見込みも実績もなければ None。
+    再現率の分母は文書・試験・撮影の値を除いた本体（本体がなければ全部）。適合率はどのファイルに当たってもよい"""
     expected = [e for e in expected or [] if isinstance(e, str) and e.strip()]
     if not expected or not actual:
         return None, None
-    hit_actual = sum(1 for a in actual if any(_matches(e, a) for e in expected))
+    body = body_files(actual) or actual
+    hit_actual = sum(1 for a in body if any(_matches(e, a) for e in expected))
     hit_expected = sum(1 for e in expected if any(_matches(e, a) for a in actual))
-    return round(hit_actual / len(actual), 3), round(hit_expected / len(expected), 3)
+    return round(hit_actual / len(body), 3), round(hit_expected / len(expected), 3)
 
 
 def judge(o: dict) -> tuple[str, list[str]]:
@@ -231,6 +238,30 @@ def step(cur, gh, days: int | None = STEP_DAYS, limit: int | None = STEP_LIMIT, 
         if record(cur, r["corr"], o, r["at"]):
             n += 1
             log("plan outcome", r["pr_url"], o["judgment"], o["reasons"])
+    return n
+
+
+def rescore(cur, gh, days: int | None = None, log=lambda *a: None) -> int:
+    """残した突き合わせを、今の数え方（層・再現率）で組み立て直す（factoryctl plan outcomes --rescore）。結果の時刻はそのまま"""
+    cur.execute("select id, correlation_id as corr, payload from events where name='plan.outcome'"
+                + (" and occurred_at > now() - make_interval(days => %s)" if days else "") + " order by id", (days,) if days else ())
+    n = 0
+    for r in cur.fetchall():
+        p = r["payload"] or {}
+        m = PR_URL.match(p.get("pr_url") or "")
+        if not m:
+            continue
+        repo, number = m.group(1), int(m.group(2))
+        try:
+            files = pr_files(gh, repo, number)
+            labels = [l.get("name") for l in (gh("GET", f"repos/{repo}/pulls/{number}") or {}).get("labels") or []]
+        except Exception as e:  # noqa: BLE001  1 本の失敗で止めない
+            log("plan outcome rescore skipped", p.get("pr_url"), repr(e)[:200])
+            continue
+        o = build(cur, r["corr"], p["pr_url"], bool(p.get("merged")), files, labels)
+        cur.execute("update events set payload=%s where id=%s", (Jsonb(o), r["id"]))
+        n += 1
+        log("plan outcome rescored", p["pr_url"], o["judgment"], o["reasons"], o.get("expected_recall"))
     return n
 
 
