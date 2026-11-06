@@ -116,7 +116,7 @@ phases:
     # 着手はラインの再開の指示の後。アーキテクチャに触れる点（QA 役と Verdict の型、Mac ランナー、Blueprint の欄、Defect/Incident の型）は ADR 0028
     items:
       - { id: mac_runner, ja: "Mac ランナーが工場から呼べる（iOS シミュレーターの起動・インストール・画面の取得・操作・ログの回収をジョブから）", measure: { manual: todo } }   # Mac 上の MCP サーバー＋常駐。対話は要らないので Remote Control ではない。Gen1 は dispatcher から直接でもよい
-      - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す
+      - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す。2026-11-06 dispatcher/runner_relay.py（ジョブごとの中継）。QA の判定で iOS のストーリーを 1 本通したら done
       - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { db: { target: 1, sql: "select count(distinct payload->>'release_id') from events where name = 'release.touchable' and (payload->>'reachable_from_phone')::boolean" } } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env。factoryctl env up（orchestrator/README の「触れる環境」）。スマートフォンから届く入口を出した Release を数える
       - id: user_story
         ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）の型があり、既存機能に 3 本以上遡って書かれた"

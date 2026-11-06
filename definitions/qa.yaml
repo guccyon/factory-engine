@@ -47,6 +47,12 @@ worker:
   max_turns: 80                 # ブラウザで 3 本を流す。足りなければ blocked で返す
   stories_max: 6                # 1 回に流す本数の上限
   env_host: host.docker.internal   # ワーカーのコンテナから工場の機械（触れる環境）に届く名前。dispatcher の QA_ENV_HOST で上書き
+  mobile_api_url: "http://127.0.0.1:18080"   # Mac のシミュレーターから見た staging の backend（Gen1 は工場と Mac が同じ機械。BIND_HOST の 127.0.0.1 に届く）
+
+# Mac ランナー（ADR 0028 の one_orchestrator）。dispatcher がジョブごとに中継（dispatcher/runner_relay.py）を立て、合言葉をワーカーに渡す。
+# ランナーの鍵と窓口の合言葉はワーカーに渡さない。通すのは下の道具だけ（sim_erase・sim_shutdown は通さない）。呼んだ道具は events の runner.relayed
+runner_tools: [sim_devices, sim_boot, app_build, build_status, app_install, app_launch, app_terminate, screenshot, open_url, push, logs,
+               ui_describe, ui_tap, ui_swipe, ui_text, ui_key]
 
 # dispatcher の作用
 act:

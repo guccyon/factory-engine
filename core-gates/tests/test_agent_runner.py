@@ -145,6 +145,14 @@ class RunTest(unittest.TestCase):
         self.assertEqual(args[-1], "STDIN:作業して")   # プロンプトは標準入力で渡す
         self.assertNotIn("作業して", args[:-1])
 
+    def test_agentic_mcp_config_only_when_given(self):
+        ar.run_agentic("implement", "作業して")
+        self.assertNotIn("--mcp-config", self.calls()[0])
+        ar.run_agentic("implement", "作業して", mcp_config="/tmp/relay.json")   # Mac ランナーの中継（ADR 0028 の one_orchestrator）
+        args = self.calls()[1]
+        self.assertEqual(args[args.index("--mcp-config") + 1], "/tmp/relay.json")
+        self.assertIn("--strict-mcp-config", args)
+
     def test_state_dir_saves_and_resumes_session(self):
         home, state = Path(self.tmp.name) / "home", Path(self.tmp.name) / "handoff" / "agent"
         os.environ["HOME"] = str(home)

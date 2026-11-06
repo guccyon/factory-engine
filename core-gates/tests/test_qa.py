@@ -70,9 +70,10 @@ def test_validate_ok_and_errors(tmp_path):
 
 def test_run_retries_once_and_returns_verdicts_with_known_gaps(tmp_path, monkeypatch):
     d = product(tmp_path)
-    calls = []
+    calls, seen = [], {}
 
-    def fake(step, text, max_turns, cwd, state_dir):
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        seen["mcp"] = mcp_config
         calls.append(text)
         out = Path(cwd) / "out"
         env = json.loads((Path(cwd) / "env.json").read_text())
@@ -83,9 +84,9 @@ def test_run_retries_once_and_returns_verdicts_with_known_gaps(tmp_path, monkeyp
             (out / "01-list.png").write_bytes(b"\x89PNG")
             (out / "bad name.png").write_bytes(b"x")
             (out / "verdicts.yaml").write_text(yaml.safe_dump({"verdicts": [verdict(evidence=["01-list.png"])]}, allow_unicode=True))
-        return agent_runner.Result(output="", cost_usd=1.0, usage={"input_tokens": 10}, model="m", num_turns=3)
+        return sys.modules["agent_runner"].Result(output="", cost_usd=1.0, usage={"input_tokens": 10}, model="m", num_turns=3)
 
-    monkeypatch.setattr(agent_runner, "run_agentic", fake)
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)   # test_agent_runner が sys.modules を差し替えることがある
     res = qa.run(d, {"release_id": "r1", "touchable": {"accounts": [{"label": "本部", "value": "mock.headquarters.x"}]}}, tmp_path / "o", DEFS)
     assert res["ok"] and len(calls) == 2 and "崩れ" in calls[1]
     assert res["files"] == ["01-list.png"] and (tmp_path / "o" / "01-list.png").is_file()
@@ -106,3 +107,27 @@ def test_rally_stories_load_if_present():
         ids = [s["id"] for s in qa.load_stories(rally)]
         assert len(ids) >= 3
         assert qa.env_entries(rally, "staging", "h")["entries"]
+
+
+def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
+    assert qa.relay_config(tmp_path, {}) is None
+    p = qa.relay_config(tmp_path, {"RUNNER_RELAY_URL": "http://dispatcher:8796/mcp", "RUNNER_RELAY_TOKEN": "t0k"})
+    cfg = json.loads(Path(p).read_text())["mcpServers"]["macrunner"]
+    assert cfg == {"type": "http", "url": "http://dispatcher:8796/mcp", "headers": {"Authorization": "Bearer t0k"}}
+    assert oct(Path(p).stat().st_mode & 0o777) == "0o600"
+    text = qa.prompt(DEFS, [STORY], {"entries": []}, {}, mobile=True)
+    assert "mcp__macrunner__" in text and '"RALLY_API_URL": "http://127.0.0.1:18080"' in text
+    assert "mcp__macrunner__" not in qa.prompt(DEFS, [STORY], {"entries": []}, {})
+    d = product(tmp_path / "p")
+    seen = {}
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        seen["mcp"] = mcp_config
+        (Path(cwd) / "out" / "verdicts.yaml").write_text(yaml.safe_dump({"verdicts": [verdict()]}, allow_unicode=True))
+        return sys.modules["agent_runner"].Result(output="")
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)
+    monkeypatch.setenv("RUNNER_RELAY_URL", "http://dispatcher:8796/mcp")
+    monkeypatch.setenv("RUNNER_RELAY_TOKEN", "t0k")
+    res = qa.run(d, {}, tmp_path / "o", DEFS)
+    assert res["ok"] and res["mobile"] and seen["mcp"].endswith(".mcp-relay.json")

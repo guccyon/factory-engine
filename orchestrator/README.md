@@ -380,7 +380,8 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally
 - 記録は `qa.verdict`（ストーリーごと。roadmap の `qa_verdict` が数える）と artifacts の `QAVerdict`。根拠のスクリーンショットはオブジェクトストアの `qa/<job_id>/`
 - hold の Defect は製品の Issue（`factory:qa-defect`・`factory:fix-proposed`）に起票する（1 回 5 件まで。ストーリーの `known_gaps` に書いてあるものは起票せずまとめに載せる）。流すときは差し戻しと同じく `factory:planned` に替える
 - 見た目と言葉の温度は判定しない。印としてまとめに載せて人に出す
-- まだないもの: Mac ランナー（iOS シミュレーター）を QA のワーカーに渡す中継（`one_orchestrator`。PROTOCOL.md の決めたいこと 1）、時間をまたぐ手順（`scenario_time`。いまは skipped にする）、ラインを差し止める裁量
+- Mac ランナー（iOS シミュレーター）は、dispatcher の中継（`runner_relay.py`、`one_orchestrator`）越しに QA のワーカーへ MCP の道具として渡す。ワーカーに渡すのはそのジョブだけの合言葉で、ランナーの鍵と窓口の合言葉は渡さない（`macrunner/PROTOCOL.md` の決めたいこと 1）。生徒アプリのストーリーはまず iOS で、ビルドできなければ Web 版で流す。`RUNNER_RELAY=0` で止める
+- まだないもの: 時間をまたぐ手順（`scenario_time`。いまは skipped にする）、ラインを差し止める裁量
 
 ## Learn ループ（ADR 0013）
 

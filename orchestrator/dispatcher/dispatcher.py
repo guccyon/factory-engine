@@ -37,6 +37,7 @@ import continuation
 import design
 import design_line
 import qa_line
+import runner_relay
 import design_system_line
 import desk_line
 import planner
@@ -431,6 +432,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
+                   *([] if reattaching else relay_env(job_id, kind)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
             if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
@@ -729,6 +731,8 @@ def run_job(job: dict, reattaching: bool = False):
                     log("requeue after run_job error failed", job_id, repr(e2))
         finally:
             reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0020）
+            if RELAY is not None:
+                RELAY.revoke(job_id)   # 中継の合言葉はジョブの終わりで捨てる
             if JOB_DB_ENABLED:
                 try:
                     cur.execute(f'drop database if exists "job_{job_id}" with (force)')   # ワーカーの状態を残さない
@@ -1336,7 +1340,31 @@ def recover() -> list[dict]:
     return resume
 
 
+RELAY: runner_relay.Relay | None = None   # Mac ランナーへのジョブごとの中継（one_orchestrator）。RUNNER_RELAY=0 で止める
+RELAY_PORT = int(ENV.get("RUNNER_RELAY_PORT", "8796"))
+RELAY_HOST = ENV.get("RUNNER_RELAY_HOST", "dispatcher")   # ワーカーから見た dispatcher の名前（compose の網の中）
+
+
+def _relay_call(tool: str, arguments: dict, timeout: int) -> dict:
+    import macrunner_client
+    return macrunner_client.call(tool, arguments, timeout=timeout)
+
+
+def _relay_record(job_id: int, payload: dict):
+    with db() as conn, conn.cursor() as cur:
+        record_event(cur, "runner.relayed", None, job_id, payload)
+
+
+def relay_env(job_id: int, kind: str) -> list[str]:
+    """中継を使うジョブなら、このジョブだけの合言葉を作って docker run の引数を返す。網は compose の網（dispatcher に届く）"""
+    if RELAY is None or kind not in runner_relay.KIND_TOOLS:
+        return []
+    token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300)
+    return ["--network", JOB_DB_NETWORK, "-e", f"RUNNER_RELAY_URL=http://{RELAY_HOST}:{RELAY_PORT}/mcp", "-e", f"RUNNER_RELAY_TOKEN={token}"]
+
+
 def main():
+    global RELAY
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
     reattached = recover()
@@ -1356,6 +1384,10 @@ def main():
     if ENV.get("SWAP_ENABLED", "1") == "1":
         threading.Thread(target=swap_loop, daemon=True).start()
     pr_events.start(threading)
+    if ENV.get("RUNNER_RELAY", "1") == "1":
+        RELAY = runner_relay.Relay(_relay_call, _relay_record)
+        runner_relay.serve(RELAY, RELAY_PORT)
+        log(f"runner relay listening :{RELAY_PORT}")
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)
         threading.Thread(target=srv.serve_forever, daemon=True).start()

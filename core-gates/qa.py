@@ -138,8 +138,31 @@ def screenshots(out_dir: Path) -> list[str]:
     return names[:PNG_MAX]
 
 
+# ------------------------------------------------------------------ Mac ランナー（one_orchestrator）
+def relay_config(root: Path, env=os.environ) -> str | None:
+    """dispatcher がこのジョブに Mac ランナーへの中継を渡していれば、MCP の設定を書いてパスを返す。合言葉はこのジョブの間だけ有効"""
+    url, token = env.get("RUNNER_RELAY_URL"), env.get("RUNNER_RELAY_TOKEN")
+    if not url or not token:
+        return None
+    p = root / ".mcp-relay.json"
+    p.write_text(json.dumps({"mcpServers": {"macrunner": {"type": "http", "url": url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
+    p.chmod(0o600)
+    return str(p)
+
+
+MOBILE = """
+## iOS シミュレーター（Mac ランナー）
+mcp__macrunner__* の道具で、Mac の iOS シミュレーターを動かせます（この環境の画面と同じ staging のサーバーに繋ぎます）。
+- 生徒アプリ（student-app）のストーリーは、まず iOS で流す。sim_devices → sim_boot → app_build（app: guccyon/rally:apps/student-app、
+  dart_defines: {{"RALLY_API_URL": "{api}"}}）→ build_status で built まで待つ → app_install → app_launch → ui_describe / ui_tap / ui_text / screenshot
+- ビルドに 10 分より長くかかる・失敗する・ランナーがいないときは、Web 版（env.json の生徒アプリ）で流し、interpretation にそう書く
+- screenshot の画像は根拠として out/ に保存してよい（ファイル名の決まりは同じ）
+- Mac のシミュレーターから見た staging のサーバーは {api}（Mac の中なので 127.0.0.1）
+"""
+
+
 # ------------------------------------------------------------------ プロンプト
-def prompt(defs: dict, stories: list[dict], env: dict, inp: dict) -> str:
+def prompt(defs: dict, stories: list[dict], env: dict, inp: dict, mobile: bool = False) -> str:
     accounts = ((inp.get("touchable") or {}).get("accounts") or [])
     ex = {"verdicts": [{
         "story_id": stories[0]["id"] if stories else "<id>", "decision": "hold", "confidence": 0.8,
@@ -169,6 +192,7 @@ def prompt(defs: dict, stories: list[dict], env: dict, inp: dict) -> str:
   代わりに「ログインし直し・再読み込みで残るか」までを確かめて、ストーリー全体の decision は exit まで確かめられた範囲で決める
   （exit そのものが時間をまたぐなら blocked にして、何が足りないかを interpretation に書く）
 
+{MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"]) if mobile else ""}
 ## 判定の決まり（definitions/qa.yaml）
 - pass: {defs['decisions']['pass']}
 - hold: {defs['decisions']['hold']}
@@ -213,11 +237,13 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
         (root / "env.json").write_text(json.dumps({**env, "accounts": (inp.get("touchable") or {}).get("accounts") or []},
                                                   ensure_ascii=False, indent=1), encoding="utf-8")
         state = str(root / ".agent-state")
-        text = prompt(defs, stories, env, inp)
+        mcp = relay_config(root)
+        text = prompt(defs, stories, env, inp, mobile=bool(mcp))
         errs: list[str] = []
         doc = None
         for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
-            res = agent_runner.run_agentic("qa", text, max_turns=defs["worker"]["max_turns"], cwd=str(root), state_dir=state)
+            res = agent_runner.run_agentic("qa", text, max_turns=defs["worker"]["max_turns"], cwd=str(root), state_dir=state,
+                                           **({"mcp_config": mcp} if mcp else {}))
             cost += res.cost_usd or 0
             turns += res.num_turns or 0
             model = res.model
@@ -234,7 +260,7 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
         for n in files:
             shutil.copy2(root / "out" / n, out_dir / n)
     base = {"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "env": env["env"],
-            "release_id": inp.get("release_id"), "stories": [s["id"] for s in stories]}
+            "release_id": inp.get("release_id"), "stories": [s["id"] for s in stories], "mobile": bool(mcp)}
     if errs:
         return {"ok": False, "errors": errs, **base}
     known = {s["id"]: s.get("known_gaps") or [] for s in stories}

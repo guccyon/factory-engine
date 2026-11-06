@@ -234,10 +234,12 @@ def _claude_save(state: Path | None, sid: str | None, total_cost_usd: float = 0.
         print(f"[agent_runner] session save failed: {e}", file=sys.stderr)
 
 
-def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, state_dir: str | None = None) -> Result:
+def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, state_dir: str | None = None,
+                    mcp_config: str | None = None) -> Result:
     # ワーカーの中だけで使う（使い捨てのコンテナなので権限の確認を省く）。stderr はそのまま流す
     state = Path(state_dir) / "claude-code" if state_dir else None
-    base = ["claude", "-p", "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions"]
+    base = ["claude", "-p", "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions",
+            *(["--mcp-config", mcp_config, "--strict-mcp-config"] if mcp_config else [])]   # 渡した MCP の道具だけ（Mac ランナーの中継。ADR 0028 の one_orchestrator）
     sid, prior_cost = _claude_restore(state)
     resumed = bool(sid)
     with _Heartbeat():
@@ -275,12 +277,14 @@ def run(step: str, prompt: str, *, schema: dict | None = None, tier: str | None 
 
 
 def run_agentic(step: str, prompt: str, *, tier: str | None = None, max_turns: int = 40, cwd: str | None = None,
-                state_dir: str | None = None) -> Result:
+                state_dir: str | None = None, mcp_config: str | None = None) -> Result:
     """ツールありで作業させる（実装）。失敗しても例外にせず exit に runner の終了コードを入れて返す。
     state_dir があれば runner の会話の記録をそこに残し、次はそこから再開する（なくても動く近道）"""
     a = resolve(step, tier)
     if a.mode != "agentic":
         raise AgentError(f"step {step} is not agentic")
+    if mcp_config:   # MCP の道具を渡せるのは claude-code だけ（ほかの runner はまだない）
+        return AGENTIC[a.runner](a, prompt, max_turns, cwd, state_dir, mcp_config=mcp_config)
     return AGENTIC[a.runner](a, prompt, max_turns, cwd, state_dir)
 
 
