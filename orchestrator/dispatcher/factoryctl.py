@@ -18,7 +18,7 @@
   factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
-  factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
+  factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
   factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
@@ -818,14 +818,18 @@ def main(argv):
             urls = [a for a in argv[3:] if a.startswith("https://")]
             corrs = []
             for u in urls:
+                issue = drain.issue_corr(u)
+                if issue:   # Issue はチケットの correlation_id。デザインの線から実装・検査・judge まで同じ流れで通る（p0 の検証チケット）
+                    corrs.append(issue)
+                    continue
                 cur.execute("select correlation_id from artifacts where type='PR' and payload->>'pr_url'=%s order by id desc limit 1", (u,))
                 r = cur.fetchone()
                 if not r:
-                    print(f"工場の PR ではない: {u}")
+                    print(f"工場の PR でも Issue でもない: {u}")
                     return 2
                 corrs += [r["correlation_id"], f"committee:{u}"]   # 衝突の解消・検査・judge はチケットの、委員会は PR の correlation_id
             if not urls or not drain.allow(cur, corrs, "factoryctl", opt(argv, "--reason", "")):
-                print("一時停止していない（流してよいものを足すのは一時停止の間だけ）" if urls else "PR の URL を渡す")
+                print("一時停止していない（流してよいものを足すのは一時停止の間だけ）" if urls else "PR か Issue の URL を渡す")
                 return 1
             print(f"一時停止のまま流す: {len(urls)} 本（{' '.join(urls)}）")
             return drain_report(cur)

@@ -290,3 +290,9 @@ def test_line_scale_is_declared_and_followed(cur, monkeypatch):
     assert cur.fetchone()["n"] == 3                      # 減らしても動いているジョブは止めない
     with pytest.raises(ValueError):
         line.scale(cur, "t", workers=-1)
+
+
+def test_issue_corr():
+    assert drain.issue_corr("https://github.com/o/r/issues/992") == "github:o/r#992"
+    assert drain.issue_corr("https://github.com/o/r/pull/13") is None
+    assert drain.issue_corr("https://example.com/o/r/issues/1") is None
