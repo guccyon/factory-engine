@@ -1,0 +1,3 @@
+# gitleaks の所見のうち、誤検知と確かめたものの指紋（commit:path:rule:line）
+# core-gates/tests/test_diagnose.py の偽の AWS キー（秘密情報の値を出さないことのテスト用。いまは実行時に組み立てる）
+651c4c1632e864266c17cd5e06fbdf2a6237ef4a:core-gates/tests/test_diagnose.py:aws-access-token:129

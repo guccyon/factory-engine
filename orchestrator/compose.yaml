@@ -38,6 +38,11 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       objectstore: { condition: service_started }
+    # 通知の設定（製品の .factory-config/notifications.yaml、ADR 0032）の secret: env:NAME を引くため、.env の値をそのまま渡す。
+    # 下の environment が先に効く（今までの値は変わらない）
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
       OBJECTSTORE_ENDPOINT: objectstore:7070
@@ -51,6 +56,9 @@ services:
       # 同時実行・予算（Blueprint runtime / budgets から。実測で調整）
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}   # 委員会と知見の流れの専用の枠。ラインの枠とは別で、ラインの一時停止でも止めない（ADR 0024）
+      DESK_PARALLEL: ${DESK_PARALLEL:-1}   # 窓口の相談の専用の枠（ADR 0030 の 6）。ラインの一時停止でも相談には答える
+      DESK_CONSULT_MAX_USD: ${DESK_CONSULT_MAX_USD:-2}   # 相談 1 件の費用の上限（仮置き）。超えたら相談役を動かさない
+      SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}   # supervisor と同じ値。番人が検査の積み忘れ（inspect:）を見るかどうか
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}   # 流量の宣言（line.scaled）がないときの既定。3 つとも同じ値を各サービスに渡す（ADR 0028）
       MAX_TURNS: ${MAX_TURNS:-40}
       TOKEN_BUDGET_PER_JOB: ${TOKEN_BUDGET_PER_JOB:-2000000}
@@ -87,6 +95,9 @@ services:
       CONSOLE_URL: ${CONSOLE_URL:-http://localhost:8790} # 通知のリンクの前に付ける（コンソールの中の選択・出荷へのリンク）
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}          # slack を選ぶときだけ。値は .env に置き、リポジトリに書かない
       INBOX_SLACK_MENTIONS: ${INBOX_SLACK_MENTIONS:-}    # 誰の出番かごとのメンション（例 po=<@U…>,design_chief=<@U…>）。.env に置く
+      # 通知の出し分け（ADR 0032）。製品の .factory-config/notifications.yaml があればそれに従い、なければ上の INBOX_* のまま
+      NOTIFY_CONFIG_REPO: ${NOTIFY_CONFIG_REPO:-}        # 設定を読む製品のリポジトリ。空なら FACTORY_REPOS の先頭
+      NOTIFY_CONFIG_POLL_SEC: ${NOTIFY_CONFIG_POLL_SEC:-300}
       # 来歴（ADR 0007）。Engine の版はイメージに焼き込む（scripts/build.sh が ENGINE_VERSION を渡す。ADR 0031）。.env には書かない
       FACTORY_MODE: ${FACTORY_MODE:-}
       MODE_SCHEDULE: ${MODE_SCHEDULE:-}             # 例: unattended=22:00-08:00（Asia/Tokyo）。factoryctl mode set が優先
@@ -106,8 +117,12 @@ services:
       SWAP_ENABLED: ${SWAP_ENABLED:-1}
       SWAP_ROOT: ${SWAP_ROOT:-}
       SWAP_EXTRA_MOUNTS: ${SWAP_EXTRA_MOUNTS:-}
+      # ランナーの窓口（ADR 0033）の工場の中向けの口。合言葉は窓口の置き場のファイル（下のボリュームを読み取り専用で）
+      RUNNER_GATE_URL: http://runner-gate:8795
+      RUNNER_GATE_TOKEN_FILE: /run/runner-gate/internal.token
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - runnergate:/run/runner-gate:ro   # ワーカーにはマウントしない（ジョブはランナーの窓口を直接呼べない）
     ports:
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8787}:8787"
     restart: unless-stopped
@@ -118,6 +133,10 @@ services:
     command: ["python", "supervisor.py"]
     depends_on:
       postgres: { condition: service_healthy }
+    # 定期レポート（ADR 0032）の宛先の secret: env:NAME を引くため、.env の値をそのまま渡す。下の environment が先に効く
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
       FACTORY_REPOS: ${FACTORY_REPOS:-guccyon/rally}
@@ -128,6 +147,7 @@ services:
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
+      DESK_PARALLEL: ${DESK_PARALLEL:-1}
       SUPERVISOR_DRY_RUN: ${SUPERVISOR_DRY_RUN:-}
       SUPERVISOR_INSPECT: ${SUPERVISOR_INSPECT:-1}       # 工場の PR ごとに検査ジョブ（L4 の shadow 判定）を積む
       SUPERVISOR_JUDGE: ${SUPERVISOR_JUDGE:-1}           # 検査のあと、仮決めと指摘を裁く judge のジョブを積む（ADR 0006）
@@ -140,10 +160,13 @@ services:
       # 建設状況の日次レポート（health/daily）。JST のこの時を過ぎたら 1 日 1 回（ページは 6 時に描く）。空の DAILY_REPORT_SCRIPT で止める
       DAILY_REPORT_SCRIPT: ${DAILY_REPORT_SCRIPT-/health/daily/status_report.py}
       DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-5}
+      # 定期レポートの通知（ADR 0032）。設定は製品の .factory-config/notifications.yaml（dispatcher と同じ）。提供元の宛先では文面の頭に FACTORY_NAME を付ける
+      NOTIFY_CONFIG_REPO: ${NOTIFY_CONFIG_REPO:-}
+      NOTIFY_CONFIG_POLL_SEC: ${NOTIFY_CONFIG_POLL_SEC:-300}
+      FACTORY_NAME: ${FACTORY_NAME:-}
       # 出荷の列車（ADR 0012）。この製品の Release を 1 日 1 回、この時（JST）を過ぎたら切って staging に出す。空で止める
       RELEASE_TRAIN: ${RELEASE_TRAIN-guccyon/rally}
       RELEASE_TRAIN_HOUR: ${RELEASE_TRAIN_HOUR:-17}
-      SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
       # 週 1 回の設計の診断（ADR 0022）。definitions/design_review.yaml の曜日・時（JST）を過ぎたら製品ごとに 1 回。0 で止める
       DESIGN_REVIEW: ${DESIGN_REVIEW:-1}
       QUALITY_REPOS: ${QUALITY_REPOS:-}
@@ -169,10 +192,10 @@ services:
       CONSOLE_PORT: 8790
       CONSOLE_ALLOWED_HOSTS: ${CONSOLE_ALLOWED_HOSTS:-localhost,127.0.0.1}
       CONSOLE_OPERATOR: ${CONSOLE_OPERATOR:-builder}     # 操作の記録に残す名前（Gen1 はログインなし）
-      SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
+      DESK_PARALLEL: ${DESK_PARALLEL:-1}
       WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 段の残りを赤く出す下限（dispatcher と同じ値）
       PLAN_WEEK_RESET: ${PLAN_WEEK_RESET:-sun 11:00}     # 使用量のページの契約の週の区切り（JST）
       PLAN_WEEKLY_LIMIT_USD: ${PLAN_WEEKLY_LIMIT_USD:-}  # 契約の週の上限の目安（API 単価換算）。空なら割合と見込みを出さない
@@ -187,6 +210,23 @@ services:
     ports:
       - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_HOST_PORT:-8790}:8790"   # 同じ LAN の端末から見るときは CONSOLE_BIND=0.0.0.0 と CONSOLE_ALLOWED_HOSTS にホスト名（例 host.example.local）
       - "${CONSOLE_BIND:-127.0.0.1}:${PROTOTYPE_HOST_PORT:-8791}:8791"  # 動くプロトタイプ（別オリジン）。ホストのポートを変えたら PROTOTYPE_PUBLIC_URL も合わせる
+    restart: unless-stopped
+
+  # ランナーの窓口（ADR 0033）。工場の外の機械のランナー（Mac ランナー）が TLS で仕事を取りに来る。工場からランナーへは繋ぎに行かない。
+  # 証明書・ランナーごとの鍵・中向けの合言葉は runnergate のボリュームにだけ置く（events にも DB にも書かない）。
+  # 既定は Mac の中だけで開く。同じ LAN の別の Mac のランナーを足すときは RUNNER_GATE_BIND=0.0.0.0
+  runner-gate:
+    image: factory-dispatcher:p0
+    command: ["python", "runner_gate.py"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
+      RUNNER_GATE_HOME: /var/lib/runner-gate
+    volumes:
+      - runnergate:/var/lib/runner-gate
+    ports:
+      - "${RUNNER_GATE_BIND:-127.0.0.1}:${RUNNER_GATE_HOST_PORT:-8794}:8794"   # ランナー向け（TLS）。8795 の中向けの口は公開しない
     restart: unless-stopped
 
   # 事業部の窓口（ADR 0030）。外の人（とその代理の Claude）が依頼と問い合わせを持ち込む口。操業コンソールより狭く、相談と依頼者に許した範囲のチケットの操作だけを受ける。
@@ -216,7 +256,11 @@ services:
       GH_TOKEN: ${GH_TOKEN:?GitHub token (.env)}          # 製品のソースを取る（読むだけ）
       SHIP_POLL_SEC: ${SHIP_POLL_SEC:-2}                   # Rollback の秒数に効くので短く
       SHIP_WORKDIR: /ship
-      SHIP_PROD_HOLD: ${SHIP_PROD_HOLD-guccyon/rally}   # 本番に出さない製品（1st リリース前の development。staging だけ動かす。2026-11-04 オーナー）。空で外す
+      # 触れる環境（ADR 0028 の touchable_env）。端末ごとの値なのでここには書かず .env で渡す（README の「触れる環境」）。
+      # SHIP_TOUCH_HOST はスマートフォンから届くこの機械の名前か IP（入口の URL と QR に使う）、SHIP_TOUCH_BIND は画面の待ち受け（例: 0.0.0.0）。
+      # どちらも空なら 127.0.0.1 のまま（この機械からだけ開ける）
+      SHIP_TOUCH_HOST: ${SHIP_TOUCH_HOST:-}
+      SHIP_TOUCH_BIND: ${SHIP_TOUCH_BIND:-}
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}   # 出荷の失敗を停止として知らせる先
       NOTIFIER: ${NOTIFIER:-github-issue}
     volumes:
@@ -239,6 +283,7 @@ services:
     command: ["true"]
 
 volumes:
+  runnergate:
   pgdata:
   shipwork:
   objectdata:

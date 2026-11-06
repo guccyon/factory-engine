@@ -2,7 +2,7 @@
 
 窓口の API（desk_api.py）と factoryctl が同じ関数を通る。チケットの操作は ops.py を通るので、操業コンソールと振る舞いは変わらない。
 会話の中身は events の desk.*（correlation_id は desk:<会話の id>）に残す。依頼者の言葉はデータとして持つだけで、
-ここではシェルにもプロンプトにも渡さない（壁打ちの相手役に渡すのは順番 2 で、そのときもデータとして渡す）。
+ここではシェルにもプロンプトにも渡さない（壁打ちの相手役（desk_line.py → core-gates/desk_consult.py）にはデータとして渡す）。
 
 役割（ADR 0030 の 5）:
   operator   運用主。対象の製品（空ならすべて）の相談とチケットをすべて見て、優先度・保留を変えられる
@@ -159,6 +159,8 @@ def post_message(cur, who: dict, conversation_id: int, body: str) -> dict:
     c = _conversation(cur, who, conversation_id, for_update=True)
     if c["state"] == "closed":
         raise DeskError(409, "閉じた相談には書けない（新しく開く）")
+    if c["state"] == "confirmed":
+        raise DeskError(409, "確認して投入した相談には書けない（足したいことは新しく開く。チケットの優先度・保留は tickets の操作で）")
     body = _text(body)
     answered_question = c["state"] == "waiting_requester"
     cur.execute("update desk_conversations set state='open', rounds=rounds + %s, updated_at=now() where id=%s returning *",
@@ -213,12 +215,46 @@ def read_conversation(cur, who: dict, conversation_id: int, after: int = 0) -> d
                  **{k: v for k, v in e["payload"].items() if k != "conversation_id"}} for e in cur.fetchall()]
     cur.execute("select id, source_ref, title, state, priority from tickets where desk_conversation_id=%s order by id", (conversation_id,))
     tickets = [{**t, "level": ops.level_of(t["priority"])} for t in cur.fetchall()]
+    d = latest_draft(cur, conversation_id)
     return {"conversation": view_conversation(c), "messages": messages, "tickets": tickets,
+            "draft": {"draft_id": d["id"], **d["payload"]} if d else None,
             "last_id": messages[-1]["id"] if messages else after}
 
 
 def view_conversation(c: dict) -> dict:
     return {k: (v.isoformat() if hasattr(v, "isoformat") else float(v) if k == "cost_usd" else v) for k, v in c.items()}
+
+
+# ------------------------------------------------------------------ 下書きの確認（ADR 0030 の 3。依頼者の確認 1 回で投入する）
+DRAFT_TYPE = "TaskSetDraft"
+
+
+def latest_draft(cur, conversation_id: int) -> dict | None:
+    """会話の最新の下書き（artifacts の TaskSetDraft）。言い足しで出し直したら、古い下書きは確認できない"""
+    cur.execute("select id, created_at, payload from artifacts where type=%s and correlation_id=%s order by id desc limit 1",
+                (DRAFT_TYPE, corr(conversation_id)))
+    return cur.fetchone()
+
+
+def confirm_draft(cur, who: dict, conversation_id: int, draft_id: int, level: str | None = None) -> dict:
+    """依頼者が下書きを確認する。チケットの起票は dispatcher が次の周回で行う（窓口のプロセスは GitHub に触らない）。
+    level を渡すと、希望の優先度をここで決め直す（なければ相談を開いたときの希望、それもなければ p2）"""
+    c = _conversation(cur, who, conversation_id, for_update=True)
+    if c["kind"] != "request":
+        raise DeskError(409, "確認できるのは依頼の下書きだけ")
+    if c["state"] != "drafted":
+        raise DeskError(409, f"いまは確認できない（状態 {c['state']}。下書きが出てから）")
+    d = latest_draft(cur, conversation_id)
+    if not d or d["id"] != draft_id:
+        raise DeskError(409, f"最新の下書きではない（最新は {d['id'] if d else 'なし'}）")
+    if level is not None and level not in ops.LEVELS:
+        raise DeskError(400, f"優先度は {' / '.join(ops.LEVELS)}")
+    level = level or (c["wanted"] or {}).get("level") or "p2"
+    cur.execute("update desk_conversations set state='confirmed', updated_at=now() where id=%s returning *", (c["id"],))
+    c = cur.fetchone()
+    _event(cur, "desk.request_confirmed", c["id"], {"by": who["name"], "draft_id": draft_id, "level": level,
+                                                     "tasks": len(d["payload"].get("tasks") or [])})
+    return c
 
 
 # ------------------------------------------------------------------ チケット（明確な指示は壁打ちを通さず即時に通す）

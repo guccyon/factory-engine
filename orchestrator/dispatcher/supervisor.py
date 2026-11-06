@@ -47,8 +47,11 @@ import design
 import judgment
 import line
 import learn
+import version
 import ops
+import plan_outcome
 import process_learn
+import report
 import serialize
 import ship
 import stoppage
@@ -150,7 +153,7 @@ def decide(types: list[str], manifest: dict) -> dict:
         if t.startswith("always:"):
             # always_human_approve（表にない id も承認に倒す）。from: operation_start の項目は運用開始（autonomy.operation_started）までは効かない
             entry = always.get(t.split(":", 1)[1], {})
-            dormant = entry.get("from") == "operation_start" and not au.get("operation_started")
+            dormant = entry.get("from") == "operation_start" and not operation_started(manifest)
             v = "auto" if dormant else "human_approve"
         else:
             v = (matrix.get(t) or {}).get("merge", "human_approve")                   # 表にない種別は承認に倒す（unanswered_default: hold）
@@ -168,11 +171,17 @@ def load_rules() -> dict:
         return yaml.safe_load(f)
 
 
-def judge_constraints(au: dict) -> str:
+def operation_started(manifest: dict) -> bool:
+    """運用開始か。製品の段階（product_stage）が operating なら運用開始（definitions/product_stages.yaml）。
+    段階の欄がなかった頃の autonomy.operation_started も読む"""
+    return bool(ship.STAGES.get(ship.declared_stage(manifest), {}).get("operation_started")) or bool(manifest.get("autonomy", {}).get("operation_started"))
+
+
+def judge_constraints(au: dict, started: bool | None = None) -> str:
     """judge に渡す manifest の制約。from: operation_start の常時承認は、運用開始（autonomy.operation_started）までは
     マージの判定（上の always_human_approve の扱い）と同じく効かせないので、judge にも「今は人に回さない」と分けて渡す。
     以前は全項目を効いているものとして渡し、開発中の identity の変更を judge が人に回していた（rally #130）"""
-    started = bool(au.get("operation_started"))
+    started = bool(au.get("operation_started")) if started is None else started
     active, dormant = [], []
     for a in au.get("always_human_approve", []):
         (dormant if a.get("from") == "operation_start" and not started else active).append(f"{a['id']}（{a.get('ja', '')}）")
@@ -359,11 +368,14 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             log("merge decided", p["url"], d["table"], "grant", d["factory_grant"], d["change_types"])
             if DRY_RUN:
                 continue
-            enqueue_inspect(cur, p, sha)
             if d["table"] == "human_approve":
                 gh("POST", f"repos/{p['repo']}/issues/{p['number']}/labels", {"labels": [APPROVAL_LABEL]})
         elif DRY_RUN:
             continue
+        # 検査は判定の記録と切り離して周回ごとに試す（head ごとに 1 回積めば、以後は記録で素通り）。
+        # 判定を記録した周回でしか試さないと、同じ PR の別のジョブ（body_fix など）と重なって積めなかった head の検査が
+        # 二度と積まれず、検査のない PR が同時に流す枠を塞ぎ続ける（2026-11-05 rally #976、約 6 時間半ラインが止まった）
+        enqueue_inspect(cur, p, sha)
         if "knowledge" in d["change_types"]:
             enqueue_committee(cur, p, sha)   # 周回ごとに試す。同じ PR の検査ジョブが動いている間は積めない（1 PR 1 ジョブ）
         # マージは表が auto で、かつ検査役が承認してから（ADR 0014）。承認は周期ごとに見直すので、検査・judge が終わった周期でマージする
@@ -442,8 +454,9 @@ def enqueue_inspect(cur, p: dict, sha: str):
         cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','inspect') returning id",
                     (p["corr"], p["repo"], p["number"]))
     except psycopg.errors.UniqueViolation:
-        # 同じ PR のジョブ（judge・委員会など）がまだ動いている。次の周回で積み直せるよう記録を消す（judge_step と同じ）。
-        # 消さないと、この head の検査は二度と積まれず、検査役の承認が「検査待ち」のまま止まる（rally #458）
+        # 同じ PR のジョブ（judge・委員会・body_fix など）がまだ動いている。次の周回で積み直せるよう記録を消す（judge_step と同じ）。
+        # 消さないと、この head の検査は二度と積まれず、検査役の承認が「検査待ち」のまま止まる（rally #458）。
+        # 積み直しは merge_step が周回ごとに呼ぶことで行う（rally #976）
         cur.execute("delete from events where dedupe_key=%s", (f"supervisor.inspect:{p['url']}@{sha}",))
         return
     jid = cur.fetchone()["id"]
@@ -500,7 +513,7 @@ def judge_step(cur, manifests: dict):
         if repo not in manifests:
             manifests[repo] = load_manifest(repo)
         au = manifests[repo].get("autonomy", {})
-        constraints = judge_constraints(au)
+        constraints = judge_constraints(au, operation_started(manifests[repo]))
         inp = judgment.judge_input(cur, r["pr_url"], mode, constraints)
         nothing = not inp["provisional"] and not inp["defects"]
         if not record(cur, "supervisor.judge_enqueued", r["corr"], {"pr_url": r["pr_url"], "head_sha": r["sha"], "mode": mode, "mode_basis": basis,
@@ -662,6 +675,35 @@ def daily_report_step(cur):
     r = subprocess.run([sys.executable, DAILY_REPORT, "--publish"], capture_output=True, text=True, timeout=300,
                        env={**ENV, "GH_TOKEN": GH_TOKEN})
     log("daily report", r.returncode, (r.stdout or r.stderr).strip()[-300:])
+
+
+def notify_report_step(cur):
+    """定期レポート（ADR 0032 の決定 9）。前日の分を毎朝 1 回組み立てて report.built に残し、通知の割り当てどおりに送る。
+    設定（製品の notifications.yaml）がない工場は組み立てて残すだけで、どこにも送らない"""
+    if DRY_RUN:
+        return
+    try:
+        r = report.daily_step(cur)
+    except Exception as e:  # noqa: BLE001  レポートの失敗で周回を止めない
+        log("notify report failed", repr(e)[:300])
+        return
+    for kind, x in (r or {}).items():
+        if x.get("sent") or x.get("failed") or x.get("gave_up"):
+            log("notify report", kind, x)
+
+
+def stage_step(cur, manifests: dict):
+    """製品の段階の宣言（manifest.yaml の product_stage）を読み、変わったときだけ product.stage_observed に残す（ADR 0028 の決定 4）。
+    shipper・コンソール・受け箱は GitHub を見ずにこの記録を読む。manifest を読めない製品（Engine など）は飛ばし、記録がなければ development に倒す"""
+    for repo in dict.fromkeys(RELEASE_TRAIN + REPOS):
+        try:
+            if repo not in manifests:
+                manifests[repo] = load_manifest(repo)
+        except Exception:  # noqa: BLE001, S112  manifest がない・読めないときは前の記録のまま
+            continue
+        stage = ship.declared_stage(manifests[repo])
+        if ship.observe_stage(cur, repo, stage):
+            log("product stage", repo, stage or "(未宣言)", "→", ship.stage_of(cur, repo)["stage"])
 
 
 def release_train_step(cur):
@@ -1010,18 +1052,29 @@ def committee_weekly_step(cur, now: datetime | None = None):
         log("committee weekly enqueued", repo, week, "job", jid)
 
 
+def plan_outcome_step(cur):
+    """結果の出た工場の PR を、最新の Plan と突き合わせて plan.outcome に残す（ADR 0036 の 4a。決定的）"""
+    try:
+        plan_outcome.step(cur, gh, log=log)
+    except Exception as e:  # noqa: BLE001  突き合わせの失敗でラインを止めない
+        log("plan outcome step error", repr(e)[:200])
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
-                    (Jsonb({"repos": REPOS, "engine_version": ENV.get("ENGINE_VERSION") or "unknown"}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
+                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
+        plan_outcome_step(cur)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
+        stage_step(cur, manifests)
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
         daily_report_step(cur)
+        notify_report_step(cur)
         changelog_step(cur)
         release_train_step(cur)
         learn_step(cur)

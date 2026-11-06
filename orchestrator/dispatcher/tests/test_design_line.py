@@ -190,3 +190,20 @@ def test_return_requeues_designer_with_the_human_note(cur):
     cur.execute("select payload from events where name='job.enqueued' and job_id=%s", (jid,))
     inp = cur.fetchone()["payload"]["input"]
     assert inp["round"] == 2 and inp["findings"][0]["evidence"] == "どれも文字が小さい" and inp["previous_artifact_id"] == aid
+
+
+@needs_db
+def test_big_ticket_goes_to_the_pre_implement_plan(cur):
+    # 大きいが画面が先だったチケットは、画面が決まったら実装の手前のプランナーの判定に回す（ADR 0036 の 3）
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Plan',%s,'plan',%s)",
+                (CORR, Jsonb({"decision": "ready", "steps": ["ui_design", "implement"], "advisories": ["split_after_design"]})))
+    aid, store = draft(cur)
+    gh = GH()
+    review(cur, gh, aid, "approve", store)
+    assert ("POST", ["factory:queued"]) in gh.labels() and ("POST", ["factory:planned"]) not in gh.labels()
+    cur.execute("select kind from jobs where kind='plan'")
+    assert cur.fetchone()["kind"] == "plan"
+    cur.execute("select e.payload->'input' as inp from events e join jobs j on j.id=e.job_id where j.kind='plan' and e.name='job.enqueued'")
+    assert cur.fetchone()["inp"]["phase"] == "implement"
+    assert any("実装の手前のプランナーの判定" in c for c in gh.comments)

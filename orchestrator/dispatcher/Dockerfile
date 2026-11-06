@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 # docker CLI（ワーカーを docker run するため。ソケットはホストからマウント）
 # git と docker compose は shipper（ADR 0012）が使う
-RUN apt-get update && apt-get install -y --no-install-recommends docker-cli docker-compose docker-buildx git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends docker-cli docker-compose docker-buildx git ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -12,5 +12,6 @@ ENV PYTHONUNBUFFERED=1
 # Engine の版（ADR 0031）。scripts/build.sh が作るときに渡す。.env には書かない（古い値が残って来歴を誤るため）
 ARG ENGINE_VERSION=unknown
 ENV ENGINE_VERSION=$ENGINE_VERSION
+RUN echo "$ENGINE_VERSION" > /app/ENGINE_VERSION   # env_file の .env で上書きされても版を誤らないよう、ファイルにも置く
 LABEL factory.engine_version=$ENGINE_VERSION
 CMD ["python", "dispatcher.py"]

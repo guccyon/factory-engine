@@ -1,0 +1,39 @@
+# 通知の種類（ADR 0032 の決定 2）。全工場に共通。工場ごとの割り当ては製品の .factory-config/notifications.yaml（決定 6）。
+#
+# - 系統は 3 つ: report（定期レポート）/ request（承認依頼）/ done（作業の完了報告。頼まれたものだけ）
+# - parties: その種類を出してよい組織。provider（提供元）/ business_owner（事業主）。ここにない組織の宛先に割り当てた設定は読み込みで拒む（決定 3）
+# - defaults: 運用形態（operated_by）ごとの既定の宛先の組織。routes に書かない種類はこれで決まる（決定 4）
+# - status: ready（作ってある）/ later（形だけ。まだ送らない）
+# dispatcher のコンテナには definitions/ がないので、使う値は orchestrator/dispatcher/notify.py の KINDS に写す（食い違いはテストで見る）
+
+schema_version: "0.1"
+
+kinds:
+  report.factory_health:
+    ja: 工場の健康状態の日次レポート
+    parties: [provider, business_owner]
+    defaults:
+      provider: [provider]
+      business_owner: [business_owner, provider]   # 自走でも提供元に写しを送る（R3）
+    status: ready      # 順番 3（中身は reports.yaml の仮置き）
+  report.product:
+    ja: プロダクト開発の日次レポート（ロードマップの進捗）
+    parties: [provider, business_owner]
+    defaults:
+      provider: [business_owner, provider]
+      business_owner: [business_owner, provider]
+    status: ready      # 順番 4（中身は reports.yaml の仮置き）
+  request.inbox:
+    ja: 受信トレイの人の出番（承認依頼）
+    parties: [business_owner]     # 事業主の判断が要るものだけ。誰の出番かで絞る（決定 5）
+    defaults:
+      provider: [business_owner]
+      business_owner: [business_owner]
+    status: ready
+  done.task:
+    ja: 窓口の依頼の完了報告
+    parties: [provider, business_owner]
+    defaults:
+      provider: []
+      business_owner: []
+    status: later

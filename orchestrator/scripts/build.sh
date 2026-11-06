@@ -46,4 +46,4 @@ for step in "${STEPS[@]}"; do
   run docker build -t "$name" -t "$repo:${name#*:}-$VERSION" -f "$file" \
     --build-arg "ENGINE_VERSION=$VERSION" --label "factory.engine_version=$VERSION" "$ctx"
 done
-echo "できた: 版 $VERSION。次は docker compose up -d（すべてのサービス）"
+echo "できた: 版 ${VERSION}。次は docker compose up -d（すべてのサービス）"

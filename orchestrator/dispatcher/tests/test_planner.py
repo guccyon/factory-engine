@@ -181,3 +181,98 @@ def test_design_system_only_stays_on_the_ticket(cur):
     c = Calls()
     run(cur, c, res(steps=["design_system"]), c.gh)
     assert c.created is None and c.labels == [(ISSUE, ("factory:running",), ("factory:design-system",))]
+
+
+# ------------------------------------------------------------------ 大きさで切る（ADR 0036 の 2）
+class SplitGH:
+    def __init__(self):
+        self.posts, self.patches, self.states, self.next = [], [], {}, 40
+
+    def __call__(self, method, path, body=None):
+        if "labels=" in path:
+            return [{"number": ISSUE}]
+        if method == "POST" and path.endswith("/issues"):
+            self.posts.append(body)
+            self.next += 1
+            self.states[self.next] = "open"
+            return {"number": self.next, "html_url": f"https://github.com/{REPO}/issues/{self.next}"}
+        if method == "PATCH":
+            self.patches.append((path, body))
+            return {}
+        if method == "GET" and path.endswith(f"/issues/{ISSUE}"):
+            return {"labels": [{"name": "factory:priority:p0"}, {"name": "factory:running"}]}
+        if method == "GET" and "/issues/" in path:
+            return {"state": self.states.get(int(path.rsplit("/", 1)[1]), "open")}
+        return {}
+
+
+def T(key, kind="implement", deps=()):
+    return {"key": key, "title": f"題 {key}", "kind": kind, "summary": f"{key} の要約", "do": [f"{key} をする"], "acceptance": [f"{key} ができる"],
+            "depends_on": list(deps), "effort": "standard", "expected_files": [f"{key}.rs"]}
+
+
+@needs_db
+def test_split_files_children_in_dependency_order_and_closes_parent(cur):
+    c, gh = Calls(), SplitGH()
+    r = res(decision="split", steps=["implement"], guards=["oversized"])
+    r["tasks"], r["oversize"] = [T("t1", "contract"), T("t2", deps=["t1"]), T("t3", "design", deps=["t2"])], ["layers", "turns"]
+    r["plan"]["size"] = {"layers": ["contract", "backend", "web"], "turns_band": "XL", "basis": "似た #455 は 181 ターン"}
+    pid = run(cur, c, r, gh)
+    assert [p["labels"] for p in gh.posts] == [["factory:plan", "factory:priority:p0"], ["factory:desk-waiting", "factory:priority:p0"],
+                                               ["factory:desk-waiting", "factory:priority:p0"]]
+    assert gh.posts[0]["title"] == "題 t1（#5 の t1）" and "依存:" not in gh.posts[0]["body"]
+    assert "依存: #41" in gh.posts[1]["body"] and "依存: #42" in gh.posts[2]["body"] and "t2 ができる" in gh.posts[1]["body"]
+    assert "UXSpec" in gh.posts[0]["body"] and f"parent={ISSUE} plan={pid} task=t1" in gh.posts[0]["body"]
+    assert c.labels == [(ISSUE, ("factory:running",), ("factory:waiting-steps",))]
+    assert "3 件のタスクに切りました" in c.comments[0] and "#42 題 t2（#41 の後）" in c.comments[0] and "181 ターン" in c.comments[0]
+    cur.execute("select waiting_on from tickets where source_ref=%s", (f"{REPO}#42",))
+    assert cur.fetchone()["waiting_on"] == [f"{REPO}#41"]
+    cur.execute("select payload from events where name='plan.decided'")
+    d = cur.fetchone()["payload"]
+    assert d["tasks"] == 3 and d["oversize"] == ["layers", "turns"] and d["size"]["turns_band"] == "XL"
+    # 子がすべて閉じたら、もとのチケットを閉じる（1 度だけ）
+    gh.states.update({41: "closed", 42: "closed"})
+    assert pn.advance_steps(cur, gh, c.swap, c.comment, [REPO]) == 0
+    gh.states[43] = "closed"
+    assert pn.advance_steps(cur, gh, c.swap, c.comment, [REPO]) == 1
+    assert gh.patches == [(f"repos/{REPO}/issues/{ISSUE}", {"state": "closed", "state_reason": "completed"})]
+    assert pn.advance_steps(cur, gh, c.swap, c.comment, [REPO]) == 0
+    # 判定し直しても、同じ Plan の子は 2 度作らない
+    pn.split_tasks(cur, gh, REPO, ISSUE, CORR, pid, "お知らせの画面", r["tasks"], r["plan"])
+    assert len(gh.posts) == 3
+
+
+@needs_db
+def test_attach_sizes_adds_the_product_table(cur):
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into events(name, payload, dedupe_key) values ('plan.outcome',%s,'plan.outcome:x')",
+                (Jsonb({"repo": REPO, "pr_url": "x", "merged": True, "jobs": 2, "turns": 181, "files": 84, "layers_key": "contract+backend+web",
+                        "incomplete": 1, "cost_usd": 19.5}),))
+    inp = pn.attach_sizes(cur, REPO, {"round": 2})
+    assert inp["round"] == 2 and inp["size_table"][0]["layers"] == "contract+backend+web" and inp["size_table"][0]["turns_median"] == 181
+    assert pn.attach_sizes(cur, "other/repo", {})["size_table"] == []
+
+
+@needs_db
+def test_pre_implement_only_once_and_parent_deps_carry(cur):
+    from psycopg.types.json import Jsonb
+    r = res(steps=["ui_design", "implement"], marks=["split_after_design"])
+    run(cur, Calls(), r)
+    assert pn.wants_pre_implement(cur, CORR)
+    jid = pn.enqueue_pre_implement(cur, REPO, ISSUE, CORR, "design_handed_off")
+    cur.execute("select payload from events where name='job.enqueued' and job_id=%s", (jid,))
+    assert cur.fetchone()["payload"]["input"]["phase"] == "implement"
+    cur.execute("update jobs set state='succeeded' where id=%s", (jid,))
+    r2 = res(decision="split", steps=["implement"], guards=["oversized"])
+    r2["phase"], r2["tasks"] = "implement", [T("t1", "contract"), T("t2", deps=["t1"])]
+    gh = SplitGH()
+    gh_get = gh.__call__
+
+    def with_deps(method, path, body=None):   # 親の本文に足りない部品の依存がある
+        if method == "GET" and path.endswith(f"/issues/{ISSUE}"):
+            return {"labels": [], "body": "UXSpec\n依存: #9"}
+        return gh_get(method, path, body)
+    run(cur, Calls(), r2, with_deps)
+    assert "依存: #9" in gh.posts[0]["body"] and "依存: #9 #41" in gh.posts[1]["body"]
+    assert gh.posts[0]["labels"] == ["factory:desk-waiting"]
+    assert not pn.wants_pre_implement(cur, CORR)   # 実装の手前の判定は 1 度だけ

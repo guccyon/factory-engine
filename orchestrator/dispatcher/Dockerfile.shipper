@@ -3,8 +3,12 @@
 # 次に dispatcher を作り直すときは Dockerfile にも同じものが入っているので、shipper も同じイメージにしてよい
 FROM factory-dispatcher:p0
 RUN apt-get update && apt-get install -y --no-install-recommends git docker-compose docker-buildx && rm -rf /var/lib/apt/lists/*
+# 土台を作り直す前に足した依存（触れる環境の QR の segno など）も入るように、もう一度入れる（入っているものは飛ばされる）
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY *.py /app/
 ARG ENGINE_VERSION=unknown
 ENV ENGINE_VERSION=$ENGINE_VERSION
+RUN echo "$ENGINE_VERSION" > /app/ENGINE_VERSION   # env_file の .env で上書きされても版を誤らないよう、ファイルにも置く
 LABEL factory.engine_version=$ENGINE_VERSION
 CMD ["python", "ship.py"]

@@ -1,0 +1,95 @@
+# PR ごとの診断（依存・静的解析・秘密情報）。factory-engine の templates/ci/diagnose.yml を写したもの（ADR 0028 の ci_diagnose）。
+# 写すときに変えてよいのは ENGINE_REF の行だけ（Engine の固定した版。factory-engine 自身は self で自分の木の版を使う）。
+# action は commit の SHA で固定する（タグは付け替えられるため。semgrep の github-actions-mutable-action-tag）。
+# shadow: 結果は Job Summary と成果物 diagnose に出すだけで、PR は落とさない。必須チェックにもしない。
+# - 静的解析: semgrep（p/default）を --baseline-commit で base との差分だけにする
+# - 依存: osv-scanner で base と head のロックファイルを測り、head にだけある脆弱性を出す
+# - 秘密情報: gitleaks で PR のコミットの範囲だけを見る（--redact。値は出さない）
+# 除外は道具それぞれの設定ファイルに書く（osv-scanner.toml、.semgrepignore、.gitleaks.toml / .gitleaksignore）
+name: diagnose
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENGINE_REF: self
+  OSV_SCANNER_VERSION: v2.2.2
+  OSV_SCANNER_SHA256: c799274b682e0437c802d4714a136ad09b39c65547c460049ba5358d28afa576
+  GITLEAKS_VERSION: 8.28.0
+  GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+  SEMGREP_VERSION: 1.181.0
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: まとめ役を取る
+        run: |
+          if [ "$ENGINE_REF" = "self" ]; then
+            cp core-gates/diagnose.py "$RUNNER_TEMP/diagnose.py"
+          else
+            curl -fsSL -o "$RUNNER_TEMP/diagnose.py" "https://raw.githubusercontent.com/guccyon/factory-engine/${ENGINE_REF}/core-gates/diagnose.py"
+          fi
+      - name: 道具を取る（固定した版と照合）
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP/bin"
+          curl -fsSL -o osv-scanner "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz gitleaks
+          python3 -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --quiet "semgrep==${SEMGREP_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/semgrep/bin" >> "$GITHUB_PATH"
+      - name: 静的解析（semgrep、base との差分）
+        continue-on-error: true
+        run: |
+          semgrep scan --config p/default --metrics off --baseline-commit "$BASE_SHA" --json --output "$RUNNER_TEMP/semgrep.json" --quiet || true
+      - name: 依存（osv-scanner、base と head）
+        continue-on-error: true
+        run: |
+          # 脆弱性があると終了コード 1、ロックファイルがないと 128 を返すので、出力の有無で判断する
+          osv-scanner scan source --recursive --format json --output "$RUNNER_TEMP/osv-head.json" . || true
+          git worktree add -q "$RUNNER_TEMP/base" "$BASE_SHA"
+          osv-scanner scan source --recursive --format json --output "$RUNNER_TEMP/osv-base.json" "$RUNNER_TEMP/base" || true
+      - name: 秘密情報（gitleaks、PR のコミットだけ）
+        continue-on-error: true
+        run: |
+          from=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          gitleaks git --log-opts="${from}..${HEAD_SHA}" --redact --no-banner --exit-code 0 \
+            --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" .
+      - name: まとめる
+        if: always()
+        run: |
+          python3 "$RUNNER_TEMP/diagnose.py" summarize \
+            --deps-head "$RUNNER_TEMP/osv-head.json" --deps-base "$RUNNER_TEMP/osv-base.json" \
+            --root-head . --root-base "$RUNNER_TEMP/base" \
+            --sast "$RUNNER_TEMP/semgrep.json" --secrets "$RUNNER_TEMP/gitleaks.json" \
+            --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --out diagnose.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: diagnose
+          path: diagnose.json
+          retention-days: 30
+          if-no-files-found: ignore

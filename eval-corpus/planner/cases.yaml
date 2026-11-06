@@ -1,0 +1,947 @@
+# プランナーの固定の評価セット（ADR 0036 の 4b）。正解は建設者がオーナーの代理で付けた案で、confirmed: false のものはオーナーの確認待ち
+schema_version: '0.1'
+product: guccyon/rally
+cases:
+- id: rally-455
+  issue: 455
+  title: コーチがお休みするとき、毎回手作業で大変なんだけど
+  has_uxspec: true
+  phase: implement
+  input:
+    title: コーチがお休みするとき、毎回手作業で大変なんだけど
+    body: "コーチがお休みするとき、毎回手作業で大変なんだけど\n\n（clarify の収束の計測。要求者 ops-1 は架空のペルソナで、往復は窓口と工場のエージェントが行う）\n\n<!-- factory-uxspec:v1\
+      \ -->\n## 画面の設計（UXSpec）\n\nデザインの線で決まった案 `a`（人が選んだ）。画面の要素・振る舞い・状態はこの UXSpec に合わせて実装する（ADR 0025）。\n同じ PR で、この UXSpec を\
+      \ `specs/ux/issue-455.yaml` に置く。見た目の細部は後から直してよい。\nデザインシステムに足りない部品は別のタスクで足す。画面に直書きしない。\n依存: #979\n\n```yaml\nprd:\n \
+      \ goal: 本部の担当者（運営）として、コーチがお休みするときに、その期間の予約を 1 件ずつ探して生徒に連絡し、枠を片づける手作業をやめたい。 期間を入れて\n    1 回確かめれば、影響する生徒にもれなく知らせて片づけが終わるようにしたい。\n\
+      \  scope:\n    in:\n    - 本部の画面「コーチのお休み」（期間の入力・影響の一覧・生徒への一言・確認・結果）\n    - コーチの様子の「このコーチで開く画面」のリンクの並びに「お休み」を足す\n    -\
+      \ 本部による予約のまとめてのキャンセル、生徒ごとのお知らせ、期間の枠の取り下げ（新しい API。contract_needs）\n    out:\n    - ほかのコーチへの振替（代わりのコーチを探して予約し直す）。生徒が自分で探す（お知らせの本文で案内する）\n\
+      \    - コーチ自身がお休みを申し出る画面（coach ロール）。今回はコーチから本部へ連絡が来る前提\n    - お休みの期間中にコーチが新しく枠を公開できないようにする仕組み（open_questions の 2）\n \
+      \   - 受付の停止（期限のない停止は今の「コーチの受付」のまま。お休みは期間で区切る）\n    - お休みの取り消し（キャンセルした予約は元に戻せない）と、お休みの記録の一覧の画面\n    - 動画添削（非同期レッスン）の返却待ちの扱い。期間のある予約ではないので対象外（open_questions\
+      \ の 4）\n  source: 'Issue guccyon/rally#455「コーチがお休みするとき、毎回手作業で大変なんだけど」（要求者 ops-1。本文はこの 1 文だけで、\n    受け入れ条件はない。手作業の中身は今の製品から読み取った:\
+      \ 本部は受付を止められるが予約と枠はそのまま残り （openapi admin-web の suspendCoach）、本部は予約をキャンセルできず（今キャンセルできるのは生徒だけ。listCancelledBookings\n\
+      \    の説明）、 枠の取り下げはコーチ本人だけ（withdrawMySlot）、お知らせは生徒全員かスポーツごとにしか送れない（sendAnnouncement））。\n    PRD の文書は specs/ にない。'\n \
+      \ success: '本部がコーチの様子からこの画面を開き、お休みの期間を入れて、期間の予約（確定待ち・確定済み）と枠を画面で確かめ、 「お休みにする」を 1 回確かめて押すだけで、(1)\n    期間の予約がすべて本部のキャンセルになり（生徒のビデオ通話の枠を使わない）、\
+      \ (2) 予約した生徒全員にお知らせが届き、(3) 期間の枠がすべて取り下げられて生徒の検索に出なくなる。\n    どの予約をキャンセルしたかは「キャンセルされた予約」（キャンセルした人: 本部）であとからたどれる。'\nnotes:\n\
+      - 案は admin-web（PC の管理画面）なので desktop で撮った。今の本部の画面は幅 48rem の 1 段で、狭い幅でも同じ並びで縦に伸びる\n- 動くプロトタイプの入口は a.html。a-overview.html（コーチの様子）の「お休み」→\
+      \ a.html の「お休みにする」→ a-confirm.html\n  の「キャンセルしてお休みにする」→ a-done.html → 「コーチの様子へ戻る」でひと回りする。a-loading・a-invalid・a-empty・a-sending・a-failed\n\
+      \  は状態のコマ\n- 送信中（a-sending）の後ろの画面は案 a の代表と同じ中身を描いている。コマの中の「モックの注記」の文と、入口のリンクの薄い青の面はモックだけのもの\n- サンプルの名前・日時は架空（2026-11-05\
+      \ を今日とした）\nstates:\n- 'hqCoachLeave コーチの読み込み中: 「読み込み中…」（frame loading とは別。コーチの欄だけ）'\n- 'hqCoachLeave コーチが見つからない（coach_id\
+      \ なし・コーチでない ID）: 「このコーチは見つかりません。コーチの一覧から選び直してください。」入力欄は出さない'\n- 'hqCoachLeave 期間がまだ空: 期間の欄と「期間の予約と枠を確かめる」だけ。「お休みにする」は押せない'\n\
+      - 'hqCoachLeave 入力の誤り: 日付の欄の下に error_text（frame invalid）'\n- 'hqCoachLeave 期間の予約と枠の読み込み中: ボタンの spinner と「期間の予約と枠を読み込んでいます…」・画面の上の\
+      \ bar（frame loading）'\n- 'hqCoachLeave 中身あり: 期間の予約と枠の一覧・お知らせの見本・一言・知らせ・「お休みにする」（案 a の代表）'\n- 'hqCoachLeave 空（期間に予約も公開中の枠もない）:\
+      \ empty_state（frame empty）'\n- 'hqCoachLeave 一覧の読み込みの失敗: 欄の中に notice（danger）。期間は残す'\n- 'hqCoachLeave 期間を変えたあと: 一覧は残し、「お休みにする」を押せなくして読み直しを促す'\n\
+      - 'hqCoachLeave 確認: confirm_dialog（frame confirm）'\n- 'hqCoachLeave 送信中: confirm の spinner、「やめる」も押せない、「お休みにしています…」（frame\
+      \ sending）'\n- 'hqCoachLeave お休みにした: 結果の知らせ（success）とキャンセル済み・終了の一覧、次のリンク（frame done）'\n- 'hqCoachLeave 送る失敗（確かめたあとに予約が変わった・重なるお休み・そのほか）:\
+      \ 画面の上に notice（danger）。何も変えていないことを書き、入れた値は残す（frame\n  failed）'\n- 'hqCoachLeave 権限がない（本部以外・未ログイン）: RoleGate がログイン画面へ戻す。API\
+      \ の 401・403 は失敗の文言'\n- 'hqCoachOverview: 既存の状態のまま（「お休み」のリンクは読み込みを待たずに出る）'\nticket: guccyon/rally#455\nchanges:\n- kind:\
+      \ new\n  after: 新しい画面。コーチ 1 人（URL の ?coach_id=）とお休みの期間（始まりの日・終わりの日）を入れて「期間の予約と枠を確かめる」と、 期間の予約と予約のない枠が出る。生徒への一言（任意）を書き、「お休みにする」→\n\
+      \    確認のダイアログで、予約のキャンセル・ 生徒へのお知らせ・枠の取り下げをまとめて行い、結果を同じ画面に出す。\n  screen: hqCoachLeave\n- kind: changed\n  after: 同じ並びの最後に「お休み」を足し、/headquarters/coaches/leave?coach_id=<コーチ\
+      \ ID> へ移る。ほかは変えない。\n  before: コーチの様子（/headquarters/coach-overview）の上の「このコーチで開く画面」に、評価・低い評価・レッスンメニュー・予約のリンクが並ぶ。\n   \
+      \ お休みの手続きの入り口はない（受付の停止はコーチの一覧の行から）。\n  screen: hqCoachOverview\nscreens:\n- id: hqCoachLeave\n  new: true\n  more:\n\
+      \    copy:\n    - 画面の名前「コーチのお休み」。「お休み」は glossary にまだない語で、仮に使う（open_questions の 1。足すなら coach_leave「コーチのお休み」）\n    - 予約・スロット（画面では「枠」。今の\
+      \ admin-web と同じ）・確定待ち・確定済み・キャンセル済み・公開中・終了・受付中・停止中・お知らせ・ビデオ通話は\n      glossary と今の画面の語\n    - ボタンは動詞で終える（「期間の予約と枠を確かめる」「お休みにする」「キャンセルしてお休みにする」「やめる」）。admin-web\
+      \ なので感嘆符は使わない\n    - 日時は content.yaml の形（「11/10（火）19:00〜19:30」「11/10（火）〜11/16（月）」）。日本時間\n    - 生徒に届くお知らせの文面の正本はサーバー（notification\
+      \ の本文）。画面は見本を出すだけ\n    analytics:\n    - 行動イベントは新しく足さない（本部の運営の操作で、suspendCoach と同じ扱い）\n    - キャンセルした予約ごとに booking.cancelled\
+      \ が要るか、slot.withdrawn を本部の取り下げでも発火するかは、actor が\n      student / coach に決まっているので決めきれない（open_questions の 6）。KPI「コーチの予約枠充足率」の分母に効く\n\
+      \    accessibility:\n    - 日付の欄・一言の欄に見えるラベル。誤りは aria-invalid と aria-describedby で欄に結ぶ\n    - 一覧は ul に aria-label（「期間の予約の一覧」）。行は「日時、生徒、状態」を\
+      \ 1 つの文で読む\n    - 状態は色と文字（確定待ち・確定済み・キャンセル済み・公開中・終了）とアイコン\n    - 確認のダイアログは role=dialog・aria-modal。開いたら題へフォーカス、閉じたら「お休みにする」へ戻す\n\
+      \    - 読み込み中・送信中・成功は role=status、失敗は role=alert\n    contract_needs:\n    - '1. GET /coaches/{coach_id}/leave-preview?from=YYYY-MM-DD&to=YYYY-MM-DD（本部だけ。照会だけ）。応答:\n\
+      \      coach（coach_id・display_name・sports・acceptance_status）、 bookings（期間に始まる pending・confirmed\n      の予約。booking_id・slot_id・starts_at・ends_at・status・is_trial・lesson_menu\
+      \ の名前・student_id・student_display_name。開始の早い順）、\n      open_slots（期間に始まる open で有効な予約のない枠。slot_id・starts_at・ends_at・capacity・lesson_menu\n\
+      \      の名前）、 slot_count（取り下げる枠の数。予約のある枠を含む）、student_count（知らせる生徒の人数。同じ生徒は 1 人）、notification_preview（題と本文の見本）。\n    \
+      \  期間の規則は listBookings と同じ（31 日まで・日本時間）に加え、from は明日以降（違えば 422 validation_failed）'\n    - '2. POST /coaches/{coach_id}/leaves（本部だけ）。本文:\
+      \ from・to・note（0〜200 文字）・expected_booking_ids。\n      全部か何もしないかで、期間の有効な予約をすべて本部のキャンセル（cancelled_by: headquarters。キャンセル規定で回数を使わない＝BookingCancelled\n\
+      \      の consumes_quota を false）にし、 予約した生徒ごとにお知らせ（notification の新しい種類。open_questions\n      の 7）を作ってプッシュ通知（受け取り設定に従う）、期間の枠をすべて取り下げる（closed）。\
+      \ お休みの記録（期間・note・本部のアカウント・時刻・件数）を\n      1 件残す。応答: 記録と cancelled_booking_count・notified_student_count・withdrawn_slot_count。\n\
+      \      409 leave_preview_outdated（今の期間の有効な予約の ID が expected_booking_ids と違う）、409 coach_leave_overlaps（期間の重なるお休みがある）、404（コーチでない）、422（期間・note）'\n\
+      \    - 3. 境界間イベント BookingCancelled（scheduling → entitlement）に本部のキャンセルを載せ、回数を使わないことを判定は\n      scheduling の 1 か所で決める（不変条件\
+      \ 3・ADR 0002）\n    microinteractions:\n    - loops: 押すたびに読み直す。自動では読み直さない\n      rules: 期間を確かめてから 1 回読む。期間を変えたら一覧は残し、送るボタンを止める\n\
+      \      trigger: 「期間の予約と枠を確かめる」\n      feedback: ボタンの spinner と欄の「読み込んでいます…」。300ms より速く終わるときは出さない\n    - loops: なし（同じ期間の\
+      \ 2 回目はサーバーが断る）\n      rules: 1 回だけ送る。送るのは確かめた予約の ID の一覧と期間と一言\n      trigger: 「キャンセルしてお休みにする」\n      feedback: confirm\
+      \ の spinner と「お休みにしています…」、終わったら結果の知らせ（消えない）\n  route: /headquarters/coaches/leave?coach_id=<コーチ ID>\n  purpose: コーチのお休みの期間を決め、その期間の予約と枠を見て確かめてから、まとめて片づける画面。コーチの様子から入り、\
+      \ 終わったらキャンセルされた予約かコーチの様子へ戻る。片づけの流れの中心で、ほかの画面を回らずにここだけで終える。\n  audience: 本部（admin-web に本部のロールでログインした人）。PC で見る\n  elements:\n\
+      \  - name: 外枠\n    note: 今の本部の画面と同じ\n    source: session\n    content: 見出し「Rally 管理画面（本部）」とログアウト\n    required: true\n\
+      \    component: RoleGate（既存）\n  - name: 戻るリンク\n    note: コーチの様子の画面の「コーチの一覧へ戻る」「本部の画面へ戻る」と同じ並び\n    source: coach_id\n\
+      \    content: 「コーチの様子へ戻る」「本部の画面へ戻る」\n    required: true\n    component: 文字のリンク（navigation.admin_web）\n  - name: 画面の見出しと説明\n\
+      \    note: 説明は 2 行まで\n    source: 固定の文言\n    content: 「コーチのお休み」と、何ができるかの 1 文\n    required: true\n    component: 見出し（headline\
+      \ 24px）と本文 text_muted\n  - name: お休みにするコーチ\n    note: 停止中のコーチもお休みにできる（停止中でも入っている予約は残るため）\n    source: getCoachOverview（display_name・acceptance_status）と\
+      \ listCoaches のスポーツ（contract_needs\n      の 1 で 1 回にまとめてよい）\n    content: 表示名・スポーツ・受付の状態（受付中／停止中）\n    required: true\n\
+      \    component: Section と定義の並び（CoachOverview の dl の写し）、status_tag\n  - name: 始まりの日・終わりの日\n    note: 明日から選べる（今日を含めない。今日のうちに始まる予約は個別に扱う。open_questions\
+      \ の 3）。終わりの日は始まりの日と同じか後。\n      期間は 31 日まで（listBookings と同じ上限）。helper「明日から 31 日までの期間を選べます。始まりの日と終わりの日を含みます。」\n    source:\
+      \ 入力\n    content: YYYY-MM-DD。開いたときは空\n    required: true\n    component: text_field の日付（input type=date。design_system_gaps\
+      \ の date_field）\n  - name: 期間の予約と枠を確かめるボタン\n    note: 画面の primary は「お休みにする」なので secondary\n    source: 入力した期間\n    content:\
+      \ 「期間の予約と枠を確かめる」\n    required: true\n    component: button secondary\n  - name: 期間の予約\n    note: 並べ方は API の順（開始の早い順）のまま。キャンセル済みは出さない。グループレッスンの枠は生徒ごとに\
+      \ 1 行。行は予約の詳細へのリンク\n    source: GET /coaches/{coach_id}/leave-preview の bookings（contract_needs の 1）\n    content: '見出し「期間の予約（n\
+      \ 件）」、説明 1 文、行ごとに 題＝枠の日時（「11/10（火）19:00〜19:30」）・補足＝「生徒: 表示名」と体験予約かメニュー名・状態（確定待ち／確定済み）'\n    required: true\n    component:\
+      \ Section・list_row・status_tag\n  - name: 期間の予約のない枠\n    note: 0 件ならこの欄ごと出さない。予約のある枠は予約の欄に出ているので重ねて出さない（取り下げはする）\n  \
+      \  source: leave-preview の open_slots\n    content: 見出し「期間の予約のない枠（n 件）」、行ごとに 枠の日時・定員とメニュー・状態「公開中」\n    required: true\n\
+      \    component: Section・list_row・status_tag\n  - name: 生徒へのお知らせの見本\n    note: 1 件目の予約の日時で見せ、「日時は予約ごとに入ります」と添える\n   \
+      \ source: leave-preview の notification_preview（文面の正本はサーバー。画面で組み立てない）\n    content: 題「コーチのお休みで予約をキャンセルしました」と本文（コーチの表示名・予約の日時・枠を使わないこと・ほかの枠やコーチを探せること）\n\
+      \    required: true\n    component: card（Section の中の白い面）\n  - name: 生徒への一言\n    note: 0〜200 文字（コードポイントで数える。受付の停止の理由と同じ数え方）。counter「n\
+      \ / 200」。改行はそのまま\n    source: 入力\n    content: 任意の一言。お知らせの本文の後ろに付く\n    required: false\n    component: text_field multi_line（TextArea）\n\
+      \  - name: 取り消せないことの知らせ\n    note: 一覧が出ているときだけ\n    source: 固定の文言\n    content: 「キャンセルした予約は元に戻せません。生徒の今月のビデオ通話の枠は使いません（キャンセル規定の回数にも数えません）。期間の外の予約と枠はそのままです。」\n\
+      \    required: true\n    component: notice inline（warning）\n  - name: お休みにするボタン\n    note: 期間を確かめる前と、確かめたあとに期間を変えたときは押せない（disabled。近くに「期間を確かめると押せます。」）\n\
+      \    source: —\n    content: 「お休みにする」\n    required: true\n    component: button primary（1 画面に 1 つ）\n  - name: 確認のダイアログ\n\
+      \    note: cancel「やめる」（text）を左、confirm「キャンセルしてお休みにする」（danger）を右\n    source: leave-preview の件数\n    content: 題「山田 健\
+      \ コーチをお休みにしますか？」、本文に期間・予約の件数・生徒の人数・取り下げる枠の件数・元に戻せないこと・ビデオ通話の枠を使わないこと\n    required: true\n    component: confirm_dialog（ConfirmDialog）\n\
+      \  - name: 結果の知らせ\n    note: 画面の上に出し、消さない。失敗の文言は behaviors\n    source: POST /coaches/{coach_id}/leaves の応答（contract_needs\
+      \ の 2）\n    content: 成功「山田 健 コーチを 11/10（火）〜11/16（月）のお休みにしました。予約 5 件をキャンセルして生徒 5 人にお知らせを送り、枠\n      6 件を取り下げました。」\n \
+      \   required: true\n    component: notice inline（success。role=status）か（danger。role=alert）\n  - name: 結果のあとのリンク\n   \
+      \ note: お休みにしたあとだけ。期間の入力と一言の欄は消し、一覧はキャンセル済み・終了の状態で残す\n    source: coach_id\n    content: 「キャンセルされた予約を見る」「コーチの様子へ戻る」\n\
+      \    required: true\n    component: button secondary・button text\n  behaviors:\n  - action: 開く\n    result: getCoachOverview\
+      \ を 1 回読み、コーチの欄を出す。読み込み中は「読み込み中…」。404 なら「このコーチは見つかりません。コーチの一覧から選び直してください。」、ほかの失敗はサーバーの文言を\n      notice（danger）で出す\n\
+      \    target: 画面\n    condition: coach_id がある\n  - action: 欄を離れる・確かめるボタンを押す\n    result: 欄の下に error_text を出し、API は呼ばない。文言は「始まりの日を選んでください。」「始まりの日は明日より後の日にしてください。」\n\
+      \      「終わりの日は始まりの日と同じか、それより後の日にしてください。」「お休みの期間は 31 日までにしてください。」。 打っている途中には出さない。確かめるボタンを押したときは最初の誤りの欄へフォーカスを移す\n   \
+      \ target: 始まりの日・終わりの日\n    condition: 空・今日以前・終わりが始まりより前・32 日以上\n  - action: 押す\n    result: GET /coaches/{coach_id}/leave-preview?from=&to=\
+      \ を読む。読んでいるあいだはボタンを loading（spinner。押せない）、欄に「期間の予約と枠を読み込んでいます…」。読めたら一覧・お知らせの見本・一言の欄・知らせ・「お休みにする」を出す\n    target: 期間の予約と枠を確かめるボタン\n\
+      \    condition: 期間が正しい\n  - action: 読み込み中にもう一度押す・期間を変えて押す\n    result: 読み込み中は押せない。期間を変えて押し直したら、前の結果が遅れて返っても捨て、最後に押した期間の結果だけを出す（CoachAcceptanceList\n\
+      \      と同じ番号の扱い）\n    target: 期間の予約と枠を確かめるボタン\n    condition: —\n  - action: 読み終わる\n    result: empty_state（screen）「<期間>\
+      \ に、<コーチ> コーチの予約と公開中の枠はありません。キャンセルや取り下げは要りません。」と、「しばらく新しい予約を受けたくないときは、コーチの一覧で受付を止めてください。」。「お休みにする」は出さない\n    target:\
+      \ 期間の予約と枠\n    condition: 予約も公開中の枠も 0 件\n  - action: 読み終わる\n    result: 欄の中に notice（danger）でサーバーの文言（「期間の予約を読み込めませんでした。「期間の予約と枠を確かめる」でもう一度読み込めます。」の形）。入れた期間は消さない\n\
+      \    target: 期間の予約と枠\n    condition: 失敗\n  - action: 一覧が出たあとに変える\n    result: 一覧は残したまま「お休みにする」を押せなくし、「期間を変えました。「期間の予約と枠を確かめる」で読み直してください。」を出す（見ている一覧と送る期間をいつも一致させる）\n\
+      \    target: 始まりの日・終わりの日\n    condition: —\n  - action: 押す\n    result: 予約の詳細（/headquarters/bookings/detail?booking_id=）へ移る\n\
+      \    target: 期間の予約の行\n    condition: —\n  - action: 打つ\n    result: counter を「201 / 200」にし、欄を離れたときに「一言は 200 文字までにしてください。」を出す。「お休みにする」を押したらこの欄へフォーカスを移し、送らない\n\
+      \    target: 生徒への一言\n    condition: 200 文字を超える\n  - action: 押す\n    result: 確認のダイアログを開き、フォーカスを題へ移す（ダイアログの中に閉じ込める）\n\
+      \    target: お休みにするボタン\n    condition: 一覧が出ていて、期間を変えておらず、一言が 200 文字まで\n  - action: 「やめる」・外を押す・Esc\n    result: 閉じて何も送らない。フォーカスを「お休みにする」へ戻す\n\
+      \    target: 確認のダイアログ\n    condition: 送っていない\n  - action: 「キャンセルしてお休みにする」を押す\n    result: "
+  actual:
+    pr: 984
+    merged: false
+    files: 84
+    layers:
+    - db
+    - contract
+    - docs
+    - backend
+    - web
+    counted_layers:
+    - db
+    - contract
+    - backend
+    - web
+    turns: 181
+  expected:
+    split: true
+    layers:
+    - db
+    - contract
+    - backend
+    - web
+    band: XL
+    route:
+    - implement
+  confirmed: false
+  note: db・契約・backend・admin-web の 4 層、84 ファイル、ターン 181（121＋続き 60）で、切る基準の 3 つすべてに当たる。UXSpec を付けたあとの本文なので経路は implement。PR は未マージ。本文は
+    28449 文字のうち先頭の 12000 文字
+- id: rally-886
+  issue: 886
+  title: 'D319: 管理画面で生徒の一覧を返却待ちの動画・未対応の低い評価のある生徒だけに絞り込む'
+  has_uxspec: false
+  phase: null
+  input:
+    title: 'D319: 管理画面で生徒の一覧を返却待ちの動画・未対応の低い評価のある生徒だけに絞り込む'
+    body: 'タスク。本部の運営機能。生徒の一覧を、返却待ちの動画のある生徒だけ・未対応の低い評価をつけた生徒だけに絞れるようにする。backend と契約は D314（#881）で `has_pending_video`、D316（#883）で
+      `has_unhandled_low_rated` が `listStudents` に入る。
+
+
+      依存: #881, #883
+
+
+      ## 先に読むもの
+
+      - 契約の `listStudents` の `has_pending_video`・`has_unhandled_low_rated`
+
+      - 管理画面の `StudentDirectory.tsx`（D307 の「返事を待っているメッセージのある生徒だけ」）
+
+
+      ## やること
+
+      - 生徒の一覧に「返却待ちの動画のある生徒だけ」「未対応の低い評価をつけた生徒だけ」の切り替えを置く。部品と振る舞いは D307 と揃える
+
+      - いまの絞り込みと組み合わせられる
+
+      - 0 件のときは、条件を含めた空の表示にする
+
+      - テスト：切り替えで取り直すこと、組み合わせ、空の表示
+
+
+      ## やらないこと
+
+      - backend と契約の変更
+
+
+      ## 触るファイルの見込み
+
+      - `apps/admin-web/src/api/headquarters.ts`
+
+      - `apps/admin-web/src/components/headquarters/StudentDirectory.tsx`
+
+      - `apps/admin-web/screenshots/screens.ts`（押す文言や画面を足したとき）
+
+
+      ## 受け入れ条件
+
+      - admin-web の lint・型検査・テストが通る
+
+      - 画面のキャプチャの一覧（`screens.ts`）が撮れる状態のまま
+
+      - 変更の記録は `changelog.d/<この Issue の番号>.md` に書く（`CHANGELOG.md` は直接書き換えない。`changelog.d/README.md`）'
+  actual:
+    pr: 924
+    merged: true
+    files: 5
+    layers:
+    - docs
+    - web
+    counted_layers:
+    - web
+    turns: 17
+  expected:
+    split: false
+    layers:
+    - web
+    band: S
+    route:
+    - implement
+  confirmed: false
+  note: 管理画面だけ（web）の 5 ファイル・17 ターンで、切る基準に当たらない小さな画面のチケット
+- id: rally-883
+  issue: 883
+  title: 'D316: 本部が生徒の一覧を未対応の低い評価をつけた生徒だけに絞り込める（backend と契約）'
+  has_uxspec: false
+  phase: null
+  input:
+    title: 'D316: 本部が生徒の一覧を未対応の低い評価をつけた生徒だけに絞り込める（backend と契約）'
+    body: 'タスク。本部の運営機能。フォローの要る生徒を一覧で見つけられるようにする。`getStudentActivity` には `unhandled_low_rated_review_count` があるが、`listStudents`
+      ではそれで絞れない。
+
+
+      ## 先に読むもの
+
+      - admin-web の契約の `listStudents`（`has_unanswered`、D304 の作り）と backend の実装
+
+      - 数え方：`getStudentActivity` の `unhandled_low_rated_review_count`（D293）
+
+
+      ## やること
+
+      - `listStudents` に `has_unhandled_low_rated`（任意の真偽。true は未対応の低い評価を 1 件以上つけた生徒だけ）を足す。数え方は D293 と同じ 1 か所を使い、契約の説明に書く
+
+      - 既存の絞り込みと組み合わせられる
+
+      - 既存の引数と項目は変えない（足すだけ）。指定しないときは今までどおり
+
+      - テスト：domain と application の単体テスト、DB を使う統合テスト
+
+
+      ## やらないこと
+
+      - 画面、DB の既存の列の削除・変更
+
+
+      ## 触るファイルの見込み
+
+      - `specs/contracts/api/admin-web/openapi.yaml`
+
+      - `apps/backend/crates/interface/src/lib.rs`
+
+      - `apps/admin-web/src/api/schema.ts`（生成した型）
+
+
+      ## 受け入れ条件
+
+      - `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test` が通る
+
+      - 契約（openapi）と実装が一致する。admin-web の生成した型も合わせる（画面は変えない）
+
+      - 変更の記録は `changelog.d/<この Issue の番号>.md` に書く（`CHANGELOG.md` は直接書き換えない。`changelog.d/README.md`）'
+  actual:
+    pr: 922
+    merged: true
+    files: 14
+    layers:
+    - contract
+    - docs
+    - backend
+    counted_layers:
+    - contract
+    - backend
+    turns: 41
+  expected:
+    split: false
+    layers:
+    - contract
+    - backend
+    band: M
+    route:
+    - implement
+  confirmed: false
+  note: 契約と backend のチケット。admin-web は契約から生成した型（schema.ts）だけが変わり、層の決め方では contract に入る（2026-11-05 オーナー決定）。1 件のまま 41 ターンで終わった
+- id: rally-881
+  issue: 881
+  title: 'D314: 本部が生徒の一覧を返却待ちの動画のある生徒だけに絞り込める（backend と契約）'
+  has_uxspec: false
+  phase: null
+  input:
+    title: 'D314: 本部が生徒の一覧を返却待ちの動画のある生徒だけに絞り込める（backend と契約）'
+    body: 'タスク。本部の運営機能。添削の返事を待っている生徒を一覧で見つけられるようにする。`listStudents` ではそれで絞れない。
+
+
+      ## 先に読むもの
+
+      - admin-web の契約の `listStudents`（`has_unanswered`、D304 の作り）と backend の実装
+
+      - 返却待ちの数え方：`getStudentActivity` の `pending_video_review_count`、`listPendingVideoReviews`
+
+
+      ## やること
+
+      - `listStudents` に `has_pending_video`（任意の真偽。true は返却待ちの動画が 1 件以上ある生徒だけ）を足す。数え方は `pending_video_review_count` と同じ 1
+      か所を使い、契約の説明に書く
+
+      - 既存の絞り込みと組み合わせられる
+
+      - 既存の引数と項目は変えない（足すだけ）。指定しないときは今までどおり
+
+      - テスト：domain と application の単体テスト、DB を使う統合テスト
+
+
+      ## やらないこと
+
+      - 画面、DB の既存の列の削除・変更
+
+
+      ## 触るファイルの見込み
+
+      - `specs/contracts/api/admin-web/openapi.yaml`
+
+      - `apps/backend/crates/interface/src/lib.rs`
+
+      - `apps/admin-web/src/api/schema.ts`（生成した型）
+
+
+      ## 受け入れ条件
+
+      - `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test` が通る
+
+      - 契約（openapi）と実装が一致する。admin-web の生成した型も合わせる（画面は変えない）
+
+      - 変更の記録は `changelog.d/<この Issue の番号>.md` に書く（`CHANGELOG.md` は直接書き換えない。`changelog.d/README.md`）'
+  actual:
+    pr: 917
+    merged: true
+    files: 14
+    layers:
+    - contract
+    - docs
+    - backend
+    counted_layers:
+    - contract
+    - backend
+    turns: 3
+  expected:
+    split: false
+    layers:
+    - contract
+    - backend
+    band: S
+    route:
+    - implement
+  confirmed: false
+  note: '#883 と同じ形（契約・backend・生成した型）。turns 3 は費用 $2.72 に比べて少なく、記録が実際のターンを表していない疑いがある（帯は S のまま）'
+- id: rally-896
+  issue: 896
+  title: 本部の一覧の表が細い枠に押し込まれ、文字が折り返して列がくっつく
+  has_uxspec: false
+  phase: null
+  input:
+    title: 本部の一覧の表が細い枠に押し込まれ、文字が折り返して列がくっつく
+    body: '不具合（見た目）。管理画面の本部の表が細い枠に収まっていて、画面が広くても中身は幅 550px ほどのままになる。列の多い表で、文字が 1〜2 文字ずつ折り返したり、隣の列とくっついたりする。
+
+
+      ## 見つけたところ（staging 0.7.0、2026-11-04 の本部のウォークスルー）
+
+      - 本部のレッスンメニュー: 「バスケットボー/ル」「シュートの基/礎」「同期（ビデオ通/話）」「60/分」「公開/中」「記/録」と折り返す
+
+      - 本部の生徒の一覧: 「まだ予約がありません0 件」、見出しの「直近 30 日の予約登録日」のように、列の間がなくくっつく
+
+      - 本部の返した動画添削: 「コーチ 10 水泳」のように列がくっつく
+
+
+      ## 期待
+
+      本部の一覧の画面は、列が多くても読める幅を取る（広い画面では枠を広げる、狭いときは表だけを横にスクロールする、など）。セルの中で単語が切れない。列と列の間に余白がある。
+
+
+      ## やること
+
+      - 本部の画面の枠の幅と、表のセルの折り返し・余白を見直す。表の部品が共通なら、そこで直す
+
+      - 直したら、上の 3 画面を広い幅と狭い幅で見て確かめる
+
+      '
+  actual:
+    pr: 946
+    merged: true
+    files: 29
+    layers:
+    - docs
+    - web
+    counted_layers:
+    - web
+    turns: 41
+  expected:
+    split: false
+    layers:
+    - web
+    band: M
+    route:
+    - implement
+  confirmed: false
+  note: admin-web だけの表示の不具合の直しで、29 ファイル（30 以下）・41 ターン。切らずに M
+- id: rally-897
+  issue: 897
+  title: 本部のコーチの評価の画面に内部のコーチ ID が出る
+  has_uxspec: false
+  phase: null
+  input:
+    title: 本部のコーチの評価の画面に内部のコーチ ID が出る
+    body: '不具合（見た目）。本部の「コーチの評価」の画面でコーチを選ぶと、「コーチ ID」として内部の ID（UUID）がそのまま出る。本部の人には意味のない文字列なので、画面には要らない。
+
+
+      ## 再現（staging 0.7.0、2026-11-04）
+
+      1. 本部でログイン → コーチの評価
+
+      2. コーチを選ぶ → 件数と平均の上に「コーチ ID」と UUID が出る
+
+
+      ## 期待
+
+      ID は出さない（コーチは表示名で分かる）。URL の `coach_id` はそのままでよい。
+
+
+      ## 先に読むもの
+
+      - `apps/admin-web/src/components/CoachReviewSummaryView.tsx`（「コーチ ID」の欄）
+
+      '
+  actual:
+    pr: 915
+    merged: true
+    files: 4
+    layers:
+    - docs
+    - web
+    counted_layers:
+    - web
+    turns: 10
+  expected:
+    split: false
+    layers:
+    - web
+    band: S
+    route:
+    - implement
+  confirmed: false
+  note: admin-web だけの 4 ファイル・10 ターンの小さな不具合の直し
+- id: rally-895
+  issue: 895
+  title: コーチのチャットで「新しいメッセージを確かめる」を押してもスレッドの一覧が古いまま
+  has_uxspec: false
+  phase: null
+  input:
+    title: コーチのチャットで「新しいメッセージを確かめる」を押してもスレッドの一覧が古いまま
+    body: '不具合。コーチの管理画面のチャットで、「新しいメッセージを確かめる」を押すと下のメッセージは新しくなるが、上のスレッドの一覧（最後のメッセージ・未読の数）は古いままになる。
+
+
+      ## 再現（staging 0.7.0、2026-11-04 の画面共有の通し確認で見つけた）
+
+      1. コーチでチャットのタブを開き、生徒とのスレッドを選ぶ（まだメッセージは 0 件）
+
+      2. 生徒アプリから、そのスレッドに本文とスタンプを送る
+
+      3. コーチ側で「新しいメッセージを確かめる」を押す
+
+      4. 下のメッセージには生徒の 2 件が出るが、上の一覧はそのスレッドに「まだメッセージはありません」と出たまま。コーチが返信を送ると、そこで初めて一覧も新しくなる
+
+
+      ## 期待
+
+      「新しいメッセージを確かめる」で、開いているスレッドのメッセージと一緒に、スレッドの一覧（`listMessageThreads`）も取り直す。一覧の最後のメッセージと未読の数が、下のメッセージと食い違わない。
+
+
+      ## 先に読むもの
+
+      - `apps/admin-web/src/components/coach/MessageThreadView.tsx`（「新しいメッセージを確かめる」）と、スレッドの一覧を持つ親の部品
+
+
+      ## やること
+
+      - 取り直しのときに、スレッドの一覧も取り直す（または親に知らせる）
+
+      - テスト：取り直したあと、一覧の最後のメッセージが新しいものになること
+
+
+      ## 補足
+
+      単体のテストは API をモックにしていて、生徒側から届くメッセージを含めた一周は通していないので、これまで見つからなかった。E2E（生徒アプリ・コーチの画面・backend を同時に動かす確認）で拾うべき種類の問題として、工場の検証の穴の記録にもする。
+
+      '
+  actual:
+    pr: 914
+    merged: true
+    files: 3
+    layers:
+    - docs
+    - web
+    counted_layers:
+    - web
+    turns: 14
+  expected:
+    split: false
+    layers:
+    - web
+    band: S
+    route:
+    - implement
+  confirmed: false
+  note: admin-web だけの 3 ファイル・14 ターンの小さな不具合の直し
+- id: rally-900
+  issue: 900
+  title: 需給の画面で、枠も需要も 0 のゴルフが「足りている」と出る
+  has_uxspec: false
+  phase: null
+  input:
+    title: 需給の画面で、枠も需要も 0 のゴルフが「足りている」と出る
+    body: '仕様の確認が要る。本部の「スポーツ別の予約枠の需給」で、ゴルフは公開した枠も予約しようとした生徒も 0 なのに、判定が「足りている」と出る。
+
+
+      ## 再現（staging 0.7.0、2026-11-04）
+
+      - 本部 → 需給を見る → ゴルフの行が「足りている・0・0」
+
+
+      ## 期待（案）
+
+      ゴルフは月額契約の対象外で、ワンショットだけのスポーツ。需給の対象でなければ行ごと出さないか、判定を「対象外」とする。どちらにするかは需給の判定の式（契約の `getSlotSupply`）と一緒に決める。
+
+
+      ## やること
+
+      - 判定の式に「枠も需要も 0」と「対象外のスポーツ」の扱いを足す（backend と契約）
+
+      - 画面はそれを出す
+
+      '
+  actual:
+    pr: 911
+    merged: true
+    files: 16
+    layers:
+    - contract
+    - docs
+    - backend
+    - web
+    counted_layers:
+    - contract
+    - backend
+    - web
+    turns: 2
+  expected:
+    split: false
+    layers:
+    - contract
+    - backend
+    - web
+    band: S
+    route:
+    - implement
+  confirmed: false
+  note: 不具合の直し。契約の enum を足し、backend と admin-web の画面（SlotSupplyReport.tsx）まで変わるので層は本当に 3 つで、規則では切る。それでも 16 ファイル・費用 $2.03 で
+    1 件のまま終わったので、正解は切らない。層の数だけで切ると切りすぎになる例として残す。turns 2 は記録の疑いがある
+- id: rally-898
+  issue: 898
+  title: 本部の画面で「ライブレッスン」と「通話」の呼び方が混ざっている
+  has_uxspec: false
+  phase: null
+  input:
+    title: 本部の画面で「ライブレッスン」と「通話」の呼び方が混ざっている
+    body: '言葉の揺れ。同じもの（ビデオ通話で受ける同期レッスン）を、管理画面の本部では「通話」と「ライブレッスン」の 2 つの呼び方で書いている。
+
+
+      ## 見つけたところ（staging 0.7.0、2026-11-04）
+
+      - 本部のホーム: 「通話の開始と終了の記録を見る」→ 開いた先の見出しは「ライブレッスンの記録」
+
+      - 生徒の利用の様子: 「この生徒のライブレッスンの記録を見る」と「この生徒の終わっていない通話を見る」が並んでいる
+
+      - ほかの画面では「通話（同期レッスン）」「同期（ビデオ通話）」とも書いている
+
+
+      ## 期待
+
+      本部の画面での呼び方を 1 つにそろえる（候補は、利用者に分かりやすい「ビデオ通話」）。glossary に呼び方の決まりがあればそれに従い、なければ glossary に足す。
+
+
+      ## やること
+
+      - 管理画面の本部の文言から「ライブレッスン」「通話」を洗い出し、1 つにそろえる
+
+      - 文言のテストがあれば合わせる
+
+      '
+  actual:
+    pr: 920
+    merged: true
+    files: 22
+    layers:
+    - docs
+    - web
+    counted_layers:
+    - web
+    turns: 21
+  expected:
+    split: false
+    layers:
+    - web
+    band: S
+    route:
+    - implement
+  confirmed: false
+  note: admin-web だけの文言の揃え（22 ファイル・21 ターン）で、切らずに S
+- id: rally-979
+  issue: 979
+  title: デザインシステムに部品を足す（#455 の画面で必要）
+  has_uxspec: false
+  phase: null
+  input:
+    title: デザインシステムに部品を足す（#455 の画面で必要）
+    body: "#455 の画面の設計で、デザインシステムに足りない部品が見つかりました（プロダクトデザイナー役、ADR 0025）。\n画面に直書きせず、先にデザインシステムのデザイナー役が部品を定め（`specs/design/`）、実装役が各アプリのテーマ・部品の実装に足します（ADR\
+      \ 0026）。\n\n## 足す部品\n- {\"id\": \"date_field\", \"need\": \"日付の欄（期間の始まりと終わり）。components.yaml の text_field には日付の種類がなく、今の\
+      \ admin-web も input type=date を各画面で直に書いている（CancelledBookingList・CoachAcceptanceHistory・Announcements）\", \"proposal\"\
+      : \"text_field に variant date（と期間の 2 つ並び date_range）を足し、誤りの文言の型（終わりが始まりより前・31 日を超える）も決める\"}\n- {\"id\": \"slot_state_colors\"\
+      , \"need\": \"スロットの状態（公開中・予約済み・終了）の色。tokens.yaml の booking_state にあたる対応がない\", \"proposal\": \"color.slot_state（open\
+      \ は info、booked は success、closed は neutral を仮）を足す\"}\n- {\"id\": \"checkbox\", \"need\": \"案 b（予約ごとに選ぶ）で使う選択の部品。推す案\
+      \ a では使わない\", \"proposal\": \"案 b を選ぶときだけ、checkbox（と「すべて選ぶ」）を components.yaml に足すタスクを切る\"}\n\n## 受け入れ条件\n- 部品の一覧（`specs/design/`）に、用途・状態（通常・押下・無効・読み込み中・失敗）・使わない場面を書く\n\
+      - 両アプリ（使う側）のテーマの値だけで描ける。トークン外の色・余白を使わない\n- 画面のキャプチャの一覧に部品の見本の画面があれば足す\n\n<!-- factory:design-system -->\n## デザインシステムの正本\n\
+      \nデザインシステムのデザイナー役が書いた正本（いまのデザインシステムへの追加・変更）。実装役は次を同じ PR で行う（ADR 0025）。\n- 下のファイルをそのまま `specs/design/` に置く（変わるファイルだけ。中身は直さない。直しが要れば\
+      \ PR の本文に書く）\n- 両アプリのテーマ（色・書体・余白・角丸）を tokens.yaml に合わせ、部品の一覧（components.yaml）にある基本の部品を用意する。画面の作り替えは別のタスク\n- 今の画面の見た目が変わるので、PR\
+      \ に前後のキャプチャを付ける\n\n<details><summary>specs/design/tokens.yaml</summary>\n\n```yaml\n# 基礎（トークン）。アプリのテーマ（student-app の\
+      \ ThemeData、admin-web の Tailwind の @theme）はこの名前と値に合わせる\n# 名前は <分類>.<役割>。アプリでは color-primary（CSS）・RallyColors.primary（Dart）のように写す\n\
+      schema_version: \"0.1\"\nstatus: draft\nsection: foundations\nconcept: rally-court\n\ncolor:\n  roles:   # 明るい配色（Gen1\
+      \ の既定で、唯一の配色）\n    primary: \"#3A54B0\"              # 主。主なボタン・リンク・選択中（0.2.0 で #1E3FD0 から彩度を下げた）\n    on_primary: \"\
+      #FFFFFF\"\n    primary_pressed: \"#2E4590\"      # 押下のとき（白の文字と 8.86）\n    primary_container: \"#E9EDF8\"    # 選択中の行・情報の面\n\
+      \    on_primary_container: \"#1E2A5C\"\n    secondary: \"#D4F53C\"            # 副（ライム）。文字の色にしない\n    on_secondary: \"\
+      #10131A\"\n    text: \"#10131A\"\n    text_muted: \"#4A5163\"           # 補足の文字\n    background: \"#FFFFFF\"\n    surface:\
+      \ \"#F1F3F8\"              # カード・欄の面\n    inverse_surface: \"#10131A\"      # 濃い面。1 画面に 1 か所\n    on_inverse_surface:\
+      \ \"#FFFFFF\"\n    on_inverse_surface_muted: \"#B8BFCC\"\n    border: \"#DDE1EA\"               # 飾りの区切り線だけ（1.31。部品の輪郭に使わない）\n\
+      \    border_strong: \"#7D8599\"        # 入力欄・押せる部品の輪郭（3.69）\n    focus_ring: \"#3A54B0\"           # 濃い面の上では secondary\n\
+      \    scrim: \"rgba(16,19,26,0.56)\"    # ダイアログの後ろ\n  status:\n    info:    {fg: \"#3A54B0\", container: \"#E9EDF8\"\
+      , on_container: \"#1E2A5C\"}\n    success: {fg: \"#0E7A3E\", container: \"#E2F6EA\", on_container: \"#0A4F28\"}\n  \
+      \  warning: {fg: \"#9A5B00\", container: \"#FFF1D6\", on_container: \"#5A3500\"}\n    danger:  {fg: \"#C0182F\", container:\
+      \ \"#FDE8EB\", on_container: \"#7A0F1E\"}\n  status_rule: 状態は色と一緒に必ずアイコンか文字を出す。fg は文字・アイコン・輪郭、container は面、on_container\
+      \ は面の上の文字\n  booking_state:   # 予約の状態（glossary の booking.states）と色の対応\n    pending: warning      # 確定待ち\n    confirmed:\
+      \ success    # 確定済み\n    cancelled: neutral    # キャンセル済み（text_muted の文字と surface の面）\n  slot_state:   # スロットの状態（glossary\
+      \ の slot.states）と色の対応（0.4.0 で足した。#455）\n    open: info            # 公開中。予約を待っている\n    booked: success       # 予約済み。予約が入った（確定待ちを含む。確定待ちかは予約の\
+      \ status_tag で別に出す）\n    closed: neutral       # 終了\n  state_rules:\n    - neutral は文字 text_muted・面 surface・輪郭 border\
+      \ 1px（booking_state と同じ）\n    - 状態の色はこの対応からだけ選ぶ。スロットと予約の状態を同じ行に出すときは両方の呼び名を出す\n  scale:   # 濃淡の段階。roles にない段は使わない（足すときは\
+      \ governance の手順で）\n    blue:  {50: \"#E9EDF8\", 600: \"#3A54B0\", 700: \"#2E4590\", 900: \"#1E2A5C\"}   # 0.2.0 で彩度を下げた（段の名前は同じ）\n\
+      \    lime:  {300: \"#D4F53C\"}\n    ink:   {50: \"#F1F3F8\", 100: \"#DDE1EA\", 300: \"#B8BFCC\", 500: \"#7D8599\", 700:\
+      \ \"#4A5163\", 950: \"#10131A\"}\n  usage_rules:\n    - secondary（ライム）は文字の色にしない。濃い面の上の強調（線・しるし・数字の下線）か、on_secondary\
+      \ の文字の下の面にだけ使う\n    - primary を inverse_surface の上の文字・アイコンに使わない（2.72）。濃い面の上は on_inverse_surface か secondary\n    - border\
+      \ は区切り線だけ。入力欄・ボタンの輪郭は border_strong\n  contrast_checked:   # WCAG 2.2 の比。文字は 4.5 以上、大きな文字と文字でない部品は 3 以上\n    - {fg:\
+      \ primary, bg: background, ratio: 6.83}\n    - {fg: primary, bg: surface, ratio: 6.15}\n    - {fg: primary, bg: primary_container,\
+      \ ratio: 5.83}\n    - {fg: on_primary, bg: primary, ratio: 6.83}\n    - {fg: on_primary, bg: primary_pressed, ratio:\
+      \ 8.86}\n    - {fg: on_primary_container, bg: primary_container, ratio: 11.64}\n    - {fg: text, bg: primary_container,\
+      \ ratio: 15.87}\n    - {fg: text_muted, bg: primary_container, ratio: 6.77}\n    - {fg: text, bg: background, ratio:\
+      \ 18.58}\n    - {fg: text, bg: surface, ratio: 16.74}\n    - {fg: text_muted, bg: background, ratio: 7.93}\n    - {fg:\
+      \ text_muted, bg: surface, ratio: 7.14}\n    - {fg: on_secondary, bg: secondary, ratio: 14.98}\n    - {fg: on_inverse_surface,\
+      \ bg: inverse_surface, ratio: 18.58}\n    - {fg: on_inverse_surface_muted, bg: inverse_surface, ratio: 10.05}\n    -\
+      \ {fg: secondary, bg: inverse_surface, ratio: 14.98, note: 文字でない強調と display の数字}\n    - {fg: secondary, bg: primary,\
+      \ ratio: 5.50, note: 文字でない強調だけ}\n    - {fg: border_strong, bg: background, ratio: 3.69, note: 文字でない部品}\n    - {fg: border_strong,\
+      \ bg: surface, ratio: 3.33, note: 文字でない部品}\n    - {fg: danger.fg, bg: background, ratio: 6.15}\n    - {fg: danger.fg,\
+      \ bg: surface, ratio: 5.54}\n    - {fg: danger.fg, bg: danger.container, ratio: 5.25}\n    - {fg: danger.on_container,\
+      \ bg: danger.container, ratio: 9.36}\n    - {fg: on_primary, bg: danger.fg, ratio: 6.15}\n    - {fg: success.fg, bg:\
+      \ background, ratio: 5.42}\n    - {fg: success.fg, bg: surface, ratio: 4.89}\n    - {fg: success.fg, bg: success.container,\
+      \ ratio: 4.80}\n    - {fg: success.on_container, bg: success.container, ratio: 8.61}\n    - {fg: warning.fg, bg: background,\
+      \ ratio: 5.43}\n    - {fg: warning.fg, bg: surface, ratio: 4.89}\n    - {fg: warning.fg, bg: warning.container, ratio:\
+      \ 4.86}\n    - {fg: warning.on_container, bg: warning.container, ratio: 9.67}\n    - {fg: info.on_container, bg: info.container,\
+      \ ratio: 11.64, note: slot_state の open（0.4.0）}\n    - {fg: info.fg, bg: info.container, ratio: 5.83, note: アイコン}\n\
+      \  not_allowed_pairs:   # 比が足りないので使わない\n    - {fg: secondary, bg: background, ratio: 1.24}\n    - {fg: primary, bg:\
+      \ inverse_surface, ratio: 2.72}\n    - {fg: border, bg: background, ratio: 1.31, note: 部品の輪郭として}\n  dark_mode:\n   \
+      \ gen1: 明るい配色だけ。端末がダークでも明るい配色で出す（Flutter は themeMode を ThemeMode.light、admin-web は color-scheme を light）\n    why: 熱い場所\
+      \ 1 か所の設計を、まず明るい配色で確かめるため\n    proposed_roles:   # lifecycle: proposed。入れるときは人の承認と画面の確かめを経る（governance）\n      background:\
+      \ \"#10131A\"\n      surface: \"#1A1F2B\"\n      text: \"#F1F3F8\"          # 16.74 / 14.84\n      text_muted: \"#B8BFCC\"\
+      \    # 10.05 / 8.91\n      primary: \"#9DB0FF\"       # 8.93 / 7.91。on_primary は #10131A\n      secondary: \"#D4F53C\"\
+      \n      border: \"#2E3443\"\n      border_strong: \"#7D8599\" # 5.03 / 4.46\n      danger_fg: \"#FF8A99\"     # 8.27\
+      \ / 7.33\n      success_fg: \"#5BD68F\"    # 10.14 / 8.99\n      warning_fg: \"#FFC266\"    # 11.65 / 10.32\n\ntypography:\n\
+      \  families:\n    sans: \"'Noto Sans CJK JP', 'Noto Sans JP', sans-serif\"   # 同梱の書体。Web フォントは読まない\n    serif: 使わない（Noto\
+      \ Serif CJK JP は同梱されているが、このコンセプトでは使わない）\n    bundling: student-app はアプリに同梱（pubspec の fonts）、admin-web は端末の書体を font-family\
+      \ で指定するだけ\n    bundling_status: student-app の同梱はまだ（pubspec に fonts がない）。今は RallyTypography.family の名前で指定し、端末に Noto Sans\
+      \ CJK JP があればそれ（Android の既定）、なければ端末の既定のゴシックで出る。同梱は別のタスク\n  weights: {regular: 400, bold: 700, black: 900}\n  scale:\
+      \   # 大きさ px / 太さ / 行間 / 字間\n    display:  {size: 44, weight: 900, line_height: 1.1,  letter_spacing: \"-0.02em\", use:\
+      \ 残りの回数・次のレッスンの日時。1 画面 1 か所, sample: \"残り 2 回\"}\n    headline: {size: 28, weight: 900, line_height: 1.25, letter_spacing:\
+      \ \"-0.01em\", use: 画面の見出し, sample: \"ホーム\"}\n    title:    {size: 20, weight: 700, line_height: 1.25, letter_spacing:\
+      \ \"-0.01em\", use: 欄の見出し・カードの主の行, sample: \"これからの予約\"}\n    body:     {size: 16, weight: 400, line_height: 1.65, letter_spacing:\
+      \ \"0.01em\",  use: 本文・規定・誤りの知らせ, sample: \"予約を読み込めませんでした。「ホームを更新する」でもう一度読み込めます。\"}\n    small:    {size: 14, weight:\
+      \ 400, line_height: 1.6,  letter_spacing: \"0.01em\",  use: カードの補足・ラベル, sample: \"コーチ: 山田\"}\n    caption:  {size: 12,\
+      \ weight: 700, line_height: 1.5,  letter_spacing: \"0.02em\",  use: しるし・タグだけ。文には使わない, sample: \"確定待ち\"}\n  sample_rule:\
+      \ 書体の見本（sample とカタログ）は日本語で、実際の画面の文言にする。サービスは日本国内だけに出す\n  admin_web: admin-web は display を使わず、headline を 24px、本文を 16px\
+      \ にする\n  emphasis: 本文の強調は 700。下線は押せるリンクだけ。斜体は使わない\n  max_line_length: 本文の 1 行は 40 字まで（PC の admin-web は読む画面が 1 段 48rem。一覧の画面の\
+      \ wide でも表の外の文は 40em まで）\n  punctuation:\n    - 句読点は「、」「。」。全角の約物（「」（）・〜）を使い、行頭に来る約物は詰める（palt を使わない。字間は letter_spacing\
+      \ だけ）\n    - 英数字と和文のあいだは半角スペースを 1 つ（例「残り 2 回」「10/28（水）12:00」）\n    - 感嘆符は全角「！」で、1 つの文言に 1 つまで。疑問符は確認の題だけ\n  numerals:\n\
+      \    style: 数字は等幅（font-feature-settings \"tnum\"）。display の数字は 900 で、単位（回・分）は title の大きさで添える\n    example: 「残り [2] 回」の\
+      \ 2 を display、回を title\n\nspacing:   # design_guideline の spacing_layout（余白・グリッド・画面幅・安全領域）\n  base_unit: 4\n  scale_px:\
+      \ {xs: 4, sm: 8, md: 16, lg: 24, xl: 40}\n  rules:\n    - 画面の左右は md 16px（PC の admin-web は lg 24px）\n    - 欄と欄のあいだは xl\
+      \ 40px、欄の中の行と行は sm 8px、カードの中の余白は md 16px\n    - 押せる部品の高さは 48px 以上、押せるもの同士のあいだは sm 8px 以上\n    - 段階にない値（例 12px・20px）を余白に使わない\n\
+      \  grid:\n    phone: 1 段。幅いっぱい（左右 16px）\n    tablet: 1 段、中身の幅は 600px まで中央寄せ\n    pc: >-\n      admin-web は 1 段。中身の幅は画面の型で\
+      \ 2 つ（content_width_px）。読む画面（ログイン・詳細・フォーム・本部のホーム）は reading の最大 768px、\n      本部の一覧の画面（data_table が主役の画面）は wide の最大 1280px。どちらも左右\
+      \ lg 24px で中央寄せ（0.3.0 で一覧の表を 768px に収める決まりをやめた）\n    admin_web_narrow: 600〜1023px は幅いっぱいで左右 lg 24px、600px 未満は左右 md 16px。表が幅に収まらないときは表の包み（data_table\
+      \ の wrapper）だけを横に動かし、ページ全体は横に動かさない\n  content_width_px: {reading: 768, wide: 1280}   # 0.3.0 で足した。reading は今の 48rem\
+      \ と同じ値\n  wide_rules:\n    - wide の画面でも、表の外の文（件数・説明・知らせ）は 1 行 40 字まで（max-width 40em）\n    - 表は 1 段の幅いっぱい（width 100%）に広げ、列の幅は中身で決める。細い枠に押し込んで折り返させない\n\
+      \  breakpoints_px: {phone: 0, tablet: 600, pc: 1024}\n  safe_area: student-app は SafeArea の内側に置く。下に固定するボタンは下の安全領域 +\
+      \ 16px 上に置く\n\nshape:   # design_guideline の shape_elevation（角丸・影と重なり）\n  radius_px: {sm: 6, md: 12, pill: 999}\n  usage:\n\
+      \    pill: 主なボタン・副のボタン・絞り込みのチップ\n    md: カード・欄の面・ダイアログ・入力欄\n    sm: しるし（未読など）・タグ・コーチの顔写真\n  elevation:\n    rule: 影は使わない（box-shadow・Material\
+      \ の elevation は 0）。重なりは面の色と border_strong の線で示す\n    levels:\n      - {level: 0, use: 画面の地, color: background}\n   \
+      \   - {level: 1, use: カード・欄, color: surface}\n      - {level: 2, use: 主役の 1 か所, color: inverse_surface, note: 1 画面に\
+      \ 1 か所}\n      - {level: 3, use: ダイアログ・下から出る面, color: background, note: 後ろに scrim}\n  z_order: [content, sticky_bar,\
+      \ toast, scrim, dialog]\n\niconography:\n  set: Material Symbols Rounded（Outlined の線の形）。Flutter は同梱の Icons の *_outlined\
+      \ / *_rounded、admin-web は同じ形の SVG を同梱する\n  stroke_px: 2.25\n  size_px: {default: 24, small: 20}\n  touch_target_px:\
+      \ 48\n  color: 文字と同じ色（text か on_inverse_surface）。状態のアイコンだけ status の fg\n  label:\n    - アイコンだけの押せる部品には必ず読み上げのラベル（tooltip\
+      \ / aria-label）を付ける\n    - 画面の主な入口（ホームの「コーチを探す」など）はアイコンと文字を並べる\n    - 大事な入口はアイコンを inverse_surface の面に白抜きで置く（1 画面 1 か所）\n\
+      \  decoration: 太い直線 4px と斜めの帯（-12°）。inverse_surface の中で secondary の色だけ\n\nmotion:\n  durations_ms: {instant: 0, fast:\
+      \ 120, base: 200, slow: 320}\n  easing:\n    standard: \"cubic-bezier(0.2, 0, 0, 1)\"\n    enter: \"cubic-bezier(0,\
+      \ 0, 0, 1)\"\n    exit: \"cubic-bezier(0.3, 0, 1, 1)\"\n  usage:\n    - 押下の色の変化は fast 120ms\n    - 画面の移り・ダイアログ・知らせの出入りは\
+      \ base 200ms\n    - 確定したときの数字の入れ替わりだけ slow 320ms（1 回だけ。くり返さない）\n    - 点滅・3 回以上くり返す動き・自動で流れる動きは使わない\n  reduced_motion:\
+      \ 端末の「視差効果を減らす」（MediaQuery.disableAnimations / prefers-reduced-motion）では、移動と拡大をやめ、色と透明度の変化だけ fast 120ms にする\n```\n\n\
+      </details>\n\n<details><summary>specs/design/components.yaml</summary>\n\n```yaml\n# 部品。オンボーディングでは基本の部品だけ。値は tokens.yaml\
+      \ の名前で書く\n# 基準の書き方: level（must | should | may）・statement・why・check（deterministic | design_inspector | human）\n# 状態の共通:\
+      \ pressed は fast 120ms で色を変える / disabled は押せない理由を近くに文で出す / loading は二度押しを止める\nschema_version: \"0.1\"\nstatus: draft\n\
+      section: components\nlifecycle_default: trial   # オンボーディングの部品は試用から始める（governance）\n\ncomponents:\n  - id: button\n \
+      \   ja: ボタン\n    lifecycle: trial\n    use: 画面の操作を 1 つ実行する（予約する・送る・保存する）\n    not_for: 画面の移動だけ → list_row か文字のリンク。並ぶ選択肢\
+      \ → チップ（未定義。足りなければ提案する）\n    parts: [container"
+  actual:
+    pr: 982
+    merged: true
+    files: 18
+    layers:
+    - docs
+    - web
+    - mobile
+    counted_layers:
+    - web
+    - mobile
+    turns: 56
+  expected:
+    split: false
+    layers:
+    - web
+    - mobile
+    band: M
+    route:
+    - design_system
+  confirmed: false
+  note: デザインシステムの部品足しで、正本（specs/design）と admin-web・student-app のテーマと部品。数える層は 2・18 ファイル・56 ターンで切らない。本文は 56536 文字のうち先頭の 12000
+    文字
+- id: rally-670
+  issue: 670
+  title: デザインシステムの主の色を落ち着かせ、部品の見本とカタログを足す
+  has_uxspec: false
+  phase: null
+  input:
+    title: デザインシステムの主の色を落ち着かせ、部品の見本とカタログを足す
+    body: "## 概要\n\nデザインシステム（`specs/design/`、コンセプト rally-court）の見本を人が見て、次の 4 点を決めました。正本と両アプリのテーマに反映し、あわせて部品の見本（`components.yaml`\
+      \ の `preview`）を足して、正本からカタログが組み立てられるようにします。\n\n## 背景\n\n- 正本は #496 / #505 で入った。人が見本のカタログで確かめ、青が強い・空の表示のボタンが読みにくいと指摘した\n\
+      - 見本のカタログ（正本から手で作った 1 版目）: https://claude.ai/artifact/Nf3MTWJyg3Fkh4xJuwPebn 。人はこの版の色と見た目を「見やすくなった」と承認済み\n- サービスは日本国内のみに出す。書体の見本は日本語にする\n\
+      \n## 決まったこと（人の判断、2026-11-02）\n\n1. **主の色の彩度を下げる**（色の役割の値の変更。governance の人の承認に当たる）\n\n   | 役割 | 旧 | 新 |\n   | --- | ---\
+      \ | --- |\n   | primary / focus-ring / info-fg | #1E3FD0 | #3A54B0 |\n   | primary-pressed | #1A2FA8 | #2E4590 |\n \
+      \  | primary-container / info-container | #E6EBFF | #E9EDF8 |\n   | on-primary-container / info-on-container | #14246E\
+      \ | #1E2A5C |\n\n   コントラスト：primary は background で 6.83、surface で 6.15、primary-container で 5.83。primary-pressed と白の文字は\
+      \ 8.86。on-primary-container と primary-container は 11.64。inverse-surface の上は 2.72（引き続き置かない）。\n2. **コンセプトの節**：コピー「コートの熱。次の練習へ、前のめりに。」の\
+      \ 3 語をデザインに結びつける。カタログの README の冒頭の表を正本（`concept_tone.yaml` か `principles.yaml`）に写す\n   - コートの熱：濃い面 `inverse-surface`\
+      \ にライム `secondary` の線と display の数字。熱は 1 画面 1 か所\n   - 次の練習へ：次の一手を一番前に、主なボタンは 1 つ。空の画面でも次の行動を示す\n   - 前のめりに：太い字（900・700）、-12°\
+      \ の帯、動詞で言い切るボタン、待たせない動き。ただし回数・日時・規定・誤りは正確さを優先\n3. **empty_state のボタン**：画面にほかの主な操作がないときは primary。欄だけが空で画面に primary があるときは\
+      \ secondary。surface の面の上の secondary は沈んで読みにくいので使わない。文字は `text-muted` から `text` に\n4. **書体の見本は日本語**：見本の文言は実際の画面の言葉にする\n\
+      \n## 受け入れ条件\n\n- `specs/design/` の tokens・components・コンセプトの節が上の決定に合っている。`specs/design/CHANGELOG.md` に版を 1 つ足す\n- `components.yaml`\
+      \ の各部品に `preview`（状態ごとの見本）があり、正本からカタログ（`catalog.html` と `catalog.png`）が組み立てられて、人が見られる\n- 両アプリのテーマの色の値が新しい正本に合っている（student-app\
+      \ の `rally_tokens.dart`、admin-web の `globals.css` の `@theme` と `tests/designTokens.test.ts`）。admin-web の `EmptyState`\
+      \ は決定 3 に合わせる\n- 見た目が変わる PR には前後のキャプチャを付ける\n- Web フォントは使わない\n\n## 範囲外\n\n- 個々の画面を部品に置き換える作業、書体ファイルの同梱、決済まわり\n\n<!--\
+      \ factory:design-system -->\n## デザインシステムの正本\n\nデザインシステムのデザイナー役が書いた正本（いまのデザインシステムへの追加・変更）。実装役は次を同じ PR で行う（ADR 0025）。\n\
+      - 下のファイルをそのまま `specs/design/` に置く（変わるファイルだけ。中身は直さない。直しが要れば PR の本文に書く）\n- 両アプリのテーマ（色・書体・余白・角丸）を tokens.yaml に合わせ、部品の一覧（components.yaml）にある基本の部品を用意する。画面の作り替えは別のタスク\n\
+      - 今の画面の見た目が変わるので、PR に前後のキャプチャを付ける\n\n<details><summary>specs/design/tokens.yaml</summary>\n\n```yaml\n# 基礎（トークン）。アプリのテーマ（student-app\
+      \ の ThemeData、admin-web の Tailwind の @theme）はこの名前と値に合わせる\n# 名前は <分類>.<役割>。アプリでは color-primary（CSS）・RallyColors.primary（Dart）のように写す\n\
+      schema_version: \"0.1\"\nstatus: draft\nsection: foundations\nconcept: rally-court\n\ncolor:\n  roles:   # 明るい配色（Gen1\
+      \ の既定で、唯一の配色）\n    primary: \"#3A54B0\"              # 主。主なボタン・リンク・選択中（0.2.0 で #1E3FD0 から彩度を下げた）\n    on_primary: \"\
+      #FFFFFF\"\n    primary_pressed: \"#2E4590\"      # 押下のとき（白の文字と 8.86）\n    primary_container: \"#E9EDF8\"    # 選択中の行・情報の面\n\
+      \    on_primary_container: \"#1E2A5C\"\n    secondary: \"#D4F53C\"            # 副（ライム）。文字の色にしない\n    on_secondary: \"\
+      #10131A\"\n    text: \"#10131A\"\n    text_muted: \"#4A5163\"           # 補足の文字\n    background: \"#FFFFFF\"\n    surface:\
+      \ \"#F1F3F8\"              # カード・欄の面\n    inverse_surface: \"#10131A\"      # 濃い面。1 画面に 1 か所\n    on_inverse_surface:\
+      \ \"#FFFFFF\"\n    on_inverse_surface_muted: \"#B8BFCC\"\n    border: \"#DDE1EA\"               # 飾りの区切り線だけ（1.31。部品の輪郭に使わない）\n\
+      \    border_strong: \"#7D8599\"        # 入力欄・押せる部品の輪郭（3.69）\n    focus_ring: \"#3A54B0\"           # 濃い面の上では secondary\n\
+      \    scrim: \"rgba(16,19,26,0.56)\"    # ダイアログの後ろ\n  status:\n    info:    {fg: \"#3A54B0\", container: \"#E9EDF8\"\
+      , on_container: \"#1E2A5C\"}\n    success: {fg: \"#0E7A3E\", container: \"#E2F6EA\", on_container: \"#0A4F28\"}\n  \
+      \  warning: {fg: \"#9A5B00\", container: \"#FFF1D6\", on_container: \"#5A3500\"}\n    danger:  {fg: \"#C0182F\", container:\
+      \ \"#FDE8EB\", on_container: \"#7A0F1E\"}\n  status_rule: 状態は色と一緒に必ずアイコンか文字を出す。fg は文字・アイコン・輪郭、container は面、on_container\
+      \ は面の上の文字\n  booking_state:   # 予約の状態（glossary の booking.states）と色の対応\n    pending: warning      # 確定待ち\n    confirmed:\
+      \ success    # 確定済み\n    cancelled: neutral    # キャンセル済み（text_muted の文字と surface の面）\n  scale:   # 濃淡の段階。roles にない段は使わない（足すときは\
+      \ governance の手順で）\n    blue:  {50: \"#E9EDF8\", 600: \"#3A54B0\", 700: \"#2E4590\", 900: \"#1E2A5C\"}   # 0.2.0 で彩度を下げた（段の名前は同じ）\n\
+      \    lime:  {300: \"#D4F53C\"}\n    ink:   {50: \"#F1F3F8\", 100: \"#DDE1EA\", 300: \"#B8BFCC\", 500: \"#7D8599\", 700:\
+      \ \"#4A5163\", 950: \"#10131A\"}\n  usage_rules:\n    - secondary（ライム）は文字の色にしない。濃い面の上の強調（線・しるし・数字の下線）か、on_secondary\
+      \ の文字の下の面にだけ使う\n    - primary を inverse_surface の上の文字・アイコンに使わない（2.72）。濃い面の上は on_inverse_surface か secondary\n    - border\
+      \ は区切り線だけ。入力欄・ボタンの輪郭は border_strong\n  contrast_checked:   # WCAG 2.2 の比。文字は 4.5 以上、大きな文字と文字でない部品は 3 以上\n    - {fg:\
+      \ primary, bg: background, ratio: 6.83}\n    - {fg: primary, bg: surface, ratio: 6.15}\n    - {fg: primary, bg: primary_container,\
+      \ ratio: 5.83}\n    - {fg: on_primary, bg: primary, ratio: 6.83}\n    - {fg: on_primary, bg: primary_pressed, ratio:\
+      \ 8.86}\n    - {fg: on_primary_container, bg: primary_container, ratio: 11.64}\n    - {fg: text, bg: primary_container,\
+      \ ratio: 15.87}\n    - {fg: text_muted, bg: primary_container, ratio: 6.77}\n    - {fg: text, bg: background, ratio:\
+      \ 18.58}\n    - {fg: text, bg: surface, ratio: 16.74}\n    - {fg: text_muted, bg: background, ratio: 7.93}\n    - {fg:\
+      \ text_muted, bg: surface, ratio: 7.14}\n    - {fg: on_secondary, bg: secondary, ratio: 14.98}\n    - {fg: on_inverse_surface,\
+      \ bg: inverse_surface, ratio: 18.58}\n    - {fg: on_inverse_surface_muted, bg: inverse_surface, ratio: 10.05}\n    -\
+      \ {fg: secondary, bg: inverse_surface, ratio: 14.98, note: 文字でない強調と display の数字}\n    - {fg: secondary, bg: primary,\
+      \ ratio: 5.50, note: 文字でない強調だけ}\n    - {fg: border_strong, bg: background, ratio: 3.69, note: 文字でない部品}\n    - {fg: border_strong,\
+      \ bg: surface, ratio: 3.33, note: 文字でない部品}\n    - {fg: danger.fg, bg: background, ratio: 6.15}\n    - {fg: danger.fg,\
+      \ bg: surface, ratio: 5.54}\n    - {fg: danger.fg, bg: danger.container, ratio: 5.25}\n    - {fg: danger.on_container,\
+      \ bg: danger.container, ratio: 9.36}\n    - {fg: on_primary, bg: danger.fg, ratio: 6.15}\n    - {fg: success.fg, bg:\
+      \ background, ratio: 5.42}\n    - {fg: success.fg, bg: surface, ratio: 4.89}\n    - {fg: success.fg, bg: success.container,\
+      \ ratio: 4.80}\n    - {fg: success.on_container, bg: success.container, ratio: 8.61}\n    - {fg: warning.fg, bg: background,\
+      \ ratio: 5.43}\n    - {fg: warning.fg, bg: surface, ratio: 4.89}\n    - {fg: warning.fg, bg: warning.container, ratio:\
+      \ 4.86}\n    - {fg: warning.on_container, bg: warning.container, ratio: 9.67}\n  not_allowed_pairs:   # 比が足りないので使わない\n\
+      \    - {fg: secondary, bg: background, ratio: 1.24}\n    - {fg: primary, bg: inverse_surface, ratio: 2.72}\n    - {fg:\
+      \ border, bg: background, ratio: 1.31, note: 部品の輪郭として}\n  dark_mode:\n    gen1: 明るい配色だけ。端末がダークでも明るい配色で出す（Flutter は themeMode\
+      \ を ThemeMode.light、admin-web は color-scheme を light）\n    why: 熱い場所 1 か所の設計を、まず明るい配色で確かめるため\n    proposed_roles:  \
+      \ # lifecycle: proposed。入れるときは人の承認と画面の確かめを経る（governance）\n      background: \"#10131A\"\n      surface: \"#1A1F2B\"\n\
+      \      text: \"#F1F3F8\"          # 16.74 / 14.84\n      text_muted: \"#B8BFCC\"    # 10.05 / 8.91\n      primary: \"\
+      #9DB0FF\"       # 8.93 / 7.91。on_primary は #10131A\n      secondary: \"#D4F53C\"\n      border: \"#2E3443\"\n      border_strong:\
+      \ \"#7D8599\" # 5.03 / 4.46\n      danger_fg: \"#FF8A99\"     # 8.27 / 7.33\n      success_fg: \"#5BD68F\"    # 10.14\
+      \ / 8.99\n      warning_fg: \"#FFC266\"    # 11.65 / 10.32\n\ntypography:\n  families:\n    sans: \"'Noto Sans CJK JP',\
+      \ 'Noto Sans JP', sans-serif\"   # 同梱の書体。Web フォントは読まない\n    serif: 使わない（Noto Serif CJK JP は同梱されているが、このコンセプトでは使わない）\n\
+      \    bundling: student-app はアプリに同梱（pubspec の fonts）、admin-web は端末の書体を font-family で指定するだけ\n    bundling_status: student-app\
+      \ の同梱はまだ（pubspec に fonts がない）。今は RallyTypography.family の名前で指定し、端末に Noto Sans CJK JP があればそれ（Android の既定）、なければ端末の既定のゴシックで出る。同梱は別のタスク\n\
+      \  weights: {regular: 400, bold: 700, black: 900}\n  scale:   # 大きさ px / 太さ / 行間 / 字間\n    display:  {size: 44, weight:\
+      \ 900, line_height: 1.1,  letter_spacing: \"-0.02em\", use: 残りの回数・次のレッスンの日時。1 画面 1 か所, sample: \"残り 2 回\"}\n    headline:\
+      \ {size: 28, weight: 900, line_height: 1.25, letter_spacing: \"-0.01em\", use: 画面の見出し, sample: \"ホーム\"}\n    title:\
+      \    {size: 20, weight: 700, line_height: 1.25, letter_spacing: \"-0.01em\", use: 欄の見出し・カードの主の行, sample: \"これからの予約\"\
+      }\n    body:     {size: 16, weight: 400, line_height: 1.65, letter_spacing: \"0.01em\",  use: 本文・規定・誤りの知らせ, sample:\
+      \ \"予約を読み込めませんでした。「ホームを更新する」でもう一度読み込めます。\"}\n    small:    {size: 14, weight: 400, line_height: 1.6,  letter_spacing:\
+      \ \"0.01em\",  use: カードの補足・ラベル, sample: \"コーチ: 山田\"}\n    caption:  {size: 12, weight: 700, line_height: 1.5,  letter_spacing:\
+      \ \"0.02em\",  use: しるし・タグだけ。文には使わない, sample: \"確定待ち\"}\n  sample_rule: 書体の見本（sample とカタログ）は日本語で、実際の画面の文言にする。サービスは日本国内だけに出す\n\
+      \  admin_web: admin-web は display を使わず、headline を 24px、本文を 16px にする\n  emphasis: 本文の強調は 700。下線は押せるリンクだけ。斜体は使わない\n  max_line_length:\
+      \ 本文の 1 行は 40 字まで（PC の admin-web は 1 段 48rem）\n  punctuation:\n    - 句読点は「、」「。」。全角の約物（「」（）・〜）を使い、行頭に来る約物は詰める（palt を使わない。字間は\
+      \ letter_spacing だけ）\n    - 英数字と和文のあいだは半角スペースを 1 つ（例「残り 2 回」「10/28（水）12:00」）\n    - 感嘆符は全角「！」で、1 つの文言に 1 つまで。疑問符は確認の題だけ\n\
+      \  numerals:\n    style: 数字は等幅（font-feature-settings \"tnum\"）。display の数字は 900 で、単位（回・分）は title の大きさで添える\n    example:\
+      \ 「残り [2] 回」の 2 を display、回を title\n\nspacing:   # design_guideline の spacing_layout（余白・グリッド・画面幅・安全領域）\n  base_unit:\
+      \ 4\n  scale_px: {xs: 4, sm: 8, md: 16, lg: 24, xl: 40}\n  rules:\n    - 画面の左右は md 16px（PC の admin-web は lg 24px）\n\
+      \    - 欄と欄のあいだは xl 40px、欄の中の行と行は sm 8px、カードの中の余白は md 16px\n    - 押せる部品の高さは 48px 以上、押せるもの同士のあいだは sm 8px 以上\n    - 段階にない値（例\
+      \ 12px・20px）を余白に使わない\n  grid:\n    phone: 1 段。幅いっぱい（左右 16px）\n    tablet: 1 段、中身の幅は 600px まで中央寄せ\n    pc: admin-web\
+      \ は 1 段で最大 48rem（768px）、左右 24px。一覧の表は 1 段の幅に収める\n  breakpoints_px: {phone: 0, tablet: 600, pc: 1024}\n  safe_area: student-app\
+      \ は SafeArea の内側に置く。下に固定するボタンは下の安全領域 + 16px 上に置く\n\nshape:   # design_guideline の shape_elevation（角丸・影と重なり）\n  radius_px:\
+      \ {sm: 6, md: 12, pill: 999}\n  usage:\n    pill: 主なボタン・副のボタン・絞り込みのチップ\n    md: カード・欄の面・ダイアログ・入力欄\n    sm: しるし（未読など）・タグ・コーチの顔写真\n\
+      \  elevation:\n    rule: 影は使わない（box-shadow・Material の elevation は 0）。重なりは面の色と border_strong の線で示す\n    levels:\n   \
+      \   - {level: 0, use: 画面の地, color: background}\n      - {level: 1, use: カード・欄, color: surface}\n      - {level: 2, use:\
+      \ 主役の 1 か所, color: inverse_surface, note: 1 画面に 1 か所}\n      - {level: 3, use: ダイアログ・下から出る面, color: background, note:\
+      \ 後ろに scrim}\n  z_order: [content, sticky_bar, toast, scrim, dialog]\n\niconography:\n  set: Material Symbols Rounded（Outlined\
+      \ の線の形）。Flutter は同梱の Icons の *_outlined / *_rounded、admin-web は同じ形の SVG を同梱する\n  stroke_px: 2.25\n  size_px: {default:\
+      \ 24, small: 20}\n  touch_target_px: 48\n  color: 文字と同じ色（text か on_inverse_surface）。状態のアイコンだけ status の fg\n  label:\n\
+      \    - アイコンだけの押せる部品には必ず読み上げのラベル（tooltip / aria-label）を付ける\n    - 画面の主な入口（ホームの「コーチを探す」など）はアイコンと文字を並べる\n    - 大事な入口はアイコンを\
+      \ inverse_surface の面に白抜きで置く（1 画面 1 か所）\n  decoration: 太い直線 4px と斜めの帯（-12°）。inverse_surface の中で secondary の色だけ\n\nmotion:\n\
+      \  durations_ms: {instant: 0, fast: 120, base: 200, slow: 320}\n  easing:\n    standard: \"cubic-bezier(0.2, 0, 0, 1)\"\
+      \n    enter: \"cubic-bezier(0, 0, 0, 1)\"\n    exit: \"cubic-bezier(0.3, 0, 1, 1)\"\n  usage:\n    - 押下の色の変化は fast 120ms\n\
+      \    - 画面の移り・ダイアログ・知らせの出入りは base 200ms\n    - 確定したときの数字の入れ替わりだけ slow 320ms（1 回だけ。くり返さない）\n    - 点滅・3 回以上くり返す動き・自動で流れる動きは使わない\n\
+      \  reduced_motion: 端末の「視差効果を減らす」（MediaQuery.disableAnimations / prefers-reduced-motion）では、移動と拡大をやめ、色と透明度の変化だけ fast 120ms\
+      \ にする\n```\n\n</details>\n\n<details><summary>specs/design/components.yaml</summary>\n\n```yaml\n# 部品。オンボーディングでは基本の部品だけ。値は\
+      \ tokens.yaml の名前で書く\n# 基準の書き方: level（must | should | may）・statement・why・check（deterministic | design_inspector | human）\n\
+      # 状態の共通: pressed は fast 120ms で色を変える / disabled は押せない理由を近くに文で出す / loading は二度押しを止める\nschema_version: \"0.1\"\nstatus:\
+      \ draft\nsection: components\nlifecycle_default: trial   # オンボーディングの部品は試用から始める（governance）\n\ncomponents:\n  - id: button\n\
+      \    ja: ボタン\n    lifecycle: trial\n    use: 画面の操作を 1 つ実行する（予約する・送る・保存する）\n    not_for: 画面の移動だけ → list_row か文字のリンク。並ぶ選択肢\
+      \ → チップ（未定義。足りなければ提案する）\n    parts: [container, label, leading_icon（任意）, spinner]\n    variants:\n      primary:   {container:\
+      \ primary, label: on"
+  actual:
+    pr: 678
+    merged: true
+    files: 23
+    layers:
+    - docs
+    - web
+    - mobile
+    - other
+    counted_layers:
+    - web
+    - mobile
+    turns: 59
+  expected:
+    split: false
+    layers:
+    - web
+    - mobile
+    band: M
+    route:
+    - design_system
+  confirmed: false
+  note: デザインシステムの色と部品の見本・カタログ。数える層は web と mobile の 2・23 ファイル。ターンは 51＋検査の指摘の直し 5・3（衝突の解消の 0 ターンは除く）で 59、切らずに M。本文は 42767 文字のうち先頭の
+    12000 文字
+- id: rally-648
+  issue: 648
+  title: 'D217: 本部がコーチ 1 人の様子で返却待ちの動画添削の数を見られる（backend と契約）'
+  has_uxspec: false
+  phase: null
+  input:
+    title: 'D217: 本部がコーチ 1 人の様子で返却待ちの動画添削の数を見られる（backend と契約）'
+    body: 'タスク。本部の運営機能。本部がコーチ 1 人の様子を開いたとき、返却が滞っていないかがわかるようにする。`getCoachOverview` には動画添削の数がない。
+
+
+      ## 先に読むもの
+
+      - admin-web の契約の `getCoachOverview` と backend の実装
+
+      - 「返却待ち」と経過の数え方：`listPendingVideoReviews` の説明（domain の 1 か所）
+
+
+      ## やること
+
+      - `getCoachOverview` に、そのコーチの返却待ちの動画添削の数と、そのうち 48 時間以上たったものの数を足す。数え方は `listPendingVideoReviews` と同じ domain の 1 か所を使う
+
+      - 既存の項目は変えない（足すだけ）
+
+      - テスト：domain と application の単体テスト、DB を使う統合テスト
+
+
+      ## やらないこと
+
+      - 画面、48 時間の目立たせの見た目、DB の既存の列の削除・変更
+
+
+      ## 受け入れ条件
+
+      - `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test` が通る
+
+      - 契約（openapi）と実装が一致する。admin-web の生成した型も合わせる（画面は変えない）
+
+      - CHANGELOG の `[Unreleased]` に 1 行
+
+
+      ---
+
+      _Generated by [Claude Code](https://claude.ai/code)_'
+  actual:
+    pr: 659
+    merged: true
+    files: 16
+    layers:
+    - contract
+    - docs
+    - backend
+    - other
+    counted_layers:
+    - contract
+    - backend
+    turns: 36
+  expected:
+    split: false
+    layers:
+    - contract
+    - backend
+    band: M
+    route:
+    - implement
+  confirmed: false
+  note: 契約と backend のチケット。admin-web は生成した型と、試験・画面の撮影の値の追従だけで、その層は数えない（2026-11-05 オーナー決定）。1 件のまま 36 ターンで終わった（取り込みのジョブは除く）

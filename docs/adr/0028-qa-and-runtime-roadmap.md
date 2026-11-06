@@ -1,7 +1,7 @@
 # ADR 0028: QA と実行環境のケイパビリティと、P5 の 2 段への分割
 
 - 状態: 承認（2026-11-04 オーナー。P5 を 2 段に分ける案をカードで選択。アーキテクチャに触れる点は本文で承認、実装は各 PR）
-- 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ）
+- 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ。段階に置き換えた: ADR 0012 の追記 2026-11-05）
 - 検討の記録: 50_build-work/strategy/qa-and-runtime-2026-11-04.md（発散）、strategy/qa-model/、strategy/capability-model/、strategy/roadmap-qa-runtime/（図）、capability-model-knowledge-2026-11-04.md（知見）
 
 ## 文脈
@@ -48,6 +48,7 @@ P5b は既存の 4 項目に `severity_budget`、`release_train`、`ephemeral_en
 
 - 品質方針: アクセシビリティのレベル、扱うデータの種類、サポート対象の表（OS 版 × 端末 × ブラウザ × 支援設定）、言葉の指針、S1（止める）の条件。値は Gen1 では建設者が代理で仮置き
 - 製品の段階: development / launch / operating。段階で出荷先と承認が決まる（development は production を立てない）。切り替えは人。#160 の `SHIP_PROD_HOLD` はこれができるまでのつなぎ
+- 欄の型は `definitions/quality_policy.yaml` と `definitions/product_stages.yaml`（2026-11-05）。製品側は `.factory-config/quality_policy.yaml` と manifest の `product_stage`
 
 ### 5. Defect と Incident を events の型に足す
 
@@ -63,6 +64,14 @@ preview の配布（TestFlight、Play 内部テスト）、署名、ストア審
 
 1. この PR: roadmap.yaml と本 ADR。Mac の正本（台帳の G 群・H 群、積み残し 15、憲章 07 節）は同時に直す
 2. 着手はラインの再開の指示の後。P5a-① から
+
+## 追記（2026-11-05）: ユーザーストーリーの型と最初の 3 本を先に入れる
+
+決定 1 の「ユーザーストーリーの型は P4 の `typed_upstream` と同じ PR で足す」を変える（オーナーがカードで選択）。`typed_upstream` を待つと、P5a-② の QA 役の最初の Verdict も止まるため。
+
+- 先に入れるもの: 型（`definitions/user_story.yaml`、`artifacts.yaml` の `UserStory`）と、rally の `specs/stories/` の 3 本（コーチが新しい相談に返事する、生徒が月額契約して翌日も残っている、CS が「予約が消えた」の経緯を追う）。製品の側でストーリーが正本の id だけを使っているかを検査する
+- 後に残すもの: プランナーの出力にストーリー（増やす・変える・守る）を加えることは、従来どおり `typed_upstream` で
+- 既存機能に遡って書いたストーリーは「あるべき流れ」で書き、今の実装が満たしていないところは `known_gaps` に書く。QA 役の最初の Verdict の材料にする
 
 ## 選ばなかった案
 

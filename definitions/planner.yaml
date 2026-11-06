@@ -4,6 +4,7 @@
 #   ready     → 経路（どの役をどの順で通すか）をタスクに合わせて組み、最初の役のラベルを付ける。指示役はラベルどおりに配る
 #   ask       → 理由と選択肢つきの問いを Issue のコメントで起票者に返し、factory:needs-info。返事が付いたら判定し直す
 #   escalate  → 問いの往復を使い切っても決まらない・確信が低い。factory:plan-human を付けて人に回す
+#   split     → 大きすぎる（ADR 0036）。タスクのまとまりに切って子のチケットを起票し、このチケットは子がすべて閉じるのを待って閉じる
 # 経路は型から選ばない（2026-11-01 オーナー: パターンを固定せず、タスクに合わせて柔軟に）。examples はよくある並びの例で、縛りではない。
 # 決定論で当てるのは安全のための最小限（下の guards）だけ。判断の根拠は 3 層（根拠・解釈・確信度）と、とらなかった経路と理由、
 # 入力の版を Plan と plan.decided に残し、経路ごとの結果と突き合わせて後で見返す（ADR 0026）。
@@ -58,11 +59,14 @@ guards:                              # 決定論で当てる最小限（安全�
   rounds_exhausted: "問いを使い切っても着手できなければ人へ"
   no_questions: "着手できないのに問いがなければ人へ"
   empty_steps: "経路が空、または知らない役だけなら人へ"
+  oversized: "実装役に回す仕事の見積もりが切る基準（sizing.split）に当たるなら、タスクのまとまりに切る（split）。切ったタスクがない・形が誤っていれば人へ（ADR 0036 の 2）"
 
 advisories:                          # 経路は変えず、見返すための印だけ付ける（よくある例との食い違い）
   small_change_with_designer: "小さな改修なのにデザイナーを通す"
   screen_without_designer: "新しい画面・作り直しなのにデザイナーを通さない"
   design_after_implement: "実装の後にデザインの役がある"
+  no_size: "実装役を通すのに大きさの見積もり（size）がない"
+  split_after_design: "大きいが、実装役の前にデザインの役があるので、画面が決まってから実装の手前で切る（ADR 0036 の 3）"
 
 asking:
   max_rounds: 2                      # 起票者への問いは 2 回まで。3 回目の判定でも決まらなければ人へ
@@ -83,3 +87,41 @@ planner:
     - "受け入れ条件がない・何を作るかが読めないチケットは ask にする（中身を推測で埋めない）"
     - "作業の量とトークンの量が小さい経路を選ぶ。上位の役が要らない仕事に上位の役を当てない"
     - "design_system の後の implement は、正本のファイルを置くこととテーマ・基本の部品を合わせること以外の実装があるときだけ入れる（それは design_system の仕事の中で実装役が行う）"
+    - "経路に implement があれば、実装役に回す仕事の大きさ（size）を見積もる。sizes.md の実績の表で、似た層の組の過去のチケットのファイル数とターンを見て帯を選ぶ（勘で選ばない）"
+    - "大きさが切る基準に当たるなら、タスクのまとまりに切る（tasks）。1 回の実装でターン上限に当たる大きさのまま回さない（ADR 0036）"
+
+# 大きさの見積もりと、結果との突き合わせ（ADR 0036）。数値は仮置き（2026-11-05 オーナー承認。値は運用パラメータとして工場が調整してよい）
+# layers・split（実績の判定と、プランナーの見積もりに当てる基準）・bands・pass_lines。切ったタスクの型は definitions/desk.yaml の task_kinds（窓口と同じ）。
+# dispatcher の plan_outcome.py が同じ値を写して持つ（食い違いはテストで見る）
+sizing:
+  layers:                            # 変わったファイルから層を決める（上から順に当て、最初に当たった層。どれにも当たらなければ other）。製品ごとの上書きは順番 2 で manifest から
+    - {layer: db,       globs: ["**/migrations/**"]}
+    - {layer: contract, globs: ["specs/contracts/**", "**/src/api/schema.ts"]}   # 契約から生成した型も契約（2026-11-05 オーナー決定）
+    - {layer: docs,     globs: ["specs/**", "docs/**", "changelog.d/**", "**/*.md"]}
+    - {layer: backend,  globs: ["apps/backend/**", "backend/**", "server/**"]}
+    - {layer: web,      globs: ["apps/*-web/**", "web/**"]}
+    - {layer: mobile,   globs: ["apps/*-app/**", "mobile/**"]}
+  uncounted_layers: [docs, other]    # 切る基準の層の数に数えない
+  follow_globs:                      # 追従のファイル（試験・画面の撮影の値）。層の変更がこれと生成した型だけなら、その層は数えない（other に寄せる。2026-11-05 オーナー決定）
+    - "**/tests/**"
+    - "**/test/**"
+    - "**/screenshots/**"
+    - "**/*.test.*"
+    - "**/*_test.*"
+  split:                             # 実装役に回す仕事 1 件が、どれか 1 つに当たれば切る（ADR 0036 の 2）。実績にも同じ基準を当てて undersized を判定する
+    min_layers: 3
+    max_files: 30
+    max_turns: 60                    # 実装のターンの合計（衝突の解消の続きを除く）。ターン上限 120 の半分
+  min_turns: 10                      # 切った子がこれ未満で終わったら切りすぎ（oversized）
+  bands: {S: 30, M: 60, L: 90}       # 見込みのターンの帯の上限。L を超えると XL
+  pass_lines:                        # 合格線（ADR 0036 の 4c）。実績の 4 つ。直近 window_days にチケットが min_tickets 以上あるときに測る
+    window_days: 14
+    min_tickets: 10
+    incomplete_rate_max: 0.10
+    turns_median_max: 60
+    turns_p90_max: 120
+    recall_median_min: 0.6
+    misrouted_rate_max: 0.10
+  bench:                             # 固定の評価セットのベンチの合格線（ADR 0036 の 4b・4c。12 件で 10 件以上。パイロット導入の前に満たす）
+    split_ok_min: 0.83               # 切る／切らないの一致
+    band_ok_min: 0.83                # 大きさの帯が ±1 帯の内（正解に帯のある件のうち）

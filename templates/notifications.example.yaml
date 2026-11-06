@@ -1,0 +1,46 @@
+# 通知の出し分けの設定（ADR 0032）。製品のリポジトリの .factory-config/notifications.yaml に写して使う。
+# 工場（dispatcher）が既定ブランチの版を読み、検査を通った版を制御プレーンに写して使う。マージすれば数分で効く。
+#
+# - credential の値は書かない。secret には秘密の置き場の参照だけ（env:NAME は工場の .env の NAME）
+# - 種類（routes のキー）は Engine の definitions/notifications.yaml。出してよい組織に合わない宛先を割り当てると、版ごと拒まれる
+# - routes に書かない種類は operated_by から既定の宛先が決まる。enabled: false でいったん止められる
+# - Gen1 で使えるのは via: slack_webhook / slack_app / github-issue / log と、秘密の置き場 env だけ
+# - 定期レポート（report.*）は、slack_app の宛先には報告書（HTML）を添付して本文は数行の要約だけ、slack_webhook の宛先には全文を流す
+#   （Incoming Webhook はファイルを添付できない）。slack_app のボットには chat:write・files:write・channels:read を付け、投稿先のチャンネルに招く
+
+operated_by: business_owner   # business_owner（事業主が操業も自走する）/ provider（提供元が代理で操業する）
+
+connections:
+  provider_hook:
+    party: provider           # provider（提供元）/ business_owner（事業主）
+    via: slack_webhook
+    secret: env:SLACK_WEBHOOK_URL_PROVIDER
+  owner_hook:
+    party: business_owner
+    via: slack_webhook
+    secret: env:SLACK_WEBHOOK_URL_OWNER
+
+  owner_app:                  # Slack アプリ（ボットのトークン）。1 つのトークンで、招いたチャンネルのどれにでも送れる
+    party: business_owner
+    via: slack_app
+    secret: env:SLACK_BOT_TOKEN_OWNER
+
+destinations:
+  owner_reports:
+    connection: owner_app
+    channel: "#factory-dev"   # チャンネルの名前か ID。名前は工場が ID に引く（ボットに channels:read が要る）
+    quiet: "22-7"
+  provider_ops:
+    connection: provider_hook
+  owner_dev:
+    connection: owner_hook
+    quiet: "22-7"             # 送らない時間（REPORT_TZ の時）。明けた最初の周回でまとめて送る
+    mentions:                 # 受信トレイの誰の出番かごとのメンション
+      po: "<@U0000000000>"
+
+routes:
+  request.inbox:              # 受信トレイ。事業主の判断が要る件だけが事業主の宛先に届く
+    - to: owner_dev
+  report.product:             # 定期レポートは報告書を添付できる宛先に
+    - to: owner_reports
+    - to: provider_ops

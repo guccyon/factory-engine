@@ -49,3 +49,14 @@ def test_short_and_long_commits_match():
     assert version._same("6d12e6e", "6d12e6e0b1c2")
     assert not version._same("6d12", "6d12e6e")
     assert not version._same("unknown", "6d12e6e")
+
+
+def test_engine_version_prefers_baked_file(tmp_path, monkeypatch):
+    f = tmp_path / "ENGINE_VERSION"
+    f.write_text("9430cbc\n")
+    monkeypatch.setattr(version, "VERSION_FILE", str(f))
+    assert version.engine_version({"ENGINE_VERSION": "c9fe85b"}) == "9430cbc"   # .env（env_file）の古い値より焼き込んだ版
+    f.write_text("unknown\n")
+    assert version.engine_version({"ENGINE_VERSION": "c9fe85b"}) == "c9fe85b"
+    monkeypatch.setattr(version, "VERSION_FILE", str(tmp_path / "none"))
+    assert version.engine_version({}) == "unknown"

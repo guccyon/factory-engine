@@ -217,8 +217,9 @@ class Swapper:
             self.run(["bash", "scripts/build.sh"], cwd=f"{src}/orchestrator", timeout=5400)
             self.docker("run", "--rm", "--entrypoint", "python", f"factory-dispatcher:p0-{sha[:7]}", "-m", "compileall", "-q", "/app", timeout=120)
         finally:
+            # 自分で作った一時の作業ツリーだけを外す。prune は使わない（このコンテナからはホストの他の worktree が見えず、
+            # git がそれらを消えたとみなして登録を消してしまう）
             self.git("worktree", "remove", "--force", src, check=False)
-            self.git("worktree", "prune", check=False)
 
     # -------------------------------------------------------------- イメージの名前（前の版に戻すときに作り直さない）
     def image_names(self) -> list[str]:

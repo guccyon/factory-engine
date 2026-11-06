@@ -37,8 +37,11 @@ import continuation
 import design
 import design_line
 import design_system_line
+import desk_line
 import planner
+import version
 import drain
+import exit_capture
 import jobdb
 import judgment
 import line
@@ -91,6 +94,8 @@ HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の he
 STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジョブの出力がこの分数止まったら停止（完了まで定期的に見る。2026-10-31 オーナー）
 LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
+INSPECT_WAIT_MIN = int(ENV.get("WATCH_INSPECT_WAIT_MIN", "30"))  # マージを判定した最新の head に検査がないまま、この分数たったら停止（rally #976）
+INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"        # supervisor と同じ値（検査を止めていれば見ない）
 DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちの段（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
@@ -105,7 +110,9 @@ SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
 SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の入れ替えの依頼を見る間隔（ADR 0031）
-OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))   # 停止・割り込みを見る間隔（トークンを使わない）
+OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))
+EXIT_CAPTURE = ENV.get("EXIT_CAPTURE", "1") == "1"   # 実装後の画面のキャプチャを CI の成果物から読み、PR の本文と受信トレイに載せる（ADR 0025 の 4）。0 で止める
+EXIT_CAPTURE_INTERVAL = int(ENV.get("EXIT_CAPTURE_INTERVAL_SEC", "300"))   # 見に行く間隔（状態の取得は ETag つき）。仮置き   # 停止・割り込みを見る間隔（トークンを使わない）
 
 # S3 互換のオブジェクトストア（クライアントは minio SDK。サーバーは versitygw でも MinIO でもよい）
 store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV["OBJECTSTORE_ACCESS_KEY"], secret_key=ENV["OBJECTSTORE_SECRET_KEY"], secure=False)
@@ -172,7 +179,7 @@ def continue_target(cur, job_id: int, repo: str, issue: int) -> dict | None:
 
 def provenance(repo: str, image: str) -> dict:
     """製造の来歴（ADR 0007）。全部 optional。取れなければ unknown にして、ラインは止めない"""
-    prov = {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "worker_image": image, "worker_image_id": "unknown",
+    prov = {"engine_version": version.engine_version(ENV), "worker_image": image, "worker_image_id": "unknown",
             "product_sha": "unknown", "mode": "unknown", "model_tier": MODEL_TIER}
     try:
         r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, timeout=20)
@@ -277,6 +284,12 @@ def poll_loop():
                     planner.advance_steps(cur, gh, swap_label, comment, REPOS)
             except Exception as e:  # noqa: BLE001
                 log("plan answers poll failed", repr(e))
+            try:   # 窓口で確認された下書きを製品の Issue として起票し、依存が閉じたタスクをプランナーに回す（ADR 0030 の 3）
+                with db() as conn, conn.cursor() as cur:
+                    desk_line.file_confirmed(cur, gh, REPOS)
+                    desk_line.advance_waiting(cur, gh, swap_label, comment, REPOS)
+            except Exception as e:  # noqa: BLE001
+                log("desk filing failed", repr(e))
             try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の段を積む（ADR 0025・0026）
                 with db() as conn, conn.cursor() as cur:
                     design_system_line.apply_choices(cur, swap_label, comment)
@@ -288,7 +301,24 @@ def poll_loop():
                     design_line.apply_looks(cur, gh, comment)   # 実装に渡した後に選ばれた見た目（ADR 0026 の決定 4）
             except Exception as e:  # noqa: BLE001
                 log("design choice apply failed", repr(e))
+            capture_tick()
         time.sleep(POLL_INTERVAL)
+
+
+_capture_checked_at = 0.0
+
+
+def capture_tick():
+    """実装後の画面のキャプチャを読む（ADR 0025 の 4）。EXIT_CAPTURE_INTERVAL ごとに 1 回"""
+    global _capture_checked_at
+    if not EXIT_CAPTURE or time.time() - _capture_checked_at < EXIT_CAPTURE_INTERVAL:
+        return
+    _capture_checked_at = time.time()
+    try:
+        with db() as conn, conn.cursor() as cur:
+            exit_capture.step(cur, gh, lambda repo, aid: exit_capture.download_artifact(repo, aid, GH_TOKEN), store_put, REPOS, log=log)
+    except Exception as e:  # noqa: BLE001
+        log("exit capture failed", repr(e))
 
 
 # ------------------------------------------------------------------ ワーカーの実行
@@ -344,7 +374,7 @@ def run_job(job: dict, reattaching: bool = False):
                 cur.execute("select payload from events where name='job.started' and job_id=%s order by id desc limit 1", (job_id,))
                 prov = ((cur.fetchone() or {}).get("payload") or {}).get("provenance") or {}
                 image = prov.get("worker_image") or WORKER_IMAGE
-            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design_review"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
+            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design_review", "desk_consult"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             elif kind == "plan":   # プランナー（ADR 0025・0026）。読むだけなので製品によらず基本のイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
@@ -362,7 +392,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system") and not reattaching:
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") and not reattaching:
                 dbname = f"job_{job_id}"
                 jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
                 jobdb.create(cur, dbname, JOB_DB_USER)
@@ -395,9 +425,10 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design_review.sh"] if kind == "ui_design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/plan.sh"] if kind == "plan" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -413,6 +444,8 @@ def run_job(job: dict, reattaching: bool = False):
                                 obj.release_conn()
                         except Exception as e:  # noqa: BLE001
                             log("case archive read failed", key, repr(e))
+                if kind == "plan" and not reattaching:   # 製品の実績の表（ADR 0036 の 1。見積もりの材料）
+                    judge_inp = planner.attach_sizes(cur, repo, judge_inp)
                 if kind == "ui_design_review" and not reattaching:   # 案（UXSpec とファイル）はオブジェクトストアから足す（ADR 0025）
                     judge_inp = design_line.review_input(cur, store_get, judge_inp)
             if reattaching:
@@ -421,7 +454,7 @@ def run_job(job: dict, reattaching: bool = False):
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
-                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system") or signaled
+                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") or signaled
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if piped:
                     proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -470,7 +503,7 @@ def run_job(job: dict, reattaching: bool = False):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
-            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system") and result.get("ok"):
+            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
@@ -557,6 +590,12 @@ def run_job(job: dict, reattaching: bool = False):
                         committee.record(cur, repo, issue, corr, job_id, result, gh, comment)
                     except Exception as e:  # noqa: BLE001  議決は PR のブランチに残っている。作用の失敗でラインは止めない
                         log("committee act failed", result.get("pr_url"), repr(e))
+            elif kind == "desk_consult":
+                # 窓口の相談役（ADR 0030 の 3）: 問いか下書きを会話に書く。失敗も会話で依頼者に知らせる
+                try:
+                    desk_line.record(cur, job, result, state, err)
+                except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
+                    log("desk consult record failed", job_id, repr(e))
             elif kind == "plan":
                 # プランナー（ADR 0025・0026）: 判定を残し、経路のラベル・起票者への問い・人への回付のどれかを行う
                 if state == "succeeded":
@@ -776,8 +815,21 @@ def _claim_loop(name: str, claim):
 
 def _claim_line(cur):
     if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。一時停止の間も流すと決めたもの（factoryctl drain allow）だけは取り出す
-        return drain.claim_allowed(cur, drain.allowed(cur))
+        return drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur))
     return line.claim_line(cur)
+
+
+def desk_loop():
+    """窓口の相談のジョブを、ラインとも委員会とも別の枠で流す（ADR 0030 の 6）。ラインの一時停止中も、依頼の相談には答える。
+    依頼者が書いた会話を見つけて相談役のジョブを積み、枠の空きの分だけ取り出す"""
+    def claim(cur):
+        try:
+            for jid in desk_line.enqueue(cur, MODEL_TIER, REPOS):
+                log(f"enqueued desk consult job {jid}")
+        except Exception as e:  # noqa: BLE001
+            log("desk enqueue failed", repr(e))
+        return line.claim_desk(cur)
+    _claim_loop("desk", claim)
 
 
 def governance_loop():
@@ -932,7 +984,7 @@ def classify_failure(p: dict) -> tuple[str, str, str] | None:
     if err == "timeout":
         return "budget", f"時間の上限（{JOB_TIMEOUT // 60} 分）で打ち切られた", "チケットの分割か rerun"
     if err.startswith("incomplete"):
-        return "budget", "ターンか時間の上限で途中終了した（ドラフト PR）", "建設者の仕上げか rerun"
+        return "budget", "ターンか時間の上限で途中終了した（ドラフト PR）", "続き 1 回（rerun --continue）か、残りをプランナーに切らせる（plan resplit。ADR 0036 の 6）"
     if err == "unresolved_after_max_rounds":
         return "ticket", "要求が質問の上限まで往復しても確定しなかった", "要求者か建設者の判断"
     return "factory-bug", "ジョブが失敗した（未分類。人が分類を直す）", "原因の調査と rerun"
@@ -1082,7 +1134,7 @@ def watch_once():
         #    judge がマージの直後に終わると、supervisor の「PR が閉じたら閉じる」をすり抜けて開いたまま残る（2026-10-31、rally #253）
         for k in stoppage.open_keys(cur, ""):
             prefix, _, url = k.partition(":")
-            if prefix not in ("judge", "sendback", "ci", "merge") or not url.startswith("https://"):
+            if prefix not in ("judge", "sendback", "ci", "merge", "inspect") or not url.startswith("https://"):
                 continue
             cur.execute("select name from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s limit 1", (url,))
             r = cur.fetchone()
@@ -1110,6 +1162,48 @@ def watch_once():
         for k in stoppage.open_keys(cur, "merge:"):
             if k not in waiting:
                 stoppage.close_stoppage(cur, k, remedy="PR がマージか閉じられた")
+
+        # 8) 検査の積み忘れ
+        inspect_missing_step(cur)
+
+
+def inspect_missing_step(cur):
+    """マージを判定した最新の head に検査（supervisor.inspect の記録）がないまま INSPECT_WAIT_MIN 分たった PR を、停止 inspect:<PR> として開く。
+    検査がないと検査役が承認せず、表が auto の PR もマージされないまま同時に流す枠を塞ぐ。supervisor が積み直すはずなので
+    分類は factory-bug（2026-11-05 rally #976: 検査を積めなかった head が積み直されず、約 6 時間半ラインが止まった）。
+    検査が積まれるか、PR の head が動くか、PR がマージか閉じられたら閉じる"""
+    if not INSPECT_ENABLED:
+        for k in stoppage.open_keys(cur, "inspect:"):
+            stoppage.close_stoppage(cur, k, remedy="検査を止めた（SUPERVISOR_INSPECT=0）")
+        return
+    cur.execute("select distinct on (payload->>'pr_url') payload->>'pr_url' as pr_url, payload->>'head_sha' as sha, occurred_at, correlation_id, "
+                "now() - occurred_at > make_interval(mins => %s) as long_wait from events "
+                "where name='supervisor.merge_decided' order by payload->>'pr_url', id desc", (INSPECT_WAIT_MIN,))
+    missing = {}
+    for d in cur.fetchall():
+        url, sha = d["pr_url"], d["sha"]
+        if not url or not sha:
+            continue
+        cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s", (url,))
+        if cur.fetchone():
+            continue
+        cur.execute("select payload->>'head_sha' as sha from events where name='pr.head_updated' and payload->>'pr_url'=%s order by id desc limit 1", (url,))
+        head = cur.fetchone()
+        if head and head["sha"] and head["sha"] != sha:
+            continue   # head が動いた。新しい head は CI が通ってから判定し直す
+        cur.execute("select 1 from events where dedupe_key=%s", (f"supervisor.inspect:{url}@{sha}",))
+        if cur.fetchone():
+            continue
+        missing[f"inspect:{url}"] = d
+    for k, d in missing.items():
+        if d["long_wait"]:
+            stoppage.open_stoppage(cur, k, "factory-bug",
+                                   f"マージを判定した head（{d['sha'][:7]}）に検査が積まれていない。検査役が承認できず、PR が同時に流す枠を塞いでいる",
+                                   waiting_for="supervisor が検査を積み直すこと（積めない理由を supervisor のログで確かめる）",
+                                   started_at=d["occurred_at"], correlation_id=d["correlation_id"])
+    for k in stoppage.open_keys(cur, "inspect:"):
+        if k not in missing:
+            stoppage.close_stoppage(cur, k, remedy="検査が積まれた、head が動いた、または PR がマージか閉じられた")
 
 
 def watch_loop():
@@ -1230,13 +1324,14 @@ def main():
         cur.execute("select 1")
     reattached = recover()
     with db() as conn, conn.cursor() as cur:   # 上がった印。入れ替え役が新しい版で上がったかを見る（ADR 0031）
-        record_event(cur, "dispatcher.started", None, None, {"engine_version": ENV.get("ENGINE_VERSION") or "unknown", "reattaching": len(reattached)})
+        record_event(cur, "dispatcher.started", None, None, {"engine_version": version.engine_version(ENV), "reattaching": len(reattached)})
     if not store.bucket_exists(BUCKET):
         store.make_bucket(BUCKET)
     log(f"dispatcher up: repos={REPOS} label={TRIGGER_LABEL} parallel={MAX_PARALLEL} image={WORKER_IMAGE}")
     threading.Thread(target=poll_loop, daemon=True).start()
     threading.Thread(target=ops_loop, daemon=True).start()
     threading.Thread(target=governance_loop, daemon=True).start()   # 枠の数（governance）が 0 なら取り出さない
+    threading.Thread(target=desk_loop, daemon=True).start()   # 窓口の枠（desk）。0 なら取り出さない
     if ENV.get("WATCH_ENABLED", "1") == "1":
         threading.Thread(target=watch_loop, daemon=True).start()
     if tidy.TIDY_ENABLED:

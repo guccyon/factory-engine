@@ -53,6 +53,8 @@ steps:
     tier: tier-judge
   plan:                       # プランナー（core-gates/plan.py。チケットと規範の写しを読むだけ。着手判定と経路。ADR 0025・0026）
     tier: tier-small
+  desk.consult:               # 窓口の相談役（core-gates/desk_consult.py。会話と規範の写しを読むだけ。問いか、Request とタスクのまとまりの下書き。ADR 0030 の 3）
+    tier: tier-judge
   committee_review:           # 知見の委員会の 4 役（core-gates/committee_review.py。材料の写しを読むだけ。ADR 0024）
     tier: tier-judge
   committee_weekly:           # 知見の委員会の週 1 の定例の議長（core-gates/committee_weekly.py。材料の写しを読むだけ。ADR 0024）

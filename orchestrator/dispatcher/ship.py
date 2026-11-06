@@ -7,9 +7,11 @@
   release.ship_requested      {release_id}            イメージを作り staging に出す（staging は自動。phase_grants P2 の deploy_test: auto）
   release.approved            {release_id, by, via}   承認ボタン。staging で確かめた版を prod に出す
   release.rollback_requested  {repo, env, by, via}    その環境を、いま出ている版の 1 つ前の版に戻す
+  release.reseed_requested    {env, by, via}          触れる環境の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env。release_id はいまその環境の版）
 結果（同じ release の correlation_id で）:
-  release.built / release.deployed / release.rolled_back / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
-  release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ）
+  release.built / release.deployed / release.rolled_back / release.reseeded / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
+  release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ。入れ直しのたびにも）
+  release.touchable（触れる環境の入口。ship.yaml の touch の環境に出す・戻す・入れ直すたびに。URL・QR を付ける入口・ログインの手がかり）
 
 製品の出荷の形は製品の .factory-config/ship.yaml（compose のファイル、部品ごとのイメージの作り方、環境ごとの値、確かめ方）。
 """
@@ -30,17 +32,65 @@ import stoppage
 
 WORK = os.environ.get("SHIP_WORKDIR", "/ship")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,40}$")
-REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested")
-RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.ship_failed")
-# 本番に出さない製品（1st リリース前の development。2026-11-04 オーナー: 本番はしばらく動かさず staging だけ）。
-# 承認を受け付けず、shipper も本番を起動しない。staging の版が本番待ちにならないので、出荷の列車は staging に出し続ける。
-# 製品の段階（development → 1st リリース後）を持つリリース管理ができるまでのつなぎ
-PROD_HOLD = {r.strip() for r in os.environ.get("SHIP_PROD_HOLD", "").split(",") if r.strip()}
-PROD_HOLD_MSG = "この製品は 1st リリース前（development）なので本番には出さない（SHIP_PROD_HOLD）"
+REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested")
+RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.ship_failed")
+# 触れる環境（ADR 0028 の touchable_env）。人の端末（スマートフォン）から届く工場の機械の名前と、画面の待ち受け。
+# どちらも端末ごとの値なのでリポジトリに書かず、orchestrator/.env か docker-compose.override.yml で渡す。
+# 待ち受けがなければ製品の compose の既定（127.0.0.1）のままで、入口の URL はこの機械からしか開けない
+TOUCH_HOST = os.environ.get("SHIP_TOUCH_HOST", "").strip()
+TOUCH_BIND = os.environ.get("SHIP_TOUCH_BIND", "").strip()
+HOST_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.:-]{0,252}$")
+# 製品の段階（ADR 0028 の決定 4。definitions/product_stages.yaml の写し。このコンテナには definitions/ がないので写す。食い違いはテストで見る）。
+# 段階で出荷先が決まる。development は本番を立てない（承認を受け付けず、shipper も本番を起動しない。staging の版が本番待ちにならないので、
+# 出荷の列車は staging に出し続ける）。宣言は製品の manifest.yaml の product_stage で、supervisor が読んで product.stage_observed に残す。
+# 一度も読めていない製品は development に倒す（#160 の SHIP_PROD_HOLD を置き換えた）
+STAGES = {
+    "development": {"ja": "開発中（1st リリース前）", "ship_to": ["staging"], "operation_started": False},
+    "launch": {"ja": "公開の準備（本番を立てて、最初の利用者に出すまで）", "ship_to": ["staging", "prod"], "operation_started": False},
+    "operating": {"ja": "運用中（利用者に出した後）", "ship_to": ["staging", "prod"], "operation_started": True},
+}
+DEFAULT_STAGE = "development"
 
 
-def prod_held(repo: str) -> bool:
-    return repo in PROD_HOLD
+def declared_stage(manifest: dict) -> str | None:
+    """manifest.yaml の product_stage の値。{stage: development, ...} の形のほか、product_stage: development とだけ書いたものも読む"""
+    v = manifest.get("product_stage")
+    v = v.get("stage") if isinstance(v, dict) else v
+    return str(v) if v else None
+
+
+def stage_of(cur, repo: str) -> dict:
+    """製品のいまの段階 {stage, ja, ship_to, operation_started, declared}。declared は manifest に書かれていた値
+    （manifest を一度も読めていなければ None、欄がなければ ""。どちらも development として扱う）"""
+    cur.execute("select payload from events where name='product.stage_observed' and payload->>'repo'=%s "
+                "order by id desc limit 1", (repo,))
+    r = cur.fetchone()
+    p = r["payload"] if r else {}
+    s = p.get("stage") if p.get("stage") in STAGES else DEFAULT_STAGE
+    return {"stage": s, **STAGES[s], "declared": p.get("declared") if r else None}
+
+
+def observe_stage(cur, repo: str, stage: str | None, by: str = "supervisor") -> bool:
+    """manifest の宣言を残す。変わったときだけ書く（知らない値は development として扱い、そのまま残して人が気づけるようにする）"""
+    cur.execute("select payload->>'declared' as d from events where name='product.stage_observed' and payload->>'repo'=%s "
+                "order by id desc limit 1", (repo,))
+    r = cur.fetchone()
+    declared = stage or ""
+    if r and r["d"] == declared:
+        return False
+    effective = declared if declared in STAGES else DEFAULT_STAGE
+    cur.execute("insert into events(name, correlation_id, payload) values ('product.stage_observed',%s,%s)",
+                (f"product:{repo}", Jsonb({"repo": repo, "stage": effective, "declared": declared, "known": declared in STAGES, "by": by})))
+    return True
+
+
+def prod_held(cur, repo: str) -> bool:
+    return "prod" not in stage_of(cur, repo)["ship_to"]
+
+
+def held_msg(cur, repo: str) -> str:
+    st = stage_of(cur, repo)
+    return f"この製品は {st['stage']}（{st['ja']}）の段階なので本番には出さない（段階の切り替えは manifest.yaml の product_stage を人の承認で）"
 
 
 def now() -> datetime:
@@ -99,7 +149,7 @@ def busy(cur, repo: str) -> bool:
                 (list(REQUESTS), f"{repo}@%", list(RESULTS)))
     if cur.fetchone():
         return True
-    if prod_held(repo):
+    if prod_held(cur, repo):
         return False   # 本番に出さないので、staging の版は本番待ちにならない
     envs = status(cur, repo)["environments"]
     staged = envs.get("staging", {}).get("release_id")
@@ -127,8 +177,9 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
     st = status(cur, release_of(cur, release_id)["repo"]) if release_of(cur, release_id) else None
     if not st:
         return False, "その Release はない"
-    if prod_held(release_of(cur, release_id)["repo"]):
-        return False, PROD_HOLD_MSG
+    repo = release_of(cur, release_id)["repo"]
+    if prod_held(cur, repo):
+        return False, held_msg(cur, repo)
     staged = st["environments"].get("staging", {}).get("release_id")
     if staged != release_id:
         return False, "staging でいま確かめられている版ではない"
@@ -136,9 +187,20 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
     return True, "prod への出荷を承認した"
 
 
+def request_reseed(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, str]:
+    """触れる環境の DB を空にしてシードから入れ直す依頼。いまその環境に出ている版で行う（どの環境かは shipper が ship.yaml の touch で確かめる）"""
+    if env == "prod":
+        return False, "本番の DB は入れ直さない"
+    rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
+    if not rid:
+        return False, f"{env} にまだ版が出ていない"
+    record(cur, "release.reseed_requested", rid, {"repo": repo, "env": env, "by": by, "via": via})
+    return True, f"{env} の DB を空にして、{rid} の合成シードから入れ直す依頼をした"
+
+
 def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, str]:
-    if env == "prod" and prod_held(repo):
-        return False, PROD_HOLD_MSG   # 戻すのも本番を起動するので受け付けない
+    if env == "prod" and prod_held(cur, repo):
+        return False, held_msg(cur, repo)   # 戻すのも本番を起動するので受け付けない
     st = status(cur, repo)
     cur_env = st["environments"].get(env)
     if not cur_env or not cur_env.get("previous"):
@@ -224,11 +286,20 @@ def image(repo: str, part: str, version: str) -> str:
     return f"{repo.split('/')[-1]}-{part}:{version}"
 
 
+def touch_config(cfg: dict, env: str) -> dict | None:
+    """ship.yaml の touch（触れる環境）。その環境が入っていなければ None"""
+    t = cfg.get("touch") or {}
+    return t if env in (t.get("environments") or []) else None
+
+
 def compose_env(cfg: dict, repo: str, env: str, rel: dict) -> dict:
     e = {str(k): str(v) for k, v in (cfg["environments"][env].get("env") or {}).items()}
     for part, spec in cfg["images"].items():
         e[spec["env"]] = image(repo, part, rel["app_version"])
     e.update({"COMPOSE_PROJECT_NAME": project(repo, env), "APP_VERSION": rel["app_version"], "RELEASE_ID": rel["release_id"]})
+    t = touch_config(cfg, env)
+    if t and t.get("bind_env") and TOUCH_BIND and HOST_RE.match(TOUCH_BIND):
+        e[str(t["bind_env"])] = TOUCH_BIND   # 触れる環境の画面だけ、人の端末から届く待ち受けにする（prod には渡さない）
     return e
 
 
@@ -260,18 +331,71 @@ def added_contracts(cur, path: str, repo: str, commit: str) -> list[str]:
     return sorted(f for f in out.splitlines() if "/migrations/" in f and "_contract_" in f.rsplit("/", 1)[-1] and f.endswith(".sql"))
 
 
-def seed_once(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
-    """ship.yaml の seed の環境なら、その環境に合成シードを 1 回だけ書く（DB は環境ごとのボリュームに残る）"""
-    sd = cfg.get("seed") or {}
-    if env not in (sd.get("environments") or []):
-        return
-    cur.execute("select 1 from events where name='release.seeded' and payload->>'repo'=%s and payload->>'env'=%s limit 1", (repo, env))
-    if cur.fetchone():
-        return
+def seed_envs(cfg: dict) -> list[str]:
+    return list((cfg.get("seed") or {}).get("environments") or [])
+
+
+def seed(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
+    """合成シードを書く（ship.yaml の seed のコマンド）"""
+    sd = cfg["seed"]
     t0 = time.monotonic()
     sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", sd["service"], *sd["command"]], timeout=900)
     record(cur, "release.seeded", rel["release_id"], {**common, "env": env, "seconds": round(time.monotonic() - t0, 1),
                                                       "command": sd["command"]})
+
+
+def seed_once(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
+    """ship.yaml の seed の環境なら、その環境に合成シードを 1 回だけ書く（DB は環境ごとのボリュームに残る）"""
+    if env not in seed_envs(cfg):
+        return
+    cur.execute("select 1 from events where name='release.seeded' and payload->>'repo'=%s and payload->>'env'=%s limit 1", (repo, env))
+    if cur.fetchone():
+        return
+    seed(cur, cfg, repo, env, rel, common)
+
+
+def reseed(cur, cfg: dict, path: str, repo: str, env: str, rel: dict, common: dict) -> float:
+    """触れる環境の DB を空にし（ship.yaml の touch.reset）、アプリを作り直してから合成シードを書く。
+    作り直すのは、DB を消したあとに古い接続やメモリの状態を持ち越さないため（起動でマイグレーションも当たる）"""
+    t = touch_config(cfg, env)
+    if not t or not t.get("reset") or env not in seed_envs(cfg):
+        raise RuntimeError(f"{env} は入れ直せる環境ではない（ship.yaml の touch.environments・touch.reset・seed.environments）")
+    t0 = time.monotonic()
+    sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", t["reset"]["service"], *t["reset"]["command"]], timeout=300)
+    compose = ["docker", "compose", "-f", os.path.join(path, cfg["compose"])]
+    sh(compose + ["up", "-d", "--wait", "--force-recreate", "--no-deps", cfg["verify"]["service"]],
+       env=compose_env(cfg, repo, env, rel), timeout=600)
+    verify(cfg, repo, env, rel)
+    seed(cur, cfg, repo, env, rel, common)
+    return round(time.monotonic() - t0, 1)
+
+
+def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
+    """触れる環境なら、入口（URL）とログインの手がかりを release.touchable に残す。失敗しても出荷は失敗にしない（手がかりが欠けるだけ）"""
+    t = touch_config(cfg, env)
+    if not t:
+        return
+    host = TOUCH_HOST if TOUCH_HOST and HOST_RE.match(TOUCH_HOST) else "127.0.0.1"
+    values = (cfg["environments"][env].get("env") or {})
+    entries = []
+    for x in t.get("entries") or []:
+        port = values.get(x.get("port_env"))
+        if port is None:
+            continue
+        path = str(x.get("path") or "/")
+        entries.append({"label": str(x.get("label") or x.get("port_env")), "url": f"http://{host}:{int(port)}{path}",
+                        "qr": bool(x.get("qr"))})
+    accounts, note = [], None
+    if t.get("accounts"):
+        try:
+            out = sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", t["accounts"]["service"], *t["accounts"]["command"]],
+                     timeout=60)
+            accounts = [{"label": str(a.get("label")), "value": str(a.get("value"))} for a in json.loads(out.strip() or "[]")][:20]
+        except Exception as e:  # noqa: BLE001
+            note = f"ログインの手がかりを読めなかった: {str(e)[-300:]}"
+    record(cur, "release.touchable", rel["release_id"], {
+        "repo": repo, "env": env, "host": host, "reachable_from_phone": bool(TOUCH_BIND and TOUCH_BIND != "127.0.0.1" and host != "127.0.0.1"),
+        "entries": entries, "accounts": accounts, "note": note, "request_id": common.get("request_id")})
 
 
 def handle(cur, ev: dict):
@@ -295,9 +419,11 @@ def handle(cur, ev: dict):
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})
             seed_once(cur, cfg, repo, "staging", rel, common)
-        elif (name == "release.approved" or (name == "release.rollback_requested" and p.get("env") == "prod")) and prod_held(repo):
+            touch_points(cur, cfg, repo, "staging", rel, common)
+        elif (name == "release.approved" or (name == "release.rollback_requested" and p.get("env") == "prod")) and prod_held(cur, repo):
             # 受け付けた後で止めた・直接書かれた承認も、本番は起動しない（停止には開かない。止めているのは意図どおり）
-            record(cur, "release.ship_failed", rid, {**common, "request": name, "error": PROD_HOLD_MSG, "held": True})
+            record(cur, "release.ship_failed", rid, {**common, "request": name, "error": held_msg(cur, repo), "held": True,
+                                               "stage": stage_of(cur, repo)["stage"]})
         elif name == "release.approved":
             path, _ = source(repo, rel["app_version"])
             secs = deploy(ship_config(path), path, repo, "prod", rel)
@@ -308,10 +434,21 @@ def handle(cur, ev: dict):
             target_id = status(cur, repo)["environments"][env]["previous"]
             target = release_of(cur, target_id)
             path, _ = source(repo, target["app_version"])
-            deploy(ship_config(path), path, repo, env, target)
+            cfg = ship_config(path)
+            deploy(cfg, path, repo, env, target)
             secs = round((now() - ev["occurred_at"]).total_seconds(), 1)   # 押してから確かめ終わるまで
             record(cur, "release.rolled_back", target_id, {**common, "env": env, "ok": True, "from": rid, "seconds": secs,
                                                            "by": p.get("by"), "via": p.get("via")})
+            touch_points(cur, cfg, repo, env, target, common)
+        elif name == "release.reseed_requested":
+            env = p["env"]
+            if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:
+                raise RuntimeError(f"{env} の版が依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
+            path, _ = source(repo, rel["app_version"])
+            cfg = ship_config(path)
+            secs = reseed(cur, cfg, path, repo, env, rel, common)
+            record(cur, "release.reseeded", rid, {**common, "env": env, "ok": True, "seconds": secs, "by": p.get("by"), "via": p.get("via")})
+            touch_points(cur, cfg, repo, env, rel, common)
     except Exception as e:  # noqa: BLE001  失敗は記録して停止に開き、次の依頼へ
         record(cur, "release.ship_failed", rid, {**common, "request": name, "error": str(e)[-1500:]})
         stoppage.open_stoppage(cur, f"ship:{ev['id']}", "factory-bug", f"出荷の失敗: {name} {rid}",

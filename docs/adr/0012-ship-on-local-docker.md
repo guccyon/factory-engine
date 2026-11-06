@@ -40,3 +40,13 @@ Gen1 の製品（rally）には出荷先がない。予算の都合で常時稼�
 - `SHIP_PROD_HOLD`（製品のリポジトリの並び。compose の既定は rally）に入っている製品は、本番への承認を受け付けない。受け付けた後の承認も shipper が本番を起動せず、`release.ship_failed`（`held: true`）だけを残す（停止には開かない）
 - staging の版は本番待ちにならない。受信トレイに「本番待ち」を出さず、出荷の列車も staging に出し続ける。操業コンソールの「本番に出す」のボタンは出さない
 - 製品の段階（development → 1st リリース後）を持ち、段階で出荷先を決めるリリース管理は、別に設計する。それまでのつなぎ。外すときは `SHIP_PROD_HOLD=` にして上げ直す
+
+## 追記（2026-11-05）: 製品の段階で出荷先を決める（SHIP_PROD_HOLD を置き換えた）
+
+ADR 0028 の決定 4 の `product_stage`。段階と出荷先の表は `definitions/product_stages.yaml`。
+
+- 段階は development（staging だけ）/ launch（staging と prod。prod は承認ボタン）/ operating（同じ。運用開始）の 3 つ。製品の `.factory-config/manifest.yaml` の `product_stage.stage` に書く（Blueprint の写し）。manifest の変更は憲法の変更なので、切り替えは人の承認付き PR
+- supervisor が周回ごとに既定ブランチの manifest を読み、変わったときだけ events の `product.stage_observed` に残す。shipper・操業コンソール・受信トレイはこの記録を読み、GitHub に触らない
+- 一度も読めていない製品・欄がない製品・知らない値は development に倒す（本番を立てない側）。development の振る舞いは上の追記（2026-11-04）と同じで、`release.ship_failed` に `held: true` と `stage` を残す
+- operating は manifest の `autonomy.operation_started` と同じ意味で、`from: operation_start` の常時承認が効き始める（段階の欄がなかった頃の `operation_started` も読む）
+- 環境変数 `SHIP_PROD_HOLD` はなくした。入れ替えの前に製品の manifest に段階が入っていなくても、development に倒すので本番は動かない

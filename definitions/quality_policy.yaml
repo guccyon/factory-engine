@@ -1,0 +1,55 @@
+# 品質方針の欄の型（ADR 0028 の決定 4）
+# 「利用者（エンドユーザー・CS・運営）にとって使いやすいか」を QA 役が確かめるときの、製品ごとの約束。
+# 値は製品の Blueprint の quality_policy に書き、製品側の .factory-config/quality_policy.yaml に写す（manifest と同じく Blueprint が正）。
+# ここは欄の名前と意味だけを決める。値は製品ごと。内部品質（コードの作り。quality.yaml）とは別。
+#
+# 読み手: QA 役（観点と S1 の条件、サポート対象）、プランナー（ユーザーストーリーの「してはいけないこと」）、
+#         デザイナーと検査役（アクセシビリティと言葉。詳しい規則は製品の specs/design/ を指す）
+# 決め方: Gen1 は建設者が代理で仮置きし（provisional: true）、事業主が確かめたら外す。
+#         値を緩める変更（レベルを下げる・サポート対象を減らす・S1 の条件を外す）は人の承認（Goodhart 対策。QA 役が自分の基準を緩めない）
+
+schema_version: "0.1"
+status: draft
+
+fields:
+  provisional:
+    type: bool
+    ja: "仮置きか。true の間は、事業主の確認を待っている値として日報と QA の報告に印を出す"
+  decided:
+    type: "list of {date, by, note}"
+    ja: "値を決めた・変えた記録（日付・誰が・何を）"
+
+  accessibility:
+    ja: "アクセシビリティのレベル。設計の時点から守る"
+    keys:
+      standard: "準拠する基準（例: WCAG 2.2 AA）"
+      rules: "詳しい規則の置き場（例: specs/design/accessibility.yaml）。ここに規則を重ねて書かない"
+      assistive: "確かめる支援設定（読み上げ、文字の拡大、動きを減らす、ダークモードなど）"
+
+  data:
+    ja: "扱うデータの種類。漏れたとき・壊れたときの重さを決める"
+    keys:
+      classes: "list of {id, ja, examples, sensitivity: high|medium|low, note}。high は漏れたら S1"
+      minors: "未成年の利用者がいるか（true なら保護者の同意・見せ方の配慮も観点に入る）"
+      retention: "消す・残す決まりの置き場"
+
+  support:
+    ja: "サポート対象の表。表にあるものは保証し、ないものは保証しない"
+    keys:
+      matrix: "list of {surface, platform, os, devices, browsers, note}。surface は製品のアプリ（student-app・admin-web など）"
+      locales: "言語と地域"
+      network: "確かめる回線の状態（例: 屋外のモバイル回線、切断と再接続）"
+
+  language:
+    ja: "言葉の指針。用語・表記・声と調子"
+    keys:
+      glossary: "用語の正本（例: specs/glossary.yaml）"
+      notation: "表記の正本（例: specs/design/content.yaml）"
+      voice: "声と調子の正本（例: specs/design/concept_tone.yaml）"
+      readers: "読み手ごとの注意（エンドユーザー・CS・運営）"
+      judge: "言葉の温度は QA 役が判定せず、印として人に出す（ADR 0028 の決定 2）"
+
+  s1:
+    ja: "S1（止める）の条件。当たったら QA 役はどの機能開発より優先して、指示役とプランナーに対してラインを差し止める"
+    keys:
+      conditions: "list of {id, ja}。重要度 S2〜S4 とエラーバジェットは P5b の severity_budget で足す"

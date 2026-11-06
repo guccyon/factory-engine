@@ -155,3 +155,21 @@ def test_rerun_of_a_piped_job_carries_its_input(cur):
     assert new["kind"] == "body_fix"
     cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s", (new["id"],))
     assert cur.fetchone()["inp"] == inp
+
+
+def test_rerun_continue_stops_after_two_incompletes(cur, capsys):
+    # 途中終了の続きは 1 回まで（ADR 0036 の 6）。続きも途中終了したら、残りをプランナーに切らせる
+    first = plain_job(cur)
+    cur.execute("update jobs set state='failed', error='incomplete(claude_exit=1)', result=%s where id=%s",
+                (Jsonb({"pr_url": PR_URL, "pr_number": 429, "incomplete": True}), first))
+    assert factoryctl.main(["factoryctl", "rerun", str(first), "--continue"]) in (None, 0)
+    cur.execute("select id from jobs where id > %s", (first,))
+    second = cur.fetchone()["id"]
+    cur.execute("update jobs set state='failed', error='incomplete(claude_exit=1)', result=%s where id=%s",
+                (Jsonb({"pr_url": PR_URL, "pr_number": 429, "incomplete": True}), second))
+    assert factoryctl.main(["factoryctl", "rerun", str(second), "--continue"]) == 1
+    assert "plan resplit o/r#374" in capsys.readouterr().out
+    assert factoryctl.main(["factoryctl", "plan", "resplit", f"{REPO}#{ISSUE}"]) == 0
+    cur.execute("select kind, (select payload->'input' from events e where e.job_id=j.id and e.name='job.enqueued') as inp from jobs j where id > %s", (second,))
+    r = cur.fetchone()
+    assert r["kind"] == "plan" and r["inp"]["phase"] == "implement" and r["inp"]["continuing_pr"] == PR_URL

@@ -252,6 +252,24 @@ def test_allowed_jobs_flow_while_paused(cur):
     assert drain.allowed(cur) == []                                    # 次の一時停止には持ち越さない
 
 
+def test_priority_allowed_jobs_flow_while_paused(cur):
+    """一時停止のまま、優先度が下限以上のチケットのジョブも流す（2026-11-06 オーナー: 検証のチケットを p0 で流す）。
+    プランナーのジョブは ticket_id を持たないので、correlation_id からチケットを引く"""
+    drain.set_drain(cur, True, "t")
+    cur.execute("insert into tickets(source, source_ref, repo, priority) values ('github','o/r#5','o/r',%s), ('github','o/r#6','o/r',50)",
+                (ops.LEVELS["p0"][0],))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
+                "('github:o/r#6','o/r',6,'planner','plan'), ('github:o/r#5','o/r',5,'planner','plan')")
+    assert drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur)) is None
+    assert drain.allow(cur, [], "t", min_priority=ops.LEVELS["p0"][0])
+    assert drain.allow(cur, ["github:o/r#1"], "t")                     # 後から PR を足しても下限は残る
+    assert drain.allowed_min_priority(cur) == ops.LEVELS["p0"][0]
+    got = [drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur)) for _ in range(2)]
+    assert [j["issue_number"] for j in got if j] == [5]               # p2 のチケットのジョブは順番待ちのまま
+    drain.set_drain(cur, False, "t")
+    assert drain.allowed_min_priority(cur) is None                     # 再開で消える
+
+
 def test_governance_jobs_flow_while_paused(cur):
     """委員会と知見の流れはラインと独立。一時停止の間も取り出す（2026-11-04 オーナー）"""
     drain.set_drain(cur, True, "t")
@@ -272,7 +290,7 @@ def test_line_scale_is_declared_and_followed(cur, monkeypatch):
     import line
     monkeypatch.setenv("MAX_PARALLEL", "3")
     monkeypatch.setenv("SUPERVISOR_MAX_INFLIGHT", "13")
-    assert {k: line.spec(cur)[k] for k in line.FIELDS} == {"workers": 3, "tickets": 13, "governance": 1}   # 宣言がなければ環境変数
+    assert {k: line.spec(cur)[k] for k in line.FIELDS} == {"workers": 3, "tickets": 13, "governance": 1, "desk": 1}   # 宣言がなければ環境変数
     line.scale(cur, "t", "検証のため絞る", workers=1, tickets=1)
     s = line.spec(cur)
     assert (s["workers"], s["tickets"], s["governance"], s["reason"]) == (1, 1, 1, "検証のため絞る")
@@ -282,7 +300,7 @@ def test_line_scale_is_declared_and_followed(cur, monkeypatch):
     assert line.claim_line(cur)["issue_number"] == 1
     assert line.claim_line(cur) is None                  # ワーカー 1 機が埋まっている
     assert line.claim_governance(cur)["kind"] == "case_review"   # 委員会の枠は別に数える
-    assert line.running(cur) == {"workers": 1, "governance": 1}
+    assert line.running(cur) == {"workers": 1, "governance": 1, "desk": 0}
     line.scale(cur, "t", workers=2)
     assert line.claim_line(cur)["issue_number"] == 2     # 増やせば次の取り出しから効く
     line.scale(cur, "t", workers=0)
