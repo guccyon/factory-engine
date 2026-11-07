@@ -251,8 +251,8 @@ def waiting_for_human(cur, url: str, pr: dict | None = None) -> bool:
     同時に流す件数の枠には数えない。承認待ちをラインのクリティカルパスにしない（2026-10-31 オーナー、11-01 に委員会の分を足した）。
     ラベルと保留は 11-02 に足した。ラベルの付いた PR は衝突を解かずに止まる（awaiting_decision）のに枠を取り、
     rally #527・#534・#589 が動かないまま 3 枠を埋めていた"""
-    if pr is not None and any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []):
-        return True
+    if pr is not None and any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []) and not judgment.decisions_settled(cur, url):
+        return True   # 人に回した判断がすべて決まっていれば、ラベルが残っていても人は待っていない（awaiting_decision と同じ見方）
     for prefix in ("judge:", "sendback:", "ci:", "hold:"):
         if stoppage.open_keys(cur, f"{prefix}{url}"):
             return True
@@ -320,6 +320,33 @@ def ci_fix_step(cur, p: dict, pr: dict):
         log("ci fix enqueued", p["url"], "job", jid)
 
 
+def human_fix_step(cur, p: dict, pr: dict):
+    """judge が人に回した判断に人が直す答えを出したら（受信トレイの judgment:<id>。judgment.decided の fix）、
+    その指摘を同じ担当の続きのジョブ（review_fix）に渡す。人の答えは人が出した数だけなので、続きの上限（CONTINUE_MAX）では切らない。
+    判断がそろって直しがなければ、残った factory:needs-judgment のラベルを外す（ラベルは次の judge を待たずに外れる）"""
+    if (pr["head"].get("repo") or {}).get("full_name") != p["repo"]:
+        return
+    fixes = judgment.pending_fixes(cur, p["url"])
+    if fixes:
+        sha = pr["head"]["sha"]
+        cur.execute("select payload->>'mode' as m from artifacts where type='Judgment' and payload->>'stage'='judged' and payload->>'pr_url'=%s "
+                    "order by id desc limit 1", (p["url"],))
+        mode = (cur.fetchone() or {}).get("m") or "attended"
+        signal = {"pr_url": p["url"], "mode": mode, "head_sha": sha, "by": "human", "defects": [f["fix"] for f in fixes]}
+        jid = continuation.enqueue(cur, repo=p["repo"], pr_number=p["number"], pr_url=p["url"], branch=pr["head"]["ref"], head_sha=sha,
+                                   reason="review_fix", by="human", signal=signal, limit=False)
+        if isinstance(jid, int):
+            record(cur, "judgment.fix_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha, "job_id": jid, "decided": [f["id"] for f in fixes]})
+            log("human fix enqueued", p["url"], "job", jid, "fixes", len(fixes))
+        return
+    if (any(l.get("name") == "factory:needs-judgment" for l in pr.get("labels") or []) and judgment.decisions_settled(cur, p["url"])
+            and not stoppage.open_keys(cur, f"judge:{p['url']}")):
+        try:
+            gh("DELETE", f"repos/{p['repo']}/issues/{p['number']}/labels/{urllib.parse.quote('factory:needs-judgment', safe='')}")
+        except Exception as e:  # noqa: BLE001
+            log("needs-judgment label removal failed", p["url"], repr(e))
+
+
 def merge_step(cur, rules: dict, manifests: dict) -> set:
     """返り値は、同時上限に数える開いた工場の PR の correlation_id（人を待つ PR は数えない）"""
     open_corrs: set = set()
@@ -355,6 +382,7 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             else:
                 ci_fix_step(cur, p, pr)
             ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"), pr)
+            human_fix_step(cur, p, pr)
         if not waiting_for_human(cur, p["url"], pr):
             open_corrs.add(p["corr"])
         if pr.get("draft") or pr.get("mergeable_state") != "clean":
@@ -428,6 +456,8 @@ def inspector_approved(cur, pr_url: str, sha: str) -> tuple[bool, str]:
         return False, "judge が人に回した判断の待ち"
     if continuation.pending(cur, pr_url, sha, "review_fix"):
         return False, "採用した指摘を同じ担当が直している（ADR 0017）"
+    if judgment.pending_fixes(cur, pr_url):
+        return False, "人が直す答えを出した判断を、同じ担当に渡す前"
     if body_fix_pending(cur, pr_url):
         return False, "採用した本文の指摘を直している（body_fix）"
     n_adopt = sum(1 for v in verdicts if v == "adopt")
