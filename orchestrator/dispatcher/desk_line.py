@@ -23,6 +23,8 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 import desk
+import inbox
+import operations
 import ops
 
 KIND = "desk_consult"
@@ -80,7 +82,8 @@ def consult_input(cur, c: dict) -> dict:
                 "order by updated_at desc limit 60", (c["product"],))
     closed = [{"ref": t["source_ref"], "title": t["title"], "closed_at": t["updated_at"].date().isoformat()} for t in cur.fetchall()]
     return {"conversation_id": c["id"], "product": c["product"], "wanted": c["wanted"] or {}, "recently_closed": closed,
-            "messages": [{k: m.get(k) for k in ("author", "role", "kind", "body", "at", "options")} for m in msgs],
+            "messages": [{k: m.get(k) for k in ("author", "role", "kind", "body", "at", "options")} for m in msgs if m.get("kind") != "ack"],
+            "operations": operations.catalog(),   # 振り分け（ADR 0039 の決定 2）。決まった操作で済む依頼は operate に
             "questions_asked": questions_asked(msgs), "force_draft": False, "tickets": tickets,
             "previous_draft": ({k: d["payload"].get(k) for k in ("request", "tasks", "unresolved", "overlaps")} if d else None)}
 
@@ -202,6 +205,9 @@ def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> 
                              payload={"job_id": job["id"], "round": res.get("round"), "question": q.get("question"), "why": q.get("why"),
                                       "options": q.get("options") or [], "recommended": q.get("recommended", -1),
                                       "summary": res.get("summary") or ""})
+        return
+    if res.get("outcome") == "route":
+        route(cur, cid, job, res)
         return
     if res.get("outcome") != "draft":
         desk.factory_message(cur, cid, "factory", "下書きを作れませんでした（" + "、".join((res.get("errors") or ["形の誤り"])[:5])
@@ -377,3 +383,149 @@ def open_from_issue(cur, gh, who: dict, repo: str, number: int) -> dict:
     _event(cur, "desk.imported", desk.corr(c["id"]), {"conversation_id": c["id"], "repo": repo, "issue": number, "by": who["name"],
                                                       "clarified": r.get("status") == "clarified"})
     return c
+
+
+# ------------------------------------------------------------------ 単発の依頼のループ（ADR 0039 の順番 2。operate の 1 本）
+#   受付（desk.open_conversation がすぐ返す）→ 振り分け（相談役が route を返す → route()）
+#   → 確認（send の段は受信トレイの件 desk_confirm。read の段は飛ばす）→ 実行（run_operations。dispatcher が操作を 1 回動かす）
+#   → 提出（会話に結果を書き、受信トレイの件 desk_receipt で受取確認を待つ）→ 依頼者の答え（answer()）
+MAX_FOLLOW_UPS = 5     # 続きの上限（決定 5。仮置き）。超えたら新しい会話にしてもらう
+CONFIRM_KIND, RECEIPT_KIND = "desk_confirm", "desk_receipt"
+CONFIRM_OPTIONS = [{"id": "run", "label": "実行する"}, {"id": "cancel", "label": "やめる"}]
+RECEIPT_OPTIONS = [{"id": "accept", "label": "受け取った"}, {"id": "more", "label": "続きを頼む", "note_required": True},
+                   {"id": "return", "label": "差し戻す（頼んだことと違う）", "note_required": True}]
+TIER_JA = {"read": "読むだけ（確認なしで動かす）", "send": "工場の外に出す（依頼者の確認 1 回）", "change": "状態を変える（承認ボタン）"}
+
+
+def _round(cur, cid: int) -> int:
+    """振り分けの回（続き・差し戻しで振り分け直すたびに 1 つ増える）。受信トレイの件の key と、実行の重複よけに使う"""
+    cur.execute("select count(*) as n from events where correlation_id=%s and name='desk.routed'", (desk.corr(cid),))
+    return cur.fetchone()["n"]
+
+
+def last_route(cur, cid: int) -> dict | None:
+    cur.execute("select id, payload from events where correlation_id=%s and name='desk.routed' order by id desc limit 1", (desk.corr(cid),))
+    r = cur.fetchone()
+    return {"event_id": r["id"], **r["payload"]} if r else None
+
+
+def route(cur, cid: int, job: dict, res: dict) -> None:
+    """相談役の振り分けを検査して記録する（決定 2）。宣言にない操作・引数なら振り分けず、依頼者に言い足しを頼む。
+    振り分けの結果は確認を飛ばすときも必ず会話に書く"""
+    import notify
+    r = res.get("route") or {}
+    cur.execute("select state from desk_conversations where id=%s", (cid,))
+    c = cur.fetchone()
+    if not c or c["state"] not in ("open", "waiting_requester"):
+        return   # 相談役が動いている間に取り下げられた・終わった会話は振り分けない
+    cfg = notify.cached(cur)
+    params, errors = operations.check(r.get("op"), r.get("params"), destinations=sorted(cfg.destinations), role="requester")
+    if errors:
+        desk.factory_message(cur, cid, "factory", "決まった操作に振り分けようとしましたが、宣言と合いませんでした（" + "、".join(errors[:5])
+                             + "）。依頼の言葉を足してもらえれば、もう一度振り分けます。", kind="error", state="waiting_requester",
+                             payload={"job_id": job["id"], "errors": errors, "route": r})
+        return
+    op, tier = r["op"], operations.tier(r["op"])
+    pv = operations.preview(op, params, cfg)
+    n = _round(cur, cid) + 1
+    payload = {"conversation_id": cid, "path": "operate", "op": op, "params": params, "tier": tier, "why": r.get("why") or "",
+               "preview": pv, "round": n, "job_id": job["id"], "confidence": res.get("confidence"),
+               "request": res.get("request") or {}, "workflow": {"path": "operate", "steps": ["confirm", "execute", "respond"]}}
+    desk.advance(cur, cid, "routed", "desk.routed", payload, path="operate")
+    lines = [f"振り分けました: 決まった操作（{op}。{operations.OPS[op]['ja']}）で済みます。", f"- やること: {pv['text']}",
+             f"- 確認の段: {TIER_JA.get(tier, tier)}"]
+    if r.get("why"):
+        lines.append(f"- 理由: {r['why']}")
+    if tier == "read":
+        desk.factory_message(cur, cid, "planner", "\n".join(lines + ["", "すぐに動かします。"]), kind="route", payload={"round": n})
+        desk.advance(cur, cid, "running", "desk.confirmed_run", {"conversation_id": cid, "round": n, "skipped": "read"})
+        return
+    key = f"{CONFIRM_KIND}:{cid}:{n}"
+    lines += ["", "よければ「実行する」、やめるなら「やめる」で答えてください（窓口の confirm、受信トレイのどちらからでも）。"]
+    desk.factory_message(cur, cid, "planner", "\n".join(lines), kind="route", payload={"round": n, "inbox_key": f"task:{key}"})
+    desk.advance(cur, cid, "awaiting_confirm", "desk.confirm_requested", {"conversation_id": cid, "round": n, "inbox_key": f"task:{key}"})
+    inbox.request(cur, key, CONFIRM_KIND, "requester", f"窓口の依頼 {cid}: {pv['text']}"[:300],
+                  action="実行してよいか答える（実行する・やめる）", correlation_id=desk.corr(cid), by="desk")
+
+
+def running_operations(cur) -> list[dict]:
+    cur.execute("select * from desk_conversations where state='running' and path='operate' order by updated_at")
+    return cur.fetchall()
+
+
+def run_operations(cur, config=None, poster=None) -> int:
+    """確認の済んだ操作を 1 回ずつ動かして提出する（決定 2 の 4・5）。同じ回は 2 度動かさない（落ちても送り直さない。送れたかは結果に書く）"""
+    n = 0
+    for c in running_operations(cur):
+        cid, corr = c["id"], desk.corr(c["id"])
+        rt = last_route(cur, cid)
+        if not rt or rt.get("op") not in operations.OPS:
+            continue
+        if not _event(cur, "op.started", corr, {"conversation_id": cid, "op": rt["op"], "params": rt["params"], "round": rt["round"]},
+                      f"op.started:{cid}:{rt['round']}"):
+            continue
+        try:
+            out = operations.run(cur, rt["op"], rt["params"], config=config, poster=poster)
+        except Exception as e:  # noqa: BLE001  操作の失敗も結果として提出する（依頼者が差し戻せる）
+            out = {"ok": False, "summary": f"操作が途中で失敗しました（{repr(e)[:200]}）", "detail": {}}
+        _event(cur, "op.executed", corr, {"conversation_id": cid, "op": rt["op"], "params": rt["params"], "round": rt["round"],
+                                         "ok": out["ok"], "summary": out["summary"]})
+        deliver(cur, cid, rt["round"], out)
+        n += 1
+    return n
+
+
+def deliver(cur, cid: int, round_: int, out: dict) -> None:
+    """提出（決定 5）。会話に結果と所見の要約を書き、受取確認の件を受信トレイに積む。返事がなくても閉じない"""
+    key = f"{RECEIPT_KIND}:{cid}:{round_}"
+    head = "できました。" if out["ok"] else "やってみましたが、思ったとおりにはいきませんでした。"
+    desk.factory_message(cur, cid, "factory", "\n".join([head + out["summary"], "",
+                                                         "受け取ったら「受け取った」、追加があれば「続きを頼む」、頼んだことと違えば「差し戻す」で答えてください"
+                                                         "（窓口の返事に answer を付けるか、受信トレイから）。"]),
+                         kind="delivered", payload={"round": round_, "ok": out["ok"], "inbox_key": f"task:{key}"})
+    desk.advance(cur, cid, "delivered", "desk.delivered", {"conversation_id": cid, "round": round_, "ok": out["ok"], "summary": out["summary"],
+                                                          "inbox_key": f"task:{key}"})
+    inbox.request(cur, key, RECEIPT_KIND, "requester", f"窓口の依頼 {cid} を提出: {out['summary']}"[:300],
+                  action="受け取ったか答える（受け取った・続きを頼む・差し戻す）", correlation_id=desk.corr(cid), by="desk")
+
+
+KEY_RE = re.compile(rf"^({CONFIRM_KIND}|{RECEIPT_KIND}):(\d+):(\d+)$")
+
+
+def answer(cur, key: str, option: str, by: str, via: str, note: str = "") -> tuple[bool, str]:
+    """受信トレイの件（desk_confirm・desk_receipt）への答え。inbox.answer の作用から呼ばれる（どの入口から来た答えもここを通る）"""
+    m = KEY_RE.match(key or "")
+    if not m:
+        return False, f"窓口の件ではない: {key}"
+    kind, cid, round_ = m.group(1), int(m.group(2)), int(m.group(3))
+    cur.execute("select * from desk_conversations where id=%s for update", (cid,))
+    c = cur.fetchone()
+    if not c:
+        return False, "そのような相談はない"
+    corr = desk.corr(cid)
+    if kind == CONFIRM_KIND:
+        if c["state"] != "awaiting_confirm" or _round(cur, cid) != round_:
+            return False, f"いまは確認を受けられない（状態 {c['state']}）"
+        inbox.resolve(cur, key, by, option)
+        if option == "run":
+            desk.advance(cur, cid, "running", "desk.confirmed_run", {"conversation_id": cid, "round": round_, "by": by, "via": via})
+            return True, "実行に進めた（次の周回で動かす）"
+        _event(cur, "op.rejected", corr, {"conversation_id": cid, "round": round_, "by": by, "via": via, "note": note})
+        desk.finish(cur, cid, "withdrawn", by, note=note or "確認でやめた")
+        return True, "やめた（依頼は取り下げとして閉じた）"
+    if c["state"] != "delivered" or _round(cur, cid) != round_:
+        return False, f"いまは受取確認を受けられない（状態 {c['state']}）"
+    if option == "more" and (c["follow_ups"] or 0) >= MAX_FOLLOW_UPS:
+        return False, f"続きは {MAX_FOLLOW_UPS} 回まで。新しい相談として開いてください"
+    inbox.resolve(cur, key, by, option)
+    _event(cur, "desk.received", corr, {"conversation_id": cid, "round": round_, "answer": option, "by": by, "via": via, "note": note})
+    if option == "accept":
+        desk.finish(cur, cid, "accepted", by, note=note)
+        return True, "受け取った（依頼を完了にした）"
+    # 続き・差し戻しは同じ会話で振り分けから（決定 5）。依頼者の一言を発言として残し、相談役に回す
+    if option == "more":
+        cur.execute("update desk_conversations set follow_ups = follow_ups + 1 where id=%s", (cid,))
+    desk.advance(cur, cid, "open", "desk.rerouted", {"conversation_id": cid, "round": round_, "answer": option})
+    _event(cur, "desk.message", corr, {"conversation_id": cid, "author": c["opened_by"], "role": "requester",
+                                       "kind": "follow_up" if option == "more" else "returned", "body": note})
+    return True, "続きとして振り分け直す" if option == "more" else "差し戻しとして振り分け直す"

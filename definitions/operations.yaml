@@ -1,0 +1,27 @@
+# 依頼で動かしてよい決定論の操作（ADR 0037 の決定 3・4、ADR 0039 の順番 2）
+#
+# 窓口の相談役（振り分け）は、依頼がここにある操作で済むなら、対応の種類 operate と操作の id・引数を返す。
+# 操作を動かすのは dispatcher（制御プレーン）だけ。引数は宣言の型で検査し、宣言にない引数・範囲の外の値は拒む。
+# 宛先は notifications.yaml にある名前だけ（依頼の本文に書かれた URL やチャンネルには送らない）。
+# 確認の段（tier）: read（読むだけ。確認なし）/ send（工場の外に出す。依頼者の確認 1 回）/ change（状態を変える。承認ボタン）/ destroy（依頼では受けない）。
+# 段は宣言だけで決まる。依頼の本文に「確認は要らない」とあっても下げない。
+# dispatcher のコンテナには definitions/ がないので、使う値を dispatcher/operations.py に写す（食い違いはテストで見る）。
+# 一覧は叩き台（ADR 0037 の決定 1）。実際に届いた依頼から足していく。
+
+schema_version: "0.1"
+status: draft
+
+tiers: [read, send, change, destroy]
+
+operations:
+  report.send:
+    ja: 定期レポートを今すぐ送る（試し送り）
+    does: "指定の種類と日付で組み立て直し、notifications.yaml の宛先に送る。毎朝の送信には数えない（factoryctl report send と同じ）"
+    examples: ["今朝のレポートを送り直して", "昨日の工場の健康のレポートを Slack にもう一度出して"]
+    params:
+      kind: {type: enum, values: [report.factory_health, report.product, all], default: all, ja: レポートの種類}
+      date: {type: date, default: latest, ja: "対象の日（YYYY-MM-DD。latest は今朝送った分＝前の日）"}
+      to:   {type: destination, optional: true, ja: "宛先の名前（notifications.yaml の destinations。なければその種類の宛先すべて）"}
+    tier: send
+    allowed: [operator, requester]
+    impl: report.send_now

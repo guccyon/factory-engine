@@ -10,9 +10,11 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
                                                        相談を開く。返事は会話を読んで取る（相談のジョブは数分かかるので非同期）
   GET  /api/desk/conversations                         自分の相談の一覧（運用主はすべて）
   GET  /api/desk/conversations/<id>?after=<id>&wait=<秒>  会話と、after より後の発言。wait（最大 60）を渡すと、新しい発言が来るまで待って返す
-  POST /api/desk/conversations/<id>/messages           {"body"} 返事・言い足し
+  POST /api/desk/conversations/<id>/messages           {"body"} 返事・言い足し。提出の後は {"answer": "accept"|"more"|"return", "body"?: 一言} で受取確認
+                                                       （ADR 0039 の決定 5。more・return は一言が要る）
   POST /api/desk/conversations/<id>/confirm            {"draft_id", "level"?: "p0".."p3"} 下書きを確認して投入する（依頼者の確認 1 回。ADR 0030 の 3）。
-                                                       チケットは dispatcher が次の周回で起票し、会話に「チケットを作った」の発言が付く
+                                                       チケットは dispatcher が次の周回で起票し、会話に「チケットを作った」の発言が付く。
+                                                       決まった操作に振り分けた依頼は {"answer": "run"|"cancel", "note"?} で、動かしてよいかに答える（ADR 0039）
   POST /api/desk/conversations/<id>/close              {"reason"?}
   GET  /api/desk/tickets/<id か owner/repo#123>         チケットの状態（段・優先度・順番・作業中のジョブ・PR）
   POST /api/desk/tickets/<id か ref>/priority          {"level" か "priority", "reason"?, "conversation_id"?} 明確な指示（「#812 を先に」）は壁打ちを通さずここで即時に通す
@@ -90,10 +92,16 @@ def route(method: str, path: str, query: dict, body: dict, token: str | None, co
                         return 200, out
                     time.sleep(POLL_SEC)
             if method == "POST" and len(rest) == 3 and rest[2] == "messages":
-                desk.post_message(cur, who, cid, body.get("body"))
+                if body.get("answer") is not None:   # 提出の受取確認（ADR 0039 の決定 5）。body は一言
+                    desk.receive(cur, who, cid, body.get("answer"), body.get("body") or "")
+                else:
+                    desk.post_message(cur, who, cid, body.get("body"))
                 return 200, desk.read_conversation(cur, who, cid, _int(query.get("after"), "after"))
             if method == "POST" and len(rest) == 3 and rest[2] == "confirm":
-                desk.confirm_draft(cur, who, cid, _int(body.get("draft_id"), "draft_id", -1), level=body.get("level"))
+                if body.get("answer") is not None:   # 振り分けの確認（ADR 0039 の決定 2。決まった操作を動かしてよいか）
+                    desk.confirm_route(cur, who, cid, body.get("answer"), str(body.get("note") or "")[:500])
+                else:
+                    desk.confirm_draft(cur, who, cid, _int(body.get("draft_id"), "draft_id", -1), level=body.get("level"))
                 return 200, desk.read_conversation(cur, who, cid, _int(query.get("after"), "after"))
             if method == "POST" and len(rest) == 3 and rest[2] == "close":
                 return 200, {"conversation": desk.view_conversation(desk.close_conversation(cur, who, cid, str(body.get("reason") or "")[:500]))}

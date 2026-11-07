@@ -113,5 +113,6 @@ def test_stdio_end_to_end_against_desk_api(monkeypatch):
     opened = json.loads(out[1]["result"]["content"][0]["text"])
     assert opened["conversation"]["state"] == "open" and opened["conversation"]["wanted"] == {"level": "p1"}
     read = json.loads(out[2]["result"]["content"][0]["text"])
-    assert read["messages"][-1]["body"] == "予約まわりの通知を先に進めて" and read["draft"] is None
+    assert read["messages"][-2]["body"] == "予約まわりの通知を先に進めて" and read["draft"] is None
+    assert read["messages"][-1]["kind"] == "ack"   # 受付の即時の返事（ADR 0039）
     assert out[3]["result"]["isError"] and json.loads(out[3]["result"]["content"][0]["text"])["status"] == 403

@@ -39,7 +39,7 @@ TRANSITIONS = {
     "routed": ("awaiting_confirm", "running", "delivered", "waiting_requester"),   # delivered は断りの提出（どの対応の種類にも当てはまらない）
     "awaiting_confirm": ("running", "closed", "routed"),                           # closed は確認で断られた（依頼者の答え）
     "running": ("delivered",),
-    "delivered": ("accepted", "closed", "routed"),                                 # routed は続き・差し戻し（振り分けから）
+    "delivered": ("accepted", "closed", "routed", "open"),                         # open は続き・差し戻し（相談役の振り分けから）
 }
 TOKEN_PREFIX = "fdk_"
 MAX_BODY = 8000          # 1 通の上限（文字数）。長い資料は製品のリポジトリに置いて参照を渡してもらう
@@ -180,7 +180,14 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
                                          **({"source_ref": source_ref} if source_ref else {}),
                                          **({"derived_from": derived_from} if derived_from else {})})
     _event(cur, "desk.message", c["id"], {"author": who["name"], "role": "requester", "body": body})
+    if kind == "request":
+        # 受付（ADR 0039 の決定 2・3）: 中身は読まずに、受け付けたことと次に起きることをすぐ返す
+        _event(cur, "desk.message", c["id"], {"author": "factory", "role": "factory", "kind": "ack", "body": ACK_TEXT.format(id=c["id"])})
     return c
+
+
+ACK_TEXT = ("依頼 {id} を受け付けました。次は振り分けです。相談役が、決まった操作で済むか、チケットに切るかを決めて、5 分ほどで返します"
+            "（問いがあればそのときに聞きます）。")
 
 
 def post_message(cur, who: dict, conversation_id: int, body: str) -> dict:
@@ -357,6 +364,42 @@ def confirm_draft(cur, who: dict, conversation_id: int, draft_id: int, level: st
     _event(cur, "desk.request_confirmed", c["id"], {"by": who["name"], "draft_id": draft_id, "level": level,
                                                      "tasks": len(d["payload"].get("tasks") or [])})
     return c
+
+
+# ------------------------------------------------------------------ 単発の依頼の確認と受取確認（ADR 0039 の決定 2・5。窓口の道具は増やさない）
+CONFIRM_ANSWERS = ("run", "cancel")
+RECEIPT_ANSWERS = ("accept", "more", "return")
+
+
+def _answer_step(cur, who: dict, conversation_id: int, kind: str, state: str, option: str, note: str) -> dict:
+    """窓口（API・MCP）からの答えを、受信トレイの件の答え（inbox.answer、正本は 1 つ）として通す"""
+    import inbox
+    c = _conversation(cur, who, conversation_id)
+    if c["state"] != state:
+        raise DeskError(409, f"いまは答えられない（状態 {c['state']}）")
+    cur.execute("select count(*) as n from events where correlation_id=%s and name='desk.routed'", (corr(conversation_id),))
+    key = f"task:{kind}:{conversation_id}:{cur.fetchone()['n']}"
+    res, msg = inbox.answer(cur, key, option, who["name"], "mcp", note=note, raw=note,
+                            role=None if who["role"] == "operator" else "requester")
+    if res not in ("answered", "noted"):
+        raise DeskError(409 if res in ("already", "not_found", "failed") else 400, msg)
+    return c
+
+
+def confirm_route(cur, who: dict, conversation_id: int, option: str, note: str = "") -> dict:
+    """振り分けの確認（send の段）に答える。run（実行する）か cancel（やめる）"""
+    if option not in CONFIRM_ANSWERS:
+        raise DeskError(400, f"answer は {' / '.join(CONFIRM_ANSWERS)}")
+    return _answer_step(cur, who, conversation_id, "desk_confirm", "awaiting_confirm", option, note)
+
+
+def receive(cur, who: dict, conversation_id: int, option: str, note: str = "") -> dict:
+    """提出の受取確認に答える。accept（受け取った）・more（続き。一言が要る）・return（差し戻す。一言が要る）"""
+    if option not in RECEIPT_ANSWERS:
+        raise DeskError(400, f"answer は {' / '.join(RECEIPT_ANSWERS)}")
+    if option != "accept":
+        note = _text(note, 2000)
+    return _answer_step(cur, who, conversation_id, "desk_receipt", "delivered", option, note or "")
 
 
 # ------------------------------------------------------------------ チケット（明確な指示は壁打ちを通さず即時に通す）
