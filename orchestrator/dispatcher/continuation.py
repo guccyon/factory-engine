@@ -61,9 +61,9 @@ def carry_over(cur, job_id: int) -> dict:
 
 
 def enqueue(cur, *, repo: str, pr_number: int, pr_url: str, branch: str, head_sha: str, reason: str, by: str,
-            signal: dict | None = None, priority: int | None = None) -> int | str | None:
+            signal: dict | None = None, priority: int | None = None, limit: bool = True) -> int | str | None:
     """続きのジョブを積む。返り値は積んだジョブの id、上限に達したら "limit"、積まなかった（工場のブランチでない・
-    同じ head で積み済み・同じ Issue のジョブが動いている）なら None。動いているジョブがあるときは記録を残さないので、次の周期で積み直せる"""
+    同じ head で積み済み・同じ Issue のジョブが動いている）なら None。limit=False は上限で切らない（人が求めた直し）。動いているジョブがあるときは記録を残さないので、次の周期で積み直せる"""
     if reason not in REASONS:
         raise ValueError(reason)
     m = BRANCH_RE.match(branch or "")
@@ -75,7 +75,7 @@ def enqueue(cur, *, repo: str, pr_number: int, pr_url: str, branch: str, head_sh
     if cur.fetchone():
         return None
     n = attempts(cur, pr_url, reason)
-    if reason in SIGNALED and n >= CONTINUE_MAX:
+    if limit and reason in SIGNALED and n >= CONTINUE_MAX:   # limit=False は人が求めた直し（人の答えの数だけで、空回りしない）
         return "limit"
     corr = f"github:{repo}#{issue}"
     cur.execute("select id, priority from tickets where source='github' and source_ref=%s", (f"{repo}#{issue}",))

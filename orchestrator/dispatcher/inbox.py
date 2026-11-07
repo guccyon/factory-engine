@@ -7,10 +7,11 @@
 - stoppage: 開いている停止のうち分類が human のもの（マージ待ち・judge が人に回した・差し戻しを流さなかった・ラインの一時停止）
 - choice: 開いている人の選択（HumanChoice。画面の案の選択・抜き取り・実装後の画面のキャプチャ）
 - release: staging で確かめた版がまだ本番に出ていない（「本番に出す」を押すのは人。ADR 0012）
+- judgment: judge が人に回した判断（停止 judge: の PR の、人の判断がまだの問い 1 つずつ。今の案・他の案・judge の見立てと推奨を detail に）
 - task: 他の工程が request() で積んだ依頼（レビューページの承認待ち、着手判定で起票者に返した問いなど）。resolve() で消える
 
 1 件の形: key（通知の重複を防ぐ一意の名前）・kind・who（誰の出番か）・title・action（何をすればよいか）・url・since・age_sec・ref・
-answer（答え方。この場で答えられない件は None）・answered（答え済みで反映を待っている件は、誰が・どの入口から・何と答えたか）
+detail（問いの中身。label と text の並び。任意）・answer（答え方。この場で答えられない件は None）・answered（答え済みで反映を待っている件は、誰が・どの入口から・何と答えたか）
 
 答え（ADR 0034 の決定 1）: どの入口（操業コンソール・レビューページ・のちの Slack・GitHub・窓口 MCP）から来た答えも answer() の 1 か所を通る。
 件の状態の正本は受信トレイで、先に answer() を通った答えが勝つ（同じ件への後からの答えは「答え済み」と返す）。
@@ -34,7 +35,7 @@ WHO = {
 }
 CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り",
                  "exit_capture": "実装後の画面"}   # choice.KINDS と同じ
-KINDS = {"stoppage": "人の判断待ちの停止", "choice": "人の選択", "release": "本番への出荷", "task": "依頼"}
+KINDS = {"stoppage": "人の判断待ちの停止", "judgment": "judge が人に回した判断", "choice": "人の選択", "release": "本番への出荷", "task": "依頼"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
 MAX_LEN = 300
@@ -122,13 +123,64 @@ def _stoppages(cur, now) -> list[dict]:
             m = PR_URL.search(s["what"] or "")
             url = m.group(0) if m else ""
         who = STOPPAGE_WHO.get(prefix, "owner")
-        # この場で答えられるのはラインの一時停止の再開だけ。マージ・judge の判断は GitHub の PR で（ADR 0034 の順番 3 でこの口に寄せる）
+        if prefix == "judge" and url:
+            # judge が人に回した判断は、問いを 1 つずつ件にしてその場で答えられるようにする（ADR 0034。11-07 rally #921・#930・#970 は
+            # PR へのリンクだけで、問いも答える場所も見えなかった）。記録が引けないとき（古い停止）は今までどおり停止の 1 件
+            js = _judgment_items(cur, s, url, who)
+            if js:
+                out += js
+                continue
+        # この場で答えられるのはラインの一時停止の再開と、judge が人に回した判断（上の _judgment_items）。マージの判断は GitHub の PR で
         ans = {"type": "approve", "options": [{"id": "resume", "label": "ラインを再開する"}], "extra": [],
                "effect": "ラインの一時停止を解き、順番待ちの取り出しを再開する", "allowed": [who], "target": ("resume_line", None)} if prefix == "drain" else None
         out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "title": s["what"],
                     "action": s["waiting_for"] or "判断して止まりを解く", "url": url, "since": s["started_at"],
                     "ref": (s["correlation_id"] or ":").split(":", 1)[1], "announced": True,   # 開いたときに停止の通知で一度知らせている
                     "answer": ans, "also": []})
+    return out
+
+
+JUDGMENT_EFFECT = ("答えを判断として記録する。この PR の判断がすべて決まったら停止を閉じてマージの判定に進める。"
+                   "直す答えは同じ担当の続きのジョブで直し、もう一度検査と judge を通す")
+JUDGMENT_NOTE = "一言（別の答えでは必須。どう直すか）"
+CATEGORY_JA = {"ui": "画面と操作", "aesthetic": "見た目と印象", "system_interface": "境界と契約", "implementation": "実装の選び方",
+               "error_handling": "失敗の扱い", "data": "データ", "scope": "範囲", "inspection": "検査の指摘", "unknown": "判断"}
+
+
+def _judgment_items(cur, s: dict, url: str, who: str) -> list[dict]:
+    """judge が人に回した項目のうち、人の判断がまだのもの 1 つずつを受信トレイの 1 件にする"""
+    import judgment
+    m = re.search(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", url)
+    pr = f"{m.group(1)}#{m.group(2)}" if m else url
+    out = []
+    for e in judgment.escalations(cur, url):
+        p = e["payload"]
+        defect = p.get("subject") == "defect"
+        d = p.get("defect") or {}
+        detail = ([{"label": "指摘", "text": _clip(d.get("evidence"), 600)}, {"label": "直し方の手がかり", "text": _clip(d.get("remediation_hint"), 600)}]
+                  if defect else
+                  [{"label": "今の案（ワーカーの仮決め）", "text": _clip(p.get("decision"), 600)}, {"label": "他の案", "text": _clip(e.get("alternatives"), 600)}])
+        detail += [{"label": "judge の見立て", "text": _clip(p.get("interpretation"), 800)}, {"label": "影響", "text": _clip(p.get("impact"), 400)}]
+        if p.get("recommended_replacement"):
+            detail.append({"label": "judge が推す案", "text": _clip(p["recommended_replacement"], 600)})
+        rec = p.get("recommend")
+        if defect:
+            options = [{"id": "fix", "label": "指摘どおり直す"}, {"id": "dismiss", "label": "直さない（今のままでよい）"}]
+            recommended = {"adopt": "fix", "reject": "dismiss"}.get(rec)
+        else:
+            options = [{"id": "keep", "label": "今の案のまま"}]
+            if p.get("recommended_replacement"):
+                options.append({"id": "replace", "label": "judge が推す案に直す"})
+            recommended = "replace" if rec == "replace" and p.get("recommended_replacement") else "keep" if rec == "adopt" else None
+        label = {o["id"]: o["label"] for o in options}.get(recommended)
+        out.append({"key": f"judgment:{e['id']}", "kind": "judgment", "who": who,
+                    "title": f"{pr} の判断（{CATEGORY_JA.get(p.get('category'), p.get('category') or '判断')}）: " + _clip(p.get("question"), 200),
+                    "action": "今の案・他の案・judge の見立てを読んで答える" + (f"（推奨: {label}）" if label else ""),
+                    "detail": [x for x in detail if x["text"]], "url": url, "since": e["created_at"] or s["started_at"],
+                    "ref": (e["correlation_id"] or s["correlation_id"] or ":").split(":", 1)[-1], "also": [],   # 停止の key を別名にしない（1 つ答えると同じ PR の残りの問いまで答え済みに見える）
+                    "answer": {"type": "choose", "options": options, "recommended": recommended,
+                               "extra": [{"id": "change", "label": "別の答え（一言で直し方を書く）", "note_required": True}],
+                               "note_hint": JUDGMENT_NOTE, "effect": JUDGMENT_EFFECT, "allowed": [who], "target": ("judgment", e["id"])}})
     return out
 
 
@@ -437,6 +489,9 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
         return True, "ラインを再開した"
     if kind == "task":
         return (True, "閉じた") if resolve(cur, ref, by, option) else (False, "もう閉じている")
+    if kind == "judgment":
+        import judgment
+        return judgment.decide(cur, ref, option, by, via, note)
     return False, f"答えの作用が分からない: {kind}"
 
 

@@ -19,6 +19,7 @@ PRECEDENT_ONLY = {"aesthetic": 0.8}
 # 体験が変わるもの（level=experience、または level の書かれていないもの）は今までどおり
 ELEMENT_LEVEL_MIN = {"aesthetic": 0.5}
 LEVELS = ("element", "experience")
+RECOMMENDS = {"provisional": ("adopt", "replace"), "defect": ("adopt", "reject")}   # escalate のときの judge の推奨
 # v1 の類型 id で書かれたとき（古い指示のワーカー）の読み替え。読み替えたことは category_raw に残る
 V1_ALIASES = {"term_boundary": "system_interface", "interface": "system_interface", "design_choice": "implementation", "acceptance": "ui"}
 FIELDS = {"選んだ": "decision", "他の案": "alternatives", "根拠": "evidence", "解釈": "interpretation", "確信度": "confidence", "影響": "impact",
@@ -166,6 +167,83 @@ def decisions_settled(cur, pr_url: str) -> bool:
     return bool(grades) and all(g not in (None, "null") for g in grades)
 
 
+# ------------------------------------------------------------------ judge が人に回した項目に人が答える（ADR 0034。受信トレイの judgment:<id>）
+# 答えの形。keep・dismiss は今の差分のまま、replace・fix・change は直しを同じ担当の続きのジョブ（review_fix）に渡す
+DECISIONS = {"keep": False, "replace": True, "dismiss": False, "fix": True, "change": True}
+
+
+def escalations(cur, pr_url: str, *, open_only: bool = True) -> list[dict]:
+    """最後の judge が人に回した項目（新しい judge の記録ほど後ろ）。仮決めの「他の案」も添える。open_only なら人の判断がまだのものだけ"""
+    cur.execute("select job_id from artifacts where type='Judgment' and payload->>'stage'='judged' and payload->>'pr_url'=%s "
+                "order by id desc limit 1", (pr_url,))
+    last = cur.fetchone()
+    if not last:
+        return []
+    cur.execute("select j.id, j.correlation_id, j.created_at, j.payload, s.payload as source from artifacts j "
+                "left join artifacts s on s.id = (j.payload->>'source_artifact_id')::bigint "
+                "where j.type='Judgment' and j.payload->>'stage'='judged' and j.payload->>'pr_url'=%s and j.job_id is not distinct from %s "
+                "and j.payload->>'verdict'='escalate' order by j.id", (pr_url, last["job_id"]))
+    out = []
+    for r in cur.fetchall():
+        p = r["payload"]
+        if open_only and p.get("human_grade") not in (None, "null"):
+            continue
+        out.append({"id": r["id"], "correlation_id": r["correlation_id"], "created_at": r["created_at"], "payload": p,
+                    "alternatives": (r["source"] or {}).get("alternatives")})
+    return out
+
+
+def fix_of(p: dict, decision: str, note: str) -> dict | None:
+    """人の答えを、続きのジョブに渡す指摘の形（rubric_id・severity・location・evidence・remediation_hint）にする。直さない答えは None"""
+    if not DECISIONS.get(decision):
+        return None
+    if p.get("subject") == "defect" and decision == "fix":
+        d = p.get("defect") or {}
+        return {**{k: d.get(k) for k in ("rubric_id", "severity", "location", "evidence", "remediation_hint")},
+                **({"remediation_hint": f"{d.get('remediation_hint') or ''}\n人の一言: {note}".strip()} if note else {})}
+    want = p.get("recommended_replacement") if decision == "replace" else None
+    hint = "\n".join(x for x in (f"人が選んだ案: {want}" if want else "", f"人の一言: {note}" if note else "") if x)
+    return {"rubric_id": "human_decision", "severity": "major", "location": f"判断: {p.get('question') or ''}"[:300],
+            "evidence": f"judge が人に回した判断に、人が直す答えを出した（{decision}）。今の差分の案: {p.get('decision') or '（記録なし）'}"[:MAX_LEN],
+            "remediation_hint": hint[:MAX_LEN] or "人の答えに沿って直す"}
+
+
+def decide(cur, aid: int, decision: str, by: str, via: str, note: str = "") -> tuple[bool, str]:
+    """judge が人に回した項目 1 つに人の判断を付ける。記録は human_grade（同じ PR の次の judge が引き継ぐ）と judgment.decided。
+    直す答えは judgment.decided の fix に指摘の形で残し、supervisor が同じ担当の続きのジョブに渡す。
+    最後の judge が人に回した項目がすべて決まったら、停止 judge: を閉じる（マージの判定が進む。直しがあれば直しを待つ）"""
+    import stoppage
+    if decision not in DECISIONS:
+        return False, f"答えは {' / '.join(DECISIONS)} のどれか"
+    cur.execute("select correlation_id, payload from artifacts where id=%s and type='Judgment' for update", (aid,))
+    r = cur.fetchone()
+    if not r or r["payload"].get("stage") != "judged" or r["payload"].get("verdict") != "escalate":
+        return False, "人に回した判断の記録が見つからない"
+    p = r["payload"]
+    if p.get("human_grade") not in (None, "null"):
+        return False, "この判断はもう決まっている"
+    grade = {"decision": decision, "note": note or None, "by": by, "via": via}
+    cur.execute("update artifacts set payload = jsonb_set(payload, '{human_grade}', %s) where id=%s", (Jsonb(grade), aid))
+    fix = fix_of(p, decision, note)
+    cur.execute("insert into events(name, correlation_id, payload) values ('judgment.decided', %s, %s)",
+                (r["correlation_id"], Jsonb({"artifact_id": aid, "pr_url": p.get("pr_url"), "category": p.get("category"), "subject": p.get("subject"),
+                                             "decision": decision, "note": note or None, "by": by, "via": via, "fix": fix})))
+    msg = "直しを同じ担当に渡す" if fix else "今の差分のままにする"
+    if p.get("pr_url") and decisions_settled(cur, p["pr_url"]):
+        stoppage.close_stoppage(cur, f"judge:{p['pr_url']}", remedy=f"人が人に回した判断に答えた（{via}）", closed_by=by[:80] or "inbox")
+        msg += "。この PR の判断はすべて決まった"
+    return True, msg
+
+
+def pending_fixes(cur, pr_url: str) -> list[dict]:
+    """人が直す答えを出したが、まだ続きのジョブに渡していないもの（judgment.decided の fix。渡したら judgment.fix_enqueued に id が載る）"""
+    cur.execute("select d.id, d.payload from events d where d.name='judgment.decided' and d.payload->>'pr_url'=%s "
+                "and d.payload->'fix' is not null and d.payload->'fix' <> 'null'::jsonb "
+                "and not exists (select 1 from events e where e.name='judgment.fix_enqueued' and e.payload->'decided' @> to_jsonb(d.id)) "
+                "order by d.id", (pr_url,))
+    return [{"id": r["id"], **r["payload"]} for r in cur.fetchall()]
+
+
 def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts: dict, mode: str, mode_basis: str) -> dict:
     """judge の結果を Judgment（stage=judged）と judgment.judged に残す。返り値は起票・印に使う集計。
     同じ PR で人がすでに判断した項目は、judge が人に回しても回し直さず、案を替えもしない（衝突の解消などで head が変わるたびに
@@ -185,8 +263,8 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
             category, question = "inspection", f"{src.get('rubric_id', '?')} {src.get('location', '')}".strip()
         level = v.get("level") if v.get("level") in LEVELS else None
         verdict, forced = delegated_verdict(category, v.get("verdict"), v.get("confidence"), v.get("precedent"), level)
-        if forced:
-            v = {**v, "verdict": verdict, "replacement": None}
+        if forced:   # judge の裁きは人に回すときの推奨として残す（受信トレイで「推奨」に出す）
+            v = {**v, "verdict": verdict, "recommend": v.get("verdict") if v.get("verdict") in ("adopt", "replace") else v.get("recommend")}
         # 人の判断は escalate だけでなく adopt・replace より優先する。要素レベルの自己承認（#137）で judge が
         # 人の決めた案を replace し、決定を覆す直しが起票された（11-02 rally #581）
         carried = decided.get(_key(category, question)) if kind == "provisional" else None
@@ -197,14 +275,19 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
         rec = tr.get(category)
         basis = "track_record" if rec and rec["n"] >= 10 else "self_report"
         payload = {"stage": "judged", "category": category, "taxonomy_version": TAXONOMY_VERSION, "question": question,
-                   "verdict": v.get("verdict"), "decision": v.get("replacement") or (src.get("decision") if kind == "provisional" else v.get("verdict")),
+                   "verdict": v.get("verdict"),
+                   "decision": (v.get("replacement") if v.get("verdict") != "escalate" else None) or (src.get("decision") if kind == "provisional" else v.get("verdict")),
                    "evidence": (v.get("evidence") or "")[:MAX_LEN], "interpretation": (v.get("interpretation") or "")[:MAX_LEN],
                    "impact": (v.get("impact") or "")[:MAX_LEN], "precedent": (v.get("precedent") or "")[:MAX_LEN] or None, "level": level,
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
                    "human_grade": None, "forced_escalation": forced, "carried_human_decision": carried,
-                   "already_applied": bool(v.get("already_applied")) if v.get("verdict") == "replace" else None}
+                   "already_applied": bool(v.get("already_applied")) if v.get("verdict") == "replace" else None,
+                   # 人に回すときの judge の推奨（受信トレイの「推奨」。ADR 0034）。仮決めは adopt / replace（案は replacement）、指摘は adopt / reject
+                   "recommend": v.get("recommend") if v.get("verdict") == "escalate" and v.get("recommend") in RECOMMENDS[kind] else None,
+                   "recommended_replacement": (v.get("replacement") or "")[:MAX_LEN] or None
+                   if v.get("verdict") == "escalate" and v.get("recommend") == "replace" else None}
         cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Judgment',%s,%s,'verify',%s) returning id",
                     (corr, job_id, Jsonb(payload)))
         aid = cur.fetchone()["id"]

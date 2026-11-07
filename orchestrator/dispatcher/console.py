@@ -452,6 +452,8 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 #bell .n{min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#bell.has .n{background:var(--p0);color:#fff}
 #inbox{padding:0 16px}#inbox[hidden]{display:none}.ib{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.ib h2{font-size:14px;margin:0 0 8px}
 .ib a{color:var(--accent)}.ib ul{list-style:none;margin:0;padding:0}.ib li{padding:8px 0;border-top:1px solid var(--line);display:grid;gap:2px}.ib li:first-child{border-top:0}.who{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--sub);margin-right:6px}
+.dt{margin:4px 0 0;display:grid;grid-template-columns:max-content 1fr;gap:2px 10px;font-size:12px}.dt dt{color:var(--sub)}.dt dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:560px){.dt{grid-template-columns:1fr}.dt dd{margin-bottom:4px}}
 .ans{margin-top:4px}.ans input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(320px,100%)}.ans.done{color:var(--ok);font-size:12px}.ib li.answered{opacity:.7}
 .ch:target,.rel:target,#ship:target{outline:2px solid var(--accent);outline-offset:2px}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
@@ -509,13 +511,15 @@ function answerView(i,n){const a=i.answer;
  if(i.answered){const w=i.answered;return `<div class="ans done">答え済み: ${esc(w.by||"?")}（${esc({console:"操業コンソール",review_page:"レビューページ",factoryctl:"factoryctl",mcp:"Claude",github:"GitHub",slack:"Slack"}[w.via]||w.via||"")}）が『${esc(w.label||w.option||"")}』と回答。反映を待っている</div>`}
  if(!a)return "";
  const agg=i.key==="choice:exit_capture";   // まとめた実装後の画面: 印は画面ごとに下の欄で付ける
- const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
- const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
+ const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.note_hint?esc(a.note_hint):a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
+ const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"&&o.id.length<=2?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
  const extra=a.extra.map(e=>`<button class="${e.id==="return"?"danger":""}" data-ib="${k}" data-o="${esc(e.id)}" data-n="${n}" data-need="${e.note_required?1:""}">${esc(e.label)}</button>`).join("");
  return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?`<a href="#choices" style="align-self:center">画面ごとに違和感を書く（下の欄へ）</a>`:""}${opts}${extra}${note}</div></div>`}
+// 問いの中身（judge が人に回した判断の今の案・他の案・見立てなど）。答える前に読めるように件の下に出す
+function detailView(i){return i.detail&&i.detail.length?`<dl class="dt">${i.detail.map(d=>`<dt>${esc(d.label)}</dt><dd>${esc(d.text)}</dd>`).join("")}</dl>`:""}
 function inboxView(ib){if(!ib.items.length)return `<div class="ib"><h2>受信トレイ</h2><div class="m">人が対応するものはありません</div></div>`;
  return `<div class="ib"><h2>受信トレイ（${ib.count} 件、待ちの長い順）</h2><ul>${ib.items.map((i,n)=>{const t=i.url&&/^(https:\/\/|\/#|\/review\/)/.test(i.url)?(i.url.startsWith("/")?`<a href="${esc(i.url)}">${esc(i.title)}</a>`:link(i.url,i.title)):esc(i.title);
-  return `<li${i.answered?' class="answered"':""}><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div>${answerView(i,n)}</li>`}).join("")}</ul></div>`}
+  return `<li${i.answered?' class="answered"':""}><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${t}</div><div class="m">${[esc(ib.kinds[i.kind]||i.kind),i.age_sec!=null?dur(i.age_sec)+"待ち":"",esc(i.ref),esc(i.action)].filter(Boolean).join(" · ")}</div>${detailView(i)}${answerView(i,n)}</li>`}).join("")}</ul></div>`}
 const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
