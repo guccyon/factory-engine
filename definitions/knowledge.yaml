@@ -26,7 +26,12 @@ knowledge:
     causal: "A が起きると B が起きやすいという因果（なぜなぜの結論）"
     preference: "人の好み・判断の傾向"
     hypothesis_test: "改善の仮説と予測、試した結果"
-  scope_keys: [contexts, roles, paths]
+  scope_keys: [work, artifacts, roles, purpose, product_stage, request_form, code_origin, contexts, change_types, files, paths]   # 軸は下の axes（ADR 0040）。paths は files の古い名前で、移し替えまで受け付ける
+  scope_required_one_of: [work, artifacts]   # 業務か成果物のどちらかは必ず書く（ADR 0040 の決定 3）。今ある知見（roles・contexts・paths だけのもの）は移し替えの変更セットで足す
+  acts_on:                                   # 作用の仕方（ADR 0040 の決定 5）。書かなければ context
+    context: "作業の文脈に渡す（エージェントに読ませる）"
+    engine:  "文脈に渡さない。Engine のコードや工場の設定を直すべき知見。週 1 の定例が、担保のないものを Engine の改善 Issue の候補に出す（起票まで。直すのは建設者）"
+    process: "文脈に渡さない。役割への指示・ラインの設定の変更の提案として人に回す（ADR 0023 の承認の線）"
   confidence:
     hypothesis: { ja: 仮説, review_days: 30, note: "事例 1 件から出た。エージェントには渡さない" }
     confirmed:  { ja: 確認済み, review_days: 90, note: "独立した事例 2 件以上で再現した、または人が承認した" }
@@ -48,7 +53,37 @@ context_for_agents:
   roles_wired: [implement]                    # 今つないでいる役割（2026-11-05）。検査・judge などはつなぐときに足す
   limits: { items: 12, chars: 12000 }         # 仮置き。確認日の新しい順
 
-# 失効のきっかけ（決定論で見るもの）
+# 知見の作用先の軸（ADR 0040 の決定 2・3）。業務が主軸で、ほかの軸は知見にタグのように付ける。軸は後から足せる（足しても、今ある知見はその軸では「書いていない」扱い）
+# 値は仮置き（2026-11-07）。重み・食い違いの扱い・下限を変えるのは定義の PR（学ぶ側が自分で動かさない。ADR 0013 の 8）。
+# vocabulary は値の出どころ。製品の CI が使う core-gates/knowledge_check.py は Engine の定義を読めないので、閉じた語彙はそのファイルにも写して持つ（食い違いはテストで見る）
+axes:
+  work:          { ja: 業務, main: true, hierarchical: true, vocabulary: "definitions/work.yaml の nodes", from: "入口（work.yaml の from_*）" }
+  artifacts:     { ja: 成果物, hierarchical: true, vocabulary: "definitions/artifacts.yaml の types と work.yaml の artifact_parts", from: "業務のノードの artifacts", weight: 2, on_mismatch: penalize }
+  roles:         { ja: ロール, vocabulary: "agents.yaml・workflow.yaml の役", from: "ジョブ", weight: 1, on_mismatch: penalize, note: "今の roles。語彙の検査は移し替えのあと（今は supervisor・implementer なども入っている）" }
+  purpose:       { ja: 作業の目的, vocabulary: [new_feature, change, bugfix, refactor, adopt, migrate], from: "プランナーの宣言", weight: 2, on_mismatch: exclude,
+                   values_ja: { new_feature: 新機能を足す, change: 既存を直す, bugfix: 不具合を直す, refactor: リファクタ, adopt: 既存のアプリを工場に載せる, migrate: 移行 } }
+  product_stage: { ja: 製品の段階, vocabulary: "definitions/product_stages.yaml の stages", from: "製品の manifest の product_stage", weight: 2, on_mismatch: exclude }
+  request_form:  { ja: 依頼の形, vocabulary: [ticket, one_off], from: "入口（ADR 0037 の道。ticket・direct_line はチケット、operate・quick・analysis は単発）", weight: 2, on_mismatch: exclude }
+  code_origin:   { ja: コードの出どころ, vocabulary: [factory, adopted], from: "Blueprint", weight: 1, on_mismatch: exclude }
+  contexts:      { ja: コンテキスト, vocabulary: "製品の specs/context-map.yaml の id（Engine の検査では見ない）", from: "プランナーの見込み", weight: 1, on_mismatch: penalize }
+  change_types:  { ja: 変更種別, vocabulary: "definitions/change_type_rules.yaml（Engine の検査では見ない）", from: "差分", weight: 1, on_mismatch: penalize }
+  files:         { ja: ファイル, vocabulary: "glob", from: "プランナーの見込みのファイルと差分", weight: 1, on_mismatch: penalize }
+  # 依頼者（requester）は git の知見には書かない。依頼者ごとの好みは制御プレーンの DB（ADR 0040 の決定 6）
+
+# 適応度（ADR 0040 の決定 3）。選び手が決定論で計算する。2026-11-07 仮置き
+fit:
+  candidates: "業務のノード自身か祖先に付いた知見と、成果物の型（親の型を含む）が合う知見"
+  match: "+weight"                     # 一致（階層のある軸は、作業の値が知見の値の子でもよい）
+  absent: 0                            # 知見にその軸の値がない
+  unknown: -0.25                       # 作業の側の値が分からない（重みに掛ける）
+  mismatch: { exclude: drop, penalize: "-weight" }
+  depth: 0.5                           # 当たった業務のノードの深さ 1 段ごと
+  confidence: { settled: 1, confirmed: 0 }
+  freshness_days: 90                   # 確認日がこれより新しければ +0.5
+  min_score: 0                         # これより低いものは渡さない
+  record: "渡した知見ごとに適応度と内訳を knowledge.used に残す"
+
+
 invalidation:
   - "review_by を過ぎた（日次の棚卸し）"
   - "scope のコードや specs/ が変わった、invalidate_when に当たった"
