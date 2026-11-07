@@ -119,7 +119,10 @@ def render(batch: list[tuple[dict, str]], channel: str, dest: notify.Destination
         link = _link(i.get("url") or "", dest)
         title = (f"<{link}|{i['title']}>" if slack else f"[{i['title']}]({link})") if link else i["title"]
         wait = f"（{_dur(i['age_sec'])}待ち）" if i.get("age_sec") else ""
-        lines.append(f"- {REASON[why]} {who}: {title}{wait} — {i['action']}")
+        key = f" `{i['key']}`" if i.get("answer") else ""   # Claude に「受信トレイの <key> に答えて」と言えるように（ADR 0034 の順番 2）
+        lines.append(f"- {REASON[why]} {who}: {title}{wait} — {i['action']}{key}")
+    if any(i.get("answer") for i, _ in batch) and not (dest is not None and dest.party == "business_owner"):
+        lines.append("手元の Claude からも答えられる（窓口の MCP。「受信トレイの `key` を読んで」「〜で答えて」と言う）")
     return "\n".join(lines)
 
 
