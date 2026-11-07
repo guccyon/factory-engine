@@ -56,6 +56,7 @@ import serialize
 import ship
 import stoppage
 import usage
+import workflow_shadow
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -645,6 +646,13 @@ def enqueue_step(cur, open_prs: set):
                 if serialize.record(cur, corr, b[0], b[1], hot[b[0]]):
                     log("serialized", corr, b[0], "behind", b[1])
                 continue
+        try:   # 宣言の start: after（ADR 0038 の 4b）。順番 1 は守らせず、前のチケットがまだ開いていれば待たせたはずと記録するだけ
+            after = workflow_shadow.declared_after(cur, corr)
+            open_after = [n for n in after if issue_state(repo, n) != "closed"] if after else []
+            if open_after and workflow_shadow.would_wait(cur, corr, open_after):
+                log("workflow would wait", corr, open_after)
+        except Exception as e:  # noqa: BLE001
+            log("workflow start check failed", corr, repr(e)[:200])
         if not record(cur, "supervisor.enqueued", corr, {"repo": repo, "issue": it["number"], "deps": deps, "priority": t["priority"]},
                       f"supervisor.enqueued:{repo}#{it['number']}"):
             continue
@@ -1060,14 +1068,23 @@ def plan_outcome_step(cur):
         log("plan outcome step error", repr(e)[:200])
 
 
+def workflow_shadow_step(cur):
+    """ワークフローの宣言と実績を突き合わせ、守らせていたら止めた・飛ばしたところを workflow.shadow に残す（ADR 0038 の順番 1。止めない）"""
+    try:
+        workflow_shadow.step(cur, log=log)
+    except Exception as e:  # noqa: BLE001  記録の失敗でラインを止めない
+        log("workflow shadow step error", repr(e)[:200])
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
-                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
+                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 更新役が新しい版で回ったかを見る（ADR 0031）
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
         plan_outcome_step(cur)
+        workflow_shadow_step(cur)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
         stage_step(cur, manifests)

@@ -36,6 +36,8 @@ import committee
 import continuation
 import design
 import design_line
+import qa_line
+import runner_relay
 import design_system_line
 import desk_line
 import planner
@@ -52,6 +54,7 @@ import process_learn
 import reattach
 import stoppage
 import swap
+import swap_mailbox
 import tidy
 
 ENV = os.environ
@@ -109,7 +112,8 @@ SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
-SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の入れ替えの依頼を見る間隔（ADR 0031）
+SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の更新の依頼を見る間隔（ADR 0031）
+SWAP_MAILBOX_INTERVAL = int(ENV.get("SWAP_MAILBOX_INTERVAL_SEC", "60"))   # Issue の郵便受け（factory:swap）を見る間隔。GET は ETag つき
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))
 EXIT_CAPTURE = ENV.get("EXIT_CAPTURE", "1") == "1"   # 実装後の画面のキャプチャを CI の成果物から読み、PR の本文と受信トレイに載せる（ADR 0025 の 4）。0 で止める
 EXIT_CAPTURE_INTERVAL = int(ENV.get("EXIT_CAPTURE_INTERVAL_SEC", "300"))   # 見に行く間隔（状態の取得は ETag つき）。仮置き   # 停止・割り込みを見る間隔（トークンを使わない）
@@ -382,6 +386,8 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind in ("ui_design", "design_system"):   # デザイナー役（ADR 0025・0026）。製品によらず Chromium つきのイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = UI_DESIGN_IMAGE
+            elif kind == "qa":   # QA 役（ADR 0028 の決定 2）。画面を動かすので Chromium と playwright-core のイメージ。固定 Issue（factory:qa）なのでラベルは替えない
+                image = UI_DESIGN_IMAGE
             else:
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = image_for(repo, issue)
@@ -392,7 +398,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") and not reattaching:
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") and not reattaching:
                 dbname = f"job_{job_id}"
                 jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
                 jobdb.create(cur, dbname, JOB_DB_USER)
@@ -426,9 +432,12 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/plan.sh"] if kind == "plan" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
+                   # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
+                   *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
+                   *([] if reattaching else relay_env(job_id, kind)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -446,6 +455,7 @@ def run_job(job: dict, reattaching: bool = False):
                             log("case archive read failed", key, repr(e))
                 if kind == "plan" and not reattaching:   # 製品の実績の表（ADR 0036 の 1。見積もりの材料）
                     judge_inp = planner.attach_sizes(cur, repo, judge_inp)
+                    judge_inp = planner.attach_context(cur, repo, corr, judge_inp)   # 流れているタスクと知見（ADR 0038 の 4b）
                 if kind == "ui_design_review" and not reattaching:   # 案（UXSpec とファイル）はオブジェクトストアから足す（ADR 0025）
                     judge_inp = design_line.review_input(cur, store_get, judge_inp)
             if reattaching:
@@ -454,7 +464,7 @@ def run_job(job: dict, reattaching: bool = False):
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
-                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") or signaled
+                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") or signaled
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if piped:
                     proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -486,7 +496,7 @@ def run_job(job: dict, reattaching: bool = False):
             preempted_for = cj["preempted_for"] if cancelled else None
             # ログをオブジェクトストアへ（ワーカーには何も残さない）
             blob_key = f"jobs/{job_id}/worker.log"
-            design_files, lines = design_line.extract_files(lines) if kind in ("ui_design", "design_system") else ({}, lines)   # 案のファイルはログに入れず別に置く
+            design_files, lines = design_line.extract_files(lines) if kind in ("ui_design", "design_system", "qa") else ({}, lines)   # 案のファイル（QA は根拠のスクリーンショット）はログに入れず別に置く
             data = "".join(lines).encode()
             store.put_object(BUCKET, blob_key, io.BytesIO(data), len(data), content_type="text/plain")
             result = None
@@ -503,7 +513,7 @@ def run_job(job: dict, reattaching: bool = False):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
-            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult") and result.get("ok"):
+            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
@@ -590,6 +600,18 @@ def run_job(job: dict, reattaching: bool = False):
                         committee.record(cur, repo, issue, corr, job_id, result, gh, comment)
                     except Exception as e:  # noqa: BLE001  議決は PR のブランチに残っている。作用の失敗でラインは止めない
                         log("committee act failed", result.get("pr_url"), repr(e))
+            elif kind == "qa":
+                # QA 役（ADR 0028 の決定 2）: ストーリーごとの Verdict を残し、hold の Defect を起票し、固定 Issue にまとめを書く
+                try:
+                    if state == "succeeded":
+                        keys = qa_line.store_files(store_put, job_id, design_files)
+                        recorded = qa_line.record(cur, repo, corr, job_id, result, keys)
+                        qa_line.act(cur, gh, comment, repo, issue, corr, job_id, result, recorded, keys)
+                    else:
+                        errs = "\n".join(f"- {x}" for x in ((result or {}).get("errors") or [])[:10])
+                        comment(repo, issue, f"ジョブ {job_id}（QA 役）は {state}（{err}）。`factoryctl rerun {job_id}` で再実行できます。" + (f"\n\n{errs}" if errs else ""))
+                except Exception as e:  # noqa: BLE001  Verdict は jobs の result に残っている。ラインは止めない
+                    log("qa act failed", job_id, repr(e))
             elif kind == "desk_consult":
                 # 窓口の相談役（ADR 0030 の 3）: 問いか下書きを会話に書く。失敗も会話で依頼者に知らせる
                 try:
@@ -712,6 +734,8 @@ def run_job(job: dict, reattaching: bool = False):
                     log("requeue after run_job error failed", job_id, repr(e2))
         finally:
             reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0020）
+            if RELAY is not None:
+                RELAY.revoke(job_id)   # 中継の合言葉はジョブの終わりで捨てる
             if JOB_DB_ENABLED:
                 try:
                     cur.execute(f'drop database if exists "job_{job_id}" with (force)')   # ワーカーの状態を残さない
@@ -815,7 +839,7 @@ def _claim_loop(name: str, claim):
 
 def _claim_line(cur):
     if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。一時停止の間も流すと決めたもの（factoryctl drain allow）だけは取り出す
-        return drain.claim_allowed(cur, drain.allowed(cur))
+        return drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur))
     return line.claim_line(cur)
 
 
@@ -1061,13 +1085,13 @@ def watch_once():
             for k in budget_open:
                 stoppage.close_stoppage(cur, k, remedy="次の枠に入り、投入を再開した")
 
-        # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 入れ替えの後の再開を忘れていないか
+        # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 更新の後の再開を忘れていないか
         drain_open = stoppage.open_keys(cur, "drain:")
         if draining and draining["minutes"] >= DRAIN_MIN:
             if not drain_open:
                 stoppage.open_stoppage(cur, f"drain:{draining['since']:%Y%m%dT%H%M%S}", "human",
                                        f"ラインが一時停止のまま {DRAIN_MIN} 分（{draining['by']}: {draining['reason'] or '理由なし'}）",
-                                       waiting_for="工場の入れ替えと再開（factoryctl resume か操業コンソール）", started_at=draining["since"])
+                                       waiting_for="工場の更新と再開（factoryctl resume か操業コンソール）", started_at=draining["since"])
         elif not draining:
             for k in drain_open:
                 stoppage.close_stoppage(cur, k, remedy="ラインを再開した")
@@ -1247,12 +1271,21 @@ def tidy_loop():
 
 
 def swap_loop():
-    """工場の入れ替え（ADR 0031）。受けた依頼の時刻になったら、使い捨ての入れ替え役のコンテナを起動する。入れ替え役が消えていたら人に回す"""
+    """工場の更新（ADR 0031）。Issue の郵便受け（factory:swap）から依頼を拾い、受けた依頼の時刻になったら、使い捨ての更新役のコンテナを起動する。
+    更新役が消えていたら人に回す。進み具合は依頼の Issue に返す"""
+    last_mail = 0.0
     while True:
+        if swap_mailbox.enabled() and time.time() - last_mail >= SWAP_MAILBOX_INTERVAL:
+            last_mail = time.time()
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    swap_mailbox.poll(cur, gh, comment, swap_label, log)
+            except Exception as e:  # noqa: BLE001  郵便受けの失敗で更新の周回を止めない
+                log("swap mailbox error", repr(e))
         try:
             with db() as conn, conn.cursor() as cur:
                 swap.tick(cur, log)
-        except Exception as e:  # noqa: BLE001  入れ替えの失敗でラインを止めない
+        except Exception as e:  # noqa: BLE001  更新の失敗でラインを止めない
             log("swap tick error", repr(e))
         time.sleep(SWAP_INTERVAL)
 
@@ -1319,11 +1352,35 @@ def recover() -> list[dict]:
     return resume
 
 
+RELAY: runner_relay.Relay | None = None   # Mac ランナーへのジョブごとの中継（one_orchestrator）。RUNNER_RELAY=0 で止める
+RELAY_PORT = int(ENV.get("RUNNER_RELAY_PORT", "8796"))
+RELAY_HOST = ENV.get("RUNNER_RELAY_HOST", "dispatcher")   # ワーカーから見た dispatcher の名前（compose の網の中）
+
+
+def _relay_call(tool: str, arguments: dict, timeout: int) -> dict:
+    import macrunner_client
+    return macrunner_client.call(tool, arguments, timeout=timeout)
+
+
+def _relay_record(job_id: int, payload: dict):
+    with db() as conn, conn.cursor() as cur:
+        record_event(cur, "runner.relayed", None, job_id, payload)
+
+
+def relay_env(job_id: int, kind: str) -> list[str]:
+    """中継を使うジョブなら、このジョブだけの合言葉を作って docker run の引数を返す。網は compose の網（dispatcher に届く）"""
+    if RELAY is None or kind not in runner_relay.KIND_TOOLS:
+        return []
+    token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300)
+    return ["--network", JOB_DB_NETWORK, "-e", f"RUNNER_RELAY_URL=http://{RELAY_HOST}:{RELAY_PORT}/mcp", "-e", f"RUNNER_RELAY_TOKEN={token}"]
+
+
 def main():
+    global RELAY
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
     reattached = recover()
-    with db() as conn, conn.cursor() as cur:   # 上がった印。入れ替え役が新しい版で上がったかを見る（ADR 0031）
+    with db() as conn, conn.cursor() as cur:   # 上がった印。更新役が新しい版で上がったかを見る（ADR 0031）
         record_event(cur, "dispatcher.started", None, None, {"engine_version": version.engine_version(ENV), "reattaching": len(reattached)})
     if not store.bucket_exists(BUCKET):
         store.make_bucket(BUCKET)
@@ -1339,6 +1396,10 @@ def main():
     if ENV.get("SWAP_ENABLED", "1") == "1":
         threading.Thread(target=swap_loop, daemon=True).start()
     pr_events.start(threading)
+    if ENV.get("RUNNER_RELAY", "1") == "1":
+        RELAY = runner_relay.Relay(_relay_call, _relay_record)
+        runner_relay.serve(RELAY, RELAY_PORT)
+        log(f"runner relay listening :{RELAY_PORT}")
     if ENV.get("WEBHOOK_SECRET"):
         srv = ThreadingHTTPServer(("0.0.0.0", int(ENV.get("WEBHOOK_PORT", "8787"))), Hook)
         threading.Thread(target=srv.serve_forever, daemon=True).start()

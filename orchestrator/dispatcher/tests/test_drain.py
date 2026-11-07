@@ -1,4 +1,4 @@
-"""工場の入れ替え（ADR 0020）: ラインの一時停止と再開、入れ替えてよいかの判定、番人の drain:、
+"""工場の更新（ADR 0020）: ラインの一時停止と再開、更新してよいかの判定、番人の drain:、
 上げ直した dispatcher が実行中のジョブのコンテナにつなぎ直すこと（docker は偽物に差し替える）。
 
 空の Postgres に postgres/init/*.sql を当て、TEST_DATABASE_URL を向けて動かす（なければ飛ばす）:
@@ -82,10 +82,10 @@ def job(cur, ref, state="queued", kind="implement", priority=None, container=Non
 
 def test_drain_and_resume(cur):
     assert drain.state(cur) is None
-    assert drain.set_drain(cur, True, "factoryctl", "postgres の入れ替え")
+    assert drain.set_drain(cur, True, "factoryctl", "postgres の更新")
     assert not drain.set_drain(cur, True, "console:builder")   # 二重には記録しない
     st = drain.state(cur)
-    assert st["by"] == "factoryctl" and st["reason"] == "postgres の入れ替え"
+    assert st["by"] == "factoryctl" and st["reason"] == "postgres の更新"
     assert drain.set_drain(cur, False, "factoryctl")
     assert drain.state(cur) is None
     cur.execute("select name from events where name like 'factory.drain%%' order by id")
@@ -93,7 +93,7 @@ def test_drain_and_resume(cur):
 
 
 def test_ready_waits_for_running_jobs_and_shipping(cur):
-    assert not drain.status(cur)["ready"]   # 一時停止していなければ入れ替えない
+    assert not drain.status(cur)["ready"]   # 一時停止していなければ更新しない
     drain.set_drain(cur, True, "factoryctl")
     jid = job(cur, "o/r#1", state="running")
     job(cur, "o/r#2")   # 順番待ちは待たない
@@ -122,7 +122,7 @@ def test_no_preemption_while_draining(cur):
 
 
 def test_watcher_opens_drain_stoppage_and_skips_idle(cur):
-    drain.set_drain(cur, True, "factoryctl", "入れ替え")
+    drain.set_drain(cur, True, "factoryctl", "更新")
     cur.execute("update events set occurred_at = now() - interval '45 minutes' where name='factory.drain_requested'")
     cur.execute("insert into jobs(correlation_id, repo, issue_number, state, enqueued_at, finished_at) "
                 "values ('github:o/r#9','o/r',9,'succeeded', now() - interval '2 hours', now() - interval '2 hours')")
@@ -217,7 +217,7 @@ def test_watcher_notices_line_low_once_and_recovers(cur):
 
 
 def test_watcher_does_not_notice_line_low_while_draining(cur):
-    drain.set_drain(cur, True, "factoryctl", "入れ替え")
+    drain.set_drain(cur, True, "factoryctl", "更新")
     dispatcher.watch_once()
     assert not line_events(cur)
 
@@ -250,6 +250,24 @@ def test_allowed_jobs_flow_while_paused(cur):
     assert drain.allowed(cur) == []                                    # 再開で消える
     drain.set_drain(cur, True, "t")
     assert drain.allowed(cur) == []                                    # 次の一時停止には持ち越さない
+
+
+def test_priority_allowed_jobs_flow_while_paused(cur):
+    """一時停止のまま、優先度が下限以上のチケットのジョブも流す（2026-11-06 オーナー: 検証のチケットを p0 で流す）。
+    プランナーのジョブは ticket_id を持たないので、correlation_id からチケットを引く"""
+    drain.set_drain(cur, True, "t")
+    cur.execute("insert into tickets(source, source_ref, repo, priority) values ('github','o/r#5','o/r',%s), ('github','o/r#6','o/r',50)",
+                (ops.LEVELS["p0"][0],))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
+                "('github:o/r#6','o/r',6,'planner','plan'), ('github:o/r#5','o/r',5,'planner','plan')")
+    assert drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur)) is None
+    assert drain.allow(cur, [], "t", min_priority=ops.LEVELS["p0"][0])
+    assert drain.allow(cur, ["github:o/r#1"], "t")                     # 後から PR を足しても下限は残る
+    assert drain.allowed_min_priority(cur) == ops.LEVELS["p0"][0]
+    got = [drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur)) for _ in range(2)]
+    assert [j["issue_number"] for j in got if j] == [5]               # p2 のチケットのジョブは順番待ちのまま
+    drain.set_drain(cur, False, "t")
+    assert drain.allowed_min_priority(cur) is None                     # 再開で消える
 
 
 def test_governance_jobs_flow_while_paused(cur):
@@ -290,3 +308,9 @@ def test_line_scale_is_declared_and_followed(cur, monkeypatch):
     assert cur.fetchone()["n"] == 3                      # 減らしても動いているジョブは止めない
     with pytest.raises(ValueError):
         line.scale(cur, "t", workers=-1)
+
+
+def test_issue_corr():
+    assert drain.issue_corr("https://github.com/o/r/issues/992") == "github:o/r#992"
+    assert drain.issue_corr("https://github.com/o/r/pull/13") is None
+    assert drain.issue_corr("https://example.com/o/r/issues/1") is None

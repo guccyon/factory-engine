@@ -96,7 +96,7 @@ def test_exit_captures_ack_all(cur):
 
 
 def test_resume_line_and_unanswerable_stoppage(cur):
-    drain.set_drain(cur, True, "t", "入れ替え")
+    drain.set_drain(cur, True, "t", "更新")
     stoppage.open_stoppage(cur, "drain:20261105T000000", "human", "ラインが一時停止のまま", quiet=True)
     stoppage.open_stoppage(cur, "merge:12", "human", "マージ待ちの PR", quiet=True)
     xs = {i["key"]: i for i in inbox.items(cur)}
@@ -138,21 +138,21 @@ def test_failed_effect_leaves_it_open(cur):
     res, msg = inbox.answer(cur, f"choice:{aid}", "A", "console:t", "console")
     assert res == "failed" and "待っている案がない" in msg
     assert choice.get(cur, aid)["status"] == "open" and names(cur, "inbox.answered") == []
-    inbox.request(cur, "swap:s1:rolled_back", "swap_rolled_back", "builder", "入れ替えを戻した")
+    inbox.request(cur, "swap:s1:rolled_back", "swap_rolled_back", "builder", "更新を戻した")
     inbox.resolve(cur, "swap:s1:rolled_back", "t")
     assert inbox.answer(cur, "task:swap:s1:rolled_back", "seen", "console:t", "console")[0] == "not_found"
 
 
 def test_write_back_to_where_it_was_notified(cur):
     T = datetime.now(timezone.utc)
-    inbox.request(cur, "swap:s1:rolled_back", "swap_rolled_back", "builder", "入れ替え s1 を前の版に戻した")
+    inbox.request(cur, "swap:s1:rolled_back", "swap_rolled_back", "builder", "更新 s1 を前の版に戻した")
     assert notify_inbox.tick(cur, T, ["log"], lambda ch, b: True)["sent"] == 1
     assert inbox.answer(cur, "task:swap:s1:rolled_back", "seen", "console:t", "console")[0] == "answered"
     posted = []
     r = notify_inbox.tick(cur, T + timedelta(minutes=1), ["log"], lambda ch, b: True, poster=lambda name, text: posted.append((name, text)) or True)
     assert r["written_back"] == 1 and r["cleared"] == 1
     [(name, text)] = posted
-    assert name == "log" and "入れ替え s1 を前の版に戻した" in text and "console:t が操業コンソールで『見た（閉じる）』と回答済み" in text
+    assert name == "log" and "更新 s1 を前の版に戻した" in text and "console:t が操業コンソールで『見た（閉じる）』と回答済み" in text
     r = notify_inbox.tick(cur, T + timedelta(minutes=2), ["log"], lambda ch, b: True, poster=lambda name, text: posted.append(1) or True)
     assert r["written_back"] == 0 and len(posted) == 1                      # 1 つの答え・1 宛先に 1 回
 

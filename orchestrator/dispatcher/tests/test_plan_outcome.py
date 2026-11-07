@@ -54,8 +54,12 @@ def test_over_split_and_band():
 def test_expected_scores():
     actual = ["apps/admin-web/src/a.tsx", "apps/admin-web/src/b.tsx", "specs/contracts/api/admin-web/openapi.yaml", "README.md"]
     r, p = po.expected_scores(["apps/admin-web/src/a.tsx", "openapi.yaml", "apps/backend/x.rs"], actual)
-    assert (r, p) == (0.5, round(2 / 3, 3))   # 名前だけの見込みはファイル名で当てる
+    assert (r, p) == (round(2 / 3, 3), round(2 / 3, 3))   # 名前だけの見込みはファイル名で当てる。README は分母に入れない
     assert po.expected_scores([], actual) == (None, None)
+    # 試験・撮影の値・changelog は再現率の分母に入れない。当たれば適合率には数える
+    actual2 = ["apps/backend/src/a.rs", "apps/backend/tests/a.rs", "apps/admin-web/screenshots/fixtures.ts", "changelog.d/1.md"]
+    assert po.expected_scores(["apps/backend/src/a.rs", "apps/backend/tests/a.rs"], actual2) == (1.0, 1.0)
+    assert po.expected_scores(["README.md"], ["README.md"]) == (1.0, 1.0)   # 本体がなければ全部が分母
 
 
 def _o(**kw):
@@ -157,12 +161,14 @@ def test_step_records_the_455_shape(cur):
 
     assert po.step(cur, gh) == 1
     assert po.step(cur, gh) == 0   # 2 回目は残さない
+    cur.execute("update events set payload = payload || '{\"expected_recall\": 0.01}' where name='plan.outcome'")
+    assert po.rescore(cur, gh) == 1 and po.outcomes(cur, "o/r")[0]["expected_recall"] == round(2 / 53, 3)   # 今の数え方で組み立て直す
     o = po.outcomes(cur, "o/r")[0]
     assert o["judgment"] == "undersized" and o["reasons"] == ["incomplete", "layers", "files", "turns"]
     assert (o["jobs"], o["turns"], o["turns_max"], o["incomplete"], o["files"]) == (2, 181, 121, 1, 54)
     assert o["layers_key"] == "db+contract+backend+web" and o["needs_judgment"] and o["planned"] and o["band"] == "XL"
     assert o["continues"] == {"conflict": 1, "incomplete": 1}
-    assert o["expected_recall"] == round(2 / 54, 3) and o["expected_precision"] == 1.0
+    assert o["expected_recall"] == round(2 / 53, 3) and o["expected_precision"] == 1.0
     assert o["cost_usd"] == pytest.approx(19.47)
 
 

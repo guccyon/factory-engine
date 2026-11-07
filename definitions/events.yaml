@@ -98,11 +98,11 @@ events:
   supervisor.heartbeat:
     source: control_plane
     required: []
-    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る。engine_version（ADR 0031）は入れ替え役が新しい版で回ったかを見るのに使う"
+    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る。engine_version（ADR 0031）は更新役が新しい版で回ったかを見るのに使う"
   dispatcher.started:
     source: control_plane
     required: [engine_version]
-    note: "ADR 0031。dispatcher が上がった（つなぎ直しの片付けの後）。入れ替え役が新しい版で上がったかを見る。reattaching はつなぎ直すジョブの数"
+    note: "ADR 0031。dispatcher が上がった（つなぎ直しの片付けの後）。更新役が新しい版で上がったかを見る。reattaching はつなぎ直すジョブの数"
   supervisor.merge_decided:
     source: control_plane
     required: [pr_url, head_sha, change_types, table, factory_grant, execute]
@@ -269,23 +269,23 @@ events:
   swap.requested:
     source: control_plane
     required: [target, kind, urgency, by]
-    note: "ADR 0031。工場の入れ替えの依頼。この event の id が swap_id、correlation_id は swap:<id>。同時に 1 件。順番 2 は factoryctl swap run（時刻の合意なしで swap.confirmed も出す）"
+    note: "ADR 0031。工場の更新の依頼。この event の id が swap_id、correlation_id は swap:<id>。同時に 1 件。順番 2 は factoryctl swap run（時刻の合意なしで swap.confirmed も出す）"
   swap.confirmed:
     source: control_plane
     required: [swap_id, at, by]
-    note: "ADR 0031。入れ替えの時刻を受けた（basis: manual は手での実行。プランナーの提案は順番 4）。at を過ぎたら dispatcher が入れ替え役を起動する"
+    note: "ADR 0031。更新の時刻を受けた（basis: manual は手での実行。プランナーの提案は順番 4）。at を過ぎたら dispatcher が更新役を起動する"
   swap.cancelled:
     source: control_plane
     required: [swap_id, by]
-    note: "ADR 0031。入れ替え役を起動する前の取り消し（factoryctl swap cancel）"
+    note: "ADR 0031。更新役を起動する前の取り消し（factoryctl swap cancel）"
   swap.launched:
     source: control_plane
     required: [swap_id, container]
-    note: "ADR 0031。dispatcher が使い捨ての入れ替え役（コンテナ factory-swap-<id>、--rm）を起動した"
+    note: "ADR 0031。dispatcher が使い捨ての更新役（コンテナ factory-swap-<id>、--rm）を起動した"
   swap.started:
     source: control_plane
     required: [swap_id]
-    note: "ADR 0031。入れ替え役が事前の確かめを始めた（ラインは止めない）"
+    note: "ADR 0031。更新役が事前の確かめを始めた（ラインは止めない）"
   swap.preflight_failed:
     source: control_plane
     required: [swap_id, error]
@@ -293,7 +293,7 @@ events:
   swap.drained:
     source: control_plane
     required: [swap_id, by_me]
-    note: "ADR 0031。一時停止を伴う入れ替え（control_plane）でラインを一時停止した。by_me は入れ替え役が一時停止にしたか（前から一時停止なら再開しない）"
+    note: "ADR 0031。一時停止を伴う更新（control_plane）でラインを一時停止した。by_me は更新役が一時停止にしたか（前から一時停止なら再開しない）"
   swap.applied:
     source: control_plane
     required: [swap_id, target_sha, prev, kind]
@@ -305,11 +305,11 @@ events:
   swap.completed:
     source: control_plane
     required: [swap_id, target_sha, prev, kind]
-    note: "ADR 0031。入れ替えた。kind は判定（申告の重い方）、kind_declared は申告。stopped_sec は一時停止していた秒数"
+    note: "ADR 0031。更新した。kind は判定（申告の重い方）、kind_declared は申告。stopped_sec は一時停止していた秒数"
   swap.rolled_back:
     source: control_plane
     required: [swap_id, target_sha, prev, reason]
-    note: "ADR 0031 の決定 6。確かめに通らず前の版に戻し、戻した版は通った。同じ target_sha では自動で入れ替えない。受信トレイに建設者への依頼を出す"
+    note: "ADR 0031 の決定 6。確かめに通らず前の版に戻し、戻した版は通った。同じ target_sha では自動で更新しない。受信トレイに建設者への依頼を出す"
   swap.escalated:
     source: control_plane
     required: [swap_id, reason, category]
@@ -317,7 +317,7 @@ events:
   swap.failed:
     source: control_plane
     required: [swap_id, error]
-    note: "ADR 0031。入れ替え役を起動できなかったか、結果を書かずに消えた（dispatcher が見つけて停止 swap:<id> を開く）"
+    note: "ADR 0031。更新役を起動できなかったか、結果を書かずに消えた（dispatcher が見つけて停止 swap:<id> を開く）"
   job.reattached:
     source: control_plane
     required: [container]
@@ -458,14 +458,38 @@ events:
     source: control_plane
     required: [repo, week, sha, summary, strengths, findings, checked]
     note: "ADR 0022。設計の診断の所見。dispatcher が記録し、固定 Issue の本文（ページのスナップショット付き）を書き換える。人が読むためのもので、ワーカーのプロンプトには入れない。dedupe は design.reviewed:<repo>:<ISO 週>。同じ中身を artifacts の DesignReview に残す"
+  qa.enqueued:
+    source: control_plane
+    required: [repo, issue, release_id, env, stories, job_id, by]
+    note: "ADR 0028 の決定 2。QA 役のジョブ（kind=qa）を固定 Issue（factory:qa）に積んだ（factoryctl qa run）。release_id はそのときの環境の版（なければ null）"
+  qa.verdict:
+    source: control_plane
+    required: [repo, release_id, env, story_id, decision, confidence, defects, flags, verdict_id, model]
+    note: "ADR 0028 の決定 2。QA 役がストーリー 1 本を流した判断（pass / hold / blocked）。同じ中身を artifacts の QAVerdict に残す。roadmap の qa_verdict はこの件数を数える。dedupe は qa.verdict:<job_id>:<story_id>"
+  qa.defect_seen:
+    source: control_plane
+    required: [repo, release_id, story_id, verdict_id, key, issue]
+    note: "ADR 0028 の決定 2。hold の Defect が、同じストーリーの同じ歩で開いている QA の Defect の Issue（key は <story_id>#<歩>）に当たったので、起票せずにその Issue に再現したことを書いた"
+  runner.relayed:
+    source: control_plane
+    required: [tool, ok, runner, ms, args_len, n]
+    note: "ADR 0028 の one_orchestrator。ジョブ（job_id）のワーカーが、dispatcher の中継（runner_relay.py）越しに Mac ランナーの道具を 1 回呼んだ。引数は長さだけ残す（打った文字は残さない）。通す道具は definitions/qa.yaml の runner_tools"
+  qa.defect_filed:
+    source: control_plane
+    required: [repo, release_id, story_id, verdict_id, title, severity, issue]
+    note: "ADR 0028 の決定 2。hold の Defect を製品の Issue（factory:qa-defect・factory:fix-proposed）にした。known_gaps に当たったものと 1 回の上限を超えたものは起票せず、固定 Issue のまとめに載せる"
   plan.decided:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]
-    note: "ADR 0025・0026・0036。decision は ready / ask / escalate / split。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
+    note: "ADR 0025・0026・0036・0038。workflow はワークフローの宣言の要約（skip・deep・caps・start・after・handoff）、workflow_marks は決まりで直した印（mandatory_skip・cap_clamped・no_workflow など）。decision は ready / ask / escalate / split。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
   plan.serialized:
     source: control_plane
     required: [file, behind, hot, why]
     note: "ADR 0027 の 2。supervisor が投入の直前に、よく衝突するファイル（工程の信号 conflict_fix の束で、7 日に 3 回以上・解消の費用 $5 以上。CHANGELOG.md は除く）に触る見込みのタスクを、同じファイルに触る流れているチケット（behind）が終わるまで投入しなかった。見込みは Plan の expected_files とチケットの本文のパス。人の判断を待つ PR では並べない。dedupe は plan.serialized:<チケット>:<ファイル>:<behind>。factoryctl plan show に出る"
+  workflow.shadow:
+    source: control_plane
+    required: [kind, repo, issue, plan_id]
+    note: "ADR 0038 の順番 1（記録だけ。ラインの動きは変えない）。プランナーの宣言（Plan の workflow）と実績の差。kind=cap_hit は実績が宣言の上限を超えた（cap・declared・actual・action＝守らせていたら取った動き・declared_by_planner）、would_skip は飛ばす宣言のステップ（inspect・qa）のジョブが動いた（step・job_id）、would_wait は start: after の前のチケット（after）が開いているうちに投入した（files・why）。supervisor の workflow_shadow_step と enqueue_step が残す。dedupe は workflow.shadow:<cap|skip|wait>:<チケット>:<plan_id>[:<種類>]。factoryctl plan show と建設状況の日報に出る。上限に当たった事例はプランナーの入力（caps.md）に戻る"
   plan.asked:
     source: control_plane
     required: [plan_id, repo, issue, round, questions]

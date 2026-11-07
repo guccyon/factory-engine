@@ -37,7 +37,7 @@ import time
 import urllib.parse
 import uuid
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 HOME = os.path.expanduser("~")
 
 
@@ -118,9 +118,20 @@ def number(args, name, lo, hi, default=None):
 
 # ---- サブプロセス ----
 
+def child_env(base=None):
+    """子プロセスに渡す環境。git（flutter の中の git も）は持ち主の ~/.gitconfig を読まない。
+    持ち主の設定に頼らず、どの Mac でも同じに動かすため。launchd から起動したランナーは、~/.gitconfig の実体が
+    「書類」などの保護フォルダにあると読めずに落ちる（2026-11-06、app_build が Operation not permitted）"""
+    e = dict(os.environ if base is None else base)
+    e["GIT_CONFIG_GLOBAL"] = os.devnull
+    e["GIT_CONFIG_NOSYSTEM"] = "1"
+    e.setdefault("GIT_TERMINAL_PROMPT", "0")
+    return e
+
+
 def run(argv, timeout=120, input_bytes=None, cwd=None, env_extra=None):
     """argv をシェルを通さずに動かす。失敗は ToolError にする。"""
-    e = dict(os.environ)
+    e = child_env()
     if env_extra:
         e.update(env_extra)
     try:

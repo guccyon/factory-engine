@@ -1,9 +1,10 @@
-# 工場の入れ替え（ADR 0031）の決まり。入れ替え役（orchestrator/dispatcher/swapper.py）が、工場の作業ツリーにある今の版のこのファイルを読む。
+# 工場の更新（ADR 0031）の決まり。更新役（orchestrator/dispatcher/swapper.py）が、工場の作業ツリーにある今の版のこのファイルを読む。
 # 数値は仮置き。プランナーの時刻の提案（順番 4）の数値もここに足す。
 #
 # - kinds: 差分のファイルから変更の種類を判定する。上から見て、当たったものの中でいちばん重い種類を採る（db > control_plane > code）。
 #   建設者の自己申告より軽くは判定しない（申告と判定の重い方）
 # - escalate: 当たったら進めずに人に回す（決定 7）。DB の変更は kinds の db で人に回す（決定 8。承認ボタンは順番 5）
+# - diff_pattern は足した行だけを見る。# で始まる行（.env.example の説明・compose のコメント）は数えない。コメントを外して効かせる変更は、そのとき足した行として当たる
 # - glob: ** は任意の深さ（0 段を含む）、* は / を含まない（change_type_rules.yaml と同じ）
 
 schema_version: "0.1"
@@ -19,9 +20,9 @@ escalate:
   - id: secrets_permissions
     why: "秘密情報・権限（Docker のソケット、トークンの渡し方、ポートの開き方を外に広げる変更）を含む"
     paths: ["orchestrator/compose.yaml", "orchestrator/.env.example", "orchestrator/**/Dockerfile*"]
-    diff_pattern: "(?m)^\\+(?!\\+\\+).*(docker\\.sock|_TOKEN\\b|_SECRET\\b|PASSWORD|privileged|cap_add|network_mode:\\s*host|0\\.0\\.0\\.0)"
+    diff_pattern: "(?m)^\\+(?!\\+\\+)(?![ \\t]*#).*(docker\\.sock|_TOKEN\\b|_SECRET\\b|PASSWORD|privileged|cap_add|network_mode:\\s*host|0\\.0\\.0\\.0)"
 
-# 一時停止を伴う入れ替え（control_plane・db）で、入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ秒数。JOB_TIMEOUT_SEC（2400）より少し長く
+# 一時停止を伴う更新（control_plane・db）で、更新してよくなる（実行中 0・出荷の処理なし）まで待つ秒数。JOB_TIMEOUT_SEC（2400）より少し長く
 drain_wait_sec: 2700
 
 # 上げ直したあとの確かめ（決定 5）。この秒数の内にすべてそろえば成功。そろわなければ前の版に戻す

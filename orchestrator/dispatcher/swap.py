@@ -1,10 +1,11 @@
-"""工場の入れ替えの依頼と記録（ADR 0031 の決定 1・4〜7）。dispatcher・factoryctl・入れ替え役（swapper.py）が同じ関数を通る。
+"""工場の更新の依頼と記録（ADR 0031 の決定 1・4〜7）。dispatcher・factoryctl・更新役（swapper.py）が同じ関数を通る。
 
-- 状態の正本は events（swap.*）。1 件の入れ替えは swap.requested の id を swap_id にし、correlation_id は swap:<id>
-- 依頼は同時に 1 件（終わっていない入れ替えがあれば新しい依頼を受けない）
-- 入れ替え役は常駐させない。dispatcher が周回で、受けた（confirmed）依頼の時刻になったら使い捨てのコンテナ（factory-swap-<id>）を起動する。
-  入れ替え役は compose のサービスではないので、dispatcher を作り直しても止まらない。結果を書かずに消えたら、dispatcher が failed にして人に回す
+- 状態の正本は events（swap.*）。1 件の更新は swap.requested の id を swap_id にし、correlation_id は swap:<id>
+- 依頼は同時に 1 件（終わっていない更新があれば新しい依頼を受けない）
+- 更新役は常駐させない。dispatcher が周回で、受けた（confirmed）依頼の時刻になったら使い捨てのコンテナ（factory-swap-<id>）を起動する。
+  更新役は compose のサービスではないので、dispatcher を作り直しても止まらない。結果を書かずに消えたら、dispatcher が failed にして人に回す
 - 順番 2 では時刻の合意はまだない（factoryctl swap run が依頼と同時に「いま」で受ける）。プランナーの提案は順番 4
+- 順番 3 で依頼の入口に Issue の郵便受け（swap_mailbox.py）を足した。依頼の source に Issue（owner/repo#n）を残し、結果を同じ Issue に返す
 """
 from __future__ import annotations
 
@@ -26,14 +27,14 @@ STATUS = {"swap.requested": "requested", "swap.confirmed": "confirmed", "swap.la
           "swap.drained": "drained", "swap.applied": "applied", "swap.verified": "verified", "swap.completed": "completed",
           "swap.rolled_back": "rolled_back", "swap.escalated": "escalated", "swap.failed": "failed",
           "swap.preflight_failed": "preflight_failed", "swap.cancelled": "cancelled"}
-STATUS_JA = {"requested": "依頼を受けた", "confirmed": "時刻を受けた", "launched": "入れ替え役を起動した", "started": "事前の確かめ中",
-             "drained": "一時停止した", "applied": "上げ直した（確かめ中）", "verified": "確かめが通った", "completed": "入れ替えた",
-             "rolled_back": "前の版に戻した", "escalated": "人に回した", "failed": "失敗した", "preflight_failed": "事前の確かめで止めた",
-             "cancelled": "取り消した"}
+STATUS_JA = {"requested": "受付済", "confirmed": "時刻確定済", "launched": "更新役起動済", "started": "事前確認中",
+             "drained": "一時停止済", "applied": "上げ直し済（確認中）", "verified": "確認済", "completed": "反映済",
+             "rolled_back": "前の版に戻し済", "escalated": "人に回し済", "failed": "失敗", "preflight_failed": "事前確認で中止",
+             "cancelled": "取り消し済"}
 REF = re.compile(r"^(main|[0-9a-f]{7,40})$")
 CONTAINER_PREFIX = "factory-swap-"
 LABEL = "factory.swap"
-LOST_AFTER_SEC = 90   # 起動してからこの秒数たってもコンテナがなく、結果もなければ、入れ替え役が消えたとみなす
+LOST_AFTER_SEC = 90   # 起動してからこの秒数たってもコンテナがなく、結果もなければ、更新役が消えたとみなす
 DEFINITIONS = "definitions/swap.yaml"
 DEFAULT_RULES = {"kinds": [{"kind": "db", "paths": ["orchestrator/postgres/init/**"]}, {"kind": "control_plane", "paths": ["orchestrator/compose.yaml"]}],
                  "escalate": [], "drain_wait_sec": 2700, "verify": {"timeout_sec": 300, "interval_sec": 10}}
@@ -54,9 +55,11 @@ def record(cur, sid: int, name: str, payload: dict | None = None) -> None:
 
 
 # ------------------------------------------------------------------ 依頼・取り消し・状態
-def request(cur, target: str, by: str, *, kind: str = "code", urgency: str = "normal", note: str = "", confirm_now: bool = True) -> int:
-    """入れ替えの依頼。target は main かコミット（main に入っているかは入れ替え役が事前の確かめで見る）。
-    confirm_now は時刻の合意のない手での実行（factoryctl swap run。順番 2）で、依頼と同時に「いま」で受ける"""
+def request(cur, target: str, by: str, *, kind: str = "code", urgency: str = "normal", note: str = "", confirm_now: bool = True,
+            source: str = "manual", basis: str = "manual") -> int:
+    """更新の依頼。target は main かコミット（main に入っているかは更新役が事前の確かめで見る）。
+    confirm_now は時刻の合意のない手での実行（factoryctl swap run。順番 2）で、依頼と同時に「いま」で受ける。
+    source は依頼の出どころ（manual か Issue の owner/repo#n）。basis は受けた決め手（confirmed の記録に残す）"""
     target = (target or "").strip().lower() if target != "main" else "main"
     if not REF.match(target):
         raise SwapError("target は main か 7〜40 文字のコミット")
@@ -65,27 +68,27 @@ def request(cur, target: str, by: str, *, kind: str = "code", urgency: str = "no
     if urgency not in ("normal", "urgent"):
         raise SwapError("urgency は normal か urgent")
     with cur.connection.transaction():   # 同時に 2 件出さない（確かめと書き込みを 1 つのトランザクションで、ロックを取って）
-        return _request(cur, target, by, kind, urgency, note, confirm_now)
+        return _request(cur, target, by, kind, urgency, note, confirm_now, source, basis)
 
 
-def _request(cur, target, by, kind, urgency, note, confirm_now) -> int:
+def _request(cur, target, by, kind, urgency, note, confirm_now, source="manual", basis="manual") -> int:
     cur.execute("select pg_advisory_xact_lock(hashtext('swap.request'))")
     act = active(cur)
     if act:
-        raise SwapError(f"入れ替え {act['id']}（{act['target']}、{STATUS_JA[act['status']]}）が終わっていない。終わるか取り消してから")
+        raise SwapError(f"更新 {act['id']}（{act['target']}、{STATUS_JA[act['status']]}）が終わっていない。終わるか取り消してから")
     if target != "main" and rolled_back_before(cur, target):
-        raise SwapError(f"{target} の入れ替えは前の版に戻った。直した新しい版で依頼する（同じ版では自動で入れ替えない。決定 6）")
+        raise SwapError(f"{target} の更新は前の版に戻った。直した新しい版で依頼する（同じ版では自動で更新しない。決定 6）")
     cur.execute("insert into events(name, payload) values ('swap.requested', %s) returning id",
-                (Jsonb({"target": target, "kind": kind, "urgency": urgency, "by": by, "note": note[:300]}),))
+                (Jsonb({"target": target, "kind": kind, "urgency": urgency, "by": by, "note": note[:300], "source": source}),))
     sid = cur.fetchone()["id"]
     cur.execute("update events set correlation_id=%s, payload = payload || %s where id=%s", (corr(sid), Jsonb({"swap_id": sid}), sid))
     if confirm_now:
-        record(cur, sid, "swap.confirmed", {"at": datetime.now(timezone.utc).isoformat(), "by": by, "basis": "manual"})
+        record(cur, sid, "swap.confirmed", {"at": datetime.now(timezone.utc).isoformat(), "by": by, "basis": basis})
     return sid
 
 
 def cancel(cur, sid: int, by: str, reason: str = "") -> bool:
-    """始まる前（入れ替え役を起動する前）だけ取り消せる"""
+    """始まる前（更新役を起動する前）だけ取り消せる"""
     s = get(cur, sid)
     if not s or s["status"] not in ("requested", "confirmed"):
         return False
@@ -103,12 +106,13 @@ def get(cur, sid: int) -> dict | None:
     last = evs[-1] if evs else {"name": "swap.requested", "occurred_at": r["occurred_at"]}
     p = r["payload"]
     conf = next((e for e in reversed(evs) if e["name"] == "swap.confirmed"), None)
-    return {"id": sid, "target": p.get("target"), "kind": p.get("kind"), "urgency": p.get("urgency"), "by": p.get("by"), "requested_at": r["occurred_at"],
+    return {"id": sid, "target": p.get("target"), "kind": p.get("kind"), "urgency": p.get("urgency"), "by": p.get("by"), "source": p.get("source") or "manual",
+            "requested_at": r["occurred_at"],
             "status": STATUS[last["name"]], "last_at": last["occurred_at"], "at": (conf or {}).get("payload", {}).get("at"), "events": evs}
 
 
 def active(cur) -> dict | None:
-    """終わっていない入れ替え（あれば 1 件）"""
+    """終わっていない更新（あれば 1 件）"""
     cur.execute("select r.id from events r where r.name='swap.requested' and not exists "
                 "(select 1 from events t where t.correlation_id = 'swap:' || r.id and t.name = any(%s)) order by r.id limit 1", (list(TERMINAL),))
     r = cur.fetchone()
@@ -165,7 +169,7 @@ def escalations(files: list[str], diff_of, rules: dict) -> list[dict]:
     return out
 
 
-# ------------------------------------------------------------------ 入れ替え役の起動（dispatcher の周回）
+# ------------------------------------------------------------------ 更新役の起動（dispatcher の周回）
 def _docker(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
 
@@ -206,14 +210,14 @@ def git_mounts(dotgit: str, root: str) -> list[str]:
 
 
 def launch_args(sid: int, root: str, extra_mounts: list[str], image: str, network: str, project: str) -> list[str]:
-    """入れ替え役のコンテナの docker run の引数。作業ツリーは同じ絶対パスでマウントする（compose の相対パスがホストでそのまま効く）"""
+    """更新役のコンテナの docker run の引数。作業ツリーは同じ絶対パスでマウントする（compose の相対パスがホストでそのまま効く）"""
     args = ["run", "-d", "--rm", "--name", container(sid), "--label", f"{LABEL}={sid}", "--network", network,
             "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", f"{root}:{root}"]
     for m in extra_mounts:
         args += ["-v", f"{m}:{m}"]
-    # 値を書かない -e は dispatcher の環境から写す（停止の通知に GH_TOKEN を使う。入れ替え役は子のプロセスには渡さない）
+    # 値を書かない -e は dispatcher の環境から写す（停止の通知に GH_TOKEN を使う。更新役は子のプロセスには渡さない）
     args += ["-w", f"{root}/orchestrator", "-e", f"SWAP_ROOT={root}", "-e", f"COMPOSE_PROJECT={project}"]
-    for k in ("DATABASE_URL", "GH_TOKEN", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "REPORT_TZ"):
+    for k in ("DATABASE_URL", "GH_TOKEN", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "REPORT_TZ", "FACTORY_MODE", "MODE_SCHEDULE"):
         args += ["-e", k]
     args += [image, "python", "/app/swapper.py", "run", str(sid)]
     return args
@@ -233,8 +237,15 @@ def launch(sid: int) -> str:
     return container(sid)
 
 
+def relay_jobs(cur) -> list[int]:
+    """実行中で、Mac ランナーへの中継を使う種類のジョブ"""
+    from runner_relay import KIND_TOOLS
+    cur.execute("select id from jobs where state='running' and kind = any(%s) order by id", (list(KIND_TOOLS),))
+    return [r["id"] for r in cur.fetchall()]
+
+
 def tick(cur, log=print, *, launch_fn=launch, alive_fn=alive, now: datetime | None = None) -> None:
-    """dispatcher の周回。受けた依頼の時刻になったら入れ替え役を起動する。起動した入れ替え役が結果を書かずに消えていたら失敗にして人に回す"""
+    """dispatcher の周回。受けた依頼の時刻になったら更新役を起動する。起動した更新役が結果を書かずに消えていたら失敗にして人に回す"""
     import stoppage
     s = active(cur)
     if not s:
@@ -245,10 +256,16 @@ def tick(cur, log=print, *, launch_fn=launch, alive_fn=alive, now: datetime | No
         at = datetime.fromisoformat(s["at"]) if s["at"] else now
         if at > now:
             return
+        held = relay_jobs(cur)
+        if held:
+            # Mac ランナーへの中継（runner_relay）の合言葉は dispatcher のプロセスの中にだけある。上げ直すとつなぎ直したジョブが中継を使えなくなる
+            # （2026-11-06 ジョブ 4993）。中継を使うジョブが終わるまで更新役を起動しない（最長 JOB_TIMEOUT_SEC）
+            log("swap waits for relay jobs", sid, held)
+            return
         try:
             name = launch_fn(sid)
         except Exception as e:  # noqa: BLE001
-            record(cur, sid, "swap.failed", {"error": f"入れ替え役を起動できなかった: {e}"[:500]})
+            record(cur, sid, "swap.failed", {"error": f"更新役を起動できなかった: {e}"[:500]})
             log("swap launch failed", sid, repr(e))
             return
         record(cur, sid, "swap.launched", {"container": name})
@@ -258,8 +275,8 @@ def tick(cur, log=print, *, launch_fn=launch, alive_fn=alive, now: datetime | No
         return   # 時刻の合意待ち（順番 4）
     if (now - s["last_at"]).total_seconds() < LOST_AFTER_SEC or alive_fn(sid):
         return
-    record(cur, sid, "swap.failed", {"error": f"入れ替え役が結果を書かずに終わった（最後は {STATUS_JA[s['status']]}）"})
-    stoppage.open_stoppage(cur, f"swap:{sid}", "human", f"工場の入れ替え {sid}（{s['target']}）の入れ替え役が途中で消えた。工場の版が中途半端かもしれない",
+    record(cur, sid, "swap.failed", {"error": f"更新役が結果を書かずに終わった（最後は {STATUS_JA[s['status']]}）"})
+    stoppage.open_stoppage(cur, f"swap:{sid}", "human", f"工場の更新 {sid}（{s['target']}）の更新役が途中で消えた。工場の版が中途半端かもしれない",
                            waiting_for="factoryctl version で版を確かめ、手で上げ直すか前の版に戻す", correlation_id=corr(sid))
     log("swap lost", sid)
 

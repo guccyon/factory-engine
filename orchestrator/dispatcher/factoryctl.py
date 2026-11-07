@@ -13,21 +13,23 @@
   factoryctl hold <ticket> [--reason ..]          # 順番待ちから一時的に外す
   factoryctl resume <ticket>
 
-工場の入れ替え（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
-  factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
-  factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
+工場の更新（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
+  factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は更新してよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
+  factoryctl drain status                          # 一時停止か、更新してよいか、何を待っているか。更新してよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
-  factoryctl drain allow <PR の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）だけ流す。再開で消える
+  factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
+  factoryctl drain allow --priority p0 [--reason ..]    # 一時停止のまま、優先度がその段以上のチケットのジョブ（着手判定・実装を含む）も流す。再開で消える
   factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
-工場の入れ替えの自律化（ADR 0031）。dispatcher が使い捨ての入れ替え役（コンテナ factory-swap-<id>）を起動し、事前の確かめ → 一時停止（control_plane のとき）→
+工場の更新の自律化（ADR 0031）。dispatcher が使い捨ての更新役（コンテナ factory-swap-<id>）を起動し、事前の確かめ → 一時停止（control_plane のとき）→
 すべてのサービスの上げ直し → 確かめ → 再開を行う。確かめに通らなければ前の版に戻す。DB の変更・秘密情報と権限を含む版は人に回す:
-  factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま入れ替える（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
-  factoryctl swap status [<id>]                    # 直近の入れ替えの一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
-  factoryctl swap cancel <id> [--reason ..]        # 入れ替え役を起動する前だけ取り消せる
+  factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま更新する（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
+  factoryctl swap status [<id>]                    # 直近の更新の一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
+  factoryctl swap cancel <id> [--reason ..]        # 更新役を起動する前だけ取り消せる
+  （クラウドの建設者は factory-engine の Issue に factory:swap を付けて依頼する。dispatcher が拾い、結果を同じ Issue に返す。orchestrator/README.md）
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
@@ -48,6 +50,11 @@
 触れる環境（ADR 0028 の touchable_env。Gen1 は staging と兼ねる）。Release 候補を 1 コマンドで立て、シードを入れ、URL と QR を出す:
   factoryctl env up <repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]   # 版がなければ未 Release の PR から切る。--fresh は DB を空にしてシードから入れ直す
   factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
+
+QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー（specs/stories/）を流し、ストーリーごとに Verdict を出す:
+  factoryctl qa run <repo> [--stories id,id] [--env staging] [--priority p0|p1|p2|p3] [--through-pause] [--by ..]
+      # 製品の固定 Issue（factory:qa）に積む。--stories を省けば active な全部（上限 6）。--through-pause はラインの一時停止の間もこれだけ流す
+  factoryctl qa show <repo> [--limit 10]                     # 最近の判定
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -123,6 +130,7 @@ import planner
 import process_learn
 import restricted
 import serialize
+import workflow_shadow
 import ship
 import stoppage
 import touch
@@ -131,7 +139,7 @@ import swap
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult")
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa")
 
 
 def carried_input(cur, job_id: int, kind: str) -> dict:
@@ -176,13 +184,18 @@ def plan_outcome_cmd(cur, argv, sub: str) -> int:
     """判定と結果の突き合わせ・実績の表・合格線（ADR 0036 の 4）"""
     repo = opt(argv, "--repo", None)
     if sub == "outcomes":
-        if "--backfill" in argv:
+        if "--backfill" in argv or "--rescore" in argv:
             import ghapi
 
             def gh(method, path, body=None):
                 return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
-            n = plan_outcome.step(cur, gh, days=None, limit=None, log=lambda *a: print(*a, flush=True))
-            print(f"{n} 本の PR を突き合わせました")
+            log = lambda *a: print(*a, flush=True)  # noqa: E731
+            if "--rescore" in argv:   # 数え方を変えたあと、残した突き合わせを組み立て直す
+                n = plan_outcome.rescore(cur, gh, log=log)
+                print(f"{n} 本の突き合わせを組み立て直しました")
+            else:
+                n = plan_outcome.step(cur, gh, days=None, limit=None, log=log)
+                print(f"{n} 本の PR を突き合わせました")
         for o in plan_outcome.outcomes(cur, repo, int(opt(argv, "--days", "14"))):
             rec = "-" if o.get("expected_recall") is None else o["expected_recall"]
             print(f"{o['at']:%m-%d %H:%M} {o.get('repo')}#{o.get('issue')} {o.get('judgment'):<10} {','.join(o.get('reasons') or []):<22} "
@@ -229,9 +242,17 @@ def plan_cmd(cur, argv) -> int:
                 print(f"問い: {q.get('question')} {q.get('options')}")
             if p.get("expected_files"):
                 print("変わる見込みのファイル: " + ", ".join(p["expected_files"]))
+            for line in planner.workflow_lines(p.get("workflow"), p.get("workflow_marks")):
+                print(line)
             print(f"入力の版: {json.dumps(p.get('versions') or {}, ensure_ascii=False)}\n")
         for s in serialize.serialized(cur, f"github:{repo}#{n}"):
             print(f"並べた（{s['at']:%m-%d %H:%M}）: {s.get('why')}")
+        for s in workflow_shadow.shadows(cur, f"github:{repo}#{n}"):
+            what = (f"{workflow_shadow.CAP_JA.get(s.get('cap'), s.get('cap'))} の上限 {s.get('declared')} を超えた（実績 {s.get('actual')}。守らせていたら"
+                    f"{workflow_shadow.ACTION_JA.get(s.get('action'), s.get('action'))}）") if s.get("kind") == "cap_hit" else \
+                   (f"飛ばす宣言の {s.get('step')} が動いた（ジョブ {s.get('job_id')}）" if s.get("kind") == "would_skip" else
+                    f"start: after（{' '.join(f'#{x}' for x in s.get('after') or [])}）の前に投入した")
+            print(f"宣言との差（{s['at']:%m-%d %H:%M}、記録だけ）: {what}")
         return 0
     if sub in ("outcomes", "sizes", "pass"):
         return plan_outcome_cmd(cur, argv, sub)
@@ -545,7 +566,9 @@ def drain_report(cur) -> int:
         print(f"  処理中の出荷 {e['name']} {e['release_id']}")
     if st["allowed"]:
         print(f"  一時停止のまま流すもの: {' '.join(st['allowed'])}")
-    print("入れ替えてよい" if st["ready"] else "まだ入れ替えない（上の終わりを待つ）")
+    if st.get("allowed_min_priority") is not None:
+        print(f"  一時停止のまま流す優先度: {ops.level_of(st['allowed_min_priority'])} 以上のチケット")
+    print("更新してよい" if st["ready"] else "まだ更新しない（上の終わりを待つ）")
     return 0 if st["ready"] else 3
 
 
@@ -651,12 +674,12 @@ def swap_cmd(cur, argv) -> int:
         except swap.SwapError as e:
             print(e)
             return 1
-        print(f"入れ替え {sid} を受けた（{argv[3]}）。dispatcher が {swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで入れ替え役を起動する")
+        print(f"更新 {sid} を受けた（{argv[3]}）。dispatcher が {swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで更新役を起動する")
         print(f"進み具合: factoryctl swap status {sid}（dispatcher を上げ直す間は答えないことがある）。ホストでは docker logs -f {swap.container(sid)}")
         return 0
     if sub == "cancel" and len(argv) > 3 and argv[3].isdigit():
         ok = swap.cancel(cur, int(argv[3]), opt(argv, "--by", "builder"), opt(argv, "--reason", ""))
-        print("取り消した" if ok else "取り消せない（入れ替え役がもう動いているか、終わっている）")
+        print("取り消した" if ok else "取り消せない（更新役がもう動いているか、終わっている）")
         return 0 if ok else 1
     if sub == "status" and len(argv) > 3 and argv[3].isdigit():
         s = swap.get(cur, int(argv[3]))
@@ -667,7 +690,7 @@ def swap_cmd(cur, argv) -> int:
         return 0 if s["status"] == "completed" else 1
     if sub == "status":
         rows = swap.recent(cur)
-        print("\n".join(swap.summary(s) for s in rows) if rows else "入れ替えの記録はまだない")
+        print("\n".join(swap.summary(s) for s in rows) if rows else "更新の記録はまだない")
         return 0
     print(__doc__)
     return 2
@@ -715,6 +738,45 @@ def restricted_cmd(cur, argv):
     except restricted.RestrictedError as e:
         print(e)
         return 2
+
+
+def qa_cmd(cur, argv) -> int:
+    """factoryctl qa run|show（ADR 0028 の決定 2）"""
+    import qa_line
+    sub = argv[2] if len(argv) > 2 else ""
+    repo = argv[3] if len(argv) > 3 else ""
+    if sub not in ("run", "show") or "/" not in repo:
+        print("factoryctl qa run|show <owner/repo> ..."); return 2
+    if sub == "show":
+        rows = qa_line.latest(cur, repo, int(opt(argv, "--limit", "10")))
+        for r in rows:
+            print(f"{r['at']:%m-%d %H:%M} job {r['job_id']} {r.get('release_id') or '-'} {r['story_id']}: {r['decision']}"
+                  f"（確信度 {r.get('confidence')}・Defect {r.get('defects')}・印 {r.get('flags')}）")
+        if not rows:
+            print("判定の記録がない（factoryctl qa run で流す）")
+        return 0 if rows else 1
+    level = opt(argv, "--priority", "p1")
+    if level not in ops.LEVELS:
+        print(f"--priority は {'・'.join(ops.LEVELS)} のどれか"); return 2
+    import ghapi
+
+    def gh(method, path, body=None):
+        return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+    stories = [x for x in (opt(argv, "--stories", "") or "").split(",") if x]
+    try:
+        got = qa_line.enqueue(cur, gh, repo, env=opt(argv, "--env", "staging"), stories=stories, by=opt(argv, "--by", "factoryctl"), priority=level)
+    except psycopg.errors.UniqueViolation:
+        print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
+    print(f"enqueued job {got['job_id']}（QA 役・{repo}#{got['issue']}・版 {got['release_id'] or '不明'}・{level}）")
+    if not got["release_id"]:
+        print("  ※ 環境に出ている版の記録がない。先に factoryctl env up で触れる環境を立てる")
+    if drain.active(cur):
+        if "--through-pause" in argv:
+            drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "QA の判定（factoryctl qa run --through-pause）")
+            print("  ラインは一時停止中。このジョブだけ流す（drain allow）")
+        else:
+            print("  ラインは一時停止中なので、再開するまで流れない（このジョブだけ流すなら --through-pause を付けて積み直す）")
+    return 0
 
 
 def main(argv):
@@ -816,18 +878,30 @@ def main(argv):
             return drain_report(cur)
         if len(argv) > 2 and argv[2] == "allow":
             urls = [a for a in argv[3:] if a.startswith("https://")]
+            level = opt(argv, "--priority")
+            if level is not None and level not in ops.LEVELS:
+                print(f"--priority は {'・'.join(ops.LEVELS)} のどれか")
+                return 2
+            minp = ops.LEVELS[level][0] if level else None
             corrs = []
             for u in urls:
+                issue = drain.issue_corr(u)
+                if issue:   # Issue はチケットの correlation_id。デザインの線から実装・検査・judge まで同じ流れで通る（p0 の検証チケット）
+                    corrs.append(issue)
+                    continue
                 cur.execute("select correlation_id from artifacts where type='PR' and payload->>'pr_url'=%s order by id desc limit 1", (u,))
                 r = cur.fetchone()
                 if not r:
-                    print(f"工場の PR ではない: {u}")
+                    print(f"工場の PR でも Issue でもない: {u}")
                     return 2
                 corrs += [r["correlation_id"], f"committee:{u}"]   # 衝突の解消・検査・judge はチケットの、委員会は PR の correlation_id
-            if not urls or not drain.allow(cur, corrs, "factoryctl", opt(argv, "--reason", "")):
-                print("一時停止していない（流してよいものを足すのは一時停止の間だけ）" if urls else "PR の URL を渡す")
+            if not (urls or level) or not drain.allow(cur, corrs, "factoryctl", opt(argv, "--reason", ""), minp):
+                print("一時停止していない（流してよいものを足すのは一時停止の間だけ）" if urls or level else "PR か Issue の URL か --priority を渡す")
                 return 1
-            print(f"一時停止のまま流す: {len(urls)} 本（{' '.join(urls)}）")
+            if urls:
+                print(f"一時停止のまま流す: {len(urls)} 本（{' '.join(urls)}）")
+            if level:
+                print(f"一時停止のまま流す: 優先度 {level} 以上のチケットのジョブ")
             return drain_report(cur)
         changed = drain.set_drain(cur, True, "factoryctl", opt(argv, "--reason", ""))
         print("ラインを一時停止にした（順番待ちを取り出さない）" if changed else "すでに一時停止中")
@@ -965,6 +1039,8 @@ def main(argv):
         t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
         print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")
         return 0 if t else 1
+    elif cmd == "qa":
+        return qa_cmd(cur, argv)
     elif cmd == "swap":
         return swap_cmd(cur, argv)
     elif cmd == "desk":

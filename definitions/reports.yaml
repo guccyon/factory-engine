@@ -1,4 +1,6 @@
 # 定期レポートの中身（ADR 0032 の決定 9）。通知の種類は notifications.yaml。
+# 題は 工場の操業レポート（report.factory_health）・開発状況レポート（report.product）（2026-11-06 オーナー）。
+# 項目は叩き台として多めに出し、受け取る人と見ながら削る。見立て（順調か・兆候・打ち手）の閾値は組み立ての THRESHOLDS（仮置き）。
 # status: provisional は仮置き。中身を決めるタスクで書き換えて外す。
 # 節（sections）ごとに載せてよい組織（parties）を持ち、事業主の宛先に出すときは事業主に出せない節を落とす。
 # 組み立ては orchestrator/dispatcher/report_health.py など（節の id ごとの関数）。dispatcher のコンテナには definitions/ がないので節の一覧を写す（食い違いはテストで見る）
@@ -10,14 +12,16 @@ reports:
     period: day              # JST の 0〜24 時。前日の分を毎朝出す（後で頻度を落とすかもしれない）
     sections:
       - { id: line,  ja: ライン,     parties: [provider, business_owner] }   # 動いていた割合、停止の件数、戻るまでの時間、開いている停止
-      - { id: jobs,  ja: ジョブ,     parties: [provider, business_owner] }   # 終わったジョブの成否
+      - { id: jobs,  ja: ジョブ,     parties: [provider, business_owner] }   # 終わったジョブの成否、途中終了、使用量の上限、実行時間・待ち時間
+      - { id: ship,  ja: 出荷,       parties: [provider, business_owner] }   # マージした PR・閉じた PR・マージできた割合・切った版
       - { id: inbox, ja: 人の判断待ち, parties: [provider, business_owner] }   # 受信トレイに残っている件数、判断までの待ち時間
-      - { id: cost,  ja: 費用,       parties: [provider, business_owner] }   # API 単価に換算した消費、予算の上限で止まった時間（R5: 健康のレポートにだけ載せる）
+      - { id: cost,  ja: 費用,       parties: [provider, business_owner] }   # API 単価に換算した消費、PR 1 本あたり、トークン、予算の上限で止まった時間（R5: 操業レポートにだけ載せる）
   report.product:
     status: provisional      # 2026-11-05。ロードマップの進捗を工場のチケットから仮に出す（正式な中身は別のタスクで決める）
     period: day
     sections:
       - { id: roadmap,  ja: ロードマップ,   parties: [provider, business_owner] }   # チケットの済み・進行中・投入待ちの数と進み具合
+      - { id: pace,     ja: ペースと見込み, parties: [provider, business_owner] }   # 消化のペース、残り、終えるまでの見込み、リードタイム、滞り、増えた数
       - { id: done,     ja: 済んだもの,     parties: [provider, business_owner] }   # 期間に済んだチケットとマージした PR
       - { id: doing,    ja: 進めているもの, parties: [provider, business_owner] }   # 進行中のチケット
       - { id: next,     ja: 次に流すもの,   parties: [provider, business_owner] }   # 投入待ちのチケット（優先度の高い順）

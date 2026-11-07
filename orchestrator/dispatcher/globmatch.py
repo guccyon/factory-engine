@@ -1,4 +1,4 @@
-"""パスの glob（** は任意の深さ、* は / を含まない）。変更種別の写像（supervisor）と入れ替えの種類の判定（swap）が同じものを使う"""
+"""パスの glob（** は任意の深さ、* は / を含まない）。変更種別の写像（supervisor）と更新の種類の判定（swap）が同じものを使う"""
 from __future__ import annotations
 
 import re

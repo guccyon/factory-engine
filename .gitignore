@@ -6,5 +6,5 @@
 orchestrator/.env
 __pycache__/
 *.pyc
-# 手元の運用の値（予算・流量・通知先など。docker compose が自動で読む）。追跡しないので、build.sh と入れ替え役の「作業ツリーがきれい」の検査に数えない
+# 手元の運用の値（予算・流量・通知先など。docker compose が自動で読む）。追跡しないので、build.sh と更新役の「作業ツリーがきれい」の検査に数えない
 orchestrator/docker-compose.override.yml

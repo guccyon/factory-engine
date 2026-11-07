@@ -25,6 +25,8 @@ from psycopg.types.json import Jsonb
 
 import desk_line
 import plan_outcome
+import serialize
+import workflow_shadow
 
 # definitions/planner.yaml の labels・roles・asking と同じ値（dispatcher のコンテナには definitions/ がないので写す。食い違いはテストで見る）
 TRIGGER_LABEL, NEEDS_INFO_LABEL, ESCALATE_LABEL = "factory:plan", "factory:needs-info", "factory:plan-human"
@@ -72,6 +74,8 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                "size": p.get("size"), "oversize": result.get("oversize") or [], "tasks": result.get("tasks") or [], "phase": result.get("phase"),
                "requirements": result.get("requirements"), "stories": result.get("stories") or [],
                "model": result.get("model"), "cost_usd": result.get("cost_usd"), "num_turns": result.get("num_turns")}
+    if isinstance(result.get("workflow"), dict):   # ワークフローの宣言（ADR 0038）。決まりで直した後の形と、直した印
+        payload["workflow"], payload["workflow_marks"] = result["workflow"], result.get("workflow_marks") or []
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Plan',%s,%s,'plan',%s) returning id",
                 (corr, job_id, Jsonb(payload)))
     pid = cur.fetchone()["id"]
@@ -87,7 +91,8 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                                       "size": payload["size"], "oversize": payload["oversize"], "tasks": len(payload["tasks"]), "phase": payload["phase"],
                                       "requirements": bool(isinstance(req, dict) and req.get("acceptance_criteria")),
                                       "stories": [{"action": x.get("action"), "id": x.get("id")} for x in payload["stories"] if isinstance(x, dict)],
-                                      "versions": payload["versions"], "model": payload["model"], "cost_usd": payload["cost_usd"]})))
+                                      "versions": payload["versions"], "model": payload["model"], "cost_usd": payload["cost_usd"],
+                                      **({"workflow": workflow_summary(payload["workflow"]), "workflow_marks": payload["workflow_marks"]} if "workflow" in payload else {})})))
     return pid
 
 
@@ -186,6 +191,60 @@ def attach_sizes(cur, repo: str, inp: dict) -> dict:
     return {**(inp or {}), "size_table": table}
 
 
+INFLIGHT_LIMIT = 30
+
+
+def attach_context(cur, repo: str, corr: str, inp: dict) -> dict:
+    """プランナーの入力に、流れている・待っているタスクと触る（見込みの）ファイル、よく衝突するファイル、上限に当たった過去の事例を足す
+    （ADR 0038 の 4b。着手のしかた start を決める材料と、知見の蓄積）。制御プレーンの記録だけで組み立てる（GitHub を呼ばない）"""
+    out = dict(inp or {})
+    try:
+        cur.execute("select source_ref, title, state from tickets where source='github' and repo=%s and state in ('planned','active') "
+                    "order by updated_at desc limit %s", (repo, INFLIGHT_LIMIT))
+        rows = []
+        for t in cur.fetchall():
+            c = f"github:{t['source_ref']}"
+            if c == corr:
+                continue
+            _, _, n = t["source_ref"].partition("#")
+            rows.append({"issue": int(n) if n.isdigit() else n, "title": t["title"], "state": t["state"],
+                         "files": sorted(serialize.expected_files(cur, c, None))})
+        out["inflight"] = rows
+        out["hot_files"] = serialize.hot_files(cur)
+        out["cap_hits"] = workflow_shadow.cap_hits(cur, repo)
+    except Exception:  # noqa: BLE001  材料がなくても判定はできる
+        out.setdefault("inflight", [])
+    return out
+
+
+def workflow_summary(wf: dict) -> dict:
+    """plan.decided に載せる宣言の要約（飛ばすステップ・厚くするステップ・上限・着手のしかた・渡し先）"""
+    steps = [s for s in wf.get("steps") or [] if isinstance(s, dict)]
+    return {"path": wf.get("path"), "skip": [s["step"] for s in steps if s.get("run") is False],
+            "deep": [s["step"] for s in steps if s.get("run") is True and s.get("effort") == "deep"],
+            "caps": wf.get("caps") or {}, "start": (wf.get("start") or {}).get("mode"), "after": (wf.get("start") or {}).get("after") or [],
+            "handoff": wf.get("handoff") or {}}
+
+
+def workflow_lines(wf: dict | None, marks: list[str] | None = None) -> list[str]:
+    """Issue のコメントと factoryctl plan show に出す、ワークフローの宣言"""
+    if not isinstance(wf, dict):
+        return []
+    s = workflow_summary(wf)
+    caps = wf.get("caps") or {}
+    lines = ["", "ワークフローの宣言（ADR 0038。今は記録だけで、守らせていない）:"]
+    for st in wf.get("steps") or []:
+        run = {True: "動かす", False: "飛ばす", "auto": "条件で動く"}.get(st.get("run"), str(st.get("run")))
+        lines.append(f"- {st.get('step')}: {run}（{st.get('effort') or '-'}）{('。' + st['why']) if st.get('why') else ''}")
+    lines.append("- 上限: " + "、".join(f"{workflow_shadow.CAP_JA.get(k, k)} {v}" for k, v in caps.items() if not k.startswith(("quick.", "analysis."))))
+    if s["start"] == "after":
+        lines.append(f"- 着手: {' '.join(f'#{n}' for n in s['after'])} の後（{(wf.get('start') or {}).get('why') or ''}）")
+    lines.append(f"- 渡し先: 出荷 {s['handoff'].get('ship')}、Learn {s['handoff'].get('learn')}")
+    if marks:
+        lines.append("- 決まりで直したところ: " + "、".join(marks))
+    return lines
+
+
 PRE_IMPLEMENT_MARK = "split_after_design"
 
 
@@ -255,6 +314,7 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
         body += note
         if marks:
             body += ["", "見返すための印: " + _ja(marks)]
+        body += workflow_lines(result.get("workflow"), result.get("workflow_marks"))
         comment(repo, issue, "\n".join(body + ["", f"<sub>Plan {plan_id}</sub>"]))
         return
     if decision == "split" and gh and result.get("tasks"):

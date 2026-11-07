@@ -187,3 +187,13 @@ def test_hello_declares_scope(tmp_path, monkeypatch, calls):
 def test_gate_url_must_be_https():
     with pytest.raises(SystemExit):
         runner.Gate("http://127.0.0.1:8794")
+
+
+def test_child_env_ignores_owner_git_config(monkeypatch):
+    # launchd のランナーは保護フォルダにある ~/.gitconfig を読めずに落ちる（2026-11-06）。持ち主の設定を読ませない
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/Users/x/Documents/dotfiles/.gitconfig")
+    e = runner.child_env()
+    assert e["GIT_CONFIG_GLOBAL"] == os.devnull and e["GIT_CONFIG_NOSYSTEM"] == "1" and e["GIT_TERMINAL_PROMPT"] == "0"
+    assert e["PATH"] == os.environ["PATH"]
+    out = runner.run([sys.executable, "-c", "import os; print(os.environ['GIT_CONFIG_GLOBAL'])"])
+    assert out.decode().strip() == os.devnull

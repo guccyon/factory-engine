@@ -1,7 +1,7 @@
 # ADR 0035: 工場の前段に GitHub ログインを置く（パイロットの一時の囲い）
 
 - 状態: 承認（2026-11-05 オーナー。決定「まずは前段に proxy を置く方式。後で個別のエンドポイントに認証を入れるので取り外しやすく」。OAuth は Gen2 が始まってから仕様を考える）
-- 関係: ADR 0009（操業コンソール。決定 4 の閉じた網）、ADR 0030（事業部の窓口。決定 5 の認証と順番 5 のリモートの MCP と OAuth）、ADR 0034（決定 3 の Claude の入口、決定 7 の答えた人の確認、順番 6 のコンソールのログイン）、ADR 0031（入れ替え役）、factory-engine#178（悪用の防ぎ）
+- 関係: ADR 0009（操業コンソール。決定 4 の閉じた網）、ADR 0030（事業部の窓口。決定 5 の認証と順番 5 のリモートの MCP と OAuth）、ADR 0034（決定 3 の Claude の入口、決定 7 の答えた人の確認、順番 6 のコンソールのログイン）、ADR 0031（更新役）、factory-engine#178（悪用の防ぎ）
 
 ## 文脈
 
@@ -20,7 +20,7 @@
 ### 1. 前段は compose に重ねる別のファイル。工場のコードは変えない
 
 - `orchestrator/compose.edge.yaml` に、前段の 2 つのサービス（`edge` = Caddy、`oauth2-proxy`）と、前段から見える名前を足す環境変数の上書き（コンソール・窓口の開いてよいホスト名、プロトタイプの公開の URL、通知のリンク）だけを置く。`compose.yaml`・`console.py`・`desk_api.py` は変えない
-- 使うかどうかは `.env` の `COMPOSE_FILE=compose.yaml:compose.edge.yaml` で決める。入れ替え役（ADR 0031）の `docker compose up -d` も同じ `.env` を読むので、入れ替えで前段が落ちない
+- 使うかどうかは `.env` の `COMPOSE_FILE=compose.yaml:compose.edge.yaml` で決める。更新役（ADR 0031）の `docker compose up -d` も同じ `.env` を読むので、更新で前段が落ちない
 - 外すときは `COMPOSE_FILE` から抜いて `up -d --remove-orphans`。Mac の工場はこのファイルを使わない
 
 ### 2. 入口は 3 つのホスト名。ブラウザの入口だけにログインを置く
