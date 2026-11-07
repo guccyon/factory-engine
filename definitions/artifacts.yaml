@@ -116,9 +116,9 @@ types:
   Judgment:
     stage: [implement, verify, govern]
     required: [stage, category, taxonomy_version, question, decision, evidence, interpretation, score, decided_by]
-    optional: [alternatives, impact, mode, pr_url, human_grade, judged_by, verdict]
+    optional: [alternatives, impact, mode, pr_url, human_grade, judged_by, verdict, recommend, recommended_replacement]
     stage_values: [provisional, judged, graded]
-    note: "判断の記録（ADR 0006）。根拠・解釈・スコアの 3 層。類型と版は definitions/judgments.yaml。Question（人に問い返して止まる）の代わりに、ワーカーは仮決めして続ける"
+    note: "判断の記録（ADR 0006）。根拠・解釈・スコアの 3 層。類型と版は definitions/judgments.yaml。Question（人に問い返して止まる）の代わりに、ワーカーは仮決めして続ける。judge が人に回した（verdict=escalate）ものは recommend（judge の推奨）と recommended_replacement を持ち、受信トレイで答えると human_grade に decision・note・by・via が入る（ADR 0034）"
   Stoppage:
     stage: govern
     required: [key, category, what, started_at, detected_by]

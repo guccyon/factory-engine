@@ -190,6 +190,14 @@ events:
     source: approval_log
     required: [artifact_id, category, stage, mode, grade]
     note: "factoryctl judgment grade。人の採点（agree | disagree）。類型ごとの一致率（track_record）の材料"
+  judgment.decided:
+    source: approval_log
+    required: [artifact_id, pr_url, decision, by, via]
+    note: "ADR 0034。judge が人に回した判断（verdict=escalate）に人が答えた（受信トレイの judgment:<id>）。decision は keep | replace | change（仮決め）、fix | dismiss | change（検査の指摘）。fix は続きのジョブに渡す指摘の形（直さない答えは null）。人の判断は Judgment の human_grade にも残し、同じ PR の次の judge が引き継ぐ。一致率（judgment.graded）には数えない"
+  judgment.fix_enqueued:
+    source: control_plane
+    required: [pr_url, head_sha, job_id, decided]
+    note: "ADR 0034。人が直す答えを出した判断（judgment.decided の id の並び decided）を、同じ担当の続きのジョブ（review_fix）に渡した。人の求めた直しは続きの上限で切らない"
   desk.token_issued:
     source: control_plane
     required: [name, role, products, by]
