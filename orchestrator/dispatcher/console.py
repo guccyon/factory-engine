@@ -456,6 +456,12 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 @media(max-width:560px){.dt{grid-template-columns:1fr}.dt dd{margin-bottom:4px}}
 .ans{margin-top:4px}.ans input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(320px,100%)}.ans.done{color:var(--ok);font-size:12px}.ib li.answered{opacity:.7}
 .ch:target,.rel:target,#ship:target{outline:2px solid var(--accent);outline-offset:2px}
+.zm{display:block;cursor:zoom-in}
+#zoom{position:fixed;inset:0;z-index:10;background:#0f1115;display:flex;flex-direction:column}#zoom[hidden]{display:none}
+#zoom .bar{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#e6e9ef;font-size:13px}#zoom .bar .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#zoom .bar a,#zoom .bar button{font:inherit;font-size:12px;padding:4px 10px;border:1px solid #4b5563;border-radius:6px;background:transparent;color:#e6e9ef;text-decoration:none;cursor:pointer}
+#zoom .vp{flex:1;overflow:auto;display:flex;padding:0 12px 12px}#zoom img{margin:0 auto auto;max-width:100%;background:#fff;border-radius:4px;cursor:zoom-out}
+#zoom.fit img{margin:auto;max-height:100%;cursor:zoom-in}
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 </style></head><body>
 <header><h1>工場の操業コンソール</h1><button id="bell" aria-expanded="false" aria-controls="inbox" title="受信トレイ: 人が対応するもの"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>受信トレイ <span class="n" id="bell-n">0</span></button><a class="stat" href="/usage" title="トークンの消費と費用">使用量</a><span id="hdr"></span></header>
@@ -465,6 +471,7 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 <section id="runners"></section>
 <section id="choices"></section>
 <main id="lanes"></main><div id="msg"></div>
+<div id="zoom" hidden role="dialog" aria-modal="true" aria-label="画面の拡大"><div class="bar"><span class="t" id="zoom-t"></span><button data-zm="-1" title="前の画面（←）">←</button><button data-zm="1" title="次の画面（→）">→</button><button data-zm="fit" title="幅に合わせる・全体を見る（画像のクリックでも切り替え）" id="zoom-fit">全体を見る</button><a id="zoom-tab" href="#" target="_blank" rel="noopener">別タブで開く</a><button data-zm="close" title="閉じる（Esc）">閉じる</button></div><div class="vp"><img id="zoom-img" alt=""></div></div>
 <script>
 const TOKEN="__TOKEN__";
 const LANES=[["human","人の出番"],["running","作業中"],["queued","順番待ち"],["ready","投入待ち（上限）"],["waiting","依存待ち"],["review","検査・判定・マージ待ち"],["done","今日の済み"]];
@@ -524,7 +531,7 @@ const KIND={design_variants:"画面の体験の案の選択",design_look:"画面
 function choicesView(cs){return cs.map(c=>{const sub=c.subject||{};
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))return `<div class="ch"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${c.options.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで判断する</a></div></div>`;
  const exit=c.kind==="exit_capture";
- const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<img loading="lazy" alt="${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}">`:""}
+ const opts=c.options.map(o=>`<div class="opt ${o.id===c.recommended?"rec":""}">${o.image_key?`<a class="zm" href="/api/choices/${c.id}/image/${esc(o.id)}" target="_blank" rel="noopener" title="押すと拡大（別タブは ⌘/Ctrl＋クリック）"><img loading="lazy" alt="${esc(o.id)}. ${esc(o.label)}" src="/api/choices/${c.id}/image/${esc(o.id)}"></a>`:""}
   <div class="t">${esc(o.id)}. ${esc(o.label)}${o.id===c.recommended?' <span class="m">（推奨）</span>':""}</div><div class="m">${esc(o.note)}</div>
   <div class="acts">${exit?`<input data-fnote="${c.id}" data-o="${esc(o.id)}" placeholder="この画面の違和感を一言（Enter で送る）" maxlength="300">`:`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感を送る</button></div></div>`).join("");
  const tail=exit?`<span class="m">違和感は画面ごとの欄に一言書いて「違和感を送る」（例: 余白が詰まって見える）。全部見終えたら</span><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button>`
@@ -597,6 +604,19 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]")
 document.getElementById("bell").addEventListener("click",()=>{const p=document.getElementById("inbox"),b=document.getElementById("bell");p.hidden=!p.hidden;b.setAttribute("aria-expanded",String(!p.hidden));
  try{localStorage.setItem("inbox-open",p.hidden?"0":"1")}catch(e){}});
 try{if(localStorage.getItem("inbox-open")==="1"){document.getElementById("inbox").hidden=false;document.getElementById("bell").setAttribute("aria-expanded","true")}}catch(e){}
+// 画面の拡大（11-07）。案の画像を押すとその場で幅いっぱいに出す（縦長はスクロール）。押すと全体、← → で同じ問いの他の案へ、Esc で閉じる。⌘/Ctrl＋クリックは別タブ
+let zl=[],zi=0;const Z=document.getElementById("zoom");
+function zshow(){const a=zl[zi];if(!a)return;const g=a.querySelector("img");document.getElementById("zoom-img").src=a.href;document.getElementById("zoom-img").alt=g.alt;
+ document.getElementById("zoom-t").textContent=`${g.alt}（${zi+1} / ${zl.length}）`;document.getElementById("zoom-tab").href=a.href}
+const zfit=on=>{Z.classList.toggle("fit",on);document.getElementById("zoom-fit").textContent=on?"幅に合わせる":"全体を見る"};
+function zclose(){Z.hidden=true;zfit(false);document.getElementById("zoom-img").removeAttribute("src")}
+document.addEventListener("click",e=>{const a=e.target.closest("a.zm");if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button)return;e.preventDefault();
+ zl=[...a.closest(".opts").querySelectorAll("a.zm")];zi=zl.indexOf(a);zfit(false);Z.hidden=false;zshow();Z.querySelector(".vp").scrollTop=0});
+Z.addEventListener("click",e=>{const b=e.target.closest("[data-zm]");
+ if(e.target.id==="zoom-img"||(b&&b.dataset.zm==="fit"))return zfit(!Z.classList.contains("fit"));
+ if(b&&b.dataset.zm==="close"||e.target.classList.contains("vp"))return zclose();
+ if(b){zi=(zi+Number(b.dataset.zm)+zl.length)%zl.length;zshow();Z.querySelector(".vp").scrollTop=0}});
+document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape")zclose();else if(e.key==="ArrowRight"||e.key==="ArrowLeft"){zi=(zi+(e.key==="ArrowRight"?1:-1)+zl.length)%zl.length;zshow();Z.querySelector(".vp").scrollTop=0}});
 load();setInterval(load,10000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
 </script></body></html>"""
 
