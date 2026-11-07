@@ -220,8 +220,40 @@ events:
     note: "ADR 0030。問い合わせへの回答（根拠と、分からないことの欄を payload に。順番 4 の回答役から）"
   desk.closed:
     source: control_plane
-    required: [conversation_id, by]
-    note: "ADR 0030。相談を閉じた"
+    required: [conversation_id, by, reason]
+    note: "ADR 0030・0039。会話を終えた。reason は accepted（受け取った）| declined（断りに納得）| superseded（別案へ）| withdrawn（依頼者の取り下げ）| handed_off（チケット化で渡した）。from は終える前の状態、note は依頼者の一言、record は閉じたときの記録（ADR 0039 の決定 7: path・sec_first_reply・sec_routed・sec_delivered・cost_usd・rounds・follow_ups・reroutes・outcome・derived_from・superseded_by）。取り下げで止めたジョブは cancelled_jobs"
+  desk.routed:
+    source: control_plane
+    required: [conversation_id, from, state]
+    note: "ADR 0039 の決定 2・8。振り分けた。対応の種類（path）・ワークフローの宣言・見込み・確認の段を payload に。確認を飛ばすときも必ず残す"
+  desk.confirm_requested:
+    source: control_plane
+    required: [conversation_id, from, state]
+    note: "ADR 0039。確認の段が要る振り分けを依頼者に見せた（受信トレイの件）"
+  desk.confirmed_run:
+    source: control_plane
+    required: [conversation_id, from, state]
+    note: "ADR 0039。依頼者が確認したので実行に進めた（read の段は確認なしで進む）"
+  desk.progress:
+    source: control_plane
+    required: [conversation_id]
+    note: "ADR 0039 の決定 3。長くかかる実行の途中の様子（今どこまで・あとどれくらい）"
+  desk.delivered:
+    source: control_plane
+    required: [conversation_id, from, state]
+    note: "ADR 0039 の決定 5。提出した（成果物の参照・所見の要約）。受取確認を待つ。断りの提出も含む"
+  desk.received:
+    source: control_plane
+    required: [conversation_id, answer, by]
+    note: "ADR 0039 の決定 5。依頼者の受取確認。answer は accept（受け取った）| more（続き）| return（差し戻す。一言が要る）"
+  desk.declined:
+    source: control_plane
+    required: [conversation_id, reason]
+    note: "ADR 0039 の決定 4。どの対応の種類にも当てはまらないので断った。理由（決まった語）と代わりの案"
+  desk.handed_off:
+    source: control_plane
+    required: [conversation_id, tickets]
+    note: "ADR 0039 の決定 1。チケット化で起票し、製品のライン（Issue → PR）に渡した。会話は handed_off で終わる"
   desk.drafted:
     source: control_plane
     required: [conversation_id, draft_id, status, tasks]

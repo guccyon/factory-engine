@@ -270,10 +270,12 @@ docker compose exec dispatcher factoryctl hold 12
 - 直したいところは下書きに返事を書けば出し直す（古い下書きは確認できない）。確認した相談には書けない（新しく開く）
 - 窓口の枠は流量の宣言の `desk`（`factoryctl line scale --desk N`、既定 `DESK_PARALLEL=1`）。ラインの一時停止中も相談には答え、ラインのワーカーを奪わない。相談 1 件の費用は `DESK_CONSULT_MAX_USD`（既定 $2、仮置き）まで
 - 問い合わせ（`kind: inquiry`）の回答役は順番 4 で入る。それまでは開いた問い合わせは `open` のまま残り、運用主が `factoryctl desk list` で拾う
-- GitHub の Issue で clarify まで済んだ依頼（`factory:clarified`）は `factoryctl desk from-issue owner/repo#番号` で窓口の依頼として開き直せる
+- GitHub の Issue で clarify まで済んだ依頼（`factory:clarified`）は `factoryctl desk from-issue owner/repo#番号` で窓口の依頼として開き直せる（会話の `source_ref` に Issue の URL）
+- 単発の依頼のループ（ADR 0039 の順番 1、`postgres/init/006_desk_loop.sql`）: 会話の状態に `routed`（振り分けた）・`awaiting_confirm`（確認待ち）・`running`（実行中）・`delivered`（提出した。受取確認待ち）・`accepted`（依頼者が受け取った）・`handed_off`（チケット化で製品のラインに渡した）を足した。状態を進めるのは dispatcher だけ（`desk.advance`。向きは `desk.TRANSITIONS`）で、終わり方は `desk.finish` を通り、閉じる理由（`accepted`・`declined`・`superseded`・`withdrawn`・`handed_off`）と、閉じたときの記録（対応の種類・最初の返事／振り分け／提出までの秒・費用・往復・結末）を `desk.closed` に残す。チケット化は起票した時点で `handed_off` で終わる。依頼者が閉じると取り下げ（`withdrawn`）で、動いているジョブを止める。断りから別案として開いた依頼は `derived_from` で元と結ぶ。振り分けた後の依頼者の言い足しは記録だけ（相談役に回し直さない）
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/006_desk_loop.sql   # 単発の依頼のループの状態と列（冪等。足すだけ）
 docker compose up -d --build desk
 docker compose exec dispatcher factoryctl desk token create builder --role operator     # トークンはこのときだけ出る
 T=fdk_...   # 出たトークン
