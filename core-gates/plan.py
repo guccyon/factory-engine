@@ -7,6 +7,8 @@
   タスクのまとまり（desk_consult の tasks）に切る。プロダクトデザイナーが前にいる経路は、画面が決まってから（実装の手前の判定で）切る
 - エージェントの答えに重ねる決定論は安全のための最小限（guards）だけ。よくある例との食い違いは advisories として印を付けるだけで経路は変えない
 - 根拠は 3 層（根拠・解釈・確信度）と、とらなかった経路と理由、入力の版（Engine・製品のコミット、定義の版）で残す
+- 型つきの上流の成果物（P4 の typed_upstream）: 着手できるなら、要件（Requirements）と、このタスクが増やす・変える・守るユーザーストーリーを出す。
+  ストーリーの id は製品の specs/stories/ と決定論で突き合わせる（planner.yaml の upstream）
 - 材料は一時ディレクトリに写してから読ませる。読むだけで、何も書かない
 
 使い方:
@@ -19,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,15 +38,31 @@ BANDS_ORDER = ["S", "M", "L", "XL"]
 MAX_TEXT = 20000
 
 
+def story_ids(repo_dir: Path | None) -> list[str]:
+    """製品の specs/stories/ にあるユーザーストーリーの id（type: UserStory のファイルだけ）"""
+    d = repo_dir / "specs" / "stories" if repo_dir else None
+    if not d or not d.is_dir():
+        return []
+    ids = []
+    for p in sorted(d.glob("*.y*ml")):
+        try:
+            doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError):
+            continue
+        if isinstance(doc, dict) and doc.get("type") == "UserStory" and isinstance(doc.get("id"), str):
+            ids.append(doc["id"])
+    return ids
+
+
 def facts(repo_dir: Path | None) -> dict:
-    """製品のリポジトリから決定論で読める事実（デザインシステムの有無と、知見の置き場の有無）"""
+    """製品のリポジトリから決定論で読める事実（デザインシステムの有無、知見の置き場の有無、ユーザーストーリーの id）"""
     if not repo_dir:
-        return {"has_design_system": False, "design_files": [], "has_knowledge": False}
+        return {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": []}
     d = repo_dir / "specs" / "design"
     files = sorted(str(p.relative_to(repo_dir)) for p in d.rglob("*") if p.is_file()) if d.is_dir() else []
     has_tokens = any("token" in Path(f).name for f in files)
     return {"has_design_system": has_tokens, "design_files": files[:50],
-            "has_knowledge": (repo_dir / ".factory-config" / "knowledge").is_dir()}
+            "has_knowledge": (repo_dir / ".factory-config" / "knowledge").is_dir(), "story_ids": story_ids(repo_dir)}
 
 
 def desk_defs() -> dict:
@@ -53,7 +72,7 @@ def desk_defs() -> dict:
 def schema(defs: dict) -> dict:
     import desk_consult   # タスクのまとまりの型は窓口の相談役と同じ（ADR 0036 の 2）
     import workflow       # ワークフローの宣言（ADR 0038）
-    a, roles = defs["asking"], list(defs["roles"])
+    a, roles, u = defs["asking"], list(defs["roles"]), defs["upstream"]
     layers = [x["layer"] for x in defs["sizing"]["layers"]] + ["other"]
     step = {"type": "object", "properties": {
         "role": {"type": "string", "enum": roles},
@@ -84,11 +103,23 @@ def schema(defs: dict) -> dict:
             "basis": {"type": "string"}},
             "required": ["layers", "turns_band", "basis"]},
         "tasks": desk_consult.schema(desk_defs())["properties"]["tasks"],
+        "requirements": {"type": "object", "properties": {
+            "acceptance_criteria": {"type": "array", "maxItems": u["requirements"]["max_acceptance"], "items": {"type": "string"}},
+            "non_goals": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
+            "success_definition": {"type": "string"}},
+            "required": list(u["requirements"]["required"])},
+        "stories": {"type": "array", "maxItems": u["max_stories"], "items": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": list(u["story_actions"])},
+            "id": {"type": "string"},
+            "why": {"type": "string"},
+            "title": {"type": "string"},
+            "actor": {"type": "string"}},
+            "required": ["action", "id", "why"]}},
         "workflow": workflow.schema(workflow.load()),
         "interpretation": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
         "required": ["ready", "steps", "design_scale", "design_direction_given", "summary", "alternatives", "questions",
-                     "evidence", "interpretation", "confidence"]}
+                     "evidence", "interpretation", "confidence", "requirements", "stories"]}
 
 
 NO_DESIGN_SYSTEM_QUESTION = {
@@ -184,6 +215,51 @@ def size_check(out: dict, decision: str, roles: list[str], defs: dict, phase: st
     return "split", ["oversized"], [], tasks
 
 
+STORY_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def texts(v) -> list[str]:
+    return [x.strip() for x in v if isinstance(x, str) and x.strip()] if isinstance(v, list) else []
+
+
+def upstream(out: dict, f: dict, decision: str, scale: str, defs: dict) -> tuple[dict | None, list[dict], list[str]]:
+    """型つきの上流の成果物（typed_upstream）を整える。返り値は (要件, ストーリーの宣言, 印)。着手できる判定（ready・split）だけで出す
+    - 要件: 受け入れ条件が 1 つもなければ出さない（印 no_requirements）
+    - ストーリー: id の形が誤ったもの・知らない作用は落とす。変える・守るで製品にない id は落とす（印 unknown_story）。
+      増やすで製品にもう id があれば変えるにする（印 story_exists）。画面を含むのに 1 本もなければ印 no_stories"""
+    if decision not in ("ready", "split"):
+        return None, [], []
+    u, marks = defs["upstream"], []
+    r = out.get("requirements") if isinstance(out.get("requirements"), dict) else {}
+    ac = texts(r.get("acceptance_criteria"))[:u["requirements"]["max_acceptance"]]
+    req = None
+    if ac:
+        req = {"acceptance_criteria": ac, "non_goals": texts(r.get("non_goals")),
+               "success_definition": (r.get("success_definition") or "").strip() if isinstance(r.get("success_definition"), str) else ""}
+    else:
+        marks.append("no_requirements")
+    known, seen, stories = set(f.get("story_ids") or []), set(), []
+    for s in out.get("stories") or []:
+        if not isinstance(s, dict) or s.get("action") not in u["story_actions"] or not STORY_ID.match(str(s.get("id") or "")) or s["id"] in seen:
+            continue
+        action = s["action"]
+        if action == "add" and s["id"] in known:
+            action, marks = "change", marks + ["story_exists"]
+        elif action != "add" and s["id"] not in known:
+            marks.append("unknown_story")
+            continue
+        seen.add(s["id"])
+        item = {"action": action, "id": s["id"], "why": str(s.get("why") or "").strip()}
+        if action == "add":
+            item.update({k: str(s[k]).strip() for k in ("title", "actor") if isinstance(s.get(k), str) and s[k].strip()})
+        stories.append(item)
+        if len(stories) >= u["max_stories"]:
+            break
+    if not stories and scale in ("screen", "feature"):
+        marks.append("no_stories")
+    return req, stories, sorted(set(marks), key=marks.index)
+
+
 def git_head(path: Path | None) -> str | None:
     if not path or not (path / ".git").exists():
         return None
@@ -197,7 +273,7 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
             "prompt": PROMPT_VERSION}
 
 
-PROMPT_VERSION = "7"   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "8"   # 問いの文を変えたら上げる（判断の入力の版として残す）
 
 
 def phase_note(inp: dict) -> str:
@@ -225,6 +301,9 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
     layers = "、".join(x["layer"] for x in sz["layers"]) + "、other"
     bands = "、".join(f"{k}（〜{v}）" for k, v in sz["bands"].items()) + f"、XL（{list(sz['bands'].values())[-1]} より多い）"
     kinds = "、".join(f"{k}（{v['ja']}）" for k, v in desk_defs()["task_kinds"].items())
+    u = defs["upstream"]
+    actions = "、".join(f"{k}（{v}）" for k, v in u["story_actions"].items())
+    sids = "、".join(f.get("story_ids") or []) or "（まだない）"
     import workflow
     workflow_section = workflow.prompt_section(workflow.load())
     return f"""あなたは仮想開発事業部のプランナーです。入ってきたチケットを読み、着手できるかと、どの役をどの順で通すかを決めます。
@@ -235,6 +314,7 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
 - comments.md: これまでのコメント（工場からの問いと、起票者の返事）
 - specs/: 製品の規範（デザインシステムは {ds}。glossary.yaml が用語集）
 - knowledge/: 製品の知見（あれば。プロダクトの既定が入っている）
+- specs/stories/: 製品のユーザーストーリー（1 本 1 ファイル。いまある id: {sids}。actors.yaml が利用者の種類）
 - sizes.md: この製品の実績の表（層の組ごとの、変わったファイルの数とターンの中央値。工場が過去の PR から数えたもの）
 - inflight.md: いま流れている・待っているタスクと、それが触る（見込みの）ファイル、よく衝突するファイル（工場の記録から）
 - caps.md: この製品で上限に当たった過去の事例（同じ外れを繰り返さないための材料）
@@ -272,6 +352,12 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
   key は t1, t2, … 、kind は {kinds} から、depends_on で依存を付ける（契約 → backend → 画面 の順）。やること（do）と受け入れ条件（acceptance）は
   もとのチケットの範囲を分けて書き、全体で漏れがないようにする。プロダクトデザイナーかデザインシステムのデザイナーが実装役の前にいるときは、
   画面が決まってから切るので tasks は空でよい。基準に当たらなければ tasks は空にする
+- requirements: 着手できるときの要件。acceptance_criteria（受け入れ条件。利用者や API の利用者から見て確かめられる文で、{u['requirements']['max_acceptance']} 個まで）、
+  non_goals（このチケットでやらないこと）、success_definition（できあがったと言える状態を 1 文で）。チケットに書いてあることを整えるだけで、中身を足さない。
+  着手できないときは空でよい
+- stories: このタスクが触るユーザーストーリー（{u['max_stories']} 本まで）。action は {actions}。
+  change・keep は specs/stories/ にある id をそのまま書く。add は新しい id（英小文字と -）と、title（「<誰が>が<何>できる」）・actor（actors.yaml の id）も書く。
+  why にこのタスクとの関係を 1 文で。画面や利用者の流れに触るなら、少なくとも守るストーリーを探す。流れに関係しない変更なら空でよい
 {workflow_section}- 3 層で書く: evidence（根拠: 見たファイルと箇所）、interpretation（どう読んでその判断にしたか）、confidence（0〜1）
 - 日本語の平易な文で。識別子はそのまま
 """
@@ -347,13 +433,15 @@ def plan(issue: dict, inp: dict, defs: dict, repo_dir: Path | None) -> dict:
             out["steps"] = impl
     decision, steps, guards, marks = decide(out, f, round_, defs)
     decision, g2, m2, tasks = size_check(out, decision, steps, defs, inp.get("phase"))
-    guards, marks = guards + g2, marks + m2
+    req, stories, m3 = (None, [], []) if inp.get("phase") == "implement" else \
+        upstream(out, f, decision, out.get("design_scale") if out.get("design_scale") in defs["design_scales"] else "none", defs)
+    guards, marks = guards + g2, marks + m2 + m3
     import workflow   # ワークフローの宣言（ADR 0038）。順番 1 は記録だけで、判断（decision）は変えない
     sz = out.get("size") if isinstance(out.get("size"), dict) else {}
     wf, wf_marks = workflow.normalize(out.get("workflow"), steps, out.get("steps") or [], out.get("expected_files") or [],
                                       sz.get("turns_band"), workflow.load())
     return {"workflow": wf, "workflow_marks": wf_marks, "decision": decision, "steps": steps, "guards": guards, "advisories": marks, "round": round_, "facts": f,
-            "tasks": tasks, "oversize": oversize(out, defs), "phase": inp.get("phase"),
+            "tasks": tasks, "requirements": req, "stories": stories, "oversize": oversize(out, defs), "phase": inp.get("phase"),
             "versions": versions(defs, repo_dir), "plan": out,
             "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns}
 

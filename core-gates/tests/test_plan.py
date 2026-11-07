@@ -71,7 +71,7 @@ def test_versions_reads_git_heads(tmp_path):
 
 def test_facts(tmp_path):
     assert pl.facts(None)["has_design_system"] is False
-    assert pl.facts(tmp_path) == {"has_design_system": False, "design_files": [], "has_knowledge": False}
+    assert pl.facts(tmp_path) == {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": []}
     (tmp_path / "specs" / "design").mkdir(parents=True)
     (tmp_path / "specs" / "design" / "README.md").write_text("x")
     assert pl.facts(tmp_path)["has_design_system"] is False      # トークンがなければ、まだない
@@ -87,7 +87,11 @@ def test_schema_matches_definitions():
     assert s["steps"]["items"]["properties"]["effort"]["enum"] == list(DEFS["efforts"])
     assert "alternatives" in pl.schema(DEFS)["required"]
     assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized"}
-    assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design"}
+    assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design",
+                                       "no_requirements", "no_stories", "unknown_story", "story_exists"}
+    assert s["stories"]["items"]["properties"]["action"]["enum"] == list(DEFS["upstream"]["story_actions"]) == ["add", "change", "keep"]
+    assert s["requirements"]["required"] == DEFS["upstream"]["requirements"]["required"]
+    assert {"requirements", "stories"} <= set(pl.schema(DEFS)["required"])
     assert s["size"]["properties"]["layers"]["items"]["enum"] == [x["layer"] for x in DEFS["sizing"]["layers"]] + ["other"]
     assert s["tasks"]["items"]["required"][:3] == ["key", "title", "kind"]   # 窓口の相談役と同じ型
     assert set(s["design_scale"]["enum"]) == set(DEFS["design_scales"])
@@ -101,6 +105,8 @@ def test_plan_stages_reads_and_decides(tmp_path, monkeypatch):
     (repo / "specs" / "shot.png").write_bytes(b"x")
     (repo / ".factory-config" / "knowledge").mkdir(parents=True)
     (repo / ".factory-config" / "knowledge" / "k1.yaml").write_text("id: k1\n")
+    (repo / "specs" / "stories").mkdir()
+    (repo / "specs" / "stories" / "coach-replies.yaml").write_text("type: UserStory\nid: coach-replies\n")
     seen = {}
 
     def fake(step, prompt, *, schema=None, tier=None, max_turns=3, retries=3):
@@ -109,7 +115,9 @@ def test_plan_stages_reads_and_decides(tmp_path, monkeypatch):
         seen["comments"] = Path("comments.md").read_text(encoding="utf-8")
         seen["sizes"] = Path("sizes.md").read_text(encoding="utf-8")
         return agent_runner.Result(output={**O(steps=["implement"], scale="small"), "summary": "s", "evidence": [], "interpretation": "i",
-                                           "size": {"layers": ["web"], "turns_band": "S", "basis": "b"}},
+                                           "size": {"layers": ["web"], "turns_band": "S", "basis": "b"},
+                                           "requirements": {"acceptance_criteria": ["一覧に項目が出る"], "non_goals": [], "success_definition": "出る"},
+                                           "stories": [{"action": "keep", "id": "coach-replies", "why": "一覧の隣の流れ"}]},
                                    cost_usd=0.05, model="m")
 
     monkeypatch.setattr(agent_runner, "run", fake)
@@ -124,6 +132,8 @@ def test_plan_stages_reads_and_decides(tmp_path, monkeypatch):
     assert (out["decision"], out["steps"], out["guards"], out["advisories"], out["round"]) == ("ready", ["implement"], [], [], 2)
     assert out["cost_usd"] == 0.05 and out["versions"]["prompt"] == pl.PROMPT_VERSION and out["versions"]["product"] is None
     assert "よくある並びの例（縛りではない" in seen["prompt"] and "alternatives" in seen["prompt"]
+    assert "いまある id: coach-replies" in seen["prompt"] and "specs/stories/coach-replies.yaml" in seen["files"]
+    assert out["requirements"]["acceptance_criteria"] == ["一覧に項目が出る"] and out["stories"] == [{"action": "keep", "id": "coach-replies", "why": "一覧の隣の流れ"}]
 
 
 def test_main_writes_result(tmp_path, monkeypatch):
@@ -190,3 +200,55 @@ def test_pre_implement_phase_keeps_only_the_implementer(tmp_path, monkeypatch):
     assert "実装の手前の判定" in seen["prompt"] and "pull/9" in seen["prompt"] and "t1 にし" in seen["prompt"]
     out = pl.plan({"title": "t", "body": "b"}, {}, DEFS, None)
     assert out["steps"] == ["ui_design", "implement"] and "実装の手前の判定" not in seen["prompt"]
+
+
+# ------------------------------------------------------------------ 型つきの上流の成果物（P4 の typed_upstream）
+def test_story_ids_reads_only_user_stories(tmp_path):
+    d = tmp_path / "specs" / "stories"
+    d.mkdir(parents=True)
+    (d / "actors.yaml").write_text("actors: []\n")
+    (d / "a.yaml").write_text("type: UserStory\nid: a-flow\n")
+    (d / "b.yaml").write_text(": : broken\n  - [")
+    (d / "README.md").write_text("x")
+    assert pl.story_ids(tmp_path) == ["a-flow"] and pl.story_ids(None) == []
+
+
+REQ = {"acceptance_criteria": ["  通知が届く ", ""], "non_goals": ["メール"], "success_definition": "届く"}
+KNOWN = {"story_ids": ["coach-replies", "cs-traces"]}
+
+
+@pytest.mark.parametrize("stories,scale,want_ids,want_marks", [
+    ([{"action": "keep", "id": "coach-replies", "why": "w"}], "screen", [("keep", "coach-replies")], []),
+    ([{"action": "add", "id": "student-gets-reminder", "why": "w", "title": "生徒が前日に知らせを受け取れる", "actor": "student"}], "feature",
+     [("add", "student-gets-reminder")], []),
+    ([{"action": "change", "id": "nope", "why": "w"}], "small", [], ["unknown_story"]),                      # 製品にない id は落とす
+    ([{"action": "add", "id": "cs-traces", "why": "w"}], "small", [("change", "cs-traces")], ["story_exists"]),   # もうある id を増やす → 変える
+    ([{"action": "keep", "id": "Coach Replies", "why": "w"}, {"action": "bogus", "id": "cs-traces", "why": "w"}], "none", [], []),   # 形が誤ったもの
+    ([{"action": "keep", "id": "coach-replies", "why": "w"}, {"action": "change", "id": "coach-replies", "why": "w"}], "none",
+     [("keep", "coach-replies")], []),                                                                            # 同じ id は 1 度だけ
+    ([], "screen", [], ["no_stories"]),
+    ([], "none", [], []),                                                                                        # 流れに関係しない変更
+])
+def test_upstream_stories(stories, scale, want_ids, want_marks):
+    req, st, marks = pl.upstream({"requirements": REQ, "stories": stories}, KNOWN, "ready", scale, DEFS)
+    assert req == {"acceptance_criteria": ["通知が届く"], "non_goals": ["メール"], "success_definition": "届く"}
+    assert [(x["action"], x["id"]) for x in st] == want_ids and marks == want_marks
+    if want_ids and want_ids[0][0] == "add":
+        assert st[0]["title"].startswith("生徒が") and st[0]["actor"] == "student"
+
+
+def test_upstream_only_when_ready_and_marks_missing_requirements():
+    assert pl.upstream({"requirements": REQ, "stories": []}, KNOWN, "ask", "screen", DEFS) == (None, [], [])
+    req, st, marks = pl.upstream({"stories": [{"action": "keep", "id": "cs-traces", "why": "w"}]}, KNOWN, "split", "none", DEFS)
+    assert req is None and marks == ["no_requirements"] and st[0]["id"] == "cs-traces"
+
+
+def test_pre_implement_phase_does_not_reissue_upstream(monkeypatch):
+    monkeypatch.setattr(agent_runner, "run", lambda *a, **k: agent_runner.Result(
+        output={**SZ(steps=("ui_design", "implement")), "design_direction_given": True, "summary": "s", "evidence": [], "interpretation": "i",
+                "requirements": REQ, "stories": []},
+        cost_usd=0.0, model="m"))
+    out = pl.plan({"title": "t", "body": "b"}, {"phase": "implement"}, DEFS, None)
+    assert out["requirements"] is None and out["stories"] == [] and "no_stories" not in out["advisories"]
+    out = pl.plan({"title": "t", "body": "b"}, {}, DEFS, None)
+    assert out["requirements"]["acceptance_criteria"] == ["通知が届く"] and "no_stories" in out["advisories"]
