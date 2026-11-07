@@ -54,6 +54,10 @@ def test_render_links_and_mentions(monkeypatch):
     md = notify_inbox.render(b, "github-issue")
     assert "[予約の画面](https://example.com/review/1)（2 時間 0 分待ち）" in md and "[案の選択](http://localhost:8790/#choice-3)" in md
     assert "<@U1>" not in md
+    assert "`choice:3`" not in md and "手元の Claude" not in md            # 答え方のない件には key も Claude の案内も付けない
+    b[1][0]["answer"] = {"type": "choose", "options": []}
+    md = notify_inbox.render(b, "github-issue")
+    assert "— 案を選ぶ `choice:3`" in md and "`task:r`" not in md and "手元の Claude からも答えられる" in md   # ADR 0034 の順番 2
     sl = notify_inbox.render(b, "slack")
     assert "<@U1> プロダクトオーナー: <https://example.com/review/1|予約の画面>" in sl
 

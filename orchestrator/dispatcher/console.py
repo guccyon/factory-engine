@@ -581,7 +581,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-pair
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-runner]");if(!b)return;
  if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと外す";setTimeout(()=>{b.classList.remove("armed");b.textContent="外す"},4000);return}
  post(`/api/runners/${b.dataset.runner}/uninstall`,{reason:"操業コンソール"})});
-document.addEventListener("keydown",e=>{const t=e.target;if(e.key!=="Enter"||e.isComposing||!t.matches("input[data-fnote]"))return;e.preventDefault();
+document.addEventListener("keydown",e=>{const t=e.target;if(e.key!=="Enter"||e.isComposing||e.keyCode===229||!t.matches("input[data-fnote]"))return;   // 229: Safari は変換の確定の Enter で isComposing を立てない（11-06「テーブルの」だけの印が 2 件送られた）e.preventDefault();
  const b=document.querySelector(`button[data-ch=flag][data-c="${t.dataset.fnote}"][data-o="${t.dataset.o}"]`);if(b)b.click()});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c;
  const fin=b.dataset.o?document.querySelector(`input[data-fnote="${id}"][data-o="${b.dataset.o}"]`):null;   // 実装後の画面は画面ごとの欄

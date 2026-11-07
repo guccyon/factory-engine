@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
+from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
@@ -473,3 +474,96 @@ def set_held(cur, who: dict, key: str | int, held: bool, reason: str = "") -> di
     t = _ticket_for_change(cur, who, find_ticket(cur, key))
     ops.set_held(cur, t["id"], held, _by(who), reason)
     return ticket_status(cur, who, t["id"])
+
+
+# ------------------------------------------------------------------ 受信トレイ（ADR 0034 の順番 2）
+# 窓口のトークンの役割で、答えてよい件だけを見せる（ADR 0034 の決定 7）。運用主は受信トレイのどの役割（オーナー・PO・デザインのチーフ・
+# 建設者の代理）の件も見て答えられる（Gen1 はオーナー 1 人が兼ねる。コンソールと同じ扱いで、件の allowed とは照らさない）。
+# 依頼者は「起票者」の件だけ。どちらもトークンの対象の製品の件に限る（製品の分からない件は、製品を限らない運用主だけ）
+INBOX_WHO = {"operator": None, "requester": ("requester",)}
+INBOX_ANSWER_ROLE = {"operator": None, "requester": "requester"}   # inbox.answer に渡す役割（None は照らさない）
+INBOX_STATUS = {"answered": 200, "noted": 200, "already": 409, "not_found": 404, "invalid": 400, "failed": 409}
+_PRODUCT_IN_REF = re.compile(r"^(?:[a-z]+:)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:[#@].*)?$")
+_PRODUCT_IN_URL = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/")
+
+
+def inbox_product(item: dict) -> str | None:
+    """件の製品（owner/repo）。ref（owner/repo#123・owner/repo）か GitHub の URL から。分からなければ None"""
+    for rx, v in ((_PRODUCT_IN_REF, item.get("ref") or ""), (_PRODUCT_IN_URL, item.get("url") or "")):
+        m = rx.match(v)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _inbox_visible(who: dict, item: dict) -> bool:
+    roles = INBOX_WHO.get(who["role"], ())
+    if roles is not None:
+        allowed = (item.get("answer") or {}).get("allowed") or [item.get("who")]
+        if item.get("who") not in roles and not set(allowed) & set(roles):
+            return False
+    product = inbox_product(item)
+    if product is None:
+        return who["role"] == "operator" and not who["products"]
+    return can_product(who, product)
+
+
+def _inbox_summary(item: dict) -> dict:
+    import inbox
+    a = item.get("answer") or {}
+    rec = a.get("recommended")
+    return {"key": item["key"], "kind": item["kind"], "kind_label": inbox.KINDS.get(item["kind"], item["kind"]),
+            "who": item["who"], "who_label": inbox.WHO.get(item["who"], item["who"]), "title": item["title"], "action": item.get("action") or "",
+            "url": item.get("url") or "", "product": inbox_product(item), "since": inbox._iso(item.get("since")), "age_sec": item.get("age_sec"),
+            "answerable": bool(a), "irreversible": bool(a.get("irreversible")),
+            "recommended": next((o["label"] for o in a.get("options") or [] if o["id"] == rec), None) if rec else None,
+            "answered": item.get("answered")}
+
+
+def inbox_list(cur, who: dict, *, include_answered: bool = False) -> dict:
+    """自分が答えてよい受信トレイの件。待ちの長い順。include_answered で、答え済みで反映を待っている件も入れる"""
+    import inbox
+    xs = [i for i in inbox.items(cur, include_answered=include_answered) if _inbox_visible(who, i)]
+    return {"count": sum(1 for i in xs if not i.get("answered")), "items": [_inbox_summary(i) for i in xs]}
+
+
+def _inbox_item(cur, who: dict, key) -> dict:
+    import inbox
+    if not isinstance(key, str) or not inbox.KEY.match(key):
+        raise DeskError(400, "key は受信トレイの件の key（inbox_list の key）")
+    it = inbox.find(cur, key)
+    # 見えない件は「ない」と同じに返す（ほかの人の件があることも漏らさない）
+    if it is None or not _inbox_visible(who, it):
+        a = inbox.last_answer(cur, key) if it is None and who["role"] == "operator" else None
+        if a:   # 答えて閉じた件（運用主にだけ、誰が何と答えたかを返す）
+            raise DeskError(409, f"この件はすでに{inbox.answered_text(a)}")
+        raise DeskError(404, "その件は受信トレイに開いていない")
+    return it
+
+
+def inbox_read(cur, who: dict, key: str) -> dict:
+    """受信トレイの 1 件。detail（問い・今の案・他の案・judge の見立てなど）と答え方（選択肢・推奨・作用・取り返しがつくか）を付ける"""
+    import inbox
+    it = _inbox_item(cur, who, key)
+    if it.get("since") is not None and it.get("age_sec") is None:
+        it["age_sec"] = inbox._age(it["since"], datetime.now(timezone.utc))
+    a = inbox._public(it.get("answer"))
+    return {**_inbox_summary(it), "detail": it.get("detail") or [],
+            "answer": {k: a[k] for k in ("type", "options", "extra", "recommended", "effect", "irreversible", "note_hint", "allowed") if k in a} if a else None,
+            "how": None if a else (it.get("action") or "リンク先で答える")}
+
+
+def inbox_answer(cur, who: dict, key: str, option, *, note: str = "", raw: str = "", on: str | None = None, confirm: bool = False) -> dict:
+    """受信トレイの 1 件に答える。inbox.answer（唯一の口、先勝ち）を入口 mcp で通す。道具の呼び出しは選択肢を明示した答えとして扱う。
+    取り返しのつかない作用の件（本番に出すなど）は、本人が明示して承認したしるしの confirm がないと受けない（ADR 0034 の決定 4）"""
+    import inbox
+    if not isinstance(option, str) or not option:
+        raise DeskError(400, "option は inbox_read の answer.options か extra の id")
+    it = _inbox_item(cur, who, key)
+    if (it.get("answer") or {}).get("irreversible") and confirm is not True:
+        raise DeskError(400, "取り返しのつかない作用の件。本人がこの答えをはっきり承認したときだけ confirm: true を付けて送る")
+    res, msg = inbox.answer(cur, key, option, _by(who), "mcp", note=str(note or ""), raw=str(raw or "")[:1000], on=on or None,
+                            explicit=True, role=INBOX_ANSWER_ROLE.get(who["role"], "requester"))
+    if INBOX_STATUS.get(res, 400) != 200:
+        raise DeskError(INBOX_STATUS.get(res, 400), msg)
+    return {"result": res, "message": msg, "key": key}
