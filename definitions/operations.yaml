@@ -17,9 +17,9 @@ operations:
   report.send:
     ja: 定期レポートを今すぐ送る（試し送り）
     does: "指定の種類と日付で組み立て直し、notifications.yaml の宛先に送る。毎朝の送信には数えない（factoryctl report send と同じ）"
-    examples: ["今朝のレポートを送り直して", "昨日の工場の健康のレポートを Slack にもう一度出して"]
+    examples: ["今朝のレポートを送り直して", "昨日の工場の健康のレポートを Slack にもう一度出して", "今朝の開発の状況のレポートを送り直して（report.product）"]
     params:
-      kind: {type: enum, values: [report.factory_health, report.product, all], default: all, ja: レポートの種類}
+      kind: {type: enum, values: [report.factory_health, report.product, all], default: all, ja: "レポートの種類。report.product は開発の状況（ロードマップ・ペースと見込み・済んだもの・進めているもの・次に流すもの。「開発の状況」「進み具合」「製品のレポート」はこれ）、report.factory_health は工場の健康状態（ライン・ジョブ・出荷・人の判断待ち・費用。「工場の稼働」「工場の健康」はこれ）、all は両方"}
       date: {type: date, default: latest, ja: "対象の日（YYYY-MM-DD。latest は今朝送った分＝前の日）"}
       to:   {type: destination, optional: true, ja: "宛先の名前（notifications.yaml の destinations。なければその種類の宛先すべて）"}
     tier: send
