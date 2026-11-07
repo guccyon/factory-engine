@@ -1,7 +1,7 @@
-"""工場の入れ替えの依頼の郵便受け（ADR 0031 の決定 2・順番 3）。クラウドの建設者は工場のマシンの中の窓口に届かないので、
+"""工場の更新の依頼の郵便受け（ADR 0031 の決定 2・順番 3）。クラウドの建設者は工場のマシンの中の窓口に届かないので、
 factory-engine の Issue に `factory:swap` を付けたものを依頼として拾い、提案・進み具合・結果を同じ Issue のコメントに返す。
 
-dispatcher の入れ替えの周回（swap_loop）から SWAP_MAILBOX_INTERVAL_SEC ごとに呼ぶ。
+dispatcher の更新の周回（swap_loop）から SWAP_MAILBOX_INTERVAL_SEC ごとに呼ぶ。
 
   1. 拾う: 開いている Issue で `factory:swap` が付いたもの。ラベルを付けたのが SWAP_REQUESTERS（既定は郵便受けのリポジトリの持ち主）の人のものだけ。
      リポジトリは公開なので、ほかの人が付けたラベルは何もせずに飛ばす（コメントも返さない）
@@ -9,10 +9,10 @@ dispatcher の入れ替えの周回（swap_loop）から SWAP_MAILBOX_INTERVAL_S
      ほかの文はデータとして依頼の note に残すだけで、シェルにもプロンプトにも渡さない
   3. 受ける: swap.request で依頼にし、その場で「いま」で受ける（時刻の提案は順番 4 のプランナー）。
      ただし申告が一時停止を伴う種類（control_plane・db）で、いまが全面委任（unattended）の時間帯なら、人が並走する時間帯まで待つ（決めどころ S4）。
-     差分の判定が重かったときは入れ替え役が同じ理由で止め（deferred）、ここが時間帯に入ってから依頼し直す
-     ほかの入れ替えが終わっていなければ待つ（同時に 1 件）
-  4. 返す: 段（起動・一時停止・結果）ごとに 1 回ずつコメントする。入れ替えたら Issue を閉じる。止まったら `factory:swap-failed` を付けて開いたまま
-  5. 取り消す: 入れ替え役を起動する前に Issue を閉じたら取り消す
+     差分の判定が重かったときは更新役が同じ理由で止め（deferred）、ここが時間帯に入ってから依頼し直す
+     ほかの更新が終わっていなければ待つ（同時に 1 件）
+  4. 返す: 段（起動・一時停止・結果）ごとに 1 回ずつコメントする。更新したら Issue を閉じる。止まったら `factory:swap-failed` を付けて開いたまま
+  5. 取り消す: 更新役を起動する前に Issue を閉じたら取り消す
 
 コメントには工場のマシンのパスやホスト名を出さない（リポジトリは公開）。
 """
@@ -30,7 +30,7 @@ RUNNING_LABEL = "factory:swapping"
 DONE_LABEL = "factory:swapped"
 FAILED_LABEL = "factory:swap-failed"
 NOTED = "swap_mailbox.noted"        # 待ちや読めなかったことを 1 回だけ返した印（payload の issue・key）
-REPORTED = "swap_mailbox.reported"  # 段を Issue に返した印（payload の event_id）。swap.* ではないので入れ替えの状態には数えない
+REPORTED = "swap_mailbox.reported"  # 段を Issue に返した印（payload の event_id）。swap.* ではないので更新の状態には数えない
 FIELDS = {
     "target": re.compile(r"^(main|[0-9a-fA-F]{7,40})$"),
     "kind": re.compile(r"^(code|control_plane|db)$"),
@@ -140,7 +140,7 @@ def pick(cur, gh, comment, set_labels, rp: str, issue: dict, unattended, log) ->
     try:
         f = parse(issue.get("body"))
     except Unreadable as e:
-        comment(rp, n, f"工場の入れ替えの依頼として読めませんでした: {e}。\n\n{FORMAT_HELP}")
+        comment(rp, n, f"工場の更新の依頼として読めませんでした: {e}。\n\n{FORMAT_HELP}")
         set_labels(rp, n, [LABEL], [FAILED_LABEL])
         return None
     return submit(cur, comment, set_labels, rp, n, f, who, (issue.get("title") or "")[:200], unattended, log)
@@ -151,31 +151,31 @@ def submit(cur, comment, set_labels, rp, n, f, who, note, unattended, log) -> in
     if f["kind"] != "code" and unattended():
         if not _noted(cur, ref, "unattended"):
             _note(cur, ref, "unattended")
-            comment(rp, n, f"一時停止を伴う入れ替え（`{f['kind']}`）なので、人が並走する時間帯（attended）に入ってから始めます。")
+            comment(rp, n, f"一時停止を伴う更新（`{f['kind']}`）なので、人が並走する時間帯（attended）に入ってから始めます。")
         return None
     act = swap.active(cur)
     if act:
         key = f"busy:{act['id']}"
         if not _noted(cur, ref, key):
             _note(cur, ref, key)
-            comment(rp, n, f"入れ替え {act['id']}（{act['target']}、{swap.STATUS_JA[act['status']]}）が終わってから受けます。")
+            comment(rp, n, f"更新 {act['id']}（{act['target']}、{swap.STATUS_JA[act['status']]}）が終わってから受けます。")
         return None
     try:
         sid = swap.request(cur, f["target"], who, kind=f["kind"], urgency=f["urgency"], note=note, source=ref, basis="mailbox")
     except swap.SwapError as e:
-        comment(rp, n, f"工場の入れ替えの依頼を受けられませんでした: {e}")
+        comment(rp, n, f"工場の更新の依頼を受けられませんでした: {e}")
         set_labels(rp, n, [LABEL], [FAILED_LABEL])
         return None
     set_labels(rp, n, [LABEL, FAILED_LABEL], [RUNNING_LABEL])
-    comment(rp, n, f"工場の入れ替え {sid} として受けました（`{f['target']}`、申告 `{f['kind']}`）。"
-                   f"{swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで入れ替え役が始めます。種類は差分から判定し直し、重い方を採ります。"
+    comment(rp, n, f"工場の更新 {sid} として受けました（`{f['target']}`、申告 `{f['kind']}`）。"
+                   f"{swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで更新役が始めます。種類は差分から判定し直し、重い方を採ります。"
                    + (f"\n\n期限 `{f['deadline']}` は記録だけです（時刻の提案は ADR 0031 の順番 4）。" if f["deadline"] else ""))
     log("swap mailbox: requested", ref, sid)
     return sid
 
 
 def retry_deferred(cur, gh, comment, set_labels, rp, unattended, log) -> None:
-    """時間帯を待って止めた依頼（入れ替え役が判定し直して重かったもの）を、attended に入ったら同じ Issue で依頼し直す"""
+    """時間帯を待って止めた依頼（更新役が判定し直して重かったもの）を、attended に入ったら同じ Issue で依頼し直す"""
     if unattended() or swap.active(cur):
         return
     cur.execute("select distinct on (payload->>'source') id, payload from events where name='swap.requested' and payload->>'source' like %s "
@@ -195,7 +195,7 @@ def retry_deferred(cur, gh, comment, set_labels, rp, unattended, log) -> None:
 
 
 def report(cur, gh, comment, set_labels, log=print) -> None:
-    """郵便受けから来た入れ替えの段を、まだ返していなければ Issue に返す。起動する前に Issue が閉じられていたら取り消す"""
+    """郵便受けから来た更新の段を、まだ返していなければ Issue に返す。起動する前に Issue が閉じられていたら取り消す"""
     rp = repo()
     cur.execute("select id from events where name='swap.requested' and payload->>'source' like %s order by id desc limit 10", (rp + "#%",))
     for r in cur.fetchall():
@@ -213,7 +213,7 @@ def report(cur, gh, comment, set_labels, log=print) -> None:
             cur.execute("insert into events(name, correlation_id, payload) values (%s, %s, %s)",
                         (REPORTED, swap.corr(s["id"]), Jsonb({"swap_id": s["id"], "event_id": e["id"]})))
             if e["name"] == "swap.preflight_failed" and (e["payload"] or {}).get("deferred") == "unattended":
-                comment(rp, n, f"入れ替え {s['id']}: 差分の判定が一時停止を伴う種類（`{e['payload'].get('kind')}`）でした。"
+                comment(rp, n, f"更新 {s['id']}: 差分の判定が一時停止を伴う種類（`{e['payload'].get('kind')}`）でした。"
                                "人が並走する時間帯（attended）に入ったら、この Issue のまま依頼し直します。")
                 continue
             comment(rp, n, step_text(s, e))
@@ -227,7 +227,7 @@ def report(cur, gh, comment, set_labels, log=print) -> None:
 
 def step_text(s: dict, e: dict) -> str:
     p = e.get("payload") or {}
-    head = f"入れ替え {s['id']}: **{swap.STATUS_JA[swap.STATUS[e['name']]]}**"
+    head = f"更新 {s['id']}: **{swap.STATUS_JA[swap.STATUS[e['name']]]}**"
     bits = []
     if p.get("prev") and p.get("target_sha"):
         bits.append(f"版 `{p['prev']}` → `{p['target_sha']}`")

@@ -1,8 +1,8 @@
-"""ラインの一時停止（drain）と再開（ADR 0020）。工場の入れ替えのために、外から中に干渉する口。
+"""ラインの一時停止（drain）と再開（ADR 0020）。工場の更新のために、外から中に干渉する口。
 
 dispatcher・factoryctl・操業コンソール・番人が同じ関数を通る。状態の正本は events（最後の factory.drain_requested / factory.drain_released）。
 一時停止の間、dispatcher は順番待ちのジョブを取り出さず、割り込みもしない。実行中のジョブは最後まで流す。
-「入れ替えてよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でないとき。
+「更新してよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でないとき。
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def claim_governance(cur) -> dict | None:
 
 
 def status(cur) -> dict:
-    """入れ替えてよいか。running はつなぎ直しを含む実行中のジョブ、shipping は処理中の出荷の依頼"""
+    """更新してよいか。running はつなぎ直しを含む実行中のジョブ、shipping は処理中の出荷の依頼"""
     st = state(cur)
     cur.execute("select id, kind, repo, issue_number, extract(epoch from now() - started_at)::int as elapsed_sec "
                 "from jobs where state='running' order by id")

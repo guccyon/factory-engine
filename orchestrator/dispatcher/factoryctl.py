@@ -13,9 +13,9 @@
   factoryctl hold <ticket> [--reason ..]          # 順番待ちから一時的に外す
   factoryctl resume <ticket>
 
-工場の入れ替え（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
-  factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は入れ替えてよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
-  factoryctl drain status                          # 一時停止か、入れ替えてよいか、何を待っているか。入れ替えてよければ終了コード 0
+工場の更新（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
+  factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は更新してよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
+  factoryctl drain status                          # 一時停止か、更新してよいか、何を待っているか。更新してよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
   factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
@@ -24,11 +24,11 @@
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
-工場の入れ替えの自律化（ADR 0031）。dispatcher が使い捨ての入れ替え役（コンテナ factory-swap-<id>）を起動し、事前の確かめ → 一時停止（control_plane のとき）→
+工場の更新の自律化（ADR 0031）。dispatcher が使い捨ての更新役（コンテナ factory-swap-<id>）を起動し、事前の確かめ → 一時停止（control_plane のとき）→
 すべてのサービスの上げ直し → 確かめ → 再開を行う。確かめに通らなければ前の版に戻す。DB の変更・秘密情報と権限を含む版は人に回す:
-  factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま入れ替える（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
-  factoryctl swap status [<id>]                    # 直近の入れ替えの一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
-  factoryctl swap cancel <id> [--reason ..]        # 入れ替え役を起動する前だけ取り消せる
+  factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま更新する（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
+  factoryctl swap status [<id>]                    # 直近の更新の一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
+  factoryctl swap cancel <id> [--reason ..]        # 更新役を起動する前だけ取り消せる
   （クラウドの建設者は factory-engine の Issue に factory:swap を付けて依頼する。dispatcher が拾い、結果を同じ Issue に返す。orchestrator/README.md）
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
@@ -568,7 +568,7 @@ def drain_report(cur) -> int:
         print(f"  一時停止のまま流すもの: {' '.join(st['allowed'])}")
     if st.get("allowed_min_priority") is not None:
         print(f"  一時停止のまま流す優先度: {ops.level_of(st['allowed_min_priority'])} 以上のチケット")
-    print("入れ替えてよい" if st["ready"] else "まだ入れ替えない（上の終わりを待つ）")
+    print("更新してよい" if st["ready"] else "まだ更新しない（上の終わりを待つ）")
     return 0 if st["ready"] else 3
 
 
@@ -674,12 +674,12 @@ def swap_cmd(cur, argv) -> int:
         except swap.SwapError as e:
             print(e)
             return 1
-        print(f"入れ替え {sid} を受けた（{argv[3]}）。dispatcher が {swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで入れ替え役を起動する")
+        print(f"更新 {sid} を受けた（{argv[3]}）。dispatcher が {swap.ENV.get('SWAP_INTERVAL_SEC', '15')} 秒ほどで更新役を起動する")
         print(f"進み具合: factoryctl swap status {sid}（dispatcher を上げ直す間は答えないことがある）。ホストでは docker logs -f {swap.container(sid)}")
         return 0
     if sub == "cancel" and len(argv) > 3 and argv[3].isdigit():
         ok = swap.cancel(cur, int(argv[3]), opt(argv, "--by", "builder"), opt(argv, "--reason", ""))
-        print("取り消した" if ok else "取り消せない（入れ替え役がもう動いているか、終わっている）")
+        print("取り消した" if ok else "取り消せない（更新役がもう動いているか、終わっている）")
         return 0 if ok else 1
     if sub == "status" and len(argv) > 3 and argv[3].isdigit():
         s = swap.get(cur, int(argv[3]))
@@ -690,7 +690,7 @@ def swap_cmd(cur, argv) -> int:
         return 0 if s["status"] == "completed" else 1
     if sub == "status":
         rows = swap.recent(cur)
-        print("\n".join(swap.summary(s) for s in rows) if rows else "入れ替えの記録はまだない")
+        print("\n".join(swap.summary(s) for s in rows) if rows else "更新の記録はまだない")
         return 0
     print(__doc__)
     return 2

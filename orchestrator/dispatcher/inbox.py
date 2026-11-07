@@ -51,7 +51,7 @@ CHOICE_EFFECTS = {
     "concept_tone": "選んだコンセプトとトーン＆マナーでデザインシステムの線が進む。戻すと作り手に作り直しを頼む",
     "taste_sample": "選んだ案を内部品質の教師信号として残す。戻すと作り手に戻す",
 }
-TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で入れ替えを依頼し直すのは建設者）"}   # 見たら閉じてよい依頼
+TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）"}   # 見たら閉じてよい依頼
 
 
 def _clip(v, n=MAX_LEN) -> str:
@@ -102,7 +102,7 @@ def _open_task_keys(cur, key: str | None = None) -> set[str]:
 
 
 # ------------------------------------------------------------------ 集める
-# 入れ替えの再開と差し戻しの扱い、ほかの PR を待つ保留（hold:）は建設者。マージ・judge の判断はオーナー
+# 更新の再開と差し戻しの扱い、ほかの PR を待つ保留（hold:）は建設者。マージ・judge の判断はオーナー
 # （hold は人の判断が済んだあとの順番待ちで、オーナーのすることはない。11-02 rally #589 が「オーナーの出番」と出ていた）
 STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder"}
 
@@ -160,7 +160,7 @@ def _choices(cur) -> list[dict]:
             continue
         out.append(_choice_item(r))
     if captures:
-        # 実装後の画面は PR・アプリごとに出るので数が多い（入れ替え直後は 40 件を超えた）。印は任意なので 1 件にまとめ、通知も最初の 1 回だけ
+        # 実装後の画面は PR・アプリごとに出るので数が多い（更新直後は 40 件を超えた）。印は任意なので 1 件にまとめ、通知も最初の 1 回だけ
         prs = sorted({(r["payload"].get("subject") or {}).get("pr_url", "").rsplit("/", 1)[-1] for r in captures} - {""}, key=lambda x: int(x) if x.isdigit() else 0)
         head = "・".join(f"#{n}" for n in prs[-3:]) + (f" ほか {len(prs) - 3} 件" if len(prs) > 3 else "")
         out.append({"key": "choice:exit_capture", "kind": "choice", "who": "design_chief",

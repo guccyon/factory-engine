@@ -1,7 +1,7 @@
 """工場の版の一覧（ADR 0031 の決定 4・9）。サービスごとに、今動いているコンテナがどの版（Engine のコミット）のイメージかを出す。
 
 版はイメージのラベル `factory.engine_version` に入っている（scripts/build.sh が作るときに付ける）。コンテナの Config.Labels には
-イメージのラベルが引き継がれるので、docker inspect だけで読める。DB は使わない（入れ替え役が上げ直しの確かめにも使う）。
+イメージのラベルが引き継がれるので、docker inspect だけで読める。DB は使わない（更新役が上げ直しの確かめにも使う）。
 """
 from __future__ import annotations
 

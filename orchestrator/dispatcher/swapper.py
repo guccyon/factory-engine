@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""入れ替え役（ADR 0031 の決定 1・4・6・7）。入れ替えのたびに dispatcher が使い捨てのコンテナ（factory-swap-<id>）で起動し、終われば消える。
+"""更新役（ADR 0031 の決定 1・4・6・7）。更新のたびに dispatcher が使い捨てのコンテナ（factory-swap-<id>）で起動し、終われば消える。
 
   python swapper.py run <swap_id>
 
@@ -8,14 +8,14 @@
      人に回す条件（DB の変更・秘密情報と権限）、出荷の処理中でない、今のイメージを前の版の名前で残す、
      新しい版のイメージを依存の順に作る（新しい版の scripts/build.sh）、新しい compose.yaml が今の .env で通る、新しいイメージの中のコードが読める
   2. 一時停止（control_plane のときだけ）: 入れてよくなる（実行中 0・出荷の処理なし）まで待つ
-  3. 入れ替え: 作業ツリーを早送りし、docker compose up -d ですべてのサービスを上げる
+  3. 更新: 作業ツリーを早送りし、docker compose up -d ですべてのサービスを上げる
   4. 確かめ: すべてのサービスが target の版で動き、ヘルスチェックが通り、dispatcher と supervisor が新しい版で回り、コンソールと窓口が応え、
      実行中だったジョブがつなぎ直されている
   5. 再開（一時停止したとき）。失敗したら前の版（作業ツリーと前の版の名前のイメージ）に戻して確かめ直す。戻しても通らなければ一時停止のまま人に回す
 
-- DB の変更（postgres/init/）を含む入れ替えは自律の範囲の外。事前の確かめで止め、受信トレイに出す（承認ボタンで流すのは ADR 0031 の順番 5）
+- DB の変更（postgres/init/）を含む更新は自律の範囲の外。事前の確かめで止め、受信トレイに出す（承認ボタンで流すのは ADR 0031 の順番 5）
 - 子のプロセス（git・docker compose）には秘密情報を渡さない。compose は .env だけから値を取る（環境変数が .env より優先されるため）
-- 入れ替え役は compose のサービスではないので、dispatcher を作り直しても最後まで続く。制御プレーンの DB が上げ直しで切れたら繋ぎ直す
+- 更新役は compose のサービスではないので、dispatcher を作り直しても最後まで続く。制御プレーンの DB が上げ直しで切れたら繋ぎ直す
 """
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ class Swapper:
         with self.db() as conn, conn.cursor() as cur:
             s = swap.get(cur, self.sid)
         if not s or s["status"] != "launched":
-            log(f"入れ替え {self.sid} は起動された状態ではない（{s and s['status']}）。何もしない")
+            log(f"更新 {self.sid} は起動された状態ではない（{s and s['status']}）。何もしない")
             return 2
         self.req = s
         self.rec("swap.started", {"container": swap.container(self.sid), "root": self.root})
@@ -167,7 +167,7 @@ class Swapper:
     # -------------------------------------------------------------- 1. 事前の確かめ
     def preflight(self) -> dict:
         if self.git("status", "--porcelain", "--untracked-files=no"):
-            raise Stop("工場の作業ツリーに未コミットの変更がある（版のラベルと中身がずれるので入れ替えない）", escalate="human",
+            raise Stop("工場の作業ツリーに未コミットの変更がある（版のラベルと中身がずれるので更新しない）", escalate="human",
                        waiting_for="作業ツリーの変更を片付けてから依頼し直す")
         url = fetch_url(self.git("remote", "get-url", "origin"))
         self.git("fetch", "--quiet", url, "+refs/heads/main:refs/remotes/origin/main", timeout=300)
@@ -176,7 +176,7 @@ class Swapper:
         if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
             raise Stop(f"{self.req['target']} が見つからない")
         if self.run(["git", "merge-base", "--is-ancestor", sha, "origin/main"], cwd=self.root, check=False).returncode != 0:
-            raise Stop(f"{sha[:7]} は main に入っていない（main に入った版だけ入れ替える）")
+            raise Stop(f"{sha[:7]} は main に入っていない（main に入った版だけ更新する）")
         prev = self.git("rev-parse", "HEAD")
         if self.run(["git", "merge-base", "--is-ancestor", prev, sha], cwd=self.root, check=False).returncode != 0:
             raise Stop(f"今の版 {prev[:7]} から {sha[:7]} へ早送りできない（作業ツリーが main から外れている）", escalate="human",
@@ -193,14 +193,14 @@ class Swapper:
         esc = swap.escalations(files, lambda f: self.git("diff", prev, sha, "--", f), self.rules)
         if esc:
             raise Stop("人に回す変更を含む: " + "、".join(f"{e['why']}（{', '.join(e['files'][:3])}）" for e in esc), escalate="human",
-                       waiting_for="差分を確かめ、人が手で入れ替える", detail={**plan, "escalations": esc})
+                       waiting_for="差分を確かめ、人が手で更新する", detail={**plan, "escalations": esc})
         with self.db() as conn, conn.cursor() as cur:
             if ship.pending(cur):
-                raise Stop("出荷の処理中（終わってから入れ替える）")
+                raise Stop("出荷の処理中（終わってから更新する）")
             if kind != "code" and self.req.get("source", "manual") != "manual" and unattended(cur):
-                # Issue の郵便受けからの依頼で、差分が一時停止を要る種類だった。一時停止を伴う入れ替えは人が並走する時間帯だけ（決めどころ S4）。
+                # Issue の郵便受けからの依頼で、差分が一時停止を要る種類だった。一時停止を伴う更新は人が並走する時間帯だけ（決めどころ S4）。
                 # 手で打った swap run は、打った人が近くにいるので止めない
-                raise Stop(f"一時停止を伴う入れ替え（判定 {kind}）は、人が並走する時間帯（attended）だけ自動で始める。いまは全面委任の時間帯",
+                raise Stop(f"一時停止を伴う更新（判定 {kind}）は、人が並走する時間帯（attended）だけ自動で始める。いまは全面委任の時間帯",
                            detail={**plan, "deferred": "unattended"})
         self.snapshot_tags(prev[:7])
         self.build(sha)
@@ -262,7 +262,7 @@ class Swapper:
                 self.docker("tag", snap, name, check=False)
 
     def prune_images(self, keep: set[str]) -> None:
-        """前の版の名前は、次に成功した入れ替えまで残す（決定 6）。成功したら、今と 1 つ前より古いものを外す（名前を外すだけ。使っていなければ消える）"""
+        """前の版の名前は、次に成功した更新まで残す（決定 6）。成功したら、今と 1 つ前より古いものを外す（名前を外すだけ。使っていなければ消える）"""
         names = self.image_names()
         out = self.docker("images", "--format", "{{.Repository}}:{{.Tag}}", check=False).stdout.split()
         for ref in out:
@@ -275,7 +275,7 @@ class Swapper:
     def drain_wait(self, plan: dict) -> None:
         wait = int(self.rules.get("drain_wait_sec") or 2700)
         with self.db() as conn, conn.cursor() as cur:
-            self.drained_by_me = drain.set_drain(cur, True, "swapper", f"入れ替え {self.sid}（{plan['short']}、{plan['kind']}）")
+            self.drained_by_me = drain.set_drain(cur, True, "swapper", f"更新 {self.sid}（{plan['short']}、{plan['kind']}）")
         self.drained_at = self.clock()
         self.rec("swap.drained", {"by_me": self.drained_by_me})
         until = self.clock() + wait
@@ -285,7 +285,7 @@ class Swapper:
             if st["ready"]:
                 return
             if self.clock() > until:
-                raise Stop(f"{wait // 60} 分待っても入れ替えてよい状態にならない（実行中 {len(st['running'])} 件・出荷 {len(st['shipping'])} 件）",
+                raise Stop(f"{wait // 60} 分待っても更新してよい状態にならない（実行中 {len(st['running'])} 件・出荷 {len(st['shipping'])} 件）",
                            escalate="human", waiting_for="実行中のジョブを確かめてから依頼し直す")
             self.sleep(10)
 
@@ -293,13 +293,13 @@ class Swapper:
         if not self.drained_by_me:
             return
         with self.db() as conn, conn.cursor() as cur:
-            drain.set_drain(cur, False, "swapper", f"入れ替え {self.sid} が終わった")
+            drain.set_drain(cur, False, "swapper", f"更新 {self.sid} が終わった")
         self.drained_by_me = False
 
     def stopped_sec(self) -> int | None:
         return int(self.clock() - self.drained_at) if self.drained_at else None
 
-    # -------------------------------------------------------------- 3. 入れ替え
+    # -------------------------------------------------------------- 3. 更新
     def compose_up(self) -> None:
         """すべてのサービスを上げる（一部だけ上げない。2026-11-05、dispatcher が古いまま残った）。イメージは作らない（作ってある）"""
         self.docker("compose", "-p", self.project, "up", "-d", "--no-build", "--remove-orphans", timeout=600)
@@ -358,11 +358,11 @@ class Swapper:
                                           "stopped_sec": self.stopped_sec()})
             with self.db() as conn, conn.cursor() as cur:
                 inbox.request(cur, f"swap:{self.sid}:rolled_back", "swap_rolled_back", "builder",
-                              f"工場の入れ替え {self.sid}（{plan['short']}）が確かめに通らず、前の版 {plan['prev_short']} に戻した",
-                              action=f"{reason}。直した版で依頼し直す（同じ版では自動で入れ替えない）", correlation_id=swap.corr(self.sid), by="swapper")
+                              f"工場の更新 {self.sid}（{plan['short']}）が確かめに通らず、前の版 {plan['prev_short']} に戻した",
+                              action=f"{reason}。直した版で依頼し直す（同じ版では自動で更新しない）", correlation_id=swap.corr(self.sid), by="swapper")
             return 1
         with self.db() as conn, conn.cursor() as cur:
-            drain.set_drain(cur, True, "swapper", f"入れ替え {self.sid} の戻しも確かめに通らない")   # 壊れた工場では流さない
+            drain.set_drain(cur, True, "swapper", f"更新 {self.sid} の戻しも確かめに通らない")   # 壊れた工場では流さない
         return self.stop(Stop(f"新しい版が {reason}。前の版 {plan['prev_short']} に戻しても通らない", escalate="human",
                               waiting_for="factoryctl version で版を見て、手で上げ直す。直ったら factoryctl resume",
                               detail={"checks": checks, "rollback_checks": back}))
@@ -373,14 +373,14 @@ class Swapper:
             self.rec("swap.preflight_failed", {"error": e.reason, **e.detail})
             return 1
         self.rec("swap.escalated", {"reason": e.reason, "category": e.escalate, **e.detail})
-        title = f"工場の入れ替え {self.sid}（{self.req['target']}）: {e.reason}"
+        title = f"工場の更新 {self.sid}（{self.req['target']}）: {e.reason}"
         with self.db() as conn, conn.cursor() as cur:
             if e.escalate == "db":
                 d = e.detail
-                inbox.request(cur, f"swap:{self.sid}:db", "swap_db", "owner", f"DB の変更を含む工場の入れ替え（{d['prev_short']} → {d['short']}）",
+                inbox.request(cur, f"swap:{self.sid}:db", "swap_db", "owner", f"DB の変更を含む工場の更新（{d['prev_short']} → {d['short']}）",
                               url=compare_url(self.git("remote", "get-url", "origin", check=False), d["prev_short"], d["short"]),
                               action=f"流す SQL（{', '.join(os.path.basename(f) for f in d['sql'])}）を確かめる。承認ボタンができるまで（ADR 0031 の順番 5）は、"
-                                     "一時停止して SQL を手で流し、factoryctl swap run で入れ替え直す",
+                                     "一時停止して SQL を手で流し、factoryctl swap run で更新し直す",
                               correlation_id=swap.corr(self.sid), by="swapper")
             else:
                 stoppage.open_stoppage(cur, f"swap:{self.sid}", "human", title[:300], waiting_for=e.waiting_for, cause=e.reason[:300],
@@ -395,7 +395,7 @@ def unattended(cur) -> bool:
 
 
 def fetch_url(remote: str) -> str:
-    """ssh の remote（git@github.com:o/r.git）は https に直す（入れ替え役のコンテナに ssh の鍵はない。工場のリポジトリは公開）"""
+    """ssh の remote（git@github.com:o/r.git）は https に直す（更新役のコンテナに ssh の鍵はない。工場のリポジトリは公開）"""
     m = re.fullmatch(r"(?:ssh://)?git@github\.com[:/](.+?)(?:\.git)?/?", remote.strip())
     return f"https://github.com/{m.group(1)}.git" if m else remote.strip()
 
@@ -415,7 +415,7 @@ def loop_seen(cur, name: str, since: datetime, ver: str | None) -> bool:
 
 
 def reattached(cur, jobs: list[int], since: datetime) -> bool:
-    """入れ替えの前に動いていたジョブが、つなぎ直されたか、終わったか（ADR 0020）"""
+    """更新の前に動いていたジョブが、つなぎ直されたか、終わったか（ADR 0020）"""
     if not jobs:
         return True
     cur.execute("select j.id from jobs j where j.id = any(%s) and j.state = 'running' and not exists "

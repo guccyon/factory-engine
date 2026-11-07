@@ -1079,7 +1079,7 @@ def workflow_shadow_step(cur):
 def tick():
     with db() as conn, conn.cursor() as cur:
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
-                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 入れ替え役が新しい版で回ったかを見る（ADR 0031）
+                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 更新役が新しい版で回ったかを見る（ADR 0031）
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)

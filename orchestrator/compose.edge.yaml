@@ -1,5 +1,5 @@
 # 工場の前段（ADR 0035）。工場をインターネットに置くとき（パイロットの EC2 など）だけ、compose.yaml に重ねて使う。
-#   .env に COMPOSE_FILE=compose.yaml:compose.edge.yaml を書くと、docker compose と入れ替え役（ADR 0031）がこのファイルも読む
+#   .env に COMPOSE_FILE=compose.yaml:compose.edge.yaml を書くと、docker compose と更新役（ADR 0031）がこのファイルも読む
 #   外すときは COMPOSE_FILE からこのファイルを抜いて docker compose up -d --remove-orphans（compose.yaml と工場のコードは変わらない）
 #
 # 入口は 3 つ（ホスト名は EDGE_DOMAIN の下）。HTTPS は Caddy が Let's Encrypt で取る:
