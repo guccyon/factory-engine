@@ -52,14 +52,17 @@ def test_render_links_and_mentions(monkeypatch):
          ({"key": "choice:3", "kind": "choice", "who": "design_chief", "title": "案の選択", "url": "/#choice-3", "age_sec": None,
            "action": "案を選ぶ"}, "new")]
     md = notify_inbox.render(b, "github-issue")
-    assert "[予約の画面](https://example.com/review/1)（2 時間 0 分待ち）" in md and "[案の選択](http://localhost:8790/#choice-3)" in md
+    assert "[予約の画面](http://localhost:8790/inbox/task%3Ar)（2 時間 0 分待ち）" in md and "[案の選択](http://localhost:8790/inbox/choice%3A3)" in md   # メッセージの詳細へ
+    monkeypatch.setattr(notify_inbox, "CONSOLE_URL", "")
+    assert "[予約の画面](https://example.com/review/1)" in notify_inbox.render(b, "github-issue")   # コンソールの URL がなければ元のリンク
+    monkeypatch.setattr(notify_inbox, "CONSOLE_URL", "http://localhost:8790")
     assert "<@U1>" not in md
     assert "`choice:3`" not in md and "手元の Claude" not in md            # 答え方のない件には key も Claude の案内も付けない
     b[1][0]["answer"] = {"type": "choose", "options": []}
     md = notify_inbox.render(b, "github-issue")
     assert "— 案を選ぶ `choice:3`" in md and "`task:r`" not in md and "手元の Claude からも答えられる" in md   # ADR 0034 の順番 2
     sl = notify_inbox.render(b, "slack")
-    assert "<@U1> プロダクトオーナー: <https://example.com/review/1|予約の画面>" in sl
+    assert "<@U1> プロダクトオーナー: <http://localhost:8790/inbox/task%3Ar|予約の画面>" in sl
 
 
 @pytest.fixture()
