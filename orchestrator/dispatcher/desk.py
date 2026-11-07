@@ -21,6 +21,26 @@ import ops
 
 ROLES = ("operator", "requester")
 KINDS = ("request", "inquiry")
+# 会話の状態（ADR 0039 の決定 2）。上の 6 つが今の窓口の状態、下の 6 つが単発の依頼のループで足した状態
+STATES = ("open", "waiting_requester", "drafted", "confirmed", "answered", "closed",
+          "routed", "awaiting_confirm", "running", "delivered", "accepted", "handed_off")
+ENDED = ("closed", "accepted", "handed_off")   # 終わった会話。書き込めない
+LOOP_BUSY = ("routed", "awaiting_confirm", "running", "delivered")   # 振り分けた後。依頼者の言い足しは記録だけ
+# 閉じる理由（決定 2・4）。完了にできるのは依頼者だけ（accepted・declined・superseded・withdrawn）。handed_off はチケット化で渡したとき
+CLOSE_REASONS = ("accepted", "declined", "superseded", "withdrawn", "handed_off")
+PATHS = ("ticket", "direct_line", "operate", "quick", "analysis")   # 対応の種類（ADR 0037 の道。definitions/workflow.yaml の paths と同じ）
+# 状態を進めてよい向き（決定 2 の図）。進めるのは dispatcher だけ（advance）。依頼者の取り下げ（close_conversation）はどこからでも
+TRANSITIONS = {
+    "open": ("waiting_requester", "drafted", "answered", "routed"),
+    "waiting_requester": ("open", "drafted", "routed"),
+    "drafted": ("open", "confirmed", "waiting_requester"),
+    "confirmed": ("handed_off",),
+    "answered": ("open",),
+    "routed": ("awaiting_confirm", "running", "delivered", "waiting_requester"),   # delivered は断りの提出（どの対応の種類にも当てはまらない）
+    "awaiting_confirm": ("running", "closed", "routed"),                           # closed は確認で断られた（依頼者の答え）
+    "running": ("delivered",),
+    "delivered": ("accepted", "closed", "routed"),                                 # routed は続き・差し戻し（振り分けから）
+}
 TOKEN_PREFIX = "fdk_"
 MAX_BODY = 8000          # 1 通の上限（文字数）。長い資料は製品のリポジトリに置いて参照を渡してもらう
 MAX_TITLE = 80
@@ -131,8 +151,10 @@ def _event(cur, name: str, conversation_id: int, payload: dict) -> int:
     return cur.fetchone()["id"]
 
 
-def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, level: str | None = None, due: str | None = None) -> dict:
-    """相談を開く。依頼（request）と問い合わせ（inquiry）の 2 種類だけ。返り値は会話（相手の返事は read_conversation で取る）"""
+def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, level: str | None = None, due: str | None = None,
+                      source_ref: str | None = None, derived_from: int | None = None) -> dict:
+    """相談を開く。依頼（request）と問い合わせ（inquiry）の 2 種類だけ。返り値は会話（相手の返事は read_conversation で取る）。
+    source_ref は依頼の来た口（GitHub の Issue の URL。ADR 0039 の決定 1）、derived_from は断りから別案として始めた元の会話（決定 4）"""
     if kind not in KINDS:
         raise DeskError(400, "種類は request（依頼）か inquiry（問い合わせ）")
     if not isinstance(product, str) or not PRODUCT_RE.match(product):
@@ -144,12 +166,19 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
         raise DeskError(400, f"希望の優先度は {' / '.join(ops.LEVELS)}")
     if due is not None and (not isinstance(due, str) or len(due) > 40):
         raise DeskError(400, "期限は 40 文字までの文字列（例 2026-11-30）")
+    if source_ref is not None and not (isinstance(source_ref, str) and source_ref.startswith("https://") and len(source_ref) <= 300):
+        raise DeskError(400, "依頼の来た口は https:// の URL")
+    if derived_from is not None:
+        if _conversation(cur, who, derived_from)["product"] != product:
+            raise DeskError(400, "別案は元の依頼と同じ製品で開く")
     wanted = {k: v for k, v in (("level", level), ("due", due)) if v is not None}
     title = body.strip().splitlines()[0][:MAX_TITLE]
-    cur.execute("insert into desk_conversations(kind, product, opened_by, title, wanted) values (%s,%s,%s,%s,%s) returning *",
-                (kind, product, who["name"], title, Jsonb(wanted)))
+    cur.execute("insert into desk_conversations(kind, product, opened_by, title, wanted, source_ref, derived_from) "
+                "values (%s,%s,%s,%s,%s,%s,%s) returning *", (kind, product, who["name"], title, Jsonb(wanted), source_ref, derived_from))
     c = cur.fetchone()
-    _event(cur, "desk.opened", c["id"], {"kind": kind, "product": product, "by": who["name"], "title": title, "wanted": wanted})
+    _event(cur, "desk.opened", c["id"], {"kind": kind, "product": product, "by": who["name"], "title": title, "wanted": wanted,
+                                         **({"source_ref": source_ref} if source_ref else {}),
+                                         **({"derived_from": derived_from} if derived_from else {})})
     _event(cur, "desk.message", c["id"], {"author": who["name"], "role": "requester", "body": body})
     return c
 
@@ -157,14 +186,18 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
 def post_message(cur, who: dict, conversation_id: int, body: str) -> dict:
     """依頼者の返事（問いへの答え・言い足し）。閉じた相談には書けない"""
     c = _conversation(cur, who, conversation_id, for_update=True)
-    if c["state"] == "closed":
-        raise DeskError(409, "閉じた相談には書けない（新しく開く）")
+    if c["state"] in ENDED:
+        raise DeskError(409, "終わった相談には書けない（新しく開く）")
     if c["state"] == "confirmed":
         raise DeskError(409, "確認して投入した相談には書けない（足したいことは新しく開く。チケットの優先度・保留は tickets の操作で）")
     body = _text(body)
-    answered_question = c["state"] == "waiting_requester"
-    cur.execute("update desk_conversations set state='open', rounds=rounds + %s, updated_at=now() where id=%s returning *",
-                (1 if answered_question else 0, c["id"]))
+    if c["state"] in LOOP_BUSY:
+        # 振り分けた後の言い足しは記録だけ（状態は dispatcher が進める。ADR 0039 の決定 2）
+        cur.execute("update desk_conversations set updated_at=now() where id=%s returning *", (c["id"],))
+    else:
+        answered_question = c["state"] == "waiting_requester"
+        cur.execute("update desk_conversations set state='open', rounds=rounds + %s, updated_at=now() where id=%s returning *",
+                    (1 if answered_question else 0, c["id"]))
     c = cur.fetchone()
     _event(cur, "desk.message", c["id"], {"author": who["name"], "role": "requester", "body": body})
     return c
@@ -187,13 +220,82 @@ def factory_message(cur, conversation_id: int, role: str, body: str, *, kind: st
 
 
 def close_conversation(cur, who: dict, conversation_id: int, reason: str = "") -> dict:
+    """依頼者が会話を閉じる（取り下げ。ADR 0039 の決定 4）。動いているジョブは止め（cancel_requested）、止める前に出ていた結果は残す。
+    取り下げは依頼者が完了にしたものとして扱う（閉じる理由は withdrawn）。reason は依頼者の一言"""
     c = _conversation(cur, who, conversation_id, for_update=True)
-    if c["state"] == "closed":
+    if c["state"] in ENDED:
         return c
-    cur.execute("update desk_conversations set state='closed', updated_at=now() where id=%s returning *", (c["id"],))
+    cur.execute("update jobs set cancel_requested=true where correlation_id=%s and state in ('queued','running') and not cancel_requested "
+                "returning id", (corr(c["id"]),))
+    cancelled = [r["id"] for r in cur.fetchall()]
+    return finish(cur, c["id"], "withdrawn", who["name"], note=reason, cancelled_jobs=cancelled)
+
+
+def advance(cur, conversation_id: int, to: str, event: str, payload: dict | None = None, **cols) -> dict:
+    """会話の状態を進める（dispatcher だけが呼ぶ。ADR 0039 の決定 2）。向きは TRANSITIONS に限り、状態と一緒に event を残す。
+    cols は一緒に書く列（path・source_ref など）。終わり方（閉じる・受け取った・渡した）は finish を通す"""
+    if to not in STATES:
+        raise ValueError(f"知らない状態: {to}")
+    cur.execute("select * from desk_conversations where id=%s for update", (conversation_id,))
     c = cur.fetchone()
-    _event(cur, "desk.closed", c["id"], {"by": who["name"], "reason": reason})
+    if not c:
+        raise DeskError(404, "そのような相談はない")
+    if to not in TRANSITIONS.get(c["state"], ()):
+        raise DeskError(409, f"{c['state']} から {to} には進めない")
+    bad = set(cols) - {"path", "source_ref"}
+    if bad:
+        raise ValueError(f"advance で書けない列: {sorted(bad)}")
+    if cols.get("path") is not None and cols["path"] not in PATHS:
+        raise ValueError(f"対応の種類は {' / '.join(PATHS)}")
+    prev = c["state"]
+    sets = "".join(f", {k}=%({k})s" for k in cols)
+    cur.execute(f"update desk_conversations set state=%(to)s, updated_at=now(){sets} where id=%(id)s returning *",
+                {"to": to, "id": conversation_id, **cols})
+    c = cur.fetchone()
+    _event(cur, event, conversation_id, {**(payload or {}), "from": prev, "state": to})
     return c
+
+
+def finish(cur, conversation_id: int, reason: str, by: str, *, note: str = "", path: str | None = None, **payload) -> dict:
+    """会話を終える（ADR 0039 の決定 4）。reason は CLOSE_REASONS。accepted は状態 accepted、handed_off は状態 handed_off、
+    ほかは closed。desk.closed に理由と、決定 7 の記録の材料（record）を残す。もう終わっていれば何もしない"""
+    if reason not in CLOSE_REASONS:
+        raise ValueError(f"閉じる理由は {' / '.join(CLOSE_REASONS)}")
+    cur.execute("select * from desk_conversations where id=%s for update", (conversation_id,))
+    c = cur.fetchone()
+    if not c:
+        raise DeskError(404, "そのような相談はない")
+    if c["state"] in ENDED:
+        return c
+    if path is not None and path not in PATHS:
+        raise ValueError(f"対応の種類は {' / '.join(PATHS)}")
+    state = reason if reason in ("accepted", "handed_off") else "closed"
+    cur.execute("update desk_conversations set state=%s, close_reason=%s, closed_by=%s, closed_at=now(), updated_at=now(), "
+                "path=coalesce(%s, path) where id=%s returning *", (state, reason, by, path, conversation_id))
+    done = cur.fetchone()
+    _event(cur, "desk.closed", conversation_id, {"by": by, "reason": reason, "note": note, "from": c["state"],
+                                                  "record": closing_record(cur, done), **payload})
+    return done
+
+
+def closing_record(cur, c: dict) -> dict:
+    """閉じたときの記録（ADR 0039 の決定 7 の表。外側のループの束ねる材料）。events の時刻から決定論で組み立てる。
+    今は対応の種類・時間・費用・往復・結末まで。進め方・断りの理由・主題は、その段を入れたときに足す"""
+    cur.execute("select name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
+    evs = cur.fetchall()
+    t0 = c["created_at"]
+
+    def first(*names):
+        e = next((e for e in evs if e["name"] in names), None)
+        return round((e["occurred_at"] - t0).total_seconds()) if e else None
+
+    first_reply = next((e for e in evs if e["name"] in ("desk.message", "desk.answered") and (e["payload"] or {}).get("role") != "requester"), None)
+    return {"path": c.get("path"), "kind": c["kind"],
+            "sec_first_reply": round((first_reply["occurred_at"] - t0).total_seconds()) if first_reply else None,
+            "sec_routed": first("desk.routed", "desk.drafted"), "sec_delivered": first("desk.delivered", "desk.tickets_created"),
+            "cost_usd": float(c.get("cost_usd") or 0), "rounds": c.get("rounds") or 0, "follow_ups": c.get("follow_ups") or 0,
+            "reroutes": sum(1 for e in evs if e["name"] == "desk.routed") - 1 if any(e["name"] == "desk.routed" for e in evs) else 0,
+            "outcome": c.get("close_reason"), "derived_from": c.get("derived_from"), "superseded_by": c.get("superseded_by")}
 
 
 def list_conversations(cur, who: dict, limit: int = 50) -> list[dict]:

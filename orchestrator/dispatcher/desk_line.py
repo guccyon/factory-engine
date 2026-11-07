@@ -331,6 +331,9 @@ def file_confirmed(cur, gh, repos: list[str]) -> int:
         lines += [f"- {f['ref']} {f['title']}" + (f"（{' '.join(f['depends_on'])} の後）" if f["depends_on"] else "") for f in filed]
         lines.append("進み具合はチケットの状態（tickets）で見られます。")
         desk.factory_message(cur, cid, "factory", "\n".join(lines), kind="tickets", payload={"draft_id": draft_id, "tickets": filed})
+        # チケット化は起票した時点で製品のラインに渡し、会話はここで終える（ADR 0039 の決定 1）
+        _event(cur, "desk.handed_off", corr, {"conversation_id": cid, "draft_id": draft_id, "tickets": [f["ref"] for f in filed]})
+        desk.finish(cur, cid, "handed_off", "factory", path="ticket")
         n += 1
     return n
 
@@ -370,7 +373,7 @@ def open_from_issue(cur, gh, who: dict, repo: str, number: int) -> dict:
     if r.get("status") == "clarified":
         body += ["", "窓口（clarify）で確定した内容:", f"- 何を: {r.get('what') or ''}", f"- 何のために: {r.get('why') or ''}",
                  f"- いつまでに: {r.get('by_when') or ''}", f"- どの精度で: {r.get('precision') or ''}"]
-    c = desk.open_conversation(cur, who, "request", repo, "\n".join(body)[: desk.MAX_BODY])
+    c = desk.open_conversation(cur, who, "request", repo, "\n".join(body)[: desk.MAX_BODY], source_ref=it.get("html_url") or None)
     _event(cur, "desk.imported", desk.corr(c["id"]), {"conversation_id": c["id"], "repo": repo, "issue": number, "by": who["name"],
                                                       "clarified": r.get("status") == "clarified"})
     return c

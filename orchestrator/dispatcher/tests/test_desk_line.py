@@ -196,7 +196,12 @@ def test_draft_confirm_and_file(cur):
     assert all(t["priority"] == 75 and t["priority_set_by"] == "desk:cs-1" and t["desk_conversation_id"] == c["id"] for t in ts)
     assert ts[1]["waiting_on"] == [f"{REPO}#100"]
     out = desk.read_conversation(cur, who, c["id"])
-    assert len(out["tickets"]) == 3 and out["messages"][-1]["kind"] == "tickets"
+    assert len(out["tickets"]) == 3 and [m["event"] for m in out["messages"][-3:]] == ["desk.message", "desk.handed_off", "desk.closed"]
+    assert out["messages"][-3]["kind"] == "tickets"
+    # チケット化は起票で製品のラインに渡し、会話は handed_off で終える（ADR 0039 の決定 1）
+    cv = out["conversation"]
+    assert cv["state"] == "handed_off" and cv["close_reason"] == "handed_off" and cv["path"] == "ticket"
+    assert out["messages"][-1]["record"]["outcome"] == "handed_off" and out["messages"][-1]["record"]["sec_routed"] is not None
     # 依頼者は自分の依頼から作ったチケットの優先度を変えられる
     st = desk.set_priority(cur, who, f"{REPO}#102", level="p0")
     assert st["level"] == "p0"
@@ -280,11 +285,13 @@ def test_estimate(cur):
 
 def test_open_from_issue(cur):
     gh = FakeGH()
-    gh.issues[448] = {"number": 448, "title": "最近テニスの生徒の反応が鈍い気がする", "body": "本文", "state": "open", "labels": []}
+    gh.issues[448] = {"number": 448, "title": "最近テニスの生徒の反応が鈍い気がする", "body": "本文", "state": "open", "labels": [],
+                      "html_url": f"https://github.com/{REPO}/issues/448"}
     cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Request', %s, 'clarify', %s)",
                 (f"github:{REPO}#448", psycopg.types.json.Jsonb({"status": "clarified", "what": "反応の数字", "why": "w", "by_when": "b", "precision": "p"})))
     op = {"name": "factoryctl", "role": "operator", "products": []}
     c = desk_line.open_from_issue(cur, gh, op, REPO, 448)
     body = desk.read_conversation(cur, op, c["id"])["messages"][1]["body"]
     assert "反応の数字" in body and f"{REPO}#448" in body
+    assert c["source_ref"] == f"https://github.com/{REPO}/issues/448"   # 依頼の来た口（ADR 0039 の決定 1）
     assert [j for j in desk_line.enqueue(cur, "tier-small", [REPO])]
