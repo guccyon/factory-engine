@@ -112,7 +112,7 @@ SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
-SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の入れ替えの依頼を見る間隔（ADR 0031）
+SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の更新の依頼を見る間隔（ADR 0031）
 SWAP_MAILBOX_INTERVAL = int(ENV.get("SWAP_MAILBOX_INTERVAL_SEC", "60"))   # Issue の郵便受け（factory:swap）を見る間隔。GET は ETag つき
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))
 EXIT_CAPTURE = ENV.get("EXIT_CAPTURE", "1") == "1"   # 実装後の画面のキャプチャを CI の成果物から読み、PR の本文と受信トレイに載せる（ADR 0025 の 4）。0 で止める
@@ -1085,13 +1085,13 @@ def watch_once():
             for k in budget_open:
                 stoppage.close_stoppage(cur, k, remedy="次の枠に入り、投入を再開した")
 
-        # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 入れ替えの後の再開を忘れていないか
+        # 1b) ラインの一時停止（ADR 0020）が DRAIN_MIN 分続いている: 更新の後の再開を忘れていないか
         drain_open = stoppage.open_keys(cur, "drain:")
         if draining and draining["minutes"] >= DRAIN_MIN:
             if not drain_open:
                 stoppage.open_stoppage(cur, f"drain:{draining['since']:%Y%m%dT%H%M%S}", "human",
                                        f"ラインが一時停止のまま {DRAIN_MIN} 分（{draining['by']}: {draining['reason'] or '理由なし'}）",
-                                       waiting_for="工場の入れ替えと再開（factoryctl resume か操業コンソール）", started_at=draining["since"])
+                                       waiting_for="工場の更新と再開（factoryctl resume か操業コンソール）", started_at=draining["since"])
         elif not draining:
             for k in drain_open:
                 stoppage.close_stoppage(cur, k, remedy="ラインを再開した")
@@ -1271,8 +1271,8 @@ def tidy_loop():
 
 
 def swap_loop():
-    """工場の入れ替え（ADR 0031）。Issue の郵便受け（factory:swap）から依頼を拾い、受けた依頼の時刻になったら、使い捨ての入れ替え役のコンテナを起動する。
-    入れ替え役が消えていたら人に回す。進み具合は依頼の Issue に返す"""
+    """工場の更新（ADR 0031）。Issue の郵便受け（factory:swap）から依頼を拾い、受けた依頼の時刻になったら、使い捨ての更新役のコンテナを起動する。
+    更新役が消えていたら人に回す。進み具合は依頼の Issue に返す"""
     last_mail = 0.0
     while True:
         if swap_mailbox.enabled() and time.time() - last_mail >= SWAP_MAILBOX_INTERVAL:
@@ -1280,12 +1280,12 @@ def swap_loop():
             try:
                 with db() as conn, conn.cursor() as cur:
                     swap_mailbox.poll(cur, gh, comment, swap_label, log)
-            except Exception as e:  # noqa: BLE001  郵便受けの失敗で入れ替えの周回を止めない
+            except Exception as e:  # noqa: BLE001  郵便受けの失敗で更新の周回を止めない
                 log("swap mailbox error", repr(e))
         try:
             with db() as conn, conn.cursor() as cur:
                 swap.tick(cur, log)
-        except Exception as e:  # noqa: BLE001  入れ替えの失敗でラインを止めない
+        except Exception as e:  # noqa: BLE001  更新の失敗でラインを止めない
             log("swap tick error", repr(e))
         time.sleep(SWAP_INTERVAL)
 
@@ -1380,7 +1380,7 @@ def main():
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
     reattached = recover()
-    with db() as conn, conn.cursor() as cur:   # 上がった印。入れ替え役が新しい版で上がったかを見る（ADR 0031）
+    with db() as conn, conn.cursor() as cur:   # 上がった印。更新役が新しい版で上がったかを見る（ADR 0031）
         record_event(cur, "dispatcher.started", None, None, {"engine_version": version.engine_version(ENV), "reattaching": len(reattached)})
     if not store.bucket_exists(BUCKET):
         store.make_bucket(BUCKET)

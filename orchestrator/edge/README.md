@@ -34,7 +34,7 @@ Mac の中で動かすとき（`http://localhost:8790`）は使わない。`comp
 ## `.env` に足す
 
 ```bash
-# 前段を重ねる（docker compose と入れ替え役が両方を読む）
+# 前段を重ねる（docker compose と更新役が両方を読む）
 COMPOSE_FILE=compose.yaml:compose.edge.yaml
 
 EDGE_DOMAIN=factory.example.com

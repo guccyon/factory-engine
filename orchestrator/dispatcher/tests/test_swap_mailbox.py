@@ -1,4 +1,4 @@
-"""工場の入れ替えの依頼の郵便受け（ADR 0031 の順番 3）: factory:swap の Issue を拾う相手・読み方・待ち・返し方・取り消し。
+"""工場の更新の依頼の郵便受け（ADR 0031 の順番 3）: factory:swap の Issue を拾う相手・読み方・待ち・返し方・取り消し。
 
 GitHub は偽物に差し替える。DB を使うものは空の Postgres に postgres/init/*.sql を当て、TEST_DATABASE_URL を向けて動かす（なければ飛ばす）。
 """
@@ -53,7 +53,7 @@ def test_redact_hides_machine_paths_and_hostnames():
 # ------------------------------------------------------------------ 拾う・待つ・返す（DB）
 class GH:
     def __init__(self, issues=None, labeler="o"):
-        self.issues = {i["number"]: {"state": "open", "body": "", "title": "入れ替え", **i} for i in (issues or [])}
+        self.issues = {i["number"]: {"state": "open", "body": "", "title": "更新", **i} for i in (issues or [])}
         self.labeler = labeler
         self.comments, self.labels, self.patches = [], [], []
 
@@ -110,7 +110,7 @@ def test_request_from_an_allowed_labeler_is_confirmed_now_and_reported(cur):
     poll(cur, gh)
     poll(cur, gh)   # 段ごとに 1 回だけ
     texts = [t for _, t in gh.comments]
-    assert len(texts) == 3 and "入れ替え役を起動した" in texts[1] and "入れ替えた" in texts[2] and "`aaaaaaa` → `bbbbbbb`" in texts[2]
+    assert len(texts) == 3 and "更新役起動済" in texts[1] and "反映済" in texts[2] and "`aaaaaaa` → `bbbbbbb`" in texts[2]
     assert gh.issues[5]["state"] == "closed" and (5, ("factory:swapping",), ("factory:swapped",)) in gh.labels
 
 
@@ -136,7 +136,7 @@ def test_one_at_a_time_waits_and_notes_once(cur):
     gh = GH([{"number": 8}])
     poll(cur, gh)
     poll(cur, gh)
-    assert len(gh.comments) == 1 and f"入れ替え {other}" in gh.comments[0][1] and len(swap.recent(cur)) == 1
+    assert len(gh.comments) == 1 and f"更新 {other}" in gh.comments[0][1] and len(swap.recent(cur)) == 1
     swap.cancel(cur, other, "t")
     poll(cur, gh)
     assert swap.active(cur)["source"] == f"{RP}#8"
@@ -174,7 +174,7 @@ def test_closing_the_issue_before_launch_cancels(cur):
     sid = swap.active(cur)["id"]
     gh.issues[11]["state"] = "closed"
     poll(cur, gh)
-    assert swap.get(cur, sid)["status"] == "cancelled" and "取り消した" in gh.comments[-1][1]
+    assert swap.get(cur, sid)["status"] == "cancelled" and "取り消し済" in gh.comments[-1][1]
 
 
 @needs_db

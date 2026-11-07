@@ -1,4 +1,4 @@
-"""工場の入れ替え（ADR 0020）: ラインの一時停止と再開、入れ替えてよいかの判定、番人の drain:、
+"""工場の更新（ADR 0020）: ラインの一時停止と再開、更新してよいかの判定、番人の drain:、
 上げ直した dispatcher が実行中のジョブのコンテナにつなぎ直すこと（docker は偽物に差し替える）。
 
 空の Postgres に postgres/init/*.sql を当て、TEST_DATABASE_URL を向けて動かす（なければ飛ばす）:
@@ -82,10 +82,10 @@ def job(cur, ref, state="queued", kind="implement", priority=None, container=Non
 
 def test_drain_and_resume(cur):
     assert drain.state(cur) is None
-    assert drain.set_drain(cur, True, "factoryctl", "postgres の入れ替え")
+    assert drain.set_drain(cur, True, "factoryctl", "postgres の更新")
     assert not drain.set_drain(cur, True, "console:builder")   # 二重には記録しない
     st = drain.state(cur)
-    assert st["by"] == "factoryctl" and st["reason"] == "postgres の入れ替え"
+    assert st["by"] == "factoryctl" and st["reason"] == "postgres の更新"
     assert drain.set_drain(cur, False, "factoryctl")
     assert drain.state(cur) is None
     cur.execute("select name from events where name like 'factory.drain%%' order by id")
@@ -93,7 +93,7 @@ def test_drain_and_resume(cur):
 
 
 def test_ready_waits_for_running_jobs_and_shipping(cur):
-    assert not drain.status(cur)["ready"]   # 一時停止していなければ入れ替えない
+    assert not drain.status(cur)["ready"]   # 一時停止していなければ更新しない
     drain.set_drain(cur, True, "factoryctl")
     jid = job(cur, "o/r#1", state="running")
     job(cur, "o/r#2")   # 順番待ちは待たない
@@ -122,7 +122,7 @@ def test_no_preemption_while_draining(cur):
 
 
 def test_watcher_opens_drain_stoppage_and_skips_idle(cur):
-    drain.set_drain(cur, True, "factoryctl", "入れ替え")
+    drain.set_drain(cur, True, "factoryctl", "更新")
     cur.execute("update events set occurred_at = now() - interval '45 minutes' where name='factory.drain_requested'")
     cur.execute("insert into jobs(correlation_id, repo, issue_number, state, enqueued_at, finished_at) "
                 "values ('github:o/r#9','o/r',9,'succeeded', now() - interval '2 hours', now() - interval '2 hours')")
@@ -217,7 +217,7 @@ def test_watcher_notices_line_low_once_and_recovers(cur):
 
 
 def test_watcher_does_not_notice_line_low_while_draining(cur):
-    drain.set_drain(cur, True, "factoryctl", "入れ替え")
+    drain.set_drain(cur, True, "factoryctl", "更新")
     dispatcher.watch_once()
     assert not line_events(cur)
 

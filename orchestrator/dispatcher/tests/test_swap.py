@@ -1,4 +1,4 @@
-"""工場の入れ替え（ADR 0031 の順番 2）: 依頼の記録、dispatcher が入れ替え役を起動すること、入れ替え役の手順（事前の確かめ・人に回す・上げ直し・確かめ・前の版に戻す）。
+"""工場の更新（ADR 0031 の順番 2）: 依頼の記録、dispatcher が更新役を起動すること、更新役の手順（事前の確かめ・人に回す・上げ直し・確かめ・前の版に戻す）。
 
 git と docker は偽物に差し替える。DB を使うものは空の Postgres に postgres/init/*.sql を当て、TEST_DATABASE_URL を向けて動かす（なければ飛ばす）。
 """
@@ -120,12 +120,25 @@ def test_tick_launches_once_and_flags_a_lost_swapper(cur):
     swap.tick(cur, lambda *a: None, launch_fn=lambda i: launched.append(i) or swap.container(i), alive_fn=lambda i: True)
     swap.tick(cur, lambda *a: None, launch_fn=lambda i: launched.append(i) or swap.container(i), alive_fn=lambda i: True)
     assert launched == [sid] and swap.get(cur, sid)["status"] == "launched"
-    # 入れ替え役が結果を書かずに消えた（コンテナがない）。起動の直後は待つ
+    # 更新役が結果を書かずに消えた（コンテナがない）。起動の直後は待つ
     swap.tick(cur, lambda *a: None, alive_fn=lambda i: False)
     assert swap.get(cur, sid)["status"] == "launched"
     swap.tick(cur, lambda *a: None, alive_fn=lambda i: False, now=datetime.now(timezone.utc) + timedelta(seconds=swap.LOST_AFTER_SEC + 5))
     assert swap.get(cur, sid)["status"] == "failed"
     assert f"swap:{sid}" in stoppage.open_keys(cur, "swap:")
+
+
+@needs_db
+def test_tick_waits_while_a_relay_job_runs(cur):
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('c', 'o/r', 1, 'qa', 'running') returning id")
+    jid = cur.fetchone()["id"]
+    sid = swap.request(cur, "main", "builder")
+    launched = []
+    swap.tick(cur, lambda *a: None, launch_fn=lambda i: launched.append(i) or swap.container(i))
+    assert launched == [] and swap.get(cur, sid)["status"] == "confirmed"   # 上げ直すと中継が切れるので待つ
+    cur.execute("update jobs set state='succeeded' where id=%s", (jid,))
+    swap.tick(cur, lambda *a: None, launch_fn=lambda i: launched.append(i) or swap.container(i))
+    assert launched == [sid]
 
 
 @needs_db
@@ -139,7 +152,7 @@ def test_tick_records_a_launch_failure(cur):
     assert s["status"] == "failed" and "見つからない" in s["events"][-1]["payload"]["error"]
 
 
-# ------------------------------------------------------------------ 入れ替え役の手順（DB と偽の git・docker）
+# ------------------------------------------------------------------ 更新役の手順（DB と偽の git・docker）
 class Fake:
     """偽の git・docker。イメージの今の名前が指す版（tagged）と、動いているサービスの版（live）を持つ"""
     def __init__(self, cur, files=("orchestrator/dispatcher/dispatcher.py",), diffs=None, broken=(), config_rc=0):
@@ -316,7 +329,7 @@ def test_broken_version_is_rolled_back(cur, tmp_path):
     assert not drain.active(cur)
     assert any(i["key"] == f"task:swap:{sid}:rolled_back" and i["who"] == "builder" for i in inbox.items(cur))
     with pytest.raises(swap.SwapError):
-        swap.request(cur, TARGET, "builder")   # 同じ版では自動で入れ替えない
+        swap.request(cur, TARGET, "builder")   # 同じ版では自動で更新しない
 
 
 @needs_db
@@ -332,7 +345,7 @@ def test_rollback_that_also_fails_keeps_the_line_drained(cur, tmp_path):
 
 
 def test_build_removes_only_its_own_worktree(tmp_path):
-    """入れ替え役のコンテナからはホストの他の worktree が見えない。作り終えたあと、見えない worktree の登録を消さない"""
+    """更新役のコンテナからはホストの他の worktree が見えない。作り終えたあと、見えない worktree の登録を消さない"""
     import subprocess
     root = tmp_path / "fe"
     g = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True, text=True).stdout
