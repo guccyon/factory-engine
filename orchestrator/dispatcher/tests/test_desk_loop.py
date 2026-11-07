@@ -77,11 +77,12 @@ def test_loop_through_delivery_and_acceptance(cur):
         desk.post_message(cur, who, c["id"], "もう一度")
     evs = events(cur, c["id"])
     names = [e["name"] for e in evs]
-    assert names == ["desk.opened", "desk.message", "desk.routed", "desk.message", "desk.confirm_requested", "desk.confirmed_run",
+    assert names == ["desk.opened", "desk.message", "desk.message", "desk.routed", "desk.message", "desk.confirm_requested", "desk.confirmed_run",
                      "desk.delivered", "desk.closed"]
-    assert evs[2]["payload"]["from"] == "open" and evs[2]["payload"]["state"] == "routed"
+    assert evs[2]["payload"]["kind"] == "ack"   # 受付の即時の返事（決定 2・3）
+    assert evs[3]["payload"]["from"] == "open" and evs[3]["payload"]["state"] == "routed"
     rec = evs[-1]["payload"]["record"]
-    assert rec["path"] == "operate" and rec["outcome"] == "accepted" and rec["reroutes"] == 0
+    assert rec["path"] == "operate" and rec["outcome"] == "accepted" and rec["reroutes"] == 0 and rec["sec_first_reply"] is not None
     assert rec["sec_routed"] is not None and rec["sec_delivered"] is not None
 
 

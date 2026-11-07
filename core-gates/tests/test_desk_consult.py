@@ -121,3 +121,31 @@ def test_consult_end_to_end_with_fake_agent(monkeypatch, tmp_path):
     assert out["cost_usd"] == 0.3
     agents = yaml.safe_load((dc.HERE.parent / "definitions" / "agents.yaml").read_text(encoding="utf-8"))
     assert "desk.consult" in agents["steps"]
+
+
+OPS = [{"id": "report.send", "ja": "定期レポートを今すぐ送る", "does": "送り直す", "examples": ["今朝のレポートを送り直して"],
+        "params": {"kind": {"type": "enum", "values": ["report.product", "all"], "default": "all", "ja": "種類"}}, "tier": "send"}]
+
+
+def test_route_to_operation_when_catalog_is_given():
+    out = {**O(tasks=[]), "route": {"path": "operate", "op": "report.send", "params": [{"name": "kind", "value": "report.product"}], "why": "送り直すだけ"}}
+    d = dc.decide(out, {"operations": OPS}, DEFS)
+    assert d["outcome"] == "route" and d["route"] == {"path": "operate", "op": "report.send", "params": {"kind": "report.product"}, "why": "送り直すだけ"}
+    # 一覧にない操作には振り分けない
+    bad = {**out, "route": {**out["route"], "op": "line.scale"}}
+    assert dc.decide(bad, {"operations": OPS}, DEFS)["outcome"] == "failed"
+    # 一覧を渡さない（古い dispatcher）なら操作に振り分けない
+    assert dc.decide(out, {}, DEFS)["outcome"] == "failed"
+    # 問いが先（決まらないときだけ問う）。ticket なら今どおり下書き
+    q = {**out, "done": False, "question": Q}
+    assert dc.decide(q, {"operations": OPS}, DEFS)["outcome"] == "question"
+    t = {**O(), "route": {"path": "ticket", "op": "", "params": [], "why": "画面を変える"}}
+    assert dc.decide(t, {"operations": OPS}, DEFS)["outcome"] == "draft"
+
+
+def test_route_section_only_with_catalog():
+    assert "route" not in dc.schema(DEFS)["properties"] and "最初に振り分ける" not in dc.prompt(DEFS, {})
+    s = dc.schema(DEFS, OPS)
+    assert s["properties"]["route"]["properties"]["op"]["enum"] == ["", "report.send"] and "route" in s["required"]
+    p = dc.prompt(DEFS, {"operations": OPS})
+    assert "最初に振り分ける" in p and "report.send" in p and "今朝のレポートを送り直して" in p

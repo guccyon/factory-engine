@@ -53,6 +53,15 @@ CHOICE_EFFECTS = {
     "taste_sample": "選んだ案を内部品質の教師信号として残す。戻すと作り手に戻す",
 }
 TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）"}   # 見たら閉じてよい依頼
+# 窓口の単発の依頼の確認と受取確認（ADR 0039 の決定 2・5）。答えは desk_line.answer に渡す。依頼者のほか、運用主（role なし）も答えられる
+DESK_ANSWERS = {
+    "desk_confirm": {"options": [{"id": "run", "label": "実行する"}, {"id": "cancel", "label": "やめる"}],
+                     "effect": "実行するなら dispatcher が操作を 1 回動かして結果を提出する。やめるなら依頼を取り下げとして閉じる"},
+    "desk_receipt": {"options": [{"id": "accept", "label": "受け取った"}],
+                     "extra": [{"id": "more", "label": "続きを頼む", "note_required": True},
+                               {"id": "return", "label": "差し戻す（頼んだことと違う）", "note_required": True}],
+                     "effect": "受け取ったら依頼を完了にする。続き・差し戻しは一言を添えて同じ会話で振り分けからやり直す"},
+}   # desk_line の CONFIRM_OPTIONS・RECEIPT_OPTIONS と同じ（食い違いはテストで見る）
 
 
 def _clip(v, n=MAX_LEN) -> str:
@@ -272,6 +281,10 @@ def _tasks(cur) -> list[dict]:
             c = _review_choice(cur, m.group(1), m.group(2)) if m else None
             if c:
                 i["answer"], i["also"] = c["answer"], [c["key"]]
+        elif p.get("kind") in DESK_ANSWERS:
+            d = DESK_ANSWERS[p["kind"]]
+            i["answer"] = {"type": "choose", "options": d["options"], "extra": d.get("extra", []), "effect": d["effect"],
+                           "allowed": ["requester"], "target": ("desk", p["key"])}
         elif p.get("kind") in TASK_ACK:
             i["answer"] = {"type": "ack", "options": [{"id": "seen", "label": "見た（閉じる）"}], "extra": [], "effect": TASK_ACK[p["kind"]],
                            "allowed": [i["who"]], "target": ("task", p["key"])}
@@ -489,6 +502,9 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
         return True, "ラインを再開した"
     if kind == "task":
         return (True, "閉じた") if resolve(cur, ref, by, option) else (False, "もう閉じている")
+    if kind == "desk":
+        import desk_line
+        return desk_line.answer(cur, ref, option, by, via, note)
     if kind == "judgment":
         import judgment
         return judgment.decide(cur, ref, option, by, via, note)

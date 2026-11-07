@@ -274,6 +274,12 @@ docker compose exec dispatcher factoryctl hold 12
 - 受信トレイ（ADR 0034 の順番 2）: `GET /api/desk/inbox`・`GET /api/desk/inbox/<key>`・`POST /api/desk/inbox/<key>/answer`。トークンの役割と製品で答えてよい件だけを見せ、件の中身（`detail`）と答え方を返し、答えは `inbox.answer` を入口 `mcp` で通す。MCP の道具は `inbox_list`・`inbox_read`・`inbox_answer`
 - GitHub の Issue で clarify まで済んだ依頼（`factory:clarified`）は `factoryctl desk from-issue owner/repo#番号` で窓口の依頼として開き直せる（会話の `source_ref` に Issue の URL）
 - 単発の依頼のループ（ADR 0039 の順番 1、`postgres/init/006_desk_loop.sql`）: 会話の状態に `routed`（振り分けた）・`awaiting_confirm`（確認待ち）・`running`（実行中）・`delivered`（提出した。受取確認待ち）・`accepted`（依頼者が受け取った）・`handed_off`（チケット化で製品のラインに渡した）を足した。状態を進めるのは dispatcher だけ（`desk.advance`。向きは `desk.TRANSITIONS`）で、終わり方は `desk.finish` を通り、閉じる理由（`accepted`・`declined`・`superseded`・`withdrawn`・`handed_off`）と、閉じたときの記録（対応の種類・最初の返事／振り分け／提出までの秒・費用・往復・結末）を `desk.closed` に残す。チケット化は起票した時点で `handed_off` で終わる。依頼者が閉じると取り下げ（`withdrawn`）で、動いているジョブを止める。断りから別案として開いた依頼は `derived_from` で元と結ぶ。振り分けた後の依頼者の言い足しは記録だけ（相談役に回し直さない）
+- 決まった操作の 1 本（ADR 0039 の順番 2、ADR 0037 の決定 3・4。`definitions/operations.yaml`、`dispatcher/operations.py`）:
+  1. 受付: 依頼を開くと、中身を読まずに「受け付けた・次は振り分け」をすぐ返す（`kind: ack`）
+  2. 振り分け: 相談役に操作の一覧を渡し、操作を 1 回動かせば済む依頼なら `route`（`path: operate`・操作の id・引数）が返る。dispatcher が宣言と照らして引数を検査し（宣言にない引数・範囲の外の値・通知の設定にない宛先は拒む）、`desk.routed` に対応の種類・引数・確認の段・見本（何をどこへ）を残す
+  3. 確認: 段が `send` なら受信トレイに依頼者の件 `task:desk_confirm:<会話>:<回>`（実行する・やめる）を出す。窓口の `confirm` に `{"answer": "run"|"cancel"}`、操業コンソールの受信トレイのどちらから答えても `inbox.answer` を通る。`read` の段は飛ばす
+  4. 実行: dispatcher の周回（`desk_line.run_operations`）が操作を 1 回だけ動かす（`op.started` で同じ回を 2 度動かさない）。最初の操作は `report.send`（`factoryctl report send` と同じ `report.send_now`）
+  5. 提出: 会話に結果を書き、受信トレイに受取確認の件 `task:desk_receipt:<会話>:<回>`（受け取った・続きを頼む・差し戻す）を出す。窓口の `messages` に `{"answer": "accept"|"more"|"return", "body": 一言}`。受け取ったら `accepted` で完了、続き・差し戻しは同じ会話で相談役の振り分けからやり直す（続きは 5 回まで）。返事がなくても閉じない
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）

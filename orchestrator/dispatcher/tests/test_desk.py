@@ -71,7 +71,8 @@ def test_conversation_round_trip(cur):
     assert st == 201
     c = out["conversation"]
     assert (c["kind"], c["state"], c["opened_by"], c["title"], c["wanted"]) == ("request", "open", "cs-1", "予約まわりの通知を先に進めて", {"level": "p1"})
-    assert [m["event"] for m in out["messages"]] == ["desk.opened", "desk.message"]
+    assert [m["event"] for m in out["messages"]] == ["desk.opened", "desk.message", "desk.message"]
+    assert out["messages"][-1]["kind"] == "ack" and "受け付けました" in out["messages"][-1]["body"]   # 受付の即時の返事（ADR 0039）
     last = out["last_id"]
 
     # 相手の問い（順番 2 で入るプランナーの相談役の代わりに、工場の側から直接書く）→ 依頼者の返事で往復が 1 つ進む
@@ -86,7 +87,7 @@ def test_conversation_round_trip(cur):
     assert out["conversation"]["state"] == "closed"
     assert call("POST", f"/api/desk/conversations/{c['id']}/messages", tok, {"body": "まだある"})[0] == 409
     cur.execute("select count(*) as n from events where correlation_id=%s", (f"desk:{c['id']}",))
-    assert cur.fetchone()["n"] == 5
+    assert cur.fetchone()["n"] == 6
 
 
 def test_wait_returns_when_nothing_new(cur, monkeypatch):

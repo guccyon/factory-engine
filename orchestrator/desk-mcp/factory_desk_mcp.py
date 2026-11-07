@@ -17,9 +17,9 @@ Claude Code への登録の例:
 
 道具（ADR 0030 の 5。少数に絞る）:
   desk_open             相談を開く（依頼 request / 問い合わせ inquiry）
-  desk_reply            返事・言い足しを書く（相談役の問いへの答え、下書きの直し）
+  desk_reply            返事・言い足しを書く（相談役の問いへの答え、下書きの直し）。提出の後は受取確認（accept / more / return）
   desk_read             会話を読む（after より後の発言、wait 秒まで待つ。最新の下書きと作ったチケットも付く）
-  desk_confirm          下書きを確認して投入する（依頼者の確認 1 回）
+  desk_confirm          下書きを確認して投入する（依頼者の確認 1 回）。決まった操作に振り分けた依頼は、動かしてよいか（run / cancel）
   desk_list             自分の相談の一覧
   desk_ticket           チケットの状態（段・優先度・順番・作業中のジョブ・PR）
   desk_set_priority     明確な指示（「#812 を先に」）で優先度を変える。壁打ちを通さない
@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SERVER = {"name": "factory-desk", "version": "0.2.0"}
+SERVER = {"name": "factory-desk", "version": "0.3.0"}
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 HTTP_TIMEOUT = 75   # 会話を読むときの待ち（最大 60 秒）より長く
 
@@ -53,9 +53,12 @@ TOOLS = [
          "due": {"type": "string", "description": "希望の期限（例 2026-11-30、今月中）"}},
          "required": ["kind", "product", "body"]}},
     {"name": "desk_reply",
-     "description": "相談に返事・言い足しを書く（相談役の問いへの答え、下書きの直したいところ）。書くと相談役が次の周回で動く",
+     "description": "相談に返事・言い足しを書く（相談役の問いへの答え、下書きの直したいところ）。書くと相談役が次の周回で動く。"
+                    "工場が結果を提出した後は answer で受取確認に答える（accept 受け取った・more 続きを頼む・return 差し戻す。more と return は body に一言）。"
+                    "answer は依頼者が答えを決めたときだけ付ける",
      "inputSchema": {"type": "object", "properties": {
-         "conversation_id": {"type": "integer"}, "body": {"type": "string"}}, "required": ["conversation_id", "body"]}},
+         "conversation_id": {"type": "integer"}, "body": {"type": "string"},
+         "answer": {"type": "string", "enum": ["accept", "more", "return"]}}, "required": ["conversation_id"]}},
     {"name": "desk_read",
      "description": "会話を読む。after（最後に見た発言の id）より後の発言と、最新の下書き（draft）・作ったチケットを返す。"
                     "wait（秒、60 まで）を渡すと新しい発言が来るまで待つ。次に読むときは返ってきた last_id を after に渡す",
@@ -64,11 +67,13 @@ TOOLS = [
          "wait": {"type": "integer", "minimum": 0, "maximum": 60, "default": 0}}, "required": ["conversation_id"]}},
     {"name": "desk_confirm",
      "description": "下書きを確認して投入する（依頼者の確認 1 回）。draft_id は desk_read の draft.draft_id。"
-                    "依頼者が内容と優先度に同意したときだけ呼ぶ。工場が次の周回で Issue を起票し、会話に作ったチケットが書かれる",
+                    "依頼者が内容と優先度に同意したときだけ呼ぶ。工場が次の周回で Issue を起票し、会話に作ったチケットが書かれる。"
+                    "決まった操作に振り分けた依頼（状態 awaiting_confirm）は、draft_id の代わりに answer（run 実行する・cancel やめる）で答える",
      "inputSchema": {"type": "object", "properties": {
          "conversation_id": {"type": "integer"}, "draft_id": {"type": "integer"},
+         "answer": {"type": "string", "enum": ["run", "cancel"]},
          "level": {**LEVEL, "description": "チケットに付ける優先度（省くと相談を開いたときの希望、それもなければ p2）"}},
-         "required": ["conversation_id", "draft_id"]}},
+         "required": ["conversation_id"]}},
     {"name": "desk_list", "description": "自分の相談の一覧（運用主はすべて）。新しい順",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "desk_ticket",
@@ -154,12 +159,16 @@ def call_tool(name: str, a: dict, call=http) -> dict:
         body = {k: a[k] for k in ("kind", "product", "body", "level", "due") if a.get(k) is not None}
         return call("POST", "/api/desk/conversations", body)
     if name == "desk_reply":
+        if a.get("answer"):   # 受取確認（一言は body。accept なら省ける）
+            return call("POST", f"/api/desk/conversations/{int(a['conversation_id'])}/messages", {"body": a.get("body") or "", "answer": a["answer"]})
         return call("POST", f"/api/desk/conversations/{int(a['conversation_id'])}/messages", {"body": a["body"]})
     if name == "desk_read":
         q = {"after": int(a.get("after") or 0), "wait": min(max(int(a.get("wait") or 0), 0), 60)}
         return call("GET", f"/api/desk/conversations/{int(a['conversation_id'])}", None, q)
     if name == "desk_confirm":
-        body = {"draft_id": int(a["draft_id"]), **({"level": a["level"]} if a.get("level") else {})}
+        if a.get("answer"):
+            return call("POST", f"/api/desk/conversations/{int(a['conversation_id'])}/confirm", {"answer": a["answer"]})
+        body = {"draft_id": int(a.get("draft_id") or -1), **({"level": a["level"]} if a.get("level") else {})}
         return call("POST", f"/api/desk/conversations/{int(a['conversation_id'])}/confirm", body)
     if name == "desk_list":
         return call("GET", "/api/desk/conversations")
@@ -198,7 +207,7 @@ def handle(msg: dict, call=http) -> dict | None:
         want = params.get("protocolVersion")
         return ok({"protocolVersion": want if want in PROTOCOLS else PROTOCOLS[0], "capabilities": {"tools": {}}, "serverInfo": SERVER,
                    "instructions": "事業部の窓口。依頼者の言葉を desk_open / desk_reply でそのまま渡し、相談役の問いと下書きを desk_read で読んで依頼者に見せる。"
-                                   "下書きの投入（desk_confirm）は依頼者が同意したときだけ。"
+                                   "下書きの投入と操作の実行（desk_confirm）、受取確認の答え（desk_reply の answer）は依頼者が決めたときだけ。"
                                    "受信トレイ（工場が人の判断を待っているもの）は inbox_list で一覧、inbox_read で問い・今の案・他の案・見立てを読んで本人に見せる。"
                                    "判断の材料が足りないと言われたら、件の url の PR や製品のリポジトリを調べて答える。"
                                    "答え（inbox_answer）は本人がはっきり選んだときだけ送り、自分で選ばない。取り返しのつかない件は本人の明示の承認で confirm を付ける。"

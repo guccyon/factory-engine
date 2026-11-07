@@ -250,6 +250,22 @@ events:
     source: control_plane
     required: [conversation_id, reason]
     note: "ADR 0039 の決定 4。どの対応の種類にも当てはまらないので断った。理由（決まった語）と代わりの案"
+  desk.rerouted:
+    source: control_plane
+    required: [conversation_id, from, state, answer]
+    note: "ADR 0039 の決定 5。提出への答えが続き（more）か差し戻し（return）だったので、同じ会話で振り分け（相談役）からやり直す。依頼者の一言は desk.message（kind は follow_up | returned）"
+  op.started:
+    source: control_plane
+    required: [conversation_id, op, params, round]
+    note: "ADR 0037 の決定 3・ADR 0039 の順番 2。dispatcher が決まった操作を動かし始めた（同じ回を 2 度動かさない印。dedupe_key は op.started:<会話>:<回>）"
+  op.executed:
+    source: control_plane
+    required: [conversation_id, op, round, ok, summary]
+    note: "ADR 0037 の決定 3。決まった操作を 1 回動かした結果。失敗も結果として提出する"
+  op.rejected:
+    source: control_plane
+    required: [conversation_id, round, by]
+    note: "ADR 0037 の決定 4。確認の段で依頼者（か運用主）がやめた。会話は取り下げ（withdrawn）で閉じる"
   desk.handed_off:
     source: control_plane
     required: [conversation_id, tickets]
