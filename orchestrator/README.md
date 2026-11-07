@@ -270,6 +270,7 @@ docker compose exec dispatcher factoryctl hold 12
 - 直したいところは下書きに返事を書けば出し直す（古い下書きは確認できない）。確認した相談には書けない（新しく開く）
 - 窓口の枠は流量の宣言の `desk`（`factoryctl line scale --desk N`、既定 `DESK_PARALLEL=1`）。ラインの一時停止中も相談には答え、ラインのワーカーを奪わない。相談 1 件の費用は `DESK_CONSULT_MAX_USD`（既定 $2、仮置き）まで
 - 問い合わせ（`kind: inquiry`）の回答役は順番 4 で入る。それまでは開いた問い合わせは `open` のまま残り、運用主が `factoryctl desk list` で拾う
+- 受信トレイ（ADR 0034 の順番 2）: `GET /api/desk/inbox`・`GET /api/desk/inbox/<key>`・`POST /api/desk/inbox/<key>/answer`。トークンの役割と製品で答えてよい件だけを見せ、件の中身（`detail`）と答え方を返し、答えは `inbox.answer` を入口 `mcp` で通す。MCP の道具は `inbox_list`・`inbox_read`・`inbox_answer`
 - GitHub の Issue で clarify まで済んだ依頼（`factory:clarified`）は `factoryctl desk from-issue owner/repo#番号` で窓口の依頼として開き直せる
 
 ```bash

@@ -36,7 +36,9 @@ def test_initialize_and_list():
     assert rpc("initialize", {"protocolVersion": "1999-01-01"})["result"]["protocolVersion"] == m.PROTOCOLS[0]
     assert m.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     names = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
-    assert names == ["desk_open", "desk_reply", "desk_read", "desk_confirm", "desk_list", "desk_ticket", "desk_set_priority"]
+    assert names == ["desk_open", "desk_reply", "desk_read", "desk_confirm", "desk_list", "desk_ticket", "desk_set_priority",
+                     "inbox_list", "inbox_read", "inbox_answer"]
+    assert "inbox_answer" in r["instructions"] and "本人がはっきり選んだ" in r["instructions"]
     assert rpc("nope")["error"]["code"] == -32601
 
 
@@ -50,6 +52,14 @@ def test_initialize_and_list():
     ("desk_ticket", {"ticket": "o/r#812"}, ("GET", "/api/desk/tickets/o%2Fr%23812", None, None)),
     ("desk_set_priority", {"ticket": "o/r#812", "level": "p1", "reason": "先に"},
      ("POST", "/api/desk/tickets/o%2Fr%23812/priority", {"level": "p1", "reason": "先に"}, None)),
+    ("inbox_list", {}, ("GET", "/api/desk/inbox", None, None)),
+    ("inbox_list", {"include_answered": True}, ("GET", "/api/desk/inbox", None, {"all": 1})),
+    ("inbox_read", {"key": "judgment:12"}, ("GET", "/api/desk/inbox/judgment%3A12", None, None)),
+    ("inbox_read", {"key": "task:design_review:o/r#3"}, ("GET", "/api/desk/inbox/task%3Adesign_review%3Ao%2Fr%233", None, None)),
+    ("inbox_answer", {"key": "judgment:12", "option": "change", "note": "2 文に", "raw": "2 文にして", "confirm": "yes"},
+     ("POST", "/api/desk/inbox/judgment%3A12/answer", {"option": "change", "note": "2 文に", "raw": "2 文にして"}, None)),   # confirm は true だけ
+    ("inbox_answer", {"key": "release:o/r@1.2.0", "option": "approve", "confirm": True},
+     ("POST", "/api/desk/inbox/release%3Ao%2Fr%401.2.0/answer", {"option": "approve", "confirm": True}, None)),
 ])
 def test_tools_map_to_api(name, args, want):
     rec = Rec()
