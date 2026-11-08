@@ -36,8 +36,10 @@ SCHEMA = {
             "confidence": {"type": "number"},
             "evidence": {"type": "string"}, "interpretation": {"type": "string"}, "impact": {"type": "string"},
             "precedent": {"type": "string", "description": "aesthetic を adopt・replace にするときは必須。沿っている既存の部品・画面のファイルのパスと箇所、UXSpec のファイルと項目、または要素レベルなら拠った UI の定石"},
-            "level": {"type": "string", "enum": ["element", "experience"], "description": "aesthetic のときは必須。element＝部品 1 つの見た目の細部、experience＝使う人の体験や印象が変わるもの"}},
-            "required": ["artifact_id", "verdict", "confidence", "evidence", "interpretation"]}},
+            "level": {"type": "string", "enum": ["element", "experience"], "description": "aesthetic のときは必須。element＝部品 1 つの見た目の細部、experience＝使う人の体験や印象が変わるもの"},
+            "user_visible": {"type": "string", "enum": ["none", "changes"], "description": "必須。none＝どの案を選んでも利用者・API の利用者に見える振る舞いが同じ、changes＝どれかの案で変わる。迷ったら changes"},
+            "reversible": {"type": "boolean", "description": "必須。後で選び直すのに、データの移行・公開した契約の互換の維持・利用者への知らせが要らないなら true。迷ったら false"}},
+            "required": ["artifact_id", "verdict", "confidence", "evidence", "interpretation", "user_visible", "reversible"]}},
         "defects": {"type": "array", "items": {"type": "object", "properties": {
             "index": {"type": "integer"},
             "verdict": {"type": "string", "enum": ["adopt", "reject", "escalate"]},
@@ -136,9 +138,16 @@ def main() -> int:
   - experience（体験が変わる）: 画面の流れ、情報の出し方や量、操作の手順、文言の意味、ブランドや印象に効く新しい見た目（既存にない色・書体・部品の形）、
     既存と UXSpec が食い違うもの。既存の見た目か UXSpec にそのまま沿っているときだけ adopt にしてよく、それ以外（replace を含む）は escalate にする
   - 迷ったら experience にする。precedent が空のもの、level が書かれていないものは、工場が機械的に人へ回す
+- 仮決めの各件に、必ず user_visible（none / changes）と reversible（true / false）を書く（ADR 0042）。
+  - user_visible=none: どの案（今の案と他の案）を選んでも、利用者・API の利用者に見える振る舞い（画面・文言・応答・通知・速さの体感）が同じ
+  - reversible=true: 後で選び直すのに、データの移行・公開した契約（API・イベント）の互換の維持・利用者への知らせが要らない
+  - 迷ったら changes・false にする
+- category が implementation（内部実装）で user_visible=none かつ reversible=true の仮決めは、escalate にせず adopt か replace で自分で決める。
+  利用者の利益・不利益の根拠は要らない（どの案でも同じなので）。正本（ADR・SSOT・既存のコード）との整合、前例、保守のしやすさ、変更の小ささで決め、
+  拠ったものを precedent に書く。確信度が 0.5 未満のときだけ escalate にしてよい（そのときも recommend を書く）
 - track_record は類型ごとの過去の一致率（人の採点との一致）。件数が 10 以上で一致率が低い類型は、確信度を下げるか escalate にする
 - mode は attended（人が並走している）か unattended（夜間など全面委任）。unattended でも、権限・秘密情報・決済・破壊的スキーマに関わるものは escalate にする
-- 下の「重さの物差し」で裁く。指摘が仕様（契約・Issue・doc コメント）からのずれでも、利用者に害がなくワーニングにとどまるなら reject。仕様どおりの仮決めでも利用者の不利益になるなら replace で仕様への差し戻しを提案する。利用者の利益・不利益を言い切る根拠が渡したものにないときは escalate
+- 下の「重さの物差し」で裁く。指摘が仕様（契約・Issue・doc コメント）からのずれでも、利用者に害がなくワーニングにとどまるなら reject。仕様どおりの仮決めでも利用者の不利益になるなら replace で仕様への差し戻しを提案する。利用者の利益・不利益を言い切る根拠が渡したものにないときは escalate（ただし、利用者への振る舞いが変わらない内部実装の選択は上のとおり自分で決める）
 - interpretation に重さ（クリティカル / メジャー / マイナー / ワーニング）を書く
 
 {SEVERITY}
