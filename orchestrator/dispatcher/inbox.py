@@ -52,7 +52,9 @@ CHOICE_EFFECTS = {
     "concept_tone": "選んだコンセプトとトーン＆マナーでデザインシステムの線が進む。戻すと作り手に作り直しを頼む",
     "taste_sample": "選んだ案を内部品質の教師信号として残す。戻すと作り手に戻す",
 }
-TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）"}   # 見たら閉じてよい依頼
+TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）",
+            "desk_waiting": "見たとして閉じる（依頼は閉じない。依頼者に直接確かめ、答えは依頼者が窓口か受信トレイから返す）",
+            "desk_notice_failed": "見たとして閉じる（知らせはもう送り直さない。依頼者には直接知らせる）"}   # 見たら閉じてよい依頼
 # 窓口の単発の依頼の確認と受取確認（ADR 0039 の決定 2・5）。答えは desk_line.answer に渡す。依頼者のほか、運用主（role なし）も答えられる
 DESK_ANSWERS = {
     "desk_confirm": {"options": [{"id": "run", "label": "実行する"}, {"id": "cancel", "label": "やめる"}],
@@ -61,7 +63,11 @@ DESK_ANSWERS = {
                      "extra": [{"id": "more", "label": "続きを頼む", "note_required": True},
                                {"id": "return", "label": "差し戻す（頼んだことと違う）", "note_required": True}],
                      "effect": "受け取ったら依頼を完了にする。続き・差し戻しは一言を添えて同じ会話で振り分けからやり直す"},
-}   # desk_line の CONFIRM_OPTIONS・RECEIPT_OPTIONS と同じ（食い違いはテストで見る）
+    "desk_decline": {"options": [{"id": "accept", "label": "納得した"}],
+                     "extra": [{"id": "more", "label": "別案で進める（別の依頼として開く）"},
+                               {"id": "return", "label": "断りを差し戻す", "note_required": True}],
+                     "effect": "納得なら依頼を断りとして完了にする。別案なら代わりの案を別の依頼として開き、元の依頼と結ぶ。差し戻すと理由を添えて振り分けからやり直す"},
+}   # desk_line の CONFIRM_OPTIONS・RECEIPT_OPTIONS・DECLINE_OPTIONS と同じ（食い違いはテストで見る）
 
 
 def _clip(v, n=MAX_LEN) -> str:

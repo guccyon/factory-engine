@@ -71,6 +71,10 @@ advisories:                          # 経路は変えず、見返すための�
   no_stories: "画面を含む変更なのに、増やす・変える・守るユーザーストーリーがない"
   unknown_story: "変える・守るとしたストーリーの id が製品の specs/stories/ にない（その宣言は落とす）"
   story_exists: "増やすとしたストーリーの id がもうある（変えるとして扱う）"
+  unknown_adr: "従うとした ADR の番号が製品の docs/adr/ にない（その宣言は落とす）"
+  unknown_contract: "契約の差分の置き場が製品の specs/contracts/ にない（その差分は落とす）"
+  breaking_contract: "互換を壊す契約の差分がある（expand → 移行 → contract で分け、contract は人の承認。製品の ADR 0004）"
+  no_contract_diff: "契約の層を触る見積もりなのに、契約の差分がない"
 
 asking:
   max_rounds: 2                      # 起票者への問いは 2 回まで。3 回目の判定でも決まらなければ人へ
@@ -95,8 +99,11 @@ planner:
     - "大きさが切る基準に当たるなら、タスクのまとまりに切る（tasks）。1 回の実装でターン上限に当たる大きさのまま回さない（ADR 0036）"
     - "着手できるなら、要件（requirements）を書く。受け入れ条件はチケットに書いてあることを、利用者から見て確かめられる文に整える（中身を足さない）"
     - "着手できるなら、このタスクがどのユーザーストーリーを増やす・変える・守るか（stories）を書く。製品の specs/stories/ を読み、既存の id はそのまま使う"
+    - "着手できるなら、このタスクが従う製品の ADR（adrs.follow）と、新しく残すべき判断（adrs.new）を書く。新しい判断は、後から理由を知りたくなる・取り消しにくい・ほかのタスクにも効くものだけにし、チケットと既存の ADR から読めることだけで書く"
+    - "着手できるなら、契約（specs/contracts/）の差分（contract_changes）を書く。どの契約のどの操作・スキーマを足す・変える・消すか、互換への影響（none・additive・breaking）まで。契約に触らないなら空にする"
     - "ワークフロー（workflow）を宣言する。各ステップを動かすか飛ばすかと理由、どこを厚くするか、上限、出荷と Learn への渡し方、着手のしかた（start）まで（ADR 0038）"
     - "計画の前に、製品の知見（knowledge/）、実績の表（sizes.md）、上限に当たった過去の事例（caps.md）、流れているタスク（inflight.md）を読む。同じファイルで同じ上限に当たった事例があれば、上限か着手のしかたを変えて繰り返さない"
+    - "流れているタスク（inflight.md）に、このチケットと同じ目的のもの（題・知見の id・解決する Issue の目的が同じ、または同じ新規ファイルを足す見込み）があれば、同時に着手しない。後に並べる（start: after）か、重複として ask で起票者に返す。どちらにしたかと根拠を書く。進んでいる PR の続きや作り直しなら、新しい PR を作らず、その PR の続きにする（ADR 0044 の決定 8。rally #1116 と #1192 が同じ担保を同時に作った）"
 
 # 型つきの上流の成果物（P4 の typed_upstream。ADR 0025 の E5、ADR 0028 のユーザーストーリー）
 # プランナーは着手できると決めたとき（ready・split）に、要件（artifacts.yaml の Requirements）と、
@@ -115,6 +122,22 @@ upstream:
   max_stories: 6
   stories_dir: specs/stories/        # definitions/user_story.yaml の location.dir
   markers: ["<!-- factory-requirements:v1 -->", "<!-- /factory-requirements -->"]
+  adr:                               # artifacts.yaml の ADR。プランナーは宣言だけ、ファイル（docs/adr/<次の番号>-<名前>.md）は実装役が同じ PR で書く
+    dir: docs/adr/
+    max_new: 2
+    max_follow: 6
+    required: [title, context, decision, alternatives, consequences]   # artifacts.yaml の ADR と同じ（status は proposed で始める）
+  contracts:                         # artifacts.yaml の ContractDiff。契約の差分の宣言。契約のファイルは実装役が実装より先に直す
+    dir: specs/contracts/
+    max_changes: 6
+    kinds:
+      add: "契約のファイルを新しく足す（置き場の枝はもうある）"
+      change: "既存の契約に操作・スキーマ・項目を足す・変える"
+      remove: "操作・スキーマ・項目を消す（互換を壊す）"
+    compat:
+      none: "利用者から見て変わらない（説明・例の直し）"
+      additive: "足すだけで、今の利用者は壊れない"
+      breaking: "今の利用者が壊れる（消す・名前や型を変える・必須にする）"
 
 # 大きさの見積もりと、結果との突き合わせ（ADR 0036）。数値は仮置き（2026-11-05 オーナー承認。値は運用パラメータとして工場が調整してよい）
 # layers・split（実績の判定と、プランナーの見積もりに当てる基準）・bands・pass_lines。切ったタスクの型は definitions/desk.yaml の task_kinds（窓口と同じ）。

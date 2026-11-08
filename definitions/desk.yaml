@@ -31,3 +31,33 @@ efforts:                 # planner.yaml の efforts と同じ段
 labels:
   waiting: factory:desk-waiting   # 窓口から起票したタスクで、依存のタスクが閉じるのを待っている。閉じたら factory:plan に替わる
   trigger: factory:plan           # 依存のないタスクは、起票と同時にプランナーの着手判定へ
+
+# 単発の依頼のループ（ADR 0039）。数値は仮置き（2026-11-08）。運用パラメータとして工場が調整してよい
+# dispatcher のコンテナには definitions/ がないので、使う値を dispatcher/desk.py の LOOP に写す（食い違いはテストで見る）
+loop:
+  # 応答時間の目安（決定 3。秒）。マイルストーンは 最初の返事・振り分け・提出。固定の約束で、振り分けの見込み（見積もり）とは別のもの
+  #   ack:     依頼を開いてから最初の返事まで（受付は決定論なのでほぼ 0）
+  #   route:   依頼者の最後の発言から振り分けまで（問いの返事待ちの間は数えない）。対応の種類の決まる前は default で見る
+  #   deliver: 確認（確認を飛ばすなら振り分け）から提出まで。analysis は振り分けで示した時刻（deliver_by）があればそれを約束にする
+  #            direct_line は優先度を変えた時点（ラインに入ったことを返す）なので目安を置かない
+  targets:
+    ack: 60
+    route:   { default: 300, direct_line: 300, operate: 300, quick: 300, analysis: 900 }
+    deliver: { operate: 300, quick: 900, analysis: 7200 }
+  progress_at: 0.8        # 目安のこの割合を過ぎたら、超える前に「今どこまで・あとどれくらい」を会話に書く（黙って遅れない）
+  max_follow_ups: 5       # 続きの上限（決定 5）。超えたら新しい会話にしてもらう
+  # 依頼者の答え（確認・受取確認・断り）を待つ間の知らせ直し（決定 4・5。日）。工場は勝手に完了にしない
+  remind_after_days: [3, 7]      # 確認を頼んだ・提出した時から数えて、この日数で依頼者に知らせ直す
+  to_operator_after_days: 10     # それでも答えがなければ、運用主の受信トレイに「依頼者の返事待ち」として出す（会話は閉じない）
+  # 断りの理由（決定 4・7。決まった語。Learn の desk_declined の鍵）
+  decline_reasons:
+    no_operation: 決まった操作の一覧にない
+    no_data_source: 工場がつながっていないデータ源が要る
+    needs_production_data: 本番のデータが要る（後のフェーズ）
+    too_large: 単発で受けるには大きすぎる
+    no_capability: 工場がまだ持たない対応（集計・分析など）
+  # 断りに添える代わりの案の種類（必ず 1 つ以上）
+  alternatives:
+    other_path: できる範囲の別の対応の種類（チケット化など）
+    add_capability: 工場に足す提案（建設者に回す）
+    to_human: 人に回す（運用主）

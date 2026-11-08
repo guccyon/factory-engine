@@ -161,6 +161,32 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
     <div class="card" id="explore"></div>
   </section>
 
+  <section aria-label="工程ごとの ROI" id="roi-sec" hidden>
+    <h2 style="margin-bottom:12px">工程ごとの ROI（直近 <span id="roi-days"></span> 日）</h2>
+    <div class="card" id="roi-bn"></div>
+    <div class="card table-wrap" style="margin-top:12px">
+      <h2>工程 × モデル（費用の多い順）</h2>
+      <table class="reasons"><thead><tr><th>工程</th><th>モデル</th><th style="text-align:right">ジョブ</th><th style="text-align:right">費用</th><th style="text-align:right">時間の割合</th><th style="text-align:right">作業</th><th style="text-align:right">待ち</th><th style="text-align:right">一発で通った</th><th style="text-align:right">混入した Defect</th></tr></thead><tbody id="roi-stages"></tbody></table>
+    </div>
+    <div class="card table-wrap" style="margin-top:12px">
+      <h2>モデルの試し（小さいチケットの実装の一部を Sonnet で）</h2>
+      <table class="reasons"><thead><tr><th>側</th><th style="text-align:right">チケット</th><th style="text-align:right">マージ</th><th style="text-align:right">通った 1 件の費用</th><th style="text-align:right">リードタイム</th><th style="text-align:right">一発で通った</th><th style="text-align:right">Defect／件</th></tr></thead><tbody id="roi-exp"></tbody></table>
+      <div class="sub-note" id="roi-note"></div>
+    </div>
+  </section>
+
+  <section aria-label="品質（Defect）" id="defect-sec" hidden>
+    <h2 style="margin-bottom:12px">品質（Defect、直近 <span id="defect-days"></span> 日）</h2>
+    <div class="gate">
+      <div id="defect-card"></div>
+      <div class="card table-wrap">
+        <h2>発見工程の分布（上流 → 本番の順。マージの手前で止めたものが流出防止）</h2>
+        <table class="reasons"><thead><tr><th>見つけた所</th><th style="text-align:right">件数</th><th style="text-align:right">割合</th></tr></thead><tbody id="defect-found"></tbody></table>
+        <div class="sub-note" id="defect-note"></div>
+      </div>
+    </div>
+  </section>
+
   <section aria-label="自動マージの関所" id="gate-sec" hidden>
     <h2 style="margin-bottom:12px">自動マージできなかった PR と出入り<span class="gen1">Gen1 限定</span></h2>
     <div class="gate">
@@ -393,6 +419,60 @@ function render() {
     });
     X.skipped.forEach((x) => { const d = el("div", null, `${x.repo.split("/")[1]}: 昨夜は回らなかった（${SK[x.reason] || x.reason}）`); d.style.fontWeight = "700"; box.append(d); });
     box.append(el("div", "sub-note", `無人で回った夜の累計 ${X.nights}（P5a の nightly_explore の目標 3）。印は人が採点して Golden Set に入れる材料`));
+  }
+
+  // 品質（Defect。ADR 0028 の決定 5）。流出防止率・発見工程の分布・出やすい観点・紐付け率
+  const D = S.defects;
+  if (D && D.total) {
+    $("defect-sec").hidden = false; $("defect-days").textContent = D.window_days;
+    $("defect-card").append(card({ title: "流出防止率", chart: el("div"),
+      figs: [["流出防止率", `${pct(D.escape_prevention)}%`], ["Defect", `${fmt(D.total)} 件`, true], ["本番まで出た", `${fmt(D.prod)} 件`, true]],
+      note: `マージの手前（上流・PR・CI）で止めた ${D.caught_before_merge} 件 ÷ 全 ${D.total} 件。` + (D.total < 10 ? "件数が少ないので参考。" : "") +
+        `紐付け率: 版 ${pct(D.link_rate.release_id)}%・変更 ${pct(D.link_rate.change)}%・原因の工程 ${pct(D.link_rate.caused_in)}%` +
+        (D.link_rate.introduced_in == null ? "" : `・混入させた工程 ${pct(D.link_rate.introduced_in)}%`) }));
+    const top = Math.max(1, ...D.by_found_in.map((x) => x.n));
+    D.by_found_in.forEach((x) => {
+      const tr = el("tr"), td = el("td", null, x.ja + (x.before_merge ? "" : "（流出）")), bar = el("div", "hbar"); bar.style.width = `${(x.n / top) * 100}%`; td.append(bar);
+      tr.append(td, el("td", "n", fmt(x.n)), el("td", "n", `${Math.round((x.n / D.total) * 100)}%`)); $("defect-found").append(tr);
+    });
+    $("defect-note").textContent = D.hotspots.length ? "出やすい観点: " + D.hotspots.map((h) => `${h.viewpoint} ${h.n}`).join("、") : "";
+  }
+
+  // 工程ごとの ROI（2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）。ボトルネックと、モデルを替える判断の根拠
+  const R = S.stage_roi;
+  if (R && R.jobs) {
+    $("roi-sec").hidden = false; $("roi-days").textContent = R.window_days;
+    const P = (x) => (x == null ? "-" : `${Math.round(x * 100)}%`), M = (x) => (x == null ? "-" : x < 120 ? `${Math.round(x)} 分` : `${(x / 60).toFixed(1)} 時間`);
+    const U = (x) => (x == null ? "-" : `$${x.toFixed(2)}`), B = R.bottleneck || {};
+    const bl = [];
+    if (B.time) bl.push(`時間: ${B.time.ja}（${P(B.time.share)}）。待ちが全体の ${P(B.wait_share)}`);
+    if (B.cost) bl.push(`費用: ${B.cost.ja}（${P(B.cost.share)}）`);
+    if (B.first_pass) bl.push(`一発で通りにくい: ${B.first_pass.ja}（${P(B.first_pass.rate)}）`);
+    if (B.defects) bl.push(`Defect を混入させた: ${B.defects.ja}（${B.defects.n} 件）`);
+    $("roi-bn").append(el("h2", null, "ボトルネック"));
+    bl.forEach((x) => $("roi-bn").append(el("div", null, x)));
+    $("roi-bn").append(el("div", "sub-note", `終わったジョブ ${fmt(R.jobs)} 件、${U(R.cost_usd)}（API 単価換算）。ここで目立つ工程が、既定のモデルを替える候補`));
+    R.stages.slice(0, 15).forEach((r) => {
+      const tr = el("tr");
+      [[r.ja], [r.model], [fmt(r.jobs), 1], [U(r.cost_usd), 1], [P(r.time_share), 1], [M(r.work_min), 1], [M(r.wait_min), 1], [P(r.first_pass), 1], [fmt(r.defects), 1]]
+        .forEach(([t, n]) => tr.append(el("td", n ? "n" : null, t)));
+      $("roi-stages").append(tr);
+    });
+    const X = R.experiment;
+    if (X) {
+      [["試す側（Sonnet）", X.arms.trial], ["既定の側（Opus）", X.arms.control]].forEach(([name, a]) => {
+        const tr = el("tr");
+        [[name], [`${a.tickets}${a.enough ? "" : "（参考）"}`, 1], [fmt(a.merged), 1], [U(a.cost_per_merged), 1],
+         [a.lead_h_median == null ? "-" : `${a.lead_h_median.toFixed(1)} 時間`, 1], [P(a.first_pass), 1], [a.defects_per_ticket == null ? "-" : a.defects_per_ticket.toFixed(2), 1]]
+          .forEach(([t, n]) => tr.append(el("td", n ? "n" : null, t)));
+        $("roi-exp").append(tr);
+      });
+      $("roi-note").textContent = (X.arms.trial.enough && X.arms.control.enough && X.cost_ratio != null
+        ? `試す側の通った 1 件あたりの費用は既定の側の ${Math.round(X.cost_ratio * 100)}%。` : "どちらかの側が 5 件に届くまでは参考。") +
+        `条件に当たらないチケット ${X.out} 件。費用はチケットの全部（検査・judge を含む）`;
+    } else {
+      $("roi-note").textContent = "モデルの試しの記録はまだありません";
+    }
   }
 
   // 自動マージの関所（Gen1 限定）

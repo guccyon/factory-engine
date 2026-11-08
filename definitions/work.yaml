@@ -117,6 +117,7 @@ from_agent_steps:             # agents.yaml の steps（ワークフローの外
   ui_design_review: [dev.review.design]
   plan: [plan.workflow]
   desk.consult: [desk.converse, plan.route]
+  desk.answer: [desk.converse]
   committee_review: [learn.committee]
   committee_weekly: [learn.committee]
   qa: [ops.qa]

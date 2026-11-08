@@ -124,3 +124,49 @@ def test_page_escapes():
          "signals": [{"level": "ok", "text": "<script>"}]}
     page = usage_page.render(v)
     assert "<b>x</b>" not in page and "&lt;script&gt;" in page
+
+
+def test_declared_windows_one_per_day():
+    """宣言があれば 1 日（7:00 から）を 1 つの枠にする。曜日は 1 日が始まった日の曜日"""
+    daily = {"mode": "daily", "daily_usd": 500.0, "weekday_usd": {k: 0.0 for k in usage.WEEKDAYS}}
+    start, usd = usage.budget_windows(datetime(2026, 11, 4, 3, 0, tzinfo=JST), daily)   # 水曜 3 時は火曜 7 時からの 1 日
+    assert (start.day, start.hour, usd) == (3, 7, 500)
+    assert usage.day_budget(date(2026, 11, 4), daily) == 500
+    week = {"mode": "weekday", "daily_usd": 500.0, "weekday_usd": {**{k: 300.0 for k in usage.WEEKDAYS}, "sat": 900.0, "sun": 0.0}}
+    assert usage.budget_windows(datetime(2026, 11, 7, 6, 59, tzinfo=JST), week)[1] == 300   # 土曜 6:59 は金曜の 1 日
+    assert usage.budget_windows(datetime(2026, 11, 7, 7, 0, tzinfo=JST), week)[1] == 900
+    assert usage.day_budget(date(2026, 11, 8), week) == 0   # 0 はその日は新しいタスクを投入しない
+
+
+def test_budget_declaration_overrides_env(cur, monkeypatch):
+    monkeypatch.setenv("BUDGET_WINDOWS_WEEKDAY", "07:700")
+    monkeypatch.setenv("BUDGET_WINDOWS_WEEKEND", "07:700")
+    now = datetime(2026, 11, 4, 12, 0, tzinfo=JST)
+    s = usage.budget_spec(cur, now)
+    assert s["mode"] == "env" and s["daily_usd"] == 700 and s["weekday_usd"]["sat"] == 700 and s["today_usd"] == 700
+    s = usage.set_budget(cur, "test", "絞る", daily_usd=400)
+    assert s["mode"] == "daily" and s["daily_usd"] == 400 and s["by"] == "test" and s["reason"] == "絞る"
+    assert s["weekday_usd"]["mon"] == 700   # 曜日ごとの額は環境変数の値から始まる
+    assert usage.budget_spec(cur, now)["today_usd"] == 400
+    s = usage.set_budget(cur, "test", mode="weekday", weekday_usd={"wed": 200, "sat": 1000})
+    assert s["mode"] == "weekday" and s["daily_usd"] == 400 and s["weekday_usd"]["wed"] == 200 and s["weekday_usd"]["sat"] == 1000
+    assert usage.budget_spec(cur, now)["today_usd"] == 200
+    assert usage.budget_windows(now, usage.declared(cur)) == (datetime(2026, 11, 4, 7, 0, tzinfo=JST), 200)
+    for bad in ({"mode": "hourly"}, {"daily_usd": -1}, {"daily_usd": True}, {"weekday_usd": {"xyz": 1}}, {"weekday_usd": {"mon": "a"}}):
+        with pytest.raises(ValueError):
+            usage.set_budget(cur, "test", **bad)
+    assert "曜日ごと" in usage.budget_text(usage.budget_spec(cur, now))
+
+
+def test_supervisor_over_budget_reads_declaration(cur, monkeypatch):
+    os.environ.setdefault("DATABASE_URL", URL)
+    os.environ.setdefault("GH_TOKEN", "x")
+    import supervisor
+    from psycopg.types.json import Jsonb
+    monkeypatch.setenv("BUDGET_WINDOWS_WEEKDAY", "07:700")
+    monkeypatch.setenv("BUDGET_WINDOWS_WEEKEND", "07:700")
+    cur.execute("insert into events(name, payload, occurred_at) values ('job.finished', %s, now())", (Jsonb({"cost_usd": 50}),))
+    assert supervisor.over_budget(cur) is None
+    usage.set_budget(cur, "test", daily_usd=10)
+    ob = supervisor.over_budget(cur)
+    assert ob and ob["budget_usd"] == 10 and ob["spent_usd"] == 50

@@ -106,6 +106,8 @@ def test_enqueue_explore_and_record(cur):
     ev = cur.fetchone()["payload"]
     assert ev["unattended"] is True and ev["night"] == "2026-11-08" and ev["findings"] == 6 and ev["flags"][0]["note"] == "余白が詰まっている"
     assert [d.get("issue") is not None for d in ev["defects"]] == [True, False, False, True, True, True]
+    cur.execute("select count(*) as n from events where name='defect.recorded' and payload->>'found_in'='qa' and payload->>'source'='qa_explore'")
+    assert cur.fetchone()["n"] == 6   # Defect の型（ADR 0028 の決定 5）にも 1 件ずつ
     # 本文の印から、同じ題の Defect は次の夜に起票し直さない
     body = [c[2]["body"] for c in gh.calls if c[0] == "POST"][0]
     assert qa_line.open_defects(lambda *a: [{"title": "QA: 取り消した予約が戻ると残る", "html_url": "u", "body": body}], REPO, "x") == \

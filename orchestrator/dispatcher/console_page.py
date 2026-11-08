@@ -91,6 +91,7 @@ header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;
 #lanes{padding:12px 0 0}.targets{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.target{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}.target .th2{font-weight:700}.target .rel{margin-top:6px;border:0;padding:0}
 .set{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0 14px}.sn{display:grid;gap:2px;align-content:start;margin-top:12px}.sn a,.sn span{padding:7px 10px;border-radius:6px;color:var(--ink);text-decoration:none}.sn a.on{background:var(--card);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}.sn .later{color:var(--sub);font-size:12px}
 @media(max-width:640px){.set{grid-template-columns:1fr}.sn{grid-auto-flow:column;overflow-x:auto}}
+.bg-wk{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0}.bg-wk input{width:70px;font:inherit;padding:2px 6px;border:1px solid var(--line);border-radius:6px}
 .tb{border-collapse:collapse;margin:8px 0}.tb td,.tb th{padding:4px 12px 4px 0;text-align:left;font-variant-numeric:tabular-nums}.tb th{color:var(--sub);font-weight:400}.tb input{width:70px;font:inherit;padding:2px 6px;border:1px solid var(--line);border-radius:6px}
 #set-b>.rn:first-of-type{margin-top:0}#set-b input#sc-reason{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(300px,100%)}
 /* 停止のアラート（11-08）: 1 行ずつ、押すと詳しく、× で消す */
@@ -125,7 +126,7 @@ const dur=s=>s==null?"":s<60?s+"秒":s<3600?Math.floor(s/60)+"分":Math.floor(s/
 const link=(u,t)=>u&&/^https:\/\//.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);
 function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3000)}
 async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body||{})});
- const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"))force=true;load();return r.ok}
+ const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"||path==="/api/budget"))force=true;load();return r.ok}
 function acts(i){let h="";
  if(i.ticket_id&&["waiting","ready","queued","running"].includes(i.stage)){
   h+=`<select data-t="${i.ticket_id}" aria-label="優先度">`+Object.entries(levels).map(([k,v])=>`<option value="${k}" ${k===i.level?"selected":""}>${k} ${esc(v.name)}</option>`).join("")+`</select>`;
@@ -134,7 +135,7 @@ function acts(i){let h="";
  return h?`<div class="acts">${h}</div>`:""}
 const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
- const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す",restart_requested:"再起動（時計を進める）"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
   if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
@@ -142,7 +143,7 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
   if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
  const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
- const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.restarted":"再起動した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
 function pairsView(ps){return ps.map(p=>`<div class="rn" style="border-color:var(--accent)"><h2>新しいランナーの接続の依頼</h2><div><b>${esc(p.name||"?")}</b> <span class="m">${esc(p.platform||"")} · ${esc(p.version||"")}</span></div>
  <div style="font-size:28px;font-weight:700;letter-spacing:.08em;margin:6px 0">${esc(p.code)}</div><div class="m">Mac のターミナルに同じ番号が出ていれば「許可」を押し、Mac 側でも y を押す。違えば「拒否」。10 分で切れる</div>
@@ -226,7 +227,7 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 // ---------------------------------------------------------------- ページ（11-07 の構成。ADR 0009 の決定 5 の簡易画面）
 // URL がページ: / ホーム（ダッシュボード）・/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）・/line・/ship・/settings/<項目>
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
-const SETTINGS=[["runners","ランナー"],["line","ラインと流量"],["mac","Mac"],["version","工場の版"]];
+const SETTINGS=[["runners","ランナー"],["line","ラインと流量"],["budget","使用量の予算"],["mac","Mac"],["version","工場の版"]];
 const LATER=["サービスとの連携（OAuth）","credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
 let S=null,view="",gi={},ibTab="open",ibKind="",ibWho="";
 const enc=k=>encodeURIComponent(k);
@@ -267,13 +268,13 @@ function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
 function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
 // 受信トレイの画面は実際の大きさの 1/4（160〜480px）で出す。高解像度のスクリーンショットでも画面の全体が見える
 document.addEventListener("load",e=>{const g=e.target;if(g.tagName==="IMG"&&g.classList.contains("q")&&g.naturalWidth)g.style.width=Math.round(Math.min(480,Math.max(160,g.naturalWidth/4)))+"px"},true);
-// 受信トレイの件を Claude に渡す（11-08）。Claude 越しに中身を確かめて答えるとき、どの件かを伝える文をコピーする。
+// 受信トレイの「プロンプト」（11-08）。AI エージェント越しに中身を確かめて答えるとき、どの課題かを伝えるプロンプトをコピーする。
 // 決め手は件の key（工場の MCP の inbox_read・inbox_answer が受け取るもの）。URL は人が開き直すため
-function shareText(i){return `工場の受信トレイの件を一緒に確認したい。\n件: ${i.title}\nkey: ${i.key}\n工場の MCP の inbox_read に key「${i.key}」を渡して中身を読み、問いと案を見せてほしい（答えは私がはっきり選んでから inbox_answer で送る）。\n画面: ${location.origin}${ibHref(i.key)}`}
+function shareText(i){return `以下の判断待ちの課題のサポートをして\n\nタイトル: ${i.title}\nパラメータ: ${i.key}\n\nMCPの inbox_read を使って内容を確認し詳細を説明してください。回答は inbox_answer で送ります。\n受信トレイのURL: ${location.origin}${ibHref(i.key)}`}
 async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();
  let ok=false;try{ok=document.execCommand("copy")}catch(_){}a.remove();return ok}}
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-share]");if(!b||!S)return;const i=((S.inbox||{}).items||[]).find(x=>x.key===b.dataset.share);if(!i)return;
- copyText(shareText(i)).then(ok=>toast(ok?"Claude に渡す文をコピーしました。Claude との会話に貼り付けてください":"コピーできませんでした"))});
+ copyText(shareText(i)).then(ok=>toast(ok?"プロンプトをコピーしました。AI エージェントとの会話に貼り付けてください":"コピーできませんでした"))});
 // ---- 停止のアラート（11-08）。何が止まり・どれのことで・次に何をするかを 1 行ずつ。押すと詳しく（記録・リンク・やり直す）。
 // × で画面から消す（停止そのものは閉じない。消したものは「消したもの」で見られ、戻せる）
 let alAll=false,alGone=false;const alOpen=new Set(),alLog={};const AL_LIM=5;
@@ -327,6 +328,7 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。委員会どうしは数によらず常に 1 つずつ順に動く（並べると知見が競合・矛盾するため。検討の課題は順番待ちに積まれる）。ラインを一時停止しても止まらない</dd>
 <dt>　窓口</dt><dd>相談に答える係が同時に動く数。ラインを一時停止しても止まらず、ラインのワーカーを使わない</dd>
 <dt>今日の費用</dt><dd>今日終わった作業の消費を API の単価に換算した目安。定額の契約の実際の請求ではない。詳しくは「使用量」</dd>
+<dt>使用量の予算</dt><dd>1 日（7:00 から翌 7:00）の費用が予算に届いたら、次の日まで新しいタスクを投入しない。作業中のもの・検査・judge・p0 は止めない。毎日同じ額か曜日ごとかを、設定の「使用量の予算」で決める</dd>
 <dt>着手待ちのチケット</dt><dd>依存や上限で、まだ手を付けていないチケットの数（保留にしたものは除く）。少なくなる（既定は 2 件を切る）と赤くなり、番人が知らせる。積まないとラインが空になる</dd>
 <dt>ライン</dt><dd>スイッチがオンなら、順番待ちの作業を取り出して流している。オフ（一時停止）にすると新しく取り出さない。工場の更新の前に使う</dd>
 </dl>
@@ -360,7 +362,7 @@ function ibDetail(ib,key){const i=ib.items.find(x=>x.key===key);
  const xs=ibItems(ib),k=xs.findIndex(x=>x.key===key),prev=k>0?xs[k-1]:null,next=k>=0&&k<xs.length-1?xs[k+1]:null;
  const nav=`<span class="pn">${prev?`<a href="${ibHref(prev.key)}" data-nav>← 前</a>`:'<span class="off">← 前</span>'}${next?`<a href="${ibHref(next.key)}" data-nav>次 →</a>`:'<span class="off">次 →</span>'}</span>`;
  const meta=[esc(ib.who[i.who]||i.who),esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref),extLink(i.url)].filter(Boolean).join(" · ");
- return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="Claude に渡す文（件の key・題・この画面の URL）をコピーする。Claude は工場の MCP の inbox_read にこの key を渡して中身を読む">Claude に渡す</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
+ return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="AIエージェントとこの課題の判断をするためのプロンプトをクリップボードにコピーします。">プロンプト</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
 function ibBody(i){const n=0;
  if(i.key.startsWith("choice:")){const cs=i.key==="choice:exit_capture"?(S.choices||[]).filter(c=>c.kind==="exit_capture"):(S.choices||[]).filter(c=>"choice:"+c.id===i.key);
   if(i.answered||!cs.length)return answerView(i,n);
@@ -419,9 +421,25 @@ function scaleForm(sc){if(!sc)return `<div class="m">流量の宣言が読めな
   <div class="acts"><input id="sc-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-scale>宣言を変える</button></div>`}
 document.addEventListener("click",e=>{if(!e.target.closest("button[data-scale]"))return;const body={reason:(document.getElementById("sc-reason")||{}).value||"操業コンソール"};
  for(const k of ["workers","tickets","governance","desk"]){const v=(document.getElementById("sc-"+k)||{}).value;if(v!==""&&v!=null)body[k]=Number(v)}post("/api/line/scale",body)});
+// 使用量の予算（11-08 オーナー「全体で 1 日あたりの予算を決めるか、曜日べつで決めるか」）。宣言は usage.set_budget、supervisor が周回ごとに読む
+const WD=[["mon","月"],["tue","火"],["wed","水"],["thu","木"],["fri","金"],["sat","土"],["sun","日"]];
+function budgetForm(b){if(!b)return `<div class="m">予算の宣言が読めない</div>`;const m=b.mode==="weekday"?"weekday":"daily",v=x=>x==null?"":esc(x),h=b.day_start_hour;
+ const who=b.at?`${esc(b.by||"")} が ${esc(String(b.at).slice(0,16).replace("T"," "))} に宣言${b.reason?"（"+esc(b.reason)+"）":""}`:`いまは環境変数の枠（平日 <code>${esc(b.env.weekday||"なし")}</code>、週末 <code>${esc(b.env.weekend||"なし")}</code>）。保存すると下の決め方に切り替わる`;
+ return `<div class="m">1 日（${h}:00 から翌日の ${h}:00 まで）の費用（API 単価に換算）が予算に届いたら、次の日まで新しいタスクを投入しない。作業中のもの・検査・judge・p0 は止めない。factoryctl budget set と同じ</div>
+  <div class="m">${who}</div><div class="kv"><span>今日の予算 <b>${b.today_usd==null?"なし":"$"+Number(b.today_usd).toLocaleString()}</b></span></div>
+  <div class="acts"><label><input type="radio" name="bg-mode" value="daily" ${m==="daily"?"checked":""}> 毎日同じ額</label><label><input type="radio" name="bg-mode" value="weekday" ${m==="weekday"?"checked":""}> 曜日ごと</label></div>
+  <div id="bg-daily" ${m==="daily"?"":"hidden"}><table class="tb"><tr><td>1 日の予算（ドル）</td><td><input type="number" min="0" step="1" id="bg-d" value="${v(b.daily_usd)}"></td></tr></table></div>
+  <div id="bg-week" ${m==="weekday"?"":"hidden"}><div class="bg-wk">${WD.map(([k,n])=>`<label>${n} <input type="number" min="0" step="1" id="bg-${k}" value="${v((b.weekday_usd||{})[k])}"></label>`).join("")}</div><div class="m">曜日は 1 日が始まった日の曜日（月曜 ${h}:00〜火曜 ${h}:00 が月曜の予算）</div></div>
+  <div class="acts"><input id="bg-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-budget>予算を変える</button></div>`}
+document.addEventListener("change",e=>{if(e.target.name!=="bg-mode")return;const w=e.target.value==="weekday";document.getElementById("bg-daily").hidden=w;document.getElementById("bg-week").hidden=!w});
+document.addEventListener("click",e=>{if(!e.target.closest("button[data-budget]"))return;const g=id=>(document.getElementById(id)||{}).value,num=x=>x===""||x==null?undefined:Number(x);
+ const mode=(document.querySelector('input[name="bg-mode"]:checked')||{}).value||"daily",body={mode,reason:g("bg-reason")||"操業コンソール"};
+ if(mode==="daily")body.daily_usd=num(g("bg-d"));else{body.weekday_usd={};for(const [k] of WD)body.weekday_usd[k]=num(g("bg-"+k))}
+ post("/api/budget",body)});
 function settingsBody(sec,s){const f=s.factory;
  if(sec==="runners")return `<h2>ランナー</h2>${pairsView(s.runner_pairs||[])}${runnersView(s.runners||[])||'<div class="m">登録済みのランナーはない（工場の外の機械に入れた常駐プロセス。Mac なら scripts/macrunner.sh）</div>'}`;
  if(sec==="line")return `<h2>ラインと流量</h2><div class="acts">${lineView(f.line)}</div>${scaleForm(f.scale)}`;
+ if(sec==="budget")return `<h2>使用量の予算</h2>${budgetForm(f.budget)}<div class="m"><a href="/usage" data-nav>日ごとの費用と予算（使用量）→</a></div>`;
  if(sec==="mac")return `<h2>Mac</h2>${f.host?`<div class="acts"><label class="stat sw" title="オンの間は工場の稼働中に Mac を眠らせない">起こしたまま <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label></div><div class="m">Mac 上の見張り（keep-awake.sh）が ${dur(f.host.agent_age_sec)}前に連絡</div>`:'<div class="m">Mac 上の見張り（keep-awake.sh）から連絡がない。Mac 以外で動いているか、見張りが止まっている</div>'}`;
  return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
 

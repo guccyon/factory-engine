@@ -102,3 +102,34 @@ def test_enqueue_step_holds_second_task_on_same_hot_file(cur, monkeypatch):
     assert posted == [41, 43]            # 42 は 41 と同じよく衝突するファイルに触るので、41 が終わるまで待つ
     s = serialize.serialized(cur, "github:o/r#42")
     assert s and s[0]["behind"] == "github:o/r#41" and s[0]["file"] == LIB
+
+
+def test_purpose_drops_pr_number_tail():
+    assert serialize.purpose(" 担保: K-0012 を ci_check で決定論にする (#1122) ") == "担保: K-0012 を ci_check で決定論にする"
+
+
+def test_enqueue_step_holds_same_purpose_ticket(cur, monkeypatch):
+    # ADR 0044 の決定 8 の 4。rally #1052（PR #1116 が開いている）と同じ題の #1122 を、同時に投入しない
+    title = "担保: K-0012 を ci_check で決定論にする"
+    cur.execute("insert into tickets(source, source_ref, repo, title, state) values ('github','o/r#52','o/r',%s,'active')", (title,))
+    issues = [{"number": 122, "title": title, "body": "", "labels": [], "created_at": "1"},
+              {"number": 123, "title": "別の仕事", "body": "", "labels": [], "created_at": "2"}]
+    posted = []
+
+    def fake_gh(method, path, body=None):
+        if "issues?state=open" in path:
+            return issues
+        if method == "POST" and path.endswith("/labels"):
+            posted.append(int(path.split("/")[-2]))
+        return {}
+
+    monkeypatch.setattr(supervisor, "gh", fake_gh)
+    monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "over_budget", lambda cur: None)
+    monkeypatch.setattr(supervisor, "factory_prs", lambda cur: [])
+    supervisor.enqueue_step(cur, set())
+    supervisor.enqueue_step(cur, set())
+    assert posted == [123]
+    s = serialize.serialized(cur, "github:o/r#122")
+    assert len(s) == 1 and s[0]["behind"] == "github:o/r#52" and "同じ目的" in s[0]["why"]

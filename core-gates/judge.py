@@ -24,6 +24,16 @@ import pr_diff        # PR の差分（300 ファイルを超える PR はファ
 MAX_DIFF, MAX_FILES_CHARS, MAX_FILE, MAX_ISSUE = 40000, 30000, 6000, 8000
 SEVERITY = (Path(__file__).resolve().parent / "severity.md").read_text(encoding="utf-8")   # 重さの物差しとエンジニアリングの姿勢（建設者の物差し）
 
+# 判断の持ち主を決める軸（ADR 0044 の決定 1・2）。product＝製品自体の仕様（事業主か依頼者が決める）、factory＝工場自体の仕様（工場のメンテナーが決める）
+SPEC_OF = {"type": "string", "enum": ["product", "factory"],
+           "description": "必須。product＝製品自体の仕様（利用者・事業に何が起きるか。製品の利用者と事業の言葉だけで選べる）、"
+                          "factory＝工場自体の仕様（工場の工程・仕組み・判断の基準。Engine、検査・judge・CI の道具、ワーカーの指示、工場の知見の担保）。迷ったら factory"}
+MANIFEST = ".factory-config/manifest.yaml"
+KNOWLEDGE_DIR = ".factory-config/knowledge"
+ENFORCE_TITLE = re.compile(r"^担保: (K-\d+)(?:, K-\d+)* を ")
+FACTORY_ACTS_ON = ("engine", "process")
+
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -36,15 +46,19 @@ SCHEMA = {
             "confidence": {"type": "number"},
             "evidence": {"type": "string"}, "interpretation": {"type": "string"}, "impact": {"type": "string"},
             "precedent": {"type": "string", "description": "aesthetic を adopt・replace にするときは必須。沿っている既存の部品・画面のファイルのパスと箇所、UXSpec のファイルと項目、または要素レベルなら拠った UI の定石"},
-            "level": {"type": "string", "enum": ["element", "experience"], "description": "aesthetic のときは必須。element＝部品 1 つの見た目の細部、experience＝使う人の体験や印象が変わるもの"}},
-            "required": ["artifact_id", "verdict", "confidence", "evidence", "interpretation"]}},
+            "level": {"type": "string", "enum": ["element", "experience"], "description": "aesthetic のときは必須。element＝部品 1 つの見た目の細部、experience＝使う人の体験や印象が変わるもの"},
+            "user_visible": {"type": "string", "enum": ["none", "changes"], "description": "必須。none＝どの案を選んでも利用者・API の利用者に見える振る舞いが同じ、changes＝どれかの案で変わる。迷ったら changes"},
+            "reversible": {"type": "boolean", "description": "必須。後で選び直すのに、データの移行・公開した契約の互換の維持・利用者への知らせが要らないなら true。迷ったら false"},
+            "spec_of": SPEC_OF},
+            "required": ["artifact_id", "verdict", "confidence", "evidence", "interpretation", "user_visible", "reversible", "spec_of"]}},
         "defects": {"type": "array", "items": {"type": "object", "properties": {
             "index": {"type": "integer"},
             "verdict": {"type": "string", "enum": ["adopt", "reject", "escalate"]},
             "recommend": {"type": "string", "enum": ["adopt", "reject"], "description": "escalate のときだけ。人が選ぶときの推奨（adopt＝直す、reject＝直さない）"},
             "confidence": {"type": "number"},
-            "evidence": {"type": "string"}, "interpretation": {"type": "string"}},
-            "required": ["index", "verdict", "confidence", "evidence", "interpretation"]}},
+            "evidence": {"type": "string"}, "interpretation": {"type": "string"},
+            "spec_of": SPEC_OF},
+            "required": ["index", "verdict", "confidence", "evidence", "interpretation", "spec_of"]}},
         "summary": {"type": "string"},
     },
     "required": ["provisional", "defects", "summary"],
@@ -81,19 +95,75 @@ def referenced_files(root: Path, texts: list[str]) -> str:
     return "\n\n".join(out) or "（根拠に挙がったファイルはない、または読めなかった）"
 
 
+def _owned(path: str, globs: list[str]) -> bool:
+    import fnmatch
+    for g in globs:
+        g = str(g).strip()
+        if not g:
+            continue
+        if g.endswith("/**"):
+            if path == g[:-3] or path.startswith(g[:-2]):
+                return True
+        elif fnmatch.fnmatch(path, g):
+            return True
+    return False
+
+
+def factory_marks(root: Path, changed: list[str], ticket_titles: list[str]) -> list[str]:
+    """工場自体の仕様だと決まる由来の印（決定論。ADR 0044 の決定 2 の 1）。当たったものの説明の並び（空なら印なし）
+    - 差分のすべてが、製品の manifest の factory_owned_paths（工場の持ち物の道）の中にある
+    - PR が閉じる Issue が、acts_on が engine か process の知見の担保（「担保: K-NNNN を …」）"""
+    marks = []
+    try:
+        import yaml  # type: ignore
+        man = yaml.safe_load((root / MANIFEST).read_text(encoding="utf-8")) or {}
+        owned = [g for g in (man.get("factory_owned_paths") or []) if isinstance(g, str)]
+    except Exception:  # noqa: BLE001  manifest が読めなければ、この印はない
+        owned = []
+    if owned and changed and all(_owned(f, owned) for f in changed):
+        marks.append("files: 差分のすべてが factory_owned_paths の中")
+    for t in ticket_titles:
+        m = ENFORCE_TITLE.match(t or "")
+        if not m:
+            continue
+        for kid in re.findall(r"K-\d+", t.split(" を ", 1)[0]):
+            try:
+                import yaml  # type: ignore
+                k = yaml.safe_load((root / KNOWLEDGE_DIR / f"{kid}.yaml").read_text(encoding="utf-8")) or {}
+            except Exception:  # noqa: BLE001
+                continue
+            if k.get("acts_on") in FACTORY_ACTS_ON:
+                marks.append(f"knowledge: {kid} は acts_on={k.get('acts_on')}（工場を直す知見の担保）")
+    return marks
+
+
+def apply_marks(output: dict, marks: list[str]) -> dict:
+    """judge の各件に spec_of と spec_basis を確定させる。印があれば factory（mark）、なければ judge の見立て、書いていなければ factory（default）"""
+    for key in ("provisional", "defects"):
+        for v in output.get(key) or []:
+            if marks:
+                v["spec_of"], v["spec_basis"] = "factory", "mark: " + " / ".join(marks)
+            elif v.get("spec_of") in ("product", "factory"):
+                v["spec_basis"] = "judge"
+            else:
+                v["spec_of"], v["spec_basis"] = "factory", "default"
+    return output
+
+
 def main() -> int:
     inp = json.loads(sys.stdin.read())
     m = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)$", inp["pr_url"])
     if not m:
         raise SystemExit("not a PR url")
     repo, number = m.group(1), m.group(2)
-    meta = json.loads(sh("gh", "pr", "view", number, "-R", repo, "--json", "title,body,closingIssuesReferences"))
+    meta = json.loads(sh("gh", "pr", "view", number, "-R", repo, "--json", "title,body,closingIssuesReferences,files"))
     # Ticket（PR が閉じる Issue）の本文も渡す。受け入れ条件の解釈（acceptance）の仮決めを、Issue を見ずに裁けなかった（rally #155）
-    tickets = []
+    tickets, ticket_titles = [], []
     for ref in (meta.get("closingIssuesReferences") or [])[:2]:
         try:
             it = json.loads(sh("gh", "issue", "view", str(ref["number"]), "-R", repo, "--json", "number,title,body"))
             tickets.append(f"## #{it['number']} {it['title']}\n{(it.get('body') or '')[:MAX_ISSUE]}")
+            ticket_titles.append(it.get("title") or "")
         except Exception:  # noqa: BLE001  取れなくても裁きは続ける
             pass
     ticket_text = "\n\n".join(tickets) or "（PR が閉じる Issue が見つからなかった）"
@@ -136,9 +206,20 @@ def main() -> int:
   - experience（体験が変わる）: 画面の流れ、情報の出し方や量、操作の手順、文言の意味、ブランドや印象に効く新しい見た目（既存にない色・書体・部品の形）、
     既存と UXSpec が食い違うもの。既存の見た目か UXSpec にそのまま沿っているときだけ adopt にしてよく、それ以外（replace を含む）は escalate にする
   - 迷ったら experience にする。precedent が空のもの、level が書かれていないものは、工場が機械的に人へ回す
+- 仮決めの各件に、必ず user_visible（none / changes）と reversible（true / false）を書く（ADR 0042）。
+  - user_visible=none: どの案（今の案と他の案）を選んでも、利用者・API の利用者に見える振る舞い（画面・文言・応答・通知・速さの体感）が同じ
+  - reversible=true: 後で選び直すのに、データの移行・公開した契約（API・イベント）の互換の維持・利用者への知らせが要らない
+  - 迷ったら changes・false にする
+- category が implementation（内部実装）で user_visible=none かつ reversible=true の仮決めは、escalate にせず adopt か replace で自分で決める。
+  利用者の利益・不利益の根拠は要らない（どの案でも同じなので）。正本（ADR・SSOT・既存のコード）との整合、前例、保守のしやすさ、変更の小ささで決め、
+  拠ったものを precedent に書く。確信度が 0.5 未満のときだけ escalate にしてよい（そのときも recommend を書く）
+- 仮決めと指摘の各件に、必ず spec_of（product / factory）を書く（ADR 0044）。人に回したときに誰が決めるかがこれで決まる。
+  - product: 製品自体の仕様。利用者・事業に何が起きるか（画面・文言・見た目、製品の範囲と優先度、公開する契約の形、製品のデータ）。事業主か依頼者が、製品の利用者と事業の言葉だけで選べる
+  - factory: 工場自体の仕様。工場の工程・仕組み・判断の基準（Engine のコード、検査・judge・CI の道具、ワーカーの指示、工場の知見の担保、PR 本文の書き方の決まり）。事業主には選ぶ材料がない
+  - 迷ったら factory にする
 - track_record は類型ごとの過去の一致率（人の採点との一致）。件数が 10 以上で一致率が低い類型は、確信度を下げるか escalate にする
 - mode は attended（人が並走している）か unattended（夜間など全面委任）。unattended でも、権限・秘密情報・決済・破壊的スキーマに関わるものは escalate にする
-- 下の「重さの物差し」で裁く。指摘が仕様（契約・Issue・doc コメント）からのずれでも、利用者に害がなくワーニングにとどまるなら reject。仕様どおりの仮決めでも利用者の不利益になるなら replace で仕様への差し戻しを提案する。利用者の利益・不利益を言い切る根拠が渡したものにないときは escalate
+- 下の「重さの物差し」で裁く。指摘が仕様（契約・Issue・doc コメント）からのずれでも、利用者に害がなくワーニングにとどまるなら reject。仕様どおりの仮決めでも利用者の不利益になるなら replace で仕様への差し戻しを提案する。利用者の利益・不利益を言い切る根拠が渡したものにないときは escalate（ただし、利用者への振る舞いが変わらない内部実装の選択は上のとおり自分で決める）
 - interpretation に重さ（クリティカル / メジャー / マイナー / ワーニング）を書く
 
 {SEVERITY}
@@ -167,8 +248,10 @@ def main() -> int:
 {diff}
 """
     r = agent_runner.run("judge", prompt, schema=SCHEMA)
+    changed = [f.get("path") for f in meta.get("files") or [] if f.get("path")]
+    out = apply_marks(r.output, factory_marks(clone, changed, ticket_titles)) if isinstance(r.output, dict) else r.output
     print(json.dumps({"pr_url": inp["pr_url"], "model": r.model, "cost_usd": r.cost_usd, "usage": r.usage,
-                      "result": r.output}, ensure_ascii=False))
+                      "result": out}, ensure_ascii=False))
     return 0
 
 
