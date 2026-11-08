@@ -15,9 +15,9 @@ URL = os.environ.get("TEST_DATABASE_URL")
 
 
 def test_app_paths():
-    for p in ("/inbox", "/inbox/", "/inbox/choice%3Aexit_capture", "/inbox/release%3Ao%2Fr%400.9.3", "/line", "/ship", "/settings", "/settings/runners"):
+    for p in ("/inbox", "/inbox/", "/inbox/choice%3Aexit_capture", "/inbox/release%3Ao%2Fr%400.9.3", "/line", "/ship", "/usage", "/help", "/settings", "/settings/runners"):
         assert APP_PATH.fullmatch(p), p
-    for p in ("/api/state", "/review/1", "/usage", "/inbox/a/b", "/settings/../x", "/healthz"):
+    for p in ("/api/state", "/review/1", "/usage/body", "/inbox/a/b", "/settings/../x", "/healthz"):
         assert not APP_PATH.fullmatch(p), p
     assert "__TOKEN__" in PAGE and '"""' not in PAGE
 

@@ -116,7 +116,6 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import choice
-import continuation
 import desk
 import design_line
 import drain
@@ -128,6 +127,7 @@ import ops
 import plan_outcome
 import planner
 import process_learn
+import rerun
 import restricted
 import serialize
 import workflow_shadow
@@ -137,18 +137,7 @@ import touch
 import swap
 
 
-# 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
-# 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa")
-
-
-def carried_input(cur, job_id: int, kind: str) -> dict:
-    """入力を受け取る種類のジョブを積み直すときは、前の入力（PR・指摘・検査する案など）を引き継ぐ"""
-    if kind not in PIPED_KINDS:
-        return {}
-    cur.execute("select payload->'input' as inp from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
-    inp = (cur.fetchone() or {}).get("inp")
-    return {"input": inp} if inp else {}
+from rerun import INCOMPLETE_CONTINUE_MAX, PIPED_KINDS, carried_input, incomplete_count  # noqa: E402,F401  積み直し（rerun.py。コンソールのボタンと共通）
 
 
 def split_ref(ref: str) -> tuple[str, int]:
@@ -801,40 +790,11 @@ def main(argv):
             print(f"{r['id']:>4} {r['state']:<9} {r['repo']}#{r['issue_number']} a{r['attempt']} {r['enqueued_at']:%m-%d %H:%M} {r['error'] or ''} {r['pr_url'] or ''}")
     elif cmd == "stop":
         print("cancel requested" if ops.stop_job(cur, int(argv[2]), "factoryctl", opt(argv, "--reason", "")) else "job is not active")
-    elif cmd == "rerun":
-        job_id = int(argv[2])
-        cur.execute("select correlation_id, repo, issue_number, attempt, kind, ticket_id, priority, result from jobs where id=%s", (job_id,))
-        j = cur.fetchone()
-        if not j:
-            print("no such job"); return 1
-        corr = j["correlation_id"] if j["kind"] == "desk_consult" else f"github:{j['repo']}#{j['issue_number']}"   # 窓口の相談役は会話（desk:<id>）に積む
-        # 続きのジョブ（衝突・CI 落ち・指摘・途中終了）は、続ける先（工場のブランチと PR）と合図の中身を引き継いで続きとして積み直す。
-        # 引き継がないと最初からの実装になり、別のブランチで PR をもう 1 本作ってしまう
-        carried = continuation.carry_over(cur, job_id) if j["kind"] == "implement" else {}
-        cont = carried.get("continue")
-        if "--continue" in argv and not cont:   # 途中終了のドラフト PR のブランチから続ける（最初からやり直さない）
-            res = j["result"] or {}
-            if j["kind"] != "implement" or not res.get("pr_number"):
-                print("--continue needs an implement job that left a PR"); return 1
-            cont = {"branch": f"factory/issue-{j['issue_number']}-job-{job_id}", "pr_number": int(res["pr_number"]), "reason": "incomplete"}
-            carried = {"continue": cont}
-        if cont and cont.get("reason") == "incomplete" and "--force" not in argv:
-            n_inc = incomplete_count(cur, corr)
-            if n_inc > INCOMPLETE_CONTINUE_MAX:   # 続きも途中終了した（ADR 0036 の 6）。同じ大きさのまま積み直さない
-                print(f"途中終了が {n_inc} 回あります（続きは {INCOMPLETE_CONTINUE_MAX} 回まで。ADR 0036 の 6）。"
-                      f"残りをプランナーに切らせるなら factoryctl plan resplit {j['repo']}#{j['issue_number']}、それでも続けるなら --force"); return 1
-        try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
-                        "values (%s,%s,%s,%s,'rerun',%s,%s,%s,%s) returning id",
-                        (corr, j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"),
-                         j["kind"], j["ticket_id"], j["priority"]))
-        except psycopg.errors.UniqueViolation:
-            print("an active job already exists for this issue"); return 1
-        new_id = cur.fetchone()["id"]
-        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
-                    (corr, new_id, Jsonb({"by": "rerun", "attempt": j["attempt"] + 1, "previous": job_id, **carried,
-                                                                               **carried_input(cur, job_id, j["kind"])})))
-        print(f"enqueued job {new_id} (attempt {j['attempt'] + 1}{', continue ' + cont['branch'] + ' (' + cont['reason'] + ')' if cont else ''})")
+    elif cmd == "rerun":   # 続きのジョブは続きとして積み直す。中身は rerun.py（操業コンソールの「やり直す」と共通）
+        new_id, msg = rerun.rerun(cur, int(argv[2]), continue_draft="--continue" in argv, force="--force" in argv)
+        print(msg)
+        if new_id is None:
+            return 1
     elif cmd == "enqueue":   # 手動投入（試験運転や、ラベルを使わない再投入）。--tier tier-small でモデル tier を変えられる（ペア比較の材料）
         repo, issue = argv[2], int(argv[3])
         tier = argv[argv.index("--tier") + 1] if "--tier" in argv else os.environ.get("MODEL_TIER", "tier-large")

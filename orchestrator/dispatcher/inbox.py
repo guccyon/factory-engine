@@ -118,7 +118,8 @@ STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder"}
 
 
 def _stoppages(cur, now) -> list[dict]:
-    cur.execute("select key, what, waiting_for, started_at, correlation_id from stoppages where ended_at is null and category='human' order by started_at")
+    import alerts
+    cur.execute("select key, category, what, waiting_for, cause, started_at, correlation_id, job_id from stoppages where ended_at is null and category='human' order by started_at")
     out = []
     for s in cur.fetchall():
         prefix, _, rest = s["key"].partition(":")
@@ -142,8 +143,10 @@ def _stoppages(cur, now) -> list[dict]:
         # この場で答えられるのはラインの一時停止の再開と、judge が人に回した判断（上の _judgment_items）。マージの判断は GitHub の PR で
         ans = {"type": "approve", "options": [{"id": "resume", "label": "ラインを再開する"}], "extra": [],
                "effect": "ラインの一時停止を解き、順番待ちの取り出しを再開する", "allowed": [who], "target": ("resume_line", None)} if prefix == "drain" else None
-        out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "title": s["what"],
-                    "action": s["waiting_for"] or "判断して止まりを解く", "url": url, "since": s["started_at"],
+        # 題と「すること」は停止のアラートと同じ読む文（alerts.py。記録の文は工場の内側の言葉で、事業主には読めない。11-08）
+        al = alerts.describe(cur, s)
+        out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
+                    "action": al["todo"] or "判断して止まりを解く", "detail": al["detail"], "url": url, "since": s["started_at"],
                     "ref": (s["correlation_id"] or ":").split(":", 1)[1], "announced": True,   # 開いたときに停止の通知で一度知らせている
                     "answer": ans, "also": []})
     return out

@@ -216,7 +216,7 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
   - `stall:<id>` 実行中のジョブの出力が 15 分（`WATCH_STALL_MIN`）止まっている。出力が再開するかジョブが終われば閉じる（完了まで毎周期見る）
   - `merge:<PR>` supervisor が工場はマージしない（execute=false）と記録した PR が、30 分（`WATCH_MERGE_WAIT_MIN`）マージも閉じもされない。分類は human。マージか閉じられたら閉じる
   - `inspect:<PR>` マージを判定した最新の head に検査が積まれないまま 30 分（`WATCH_INSPECT_WAIT_MIN`）。分類は factory-bug（検査がないと検査役が承認せず、PR が同時に流す枠を塞ぐ）。検査が積まれる、head が動く、PR がマージか閉じられたら閉じる
-- 停止ではない知らせ: 投入待ちの段（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「段の残り」も下限を切ると赤くなる
+- 停止ではない知らせ: 投入待ちの段（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「着手待ちのチケット」も下限を切ると赤くなる
 - 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
 
@@ -232,14 +232,17 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
 工場のいまを見て、順番・保留・停止を操作する画面と API。compose の `console`（dispatcher と同じイメージ）で動き、制御プレーンだけを読み書きする。GitHub にも外部の CDN にも触らない。
 
 - 開く: http://localhost:8790 （既定は Mac の中だけ。同じ LAN の端末から見るときは .env に `CONSOLE_BIND=0.0.0.0` と、`CONSOLE_ALLOWED_HOSTS` にそのホスト名（例 `localhost,127.0.0.1,host.example.local`）を入れて console を上げ直す。ログインがないので、LAN の中の誰でも優先度・保留・停止を操作できる。インターネットには出さない）
-- 画面（ページの構成は 2026-11-07。`dispatcher/console_page.py`）: どのページも上に工場長の生存・モード・流量・今日の費用・段の残り・ラインのトグルと、ページの切り替え。右上の歯車が設定
-  - ホーム `/`（ダッシュボード）: 対応が必要なもの（受信トレイの未回答の上位 5 件）・開いている停止・指標の推移（毎朝の操業レポート「工場の健康」が残した最新の `report.built` の `charts` の指標を 14 日分。数え直さないのでレポートと同じ数）・ラインと出荷の要約
-  - 受信トレイ `/inbox`・`/inbox/<key>`: 開いた直後は一覧が全面、選ぶと右にメッセージの詳細（2 ペイン）。詳細で中身を読んで答え、答えると次の未回答へ進む。画面の判断は 1 枚ずつ大きく出し（← →・押すと拡大）、いま見ている画面に違和感を付ける。通知のリンクも `CONSOLE_URL/inbox/<key>` を指す。前の `/#choice-<id>`・`/#choices`・`/#ship` は読み替える
-  - ライン `/line`: 対応が必要・作業中・順番待ち・投入待ち（同時に流す上限）・依存待ち・検査と判定とマージ待ち・今日の済み。カードに元のチケット（出どころ `tickets.source` の印と番号、URL）と PR。リポジトリと出どころで絞れる
+- 画面（ページの構成は 2026-11-07。`dispatcher/console_page.py`）: どのページも上に指示役（supervisor）の生存・モード・流量・今日の費用・着手待ちのチケット・ラインのトグルと、ページの切り替え（使用量も同じ画面の中）。右上の ? がヘルプ（`/help`。ヘッダの数字と言葉の意味）、歯車が設定
+  - ホーム `/`（ダッシュボード）: 対応が必要なもの（受信トレイの未回答の上位 5 件）・止まっているもの（開いている停止のアラート。下に別記）・指標の推移（毎朝の操業レポート「工場の健康」が残した最新の `report.built` の `charts` の指標を 14 日分。数え直さないのでレポートと同じ数）・ラインと出荷の要約
+  - 受信トレイ `/inbox`・`/inbox/<key>`: 開いた直後は一覧が全面、選ぶと右にメッセージの詳細（2 ペイン）。詳細で中身を読んで答え、答えると次の未回答へ進む。画面の判断は実際の大きさの 1/4（160〜480px）で全部を並べ（押すと拡大、名前を押すとその画面について答える。← → で前後）、選んでいる画面に違和感を付ける。通知のリンクも `CONSOLE_URL/inbox/<key>` を指す。詳細の「Claude に渡す」で、件の key と画面の URL 入りのプロンプト（工場の MCP の `inbox_read` にその key を渡して読ませる）をコピーする。前の `/#choice-<id>`・`/#choices`・`/#ship` は読み替える
+  - ライン `/line`: 上に止まっているもの（ホームと同じ）。対応が必要・作業中・順番待ち・投入待ち（同時に流す上限）・依存待ち・検査と判定とマージ待ち・今日の済み。カードに元のチケット（出どころ `tickets.source` の印と番号、URL）と PR。リポジトリと出どころで絞れる
   - 出荷 `/ship`: 製品ごとに出荷先のカード（今は Web の検証・本番だけ。モバイルのストアや CDN は同じ形のカードで足す）
+  - 使用量 `/usage`: 下に別記。中身は `GET /usage/body` の HTML の断片で、タブとヘッダはほかのページと同じ
+  - ヘルプ `/help`: ヘッダの数字（指示役・モード・流量・着手待ちのチケット）、止まっているものの種類、ラインの列の意味
+  - 止まっているもの（2026-11-08、`dispatcher/alerts.py`）: 開いている停止を 1 行ずつ「何が止まり・どれのことか（チケット・PR・更新の依頼）・何分前から」で出す（最初の 5 件、残りは「ほか N 件」）。押すと次にすること・対応する人・記録・リンク・「やり直す」（失敗した作業の積み直し。`factoryctl rerun` と同じ `rerun.py`）・作業の記録の最後の部分（`GET /api/jobs/<id>/log`、鍵らしい文字列は伏せる）。文は停止の種類と関係する記録から組み立て、工場の内側の記録の文（stoppage の what / waiting_for）は「工場の記録の文」として添えるだけ。× で画面から消せる（`POST /api/alerts/dismiss`、events の `alert.dismissed` / `alert.restored`。停止そのものは閉じない）。消したものは「消したもの」で見られ、戻せる。受信トレイの停止の件も同じ文。失敗した作業の停止は、次の作業が始まるかチケットが閉じると番人が閉じる
   - 設定 `/settings/<項目>`: ランナー・ラインと流量（`POST /api/line/scale` と同じ）・Mac（起こしたまま）・工場の版。連携・credential・Claude からのアクセス・工場の更新は今後
 - 操作: 優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）、保留・再開、止める。すべて events に `ticket.*` / `job.cancel_requested` として残る
-- API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
+- API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`・`rerun`、`POST /api/alerts/dismiss`（`{"key", "on"?}`）。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る
 - 使用量（`/usage`、API は `GET /api/usage?days=14`、CLI は `factoryctl report usage [--days 14] [--json]`）: トークンの消費と費用（API 単価換算）を、日ごと（予算の枠と同じ 7:00 区切り。予算の枠の合計・予算で止めた時間・契約の上限に当たった回数つき）・役割ごと・モデルごと・契約の週（`PLAN_WEEK_RESET`、既定 `sun 11:00`）で出し、先頭に「アカウントを足すかの判断の材料」を決まった規則で並べる（usage.py）。週の上限の目安を API 単価で `PLAN_WEEKLY_LIMIT_USD` に入れると、割合と届く見込みも出る。予算の枠は supervisor と同じ `BUDGET_WINDOWS_WEEKDAY` / `BUDGET_WINDOWS_WEEKEND` を console にも渡す（読み方は usage.py の 1 か所）
 - 人の選択（ADR 0025）: デザイン検査役が人に回した画面の案（`design_variants`）と、内部品質の抜き取り（`taste_sample`）を、上部の「人の選択」に案の画像つきで並べる。「この案にする」「どれも違う（戻す。一言は必須）」「違和感（一言は必須）」を押せる。記録は artifacts の `HumanChoice` と events の `choice.requested`・`choice.made`（推奨との一致 `agreed`）・`choice.returned`・`taste.flagged`（教師信号 taste_flag）。依頼は `choice.request()` で作り、画像はオブジェクトストアの `choices/` か `design/` の下に置く（コンソールが中継し、外の URL は出さない）。デザインの線（`design_line`）は検査役が人に回したときに依頼を作り、画面で選ぶと `factoryctl design pick` と同じく `ui_design.chosen` を残す（Issue への反映は dispatcher の周回）。「どれも違う」は人の一言を指摘にしてデザイナー役を積み直す
 - 実装後の画面（ADR 0025 の 4、`exit_capture.py`）: dispatcher が `EXIT_CAPTURE_INTERVAL_SEC`（既定 300 秒）ごとに、工場の PR（開いているかマージから 48 時間以内）の head の状態「画面のキャプチャ / <アプリ>」を見て、`target_url` の CI の成果物（zip）から `manifest.json` と画像を読む。変わった・新しい・消えた画面の画像を `choices/capture/` の下に置き、人の選択（kind `exit_capture`）を作る。受信トレイには開いている分を「実装後の画面: N 件」の 1 件にまとめて出し（デザインのチーフの出番）、通知は最初の 1 回だけ（印は任意なので知らせ直さない）。開いている PR でも head が 48 時間動いていなければ見ない。画面ごとに「違和感」（一言は必須）で `taste.flagged`、見て違和感がなければ「見た」で `choice.seen`（印のない画面は負例の材料）。新しい head のキャプチャで前の依頼は閉じ、7 日見られなければ閉じる（`choice.closed`）。PR の本文には「実装後の画面のキャプチャ」の節（アプリごとの変わった画面の表と成果物のリンク）を書く。PR・head・アプリごとに 1 回（`capture.collected`）。`EXIT_CAPTURE=0` で止める。成果物を取るには工場のトークンに製品のリポジトリの Actions（読み取り）と Commit statuses（読み取り）が要る
