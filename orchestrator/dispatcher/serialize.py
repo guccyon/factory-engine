@@ -1,4 +1,4 @@
-"""衝突を避ける並べ方（ADR 0027 の 2）。決定的（LLM を使わない）。
+"""衝突を避ける並べ方（ADR 0027 の 2）と、同じ目的の仕事を同時に流さない（ADR 0044 の決定 8 の 4）。決定的（LLM を使わない）。
 
 「よく衝突するファイル」（工程の信号 conflict_fix の束。process_learn）に触る見込みのタスクは、同じファイルに触る PR・ジョブが
 流れている間は投入しない（順番に並べる）。supervisor の enqueue_step が投入の直前に呼ぶ。並べた根拠は events の plan.serialized に残し、
@@ -78,5 +78,39 @@ def record(cur, corr: str, file: str, behind: str, stats: dict) -> bool:
 
 
 def serialized(cur, corr: str) -> list[dict]:
-    cur.execute("select occurred_at, payload from events where name='plan.serialized' and correlation_id=%s order by id", (corr,))
+    cur.execute("select occurred_at, payload from events where name in ('plan.serialized','plan.duplicate_held') and correlation_id=%s order by id", (corr,))
     return [{"at": r["occurred_at"], **r["payload"]} for r in cur.fetchall()]
+
+
+# ------------------------------------------------------------------ 同じ目的の仕事（ADR 0044 の決定 8 の 4）
+# 2026-11-08 rally #1052（PR #1116）と #1122（PR #1192）は同じ「担保: K-0012 を ci_check で決定論にする」で、同時に流れて
+# 同じ新規ファイルを作った。題が同じチケットが流れている間は、後のものを投入しない
+TITLE_TAIL = re.compile(r"\s*\(#\d+\)\s*$")
+
+
+def purpose(title: str) -> str:
+    """比べる題。前後の空白と、PR の題の末尾に付く (#番号) を落とす"""
+    return TITLE_TAIL.sub("", (title or "").strip()).strip()
+
+
+def same_purpose(cur, repo: str, me: str, title: str) -> str | None:
+    """同じ製品で、同じ目的（題が同じ）のチケットが流れていれば（台帳で active）、その correlation_id"""
+    want = purpose(title)
+    if not want:
+        return None
+    cur.execute("select source_ref, title from tickets where source='github' and repo=%s and state='active' order by id", (repo,))
+    for t in cur.fetchall():
+        corr = f"github:{t['source_ref']}"
+        if corr != me and purpose(t["title"]) == want:
+            return corr
+    return None
+
+
+def record_duplicate(cur, corr: str, title: str, behind: str) -> bool:
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.duplicate_held',%s,%s,%s) "
+                "on conflict (dedupe_key) do nothing returning id",
+                (corr, Jsonb({"title": purpose(title), "behind": behind,
+                              "why": f"同じ目的（{purpose(title)}）の {behind} が流れているので、終わるまで投入しない。"
+                                     "重複なら起票元でどちらかを閉じる"}),
+                 f"plan.duplicate_held:{corr}:{behind}"))
+    return cur.fetchone() is not None

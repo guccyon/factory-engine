@@ -118,8 +118,37 @@ def summary(result: dict) -> str:
     return "\n".join(lines) + "\n\n---\n_知見の委員会（ADR 0024）_"
 
 
+ENFORCE_PREFIX = "担保: "
+LEARN_LABEL = "factory:learn"
+
+
+def open_issue_titled(gh, repo: str, title: str) -> int | None:
+    """同じ題の開いている Learn の Issue の番号。担保の題は「担保: <知見> を <解決策の種類> で決定論にする」で、議決の担保と週の定例の担保で同じ形"""
+    try:
+        got = gh("GET", f"repos/{repo}/issues?state=open&labels={LEARN_LABEL}&per_page=100")
+    except Exception:  # noqa: BLE001  見られなければ今までどおり起票する（起票し損ねるより、重複の方が後で見つけやすい）
+        return None
+    for i in got if isinstance(got, list) else []:
+        if i.get("title") == title and "pull_request" not in i:
+            return i.get("number")
+    return None
+
+
+def join_open(cur, repo: str, title: str, body: str, corr: str, job_id, key: str, gh, comment) -> bool:
+    """同じ知見 × 同じ解決策の種類の担保がもう開いていれば、新しく起票せず、その Issue に議決と案をコメントで足す（ADR 0044 の決定 8 の 1）。
+    2026-11-08 rally #1052（議決 D-0033）が PR #1116 で進んでいる間に、週の定例が同じ担保を #1122 で起票し、2 本が同時に流れた。
+    知見のファイルに記録がなくても、開いている担保の Issue があれば進行中と読む"""
+    n = open_issue_titled(gh, repo, title)
+    if n is None:
+        return False
+    comment(repo, n, "知見の委員会が同じ担保をもう一度決めました。新しい Issue は起票せず、ここに足します（同じ目的の仕事を同時に流さない。ADR 0044）。\n\n" + body)
+    cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.enforce_joined',%s,%s,%s,%s) "
+                "on conflict (dedupe_key) do nothing", (corr, job_id, Jsonb({"repo": repo, "title": title, "issue": n}), key))
+    return True
+
+
 def enforce_issue(e: dict, result: dict) -> tuple[str, str]:
-    title = f"担保: {e.get('knowledge')} を {e.get('solution_kind')} で決定論にする"
+    title = f"{ENFORCE_PREFIX}{e.get('knowledge')} を {e.get('solution_kind')} で決定論にする"
     body = f"""知見の委員会（ADR 0024）が、知見 `{e.get('knowledge')}` を決定論で担保すると決めました（議決 `{result.get('decision')}`、{result.get('pr_url')}）。
 委員会は実装しないので、工場のラインで作ってください。
 
@@ -165,6 +194,8 @@ def record(cur, repo: str, pr_number: int, corr: str, job_id: int, result: dict,
             if cur.fetchone():
                 continue
             title, body = enforce_issue(e, result)
+            if join_open(cur, repo, title, body, corr, job_id, key, gh, comment):
+                continue
             issue = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})
             cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.enforce_filed',%s,%s,%s,%s)",
                         (corr, job_id, Jsonb({"decision": result.get("decision"), "knowledge": e.get("knowledge"),
@@ -293,7 +324,7 @@ def weekly_issues(week: str, result: dict) -> list[tuple[str, str, str]]:
 同じ PR で、知見の `enforcement` に強さ（deterministic）と `solutions`（解決策の種類・この Issue・時期）を足す。知見は消さない。
 `python3 /work/engine/core-gates/knowledge_check.py --repo . --index` で INDEX.md を作り直し、検査が通ることを確かめる。
 """
-        out.append((f"enforce:{week}:{ids}:{e.get('solution_kind')}", f"担保: {ids} を {e.get('solution_kind')} で決定論にする", body))
+        out.append((f"enforce:{week}:{ids}:{e.get('solution_kind')}", f"{ENFORCE_PREFIX}{ids} を {e.get('solution_kind')} で決定論にする", body))
     st = r.get("structure") or {}
     if st.get("needed"):
         out.append((f"structure:{week}", "知見の置き場の構造を見直す", f"""知見の委員会（置き場の構造のオーナー）が週 1 の定例（{week}）で、置き場のディレクトリの分け方を変えると決めました（ADR 0024）。
@@ -319,6 +350,8 @@ def weekly_record(cur, repo: str, issue: int, corr: str, job_id: int, result: di
         dk = f"committee.weekly_filed:{repo}:{key}"
         cur.execute("select 1 from events where dedupe_key=%s", (dk,))
         if cur.fetchone():
+            continue
+        if title.startswith(ENFORCE_PREFIX) and join_open(cur, repo, title, body, corr, job_id, dk, gh, comment):
             continue
         got = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})
         cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.weekly_filed',%s,%s,%s,%s)",

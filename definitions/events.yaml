@@ -526,6 +526,10 @@ events:
     source: control_plane
     required: [decision, knowledge, solution_kind, issue]
     note: "ADR 0024 の 4・6。委員会が決定論で担保すると決めた知見の担保を、委員会が実装せずに Issue（factory:planned・factory:learn）にした。工場のラインが担保を作り、知見の enforcement.solutions に記録する"
+  committee.enforce_joined:
+    source: control_plane
+    required: [repo, title, issue]
+    note: "ADR 0044 の決定 8 の 1。委員会が決めた担保（議決の担保か週の定例の担保）と同じ題（同じ知見 × 同じ解決策の種類）の Learn の Issue がもう開いていたので、新しく起票せず、その Issue に議決と案をコメントで足した。dedupe は committee.enforce_filed・committee.weekly_filed と同じ鍵"
   supervisor.committee_weekly_enqueued:
     source: control_plane
     required: [repo, week, issue, job_id]
@@ -598,6 +602,10 @@ events:
     source: control_plane
     required: [file, behind, hot, why]
     note: "ADR 0027 の 2。supervisor が投入の直前に、よく衝突するファイル（工程の信号 conflict_fix の束で、7 日に 3 回以上・解消の費用 $5 以上。CHANGELOG.md は除く）に触る見込みのタスクを、同じファイルに触る流れているチケット（behind）が終わるまで投入しなかった。見込みは Plan の expected_files とチケットの本文のパス。人の判断を待つ PR では並べない。dedupe は plan.serialized:<チケット>:<ファイル>:<behind>。factoryctl plan show に出る"
+  plan.duplicate_held:
+    source: control_plane
+    required: [title, behind]
+    note: "ADR 0044 の決定 8 の 4。supervisor が投入の直前に、同じ目的（題が同じ。PR の題の末尾の (#番号) は除いて比べる）のチケット（behind）がもう流れている（台帳で active）ので、このチケットを投入しなかった。人の判断を待つ PR でも並べる（同じ目的を 2 本作らない）。dedupe は plan.duplicate_held:<チケット>:<behind>。factoryctl plan show に出る"
   workflow.shadow:
     source: control_plane
     required: [kind, repo, issue, plan_id]
