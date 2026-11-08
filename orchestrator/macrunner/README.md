@@ -90,4 +90,4 @@ TEST_DATABASE_URL=… python3 -m pytest -q orchestrator/dispatcher/tests/test_ru
 ## この先（ADR 0028 の P5a の順番）
 
 - `one_orchestrator`: dispatcher がジョブごとに MCP の中継を立て（窓口の中向けの口 `macrunner_client.call` に繋ぐ。鍵はワーカーに渡さない）、QA のワーカーの claude がサーバ側（環境・API・DB）と Mac 側を 1 つのセッションで動かす。通す道具はジョブごとに絞り、呼んだ道具は events に残す
-- `nightly_explore`: 夜間（unattended）に同じ道具で探索する。keep-awake（ADR 0011 の 7）はランナーのジョブの間も起こしておく
+- `nightly_explore`: 夜間（unattended）に同じ道具で探索する（2026-11-08、orchestrator/README の「夜間の探索」）。探索のジョブも QA のジョブなので中継はそのまま渡る。keep-awake（ADR 0011 の 7）は工場のコンテナが動いている間は Mac を起こしておくので、夜のジョブの間も眠らない

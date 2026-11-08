@@ -180,6 +180,52 @@ def workflow_view(conn, now: datetime | None = None) -> list[str]:
         return []
 
 
+def explore_view(conn, now: datetime | None = None) -> dict | None:
+    """昨夜の探索（ADR 0028 の nightly_explore）。前日の正午（JST）からの qa.explore と、回らなかった理由（supervisor.nightly_explore_skipped）。
+    Defect は起票した Issue、印（flags）は人が採点する材料として並べる。数えられなくてもレポートは出す"""
+    if conn is None:
+        return None
+    to = (now or datetime.now(timezone.utc)).astimezone(JST)
+    since = (to - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select payload, job_id from events where name='qa.explore' and occurred_at >= %s order by id", (since,))
+            runs = [{**r[0], "job_id": r[1]} for r in cur.fetchall()]
+            cur.execute("select payload from events where name='supervisor.nightly_explore_skipped' and occurred_at >= %s order by id", (since,))
+            skipped = [r[0] for r in cur.fetchall()]
+            cur.execute("select count(distinct payload->>'night') from events where name='qa.explore' and (payload->>'unattended')::boolean")
+            nights = cur.fetchone()[0]
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] 夜間の探索を数えられない:", repr(e), file=sys.stderr)
+        return None
+    return {"runs": runs, "skipped": [x for x in skipped if not any(r.get("repo") == x.get("repo") for r in runs)], "nights": nights}
+
+
+SKIP_JA = {"over_budget": "予算の枠を使い切っていた", "paused": "ラインが一時停止中だった"}
+
+
+def fmt_explore(ex: dict | None) -> list[str]:
+    """昨夜の探索の行（日次のコメントとダッシュボード）"""
+    if not ex or (not ex["runs"] and not ex["skipped"]):
+        return ["- 昨夜の探索の記録はない"]
+    lines = []
+    for r in ex["runs"]:
+        repo = r.get("repo", "").split("/")[-1]
+        lines.append(f"- {repo}（{r.get('night')} の夜・チャーター `{r.get('charter')}`・版 {r.get('release_id') or '不明'}{'・iOS あり' if r.get('mobile') else ''}"
+                     f"{'' if r.get('unattended') else '・人が積んだ'}）: 試した {r.get('tried')} 件・見つけた {r.get('findings')} 件・印 {len(r.get('flags') or [])} 件"
+                     + (f"・まとめ #{r['issue']}" if r.get("issue") else ""))
+        for d in r.get("defects") or []:
+            mark = "**" if d.get("severity") in ("s1", "s2") else ""
+            where = f" → {d['issue']}" if d.get("issue") else "（起票しない）"
+            lines.append(f"  - 🛑 {mark}[{d.get('severity')}/{d.get('viewpoint')}] {d.get('title')}{mark}{'（known_gap）' if d.get('known_gap') else ''}{where}")
+        for f in r.get("flags") or []:
+            lines.append(f"  - 印 [{f.get('viewpoint')}] {f.get('where') or ''}: {f.get('note')}")
+    for x in ex["skipped"]:
+        lines.append(f"- **{x.get('repo', '').split('/')[-1]}: 昨夜は回らなかった**（{SKIP_JA.get(x.get('reason'), x.get('reason'))}）")
+    lines.append(f"- 無人で回った夜の累計 {ex['nights']}（P5a の nightly_explore の目標 3）")
+    return lines
+
+
 def db_conn():
     if not DATABASE_URL:
         return None
@@ -631,7 +677,7 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
+    lines += ["## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
               "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
               "<sub>health/daily/status_report.py が生成（LLM 不使用）。日次の記録はこの Issue のコメント。</sub>"]
     return "\n".join(lines)
@@ -651,6 +697,7 @@ def render_daily(snap: dict, prev: dict | None) -> str:
     for repo, hist in (snap.get("quality") or {}).items():
         lines.append(f"- 内部品質: {fmt_quality({repo: hist[-2:] if len(hist) > 1 else hist})[0]}")
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
+    lines += ["", "**夜間の探索（昨夜）**", *fmt_explore(snap.get("explore"))]
     lines += fmt_usage(snap.get("usage"))
     if snap.get("workflow"):
         lines += ["", "**ワークフローの宣言（記録だけ）**", *[f"- {x}" if not x.startswith("- ") else x for x in snap["workflow"]]]
@@ -739,7 +786,7 @@ def main() -> int:
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
-            "usage": usage_view(conn), "workflow": workflow_view(conn)}
+            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],

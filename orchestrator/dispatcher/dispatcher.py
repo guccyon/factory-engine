@@ -616,7 +616,10 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "qa":
                 # QA 役（ADR 0028 の決定 2）: ストーリーごとの Verdict を残し、hold の Defect を起票し、固定 Issue にまとめを書く
                 try:
-                    if state == "succeeded":
+                    if state == "succeeded" and result.get("mode") == "explore":   # 夜間の探索（nightly_explore）: 1 晩 1 件の qa.explore と Defect の起票
+                        keys = qa_line.store_files(store_put, job_id, design_files)
+                        qa_line.record_explore(cur, gh, comment, repo, issue, corr, job_id, result, keys)
+                    elif state == "succeeded":
                         keys = qa_line.store_files(store_put, job_id, design_files)
                         recorded = qa_line.record(cur, repo, corr, job_id, result, keys)
                         qa_line.act(cur, gh, comment, repo, issue, corr, job_id, result, recorded, keys)
