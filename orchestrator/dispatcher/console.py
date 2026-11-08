@@ -15,6 +15,8 @@
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
   POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
+  POST /api/budget                        {"mode"?: "daily"|"weekday", "daily_usd"?, "weekday_usd"?: {"mon".."sun"}, "reason"?} 使用量の予算の宣言（usage.set_budget）。
+                                          渡したものだけ変える。今の決め方は /api/state の factory.budget
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の更新のため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
@@ -223,7 +225,7 @@ def snapshot(cur) -> dict:
         "runners": runners.view(cur),
         "runner_pairs": runners.pending_pairs(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur),
+        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur), "budget": usage.budget_spec(cur),
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
                     "planned": planned, "line_low_below": LINE_LOW_BELOW},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
@@ -336,6 +338,15 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         except (ValueError, TypeError) as e:
             return 400, {"error": str(e)}
         return 200, {"scale": line.status(cur)}
+    if path == "/api/budget":   # 使用量の予算の宣言（ADR 0029 の追記）。{mode, daily_usd, weekday_usd} のうち渡したものだけ変える
+        wk = body.get("weekday_usd")
+        if wk is not None and not isinstance(wk, dict):
+            return 400, {"error": "weekday_usd は {mon..sun: ドル}"}
+        try:
+            spec = usage.set_budget(cur, by, reason, mode=body.get("mode"), daily_usd=body.get("daily_usd"), weekday_usd=wk)
+        except (ValueError, TypeError) as e:
+            return 400, {"error": str(e)}
+        return 200, {"budget": spec}
     if path in ("/api/factory/drain", "/api/factory/resume"):
         drain.set_drain(cur, path.endswith("/drain"), by, reason)
         return 200, {"line": drain.status(cur)}

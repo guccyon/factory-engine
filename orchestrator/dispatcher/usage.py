@@ -8,12 +8,16 @@
   stoppages の budget（予算の枠で止めた時間）。jobs の kind で役割に分ける
 - 費用は API 単価に換算した値（ワーカーの CLI が出す cost_usd）。定額の契約では実請求ではなく、消費の物差し
 - 日の区切りは予算の枠と同じ 7:00 JST（BUDGET_DAY_START_HOUR）。週の区切りは契約の週の上限がリセットされる時刻（PLAN_WEEK_RESET）
-- 予算の枠（BUDGET_WINDOWS_*）の読み方は supervisor の投入の止め方と同じ（budget_windows）。値の正本はこの 1 か所
+- 予算の枠の読み方は supervisor の投入の止め方と同じ（budget_windows）。値の正本はこの 1 か所
+- 予算は宣言（events の budget.set。操業コンソールの設定・factoryctl budget）が正本。一度も宣言していなければ
+  環境変数 BUDGET_WINDOWS_WEEKDAY / BUDGET_WINDOWS_WEEKEND の枠（ADR 0029 の追記）
 """
 from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+
+from psycopg.types.json import Jsonb
 
 ENV = os.environ
 JST = timezone(timedelta(hours=9))
@@ -36,7 +40,7 @@ KIND_JA = {
 
 
 def windows_spec(day: datetime) -> str:
-    """その日（JST）の予算の枠の並び。supervisor と同じ環境変数（空なら予算で止めない）"""
+    """その日（JST）の予算の枠の並び（環境変数。空なら予算で止めない）。宣言があればそちらが優先（windows）"""
     if day.weekday() >= 5:
         return ENV.get("BUDGET_WINDOWS_WEEKEND", DEFAULT_WINDOWS_WEEKEND)
     return ENV.get("BUDGET_WINDOWS_WEEKDAY", DEFAULT_WINDOWS_WEEKDAY)
@@ -52,23 +56,118 @@ def parse_windows(spec: str) -> list[tuple[int, float]]:
     return sorted(out)
 
 
-def budget_windows(now: datetime) -> tuple[datetime, float] | None:
+# ---- 予算の宣言（2026-11-08 オーナー「使用量の予算も設定で変更できるようにしたい。全体で 1 日あたりの予算を決めるか、曜日べつで決めるか」）
+# 1 日は DAY_START_HOUR（7:00 JST）から翌日の同じ時まで。宣言の予算はその 1 日を 1 つの枠にする（5 時間ごとの枠には分けない）。
+# 曜日は 1 日が始まった日の曜日（月曜 7:00〜火曜 7:00 が月曜の予算）。もっと柔軟な当て方は、この先で形を足す
+BUDGET_EVENT = "budget.set"
+BUDGET_MODES = ("daily", "weekday")   # daily: 毎日同じ額、weekday: 曜日ごとの額
+BUDGET_MODE_JA = {"daily": "毎日同じ額", "weekday": "曜日ごと", "env": "環境変数の枠（宣言なし）"}
+WEEKDAYS_JA = {"mon": "月", "tue": "火", "wed": "水", "thu": "木", "fri": "金", "sat": "土", "sun": "日"}
+BUDGET_MAX_USD = 100000.0
+
+
+def declared(cur) -> dict | None:
+    """いちばん新しい予算の宣言（なければ None）。{mode, daily_usd, weekday_usd, by, reason, at}"""
+    cur.execute("select payload, occurred_at from events where name=%s order by id desc limit 1", (BUDGET_EVENT,))
+    r = cur.fetchone()
+    if not r or r["payload"].get("mode") not in BUDGET_MODES:
+        return None
+    p = r["payload"]
+    return {"mode": p["mode"], "daily_usd": float(p.get("daily_usd") or 0),
+            "weekday_usd": {k: float((p.get("weekday_usd") or {}).get(k) or 0) for k in WEEKDAYS},
+            "by": p.get("by"), "reason": p.get("reason") or "", "at": r["occurred_at"].isoformat()}
+
+
+def declared_amount(decl: dict, day) -> float:
+    """宣言のもとで、その日（予算の 1 日が始まった日）の予算"""
+    if decl["mode"] == "weekday":
+        return decl["weekday_usd"][WEEKDAYS[day.weekday()]]
+    return decl["daily_usd"]
+
+
+def windows(day: datetime, decl: dict | None = None) -> list[tuple[int, float]]:
+    """その日（JST）に始まる枠 (時, ドル)。宣言があれば 1 日 1 枠（DAY_START_HOUR から）、なければ環境変数の枠"""
+    if decl:
+        return [(DAY_START_HOUR, declared_amount(decl, day))]
+    return parse_windows(windows_spec(day))
+
+
+def budget_spec(cur, now: datetime | None = None) -> dict:
+    """いまの予算の決め方。宣言がなければ mode は env で、額は環境変数の枠から 1 日の合計を出した値（設定の画面の初めの値）"""
+    decl = declared(cur)
+    now = (now or datetime.now(JST)).astimezone(JST)
+    if decl:
+        out = dict(decl)
+    else:
+        base = budget_day(now)
+        per_day = {}
+        for i in range(7):
+            d = base + timedelta(days=i)
+            per_day[WEEKDAYS[d.weekday()]] = day_budget(d)
+        today = day_budget(base)
+        out = {"mode": "env", "daily_usd": today, "weekday_usd": per_day, "by": "env", "reason": "", "at": None,
+               "env": {"weekday": ENV.get("BUDGET_WINDOWS_WEEKDAY", DEFAULT_WINDOWS_WEEKDAY),
+                       "weekend": ENV.get("BUDGET_WINDOWS_WEEKEND", DEFAULT_WINDOWS_WEEKEND)}}
+    out["today_usd"] = day_budget(budget_day(now), decl)
+    out["day_start_hour"] = DAY_START_HOUR
+    return out
+
+
+def _usd(v, name: str) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= BUDGET_MAX_USD:
+        raise ValueError(f"{name} は 0〜{BUDGET_MAX_USD:,.0f} のドル")
+    return round(float(v), 2)
+
+
+def set_budget(cur, by: str, reason: str = "", mode: str | None = None, daily_usd=None, weekday_usd: dict | None = None) -> dict:
+    """予算を宣言する。渡したものだけ変え、ほかは今の値のまま（決め方を切り替えても、もう一方の額は残る）。返り値は新しい決め方。
+    supervisor は周回ごとに読むので、上げ直さずに次の周回から効く"""
+    cur_spec = budget_spec(cur)
+    new_mode = mode or (cur_spec["mode"] if cur_spec["mode"] in BUDGET_MODES else "daily")
+    if new_mode not in BUDGET_MODES:
+        raise ValueError(f"mode は {' か '.join(BUDGET_MODES)}")
+    daily = cur_spec.get("daily_usd") or 0.0
+    week = {k: (cur_spec["weekday_usd"].get(k) or 0.0) for k in WEEKDAYS}
+    if daily_usd is not None:
+        daily = _usd(daily_usd, "daily_usd")
+    for k, v in (weekday_usd or {}).items():
+        if k not in WEEKDAYS:
+            raise ValueError(f"曜日は {'・'.join(WEEKDAYS)}")
+        if v is not None:
+            week[k] = _usd(v, k)
+    cur.execute("insert into events(name, payload) values (%s, %s)",
+                (BUDGET_EVENT, Jsonb({"mode": new_mode, "daily_usd": daily, "weekday_usd": week, "by": by, "reason": reason})))
+    return budget_spec(cur)
+
+
+def budget_text(spec: dict) -> str:
+    """決め方を 1 行で（factoryctl と知らせの文言）"""
+    if spec["mode"] == "daily":
+        body = f"毎日 ${spec['daily_usd']:,.0f}"
+    elif spec["mode"] == "weekday":
+        body = "曜日ごと " + " ".join(f"{WEEKDAYS_JA[k]} ${spec['weekday_usd'][k]:,.0f}" for k in WEEKDAYS)
+    else:
+        body = f"環境変数の枠（平日 {spec['env']['weekday'] or 'なし'}、週末 {spec['env']['weekend'] or 'なし'}）"
+    return f"{body}（{spec['day_start_hour']}:00 区切り）"
+
+
+def budget_windows(now: datetime, decl: dict | None = None) -> tuple[datetime, float] | None:
     """今（JST）の使用量の枠の開始時刻と予算。枠は前日からまたぐ（22 時の枠は翌 3 時まで）。週末は開始した日で決める"""
     for back in (0, 1):
         day = now - timedelta(days=back)
-        for h, usd in reversed(parse_windows(windows_spec(day))):
+        for h, usd in reversed(windows(day, decl)):
             start = day.replace(hour=h, minute=0, second=0, microsecond=0)
             if start <= now:
                 return start, usd
     return None
 
 
-def day_budget(d) -> float | None:
+def day_budget(d, decl: dict | None = None) -> float | None:
     """予算の日（d の DAY_START_HOUR から翌日の同じ時まで）の予算の合計。枠がなければ None"""
     start = datetime(d.year, d.month, d.day, DAY_START_HOUR, tzinfo=JST)
     total, found = 0.0, False
     for day in (start, start + timedelta(days=1)):
-        for h, usd in parse_windows(windows_spec(day)):
+        for h, usd in windows(day, decl):
             t = day.replace(hour=h, minute=0)
             if start <= t < start + timedelta(days=1):
                 total, found = total + usd, True
@@ -100,6 +199,7 @@ def view(cur, now: datetime | None = None, days: int = 14) -> dict:
     first = today - timedelta(days=days - 1)
     since = datetime(first.year, first.month, first.day, DAY_START_HOUR, tzinfo=JST)
     shift = f"{DAY_START_HOUR} hours"
+    decl = declared(cur)   # 過去の日も今の決め方で予算の線を引く（日ごとの宣言の履歴はまだ見ない）
 
     cur.execute(
         "select ((e.occurred_at at time zone 'Asia/Tokyo') - %s::interval)::date as d, count(*) as jobs, "
@@ -123,7 +223,7 @@ def view(cur, now: datetime | None = None, days: int = 14) -> dict:
         daily.append({"date": d.isoformat(), "jobs": int(r.get("jobs") or 0), "cost_usd": round(_f(r.get("usd")), 2),
                       "billable_tokens": int(_f(r.get("billable"))), "total_tokens": int(_f(r.get("total"))),
                       "failed_cost_usd": round(_f(r.get("failed_usd")), 2), "usage_limited": int(r.get("limited") or 0),
-                      "budget_usd": day_budget(d), "budget_stopped_hours": round(stopped.get(d, 0) / 3600, 1)})
+                      "budget_usd": day_budget(d, decl), "budget_stopped_hours": round(stopped.get(d, 0) / 3600, 1)})
 
     last7 = now - timedelta(days=7)
     cur.execute(
@@ -167,7 +267,7 @@ def view(cur, now: datetime | None = None, days: int = 14) -> dict:
         if pace > 0 and projected > PLAN_WEEKLY_LIMIT_USD:
             week["exhausted_at"] = (now + timedelta(days=max(PLAN_WEEKLY_LIMIT_USD - spent, 0) / pace)).isoformat()
 
-    return {"generated_at": now.isoformat(), "day_start_hour": DAY_START_HOUR, "daily": daily, "by_kind": by_kind,
+    return {"generated_at": now.isoformat(), "day_start_hour": DAY_START_HOUR, "budget": budget_spec(cur, now), "daily": daily, "by_kind": by_kind,
             "by_model": by_model, "week": week, "signals": signals(daily, week)}
 
 

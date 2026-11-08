@@ -91,6 +91,7 @@ header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;
 #lanes{padding:12px 0 0}.targets{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.target{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}.target .th2{font-weight:700}.target .rel{margin-top:6px;border:0;padding:0}
 .set{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0 14px}.sn{display:grid;gap:2px;align-content:start;margin-top:12px}.sn a,.sn span{padding:7px 10px;border-radius:6px;color:var(--ink);text-decoration:none}.sn a.on{background:var(--card);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}.sn .later{color:var(--sub);font-size:12px}
 @media(max-width:640px){.set{grid-template-columns:1fr}.sn{grid-auto-flow:column;overflow-x:auto}}
+.bg-wk{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0}.bg-wk input{width:70px;font:inherit;padding:2px 6px;border:1px solid var(--line);border-radius:6px}
 .tb{border-collapse:collapse;margin:8px 0}.tb td,.tb th{padding:4px 12px 4px 0;text-align:left;font-variant-numeric:tabular-nums}.tb th{color:var(--sub);font-weight:400}.tb input{width:70px;font:inherit;padding:2px 6px;border:1px solid var(--line);border-radius:6px}
 #set-b>.rn:first-of-type{margin-top:0}#set-b input#sc-reason{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(300px,100%)}
 /* 停止のアラート（11-08）: 1 行ずつ、押すと詳しく、× で消す */
@@ -125,7 +126,7 @@ const dur=s=>s==null?"":s<60?s+"秒":s<3600?Math.floor(s/60)+"分":Math.floor(s/
 const link=(u,t)=>u&&/^https:\/\//.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);
 function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3000)}
 async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body||{})});
- const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"))force=true;load();return r.ok}
+ const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"||path==="/api/budget"))force=true;load();return r.ok}
 function acts(i){let h="";
  if(i.ticket_id&&["waiting","ready","queued","running"].includes(i.stage)){
   h+=`<select data-t="${i.ticket_id}" aria-label="優先度">`+Object.entries(levels).map(([k,v])=>`<option value="${k}" ${k===i.level?"selected":""}>${k} ${esc(v.name)}</option>`).join("")+`</select>`;
@@ -226,7 +227,7 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 // ---------------------------------------------------------------- ページ（11-07 の構成。ADR 0009 の決定 5 の簡易画面）
 // URL がページ: / ホーム（ダッシュボード）・/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）・/line・/ship・/settings/<項目>
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
-const SETTINGS=[["runners","ランナー"],["line","ラインと流量"],["mac","Mac"],["version","工場の版"]];
+const SETTINGS=[["runners","ランナー"],["line","ラインと流量"],["budget","使用量の予算"],["mac","Mac"],["version","工場の版"]];
 const LATER=["サービスとの連携（OAuth）","credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
 let S=null,view="",gi={},ibTab="open",ibKind="",ibWho="";
 const enc=k=>encodeURIComponent(k);
@@ -327,6 +328,7 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。委員会どうしは数によらず常に 1 つずつ順に動く（並べると知見が競合・矛盾するため。検討の課題は順番待ちに積まれる）。ラインを一時停止しても止まらない</dd>
 <dt>　窓口</dt><dd>相談に答える係が同時に動く数。ラインを一時停止しても止まらず、ラインのワーカーを使わない</dd>
 <dt>今日の費用</dt><dd>今日終わった作業の消費を API の単価に換算した目安。定額の契約の実際の請求ではない。詳しくは「使用量」</dd>
+<dt>使用量の予算</dt><dd>1 日（7:00 から翌 7:00）の費用が予算に届いたら、次の日まで新しいタスクを投入しない。作業中のもの・検査・judge・p0 は止めない。毎日同じ額か曜日ごとかを、設定の「使用量の予算」で決める</dd>
 <dt>着手待ちのチケット</dt><dd>依存や上限で、まだ手を付けていないチケットの数（保留にしたものは除く）。少なくなる（既定は 2 件を切る）と赤くなり、番人が知らせる。積まないとラインが空になる</dd>
 <dt>ライン</dt><dd>スイッチがオンなら、順番待ちの作業を取り出して流している。オフ（一時停止）にすると新しく取り出さない。工場の更新の前に使う</dd>
 </dl>
@@ -419,9 +421,25 @@ function scaleForm(sc){if(!sc)return `<div class="m">流量の宣言が読めな
   <div class="acts"><input id="sc-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-scale>宣言を変える</button></div>`}
 document.addEventListener("click",e=>{if(!e.target.closest("button[data-scale]"))return;const body={reason:(document.getElementById("sc-reason")||{}).value||"操業コンソール"};
  for(const k of ["workers","tickets","governance","desk"]){const v=(document.getElementById("sc-"+k)||{}).value;if(v!==""&&v!=null)body[k]=Number(v)}post("/api/line/scale",body)});
+// 使用量の予算（11-08 オーナー「全体で 1 日あたりの予算を決めるか、曜日べつで決めるか」）。宣言は usage.set_budget、supervisor が周回ごとに読む
+const WD=[["mon","月"],["tue","火"],["wed","水"],["thu","木"],["fri","金"],["sat","土"],["sun","日"]];
+function budgetForm(b){if(!b)return `<div class="m">予算の宣言が読めない</div>`;const m=b.mode==="weekday"?"weekday":"daily",v=x=>x==null?"":esc(x),h=b.day_start_hour;
+ const who=b.at?`${esc(b.by||"")} が ${esc(String(b.at).slice(0,16).replace("T"," "))} に宣言${b.reason?"（"+esc(b.reason)+"）":""}`:`いまは環境変数の枠（平日 <code>${esc(b.env.weekday||"なし")}</code>、週末 <code>${esc(b.env.weekend||"なし")}</code>）。保存すると下の決め方に切り替わる`;
+ return `<div class="m">1 日（${h}:00 から翌日の ${h}:00 まで）の費用（API 単価に換算）が予算に届いたら、次の日まで新しいタスクを投入しない。作業中のもの・検査・judge・p0 は止めない。factoryctl budget set と同じ</div>
+  <div class="m">${who}</div><div class="kv"><span>今日の予算 <b>${b.today_usd==null?"なし":"$"+Number(b.today_usd).toLocaleString()}</b></span></div>
+  <div class="acts"><label><input type="radio" name="bg-mode" value="daily" ${m==="daily"?"checked":""}> 毎日同じ額</label><label><input type="radio" name="bg-mode" value="weekday" ${m==="weekday"?"checked":""}> 曜日ごと</label></div>
+  <div id="bg-daily" ${m==="daily"?"":"hidden"}><table class="tb"><tr><td>1 日の予算（ドル）</td><td><input type="number" min="0" step="1" id="bg-d" value="${v(b.daily_usd)}"></td></tr></table></div>
+  <div id="bg-week" ${m==="weekday"?"":"hidden"}><div class="bg-wk">${WD.map(([k,n])=>`<label>${n} <input type="number" min="0" step="1" id="bg-${k}" value="${v((b.weekday_usd||{})[k])}"></label>`).join("")}</div><div class="m">曜日は 1 日が始まった日の曜日（月曜 ${h}:00〜火曜 ${h}:00 が月曜の予算）</div></div>
+  <div class="acts"><input id="bg-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-budget>予算を変える</button></div>`}
+document.addEventListener("change",e=>{if(e.target.name!=="bg-mode")return;const w=e.target.value==="weekday";document.getElementById("bg-daily").hidden=w;document.getElementById("bg-week").hidden=!w});
+document.addEventListener("click",e=>{if(!e.target.closest("button[data-budget]"))return;const g=id=>(document.getElementById(id)||{}).value,num=x=>x===""||x==null?undefined:Number(x);
+ const mode=(document.querySelector('input[name="bg-mode"]:checked')||{}).value||"daily",body={mode,reason:g("bg-reason")||"操業コンソール"};
+ if(mode==="daily")body.daily_usd=num(g("bg-d"));else{body.weekday_usd={};for(const [k] of WD)body.weekday_usd[k]=num(g("bg-"+k))}
+ post("/api/budget",body)});
 function settingsBody(sec,s){const f=s.factory;
  if(sec==="runners")return `<h2>ランナー</h2>${pairsView(s.runner_pairs||[])}${runnersView(s.runners||[])||'<div class="m">登録済みのランナーはない（工場の外の機械に入れた常駐プロセス。Mac なら scripts/macrunner.sh）</div>'}`;
  if(sec==="line")return `<h2>ラインと流量</h2><div class="acts">${lineView(f.line)}</div>${scaleForm(f.scale)}`;
+ if(sec==="budget")return `<h2>使用量の予算</h2>${budgetForm(f.budget)}<div class="m"><a href="/usage" data-nav>日ごとの費用と予算（使用量）→</a></div>`;
  if(sec==="mac")return `<h2>Mac</h2>${f.host?`<div class="acts"><label class="stat sw" title="オンの間は工場の稼働中に Mac を眠らせない">起こしたまま <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label></div><div class="m">Mac 上の見張り（keep-awake.sh）が ${dur(f.host.agent_age_sec)}前に連絡</div>`:'<div class="m">Mac 上の見張り（keep-awake.sh）から連絡がない。Mac 以外で動いているか、見張りが止まっている</div>'}`;
  return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
 
