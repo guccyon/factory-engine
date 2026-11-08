@@ -15,9 +15,9 @@ URL = os.environ.get("TEST_DATABASE_URL")
 
 
 def test_app_paths():
-    for p in ("/inbox", "/inbox/", "/inbox/choice%3Aexit_capture", "/inbox/release%3Ao%2Fr%400.9.3", "/line", "/ship", "/settings", "/settings/runners"):
+    for p in ("/inbox", "/inbox/", "/inbox/choice%3Aexit_capture", "/inbox/release%3Ao%2Fr%400.9.3", "/line", "/ship", "/usage", "/help", "/settings", "/settings/runners"):
         assert APP_PATH.fullmatch(p), p
-    for p in ("/api/state", "/review/1", "/usage", "/inbox/a/b", "/settings/../x", "/healthz"):
+    for p in ("/api/state", "/review/1", "/usage/body", "/inbox/a/b", "/settings/../x", "/healthz"):
         assert not APP_PATH.fullmatch(p), p
     assert "__TOKEN__" in PAGE and '"""' not in PAGE
 
@@ -57,3 +57,15 @@ def test_line_cards_carry_ticket_source(cur):
     cur.execute("insert into tickets(source, source_ref, repo, title, url, state) values ('github', 'o/r#5', 'o/r', 'チケット', 'https://github.com/o/r/issues/5', 'planned')")
     it = next(i for i in console.snapshot(cur)["items"] if i.get("ref") == "o/r#5")
     assert it["source"] == "github" and it["url"] == "https://github.com/o/r/issues/5"
+
+
+def test_failed_jobs_of_committee_show_their_repo(cur):
+    """委員会のジョブ（committee:<PR の URL>）の失敗が、PR の URL をリポジトリとして絞り込みに出さない（11-08）"""
+    import console
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('committee:https://github.com/o/r/pull/13','o/r',13,'committee_review','failed') returning id")
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.finished','committee:https://github.com/o/r/pull/13',%s,%s)",
+                (jid, Jsonb({"state": "failed", "error": "exit=1"})))
+    it = next(i for i in console.snapshot(cur)["items"] if i.get("job_id") == jid)
+    assert it["ref"] == "o/r#13"

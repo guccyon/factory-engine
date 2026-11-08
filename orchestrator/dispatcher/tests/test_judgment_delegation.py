@@ -66,3 +66,31 @@ def test_experience_level_keeps_previous_rule(level):
     assert judgment.delegated_verdict("aesthetic", "adopt", 0.6, "UXSpec の colors", level) == ("escalate", True)
     assert judgment.delegated_verdict("aesthetic", "replace", 0.95, "UXSpec の colors", level) == ("escalate", True)
     assert judgment.delegated_verdict("aesthetic", "adopt", 0.85, "UXSpec の colors", level) == ("adopt", False)
+
+
+# ADR 0042: 内部実装で利用者に見える振る舞いが変わらず、後で選び直せるものは、judge が人に回しても推奨を工場が採る
+@pytest.mark.parametrize("recommend", ["adopt", "replace"])
+def test_no_visible_change_takes_recommend(recommend):
+    assert judgment.no_visible_change_verdict("implementation", "escalate", 0.55, "none", True, recommend) == (recommend, True)
+
+
+@pytest.mark.parametrize("category,conf,visible,reversible,recommend", [
+    ("implementation", 0.4, "none", True, "adopt"),        # 確信度が下限未満
+    ("implementation", None, "none", True, "adopt"),       # 確信度がない
+    ("implementation", 0.9, "changes", True, "adopt"),     # 利用者に見える差がある
+    ("implementation", 0.9, None, True, "adopt"),          # 書いていない
+    ("implementation", 0.9, "none", False, "adopt"),       # 選び直しにくい
+    ("implementation", 0.9, "none", None, "adopt"),        # 書いていない
+    ("implementation", 0.9, "none", True, None),           # 推奨がない
+    ("system_interface", 0.9, "none", True, "adopt"),      # 委任の外の類型
+    ("data", 0.9, "none", True, "adopt"),
+    ("ui", 0.9, "none", True, "adopt"),
+])
+def test_no_visible_change_outside_delegation_keeps_escalate(category, conf, visible, reversible, recommend):
+    assert judgment.no_visible_change_verdict(category, "escalate", conf, visible, reversible, recommend) == ("escalate", False)
+
+
+@pytest.mark.parametrize("verdict", ["adopt", "replace", None])
+def test_no_visible_change_keeps_judge_decision(verdict):
+    # judge が自分で決めたものは、印の有無にかかわらず今までどおり通す（本 ADR は人に回すものを減らすだけ）
+    assert judgment.no_visible_change_verdict("implementation", verdict, 0.3, "changes", False, None) == (verdict, False)

@@ -185,6 +185,11 @@ def write_back(cur, now: datetime, dests: dict, rows: list[dict], poster) -> int
     return n
 
 
+# 窓口の依頼の提出・断りの受取確認は、依頼者の選んだ手段で done.task として知らせる（ADR 0039 の決定 5a。desk_line.send_notices）。
+# 受信トレイの通知では重ねて送らない
+DONE_TASK_KINDS = ("desk_receipt", "desk_decline")
+
+
 def tick(cur, now: datetime | None = None, channels: list[str] | None = None, sender=None, config: notify.Config | None = None,
          poster=None) -> dict:
     """1 周回ぶん。返り値は数（テストと日報向け）。channels を渡すと、その名前の今までの通知先に送る（テスト向け）。
@@ -216,7 +221,8 @@ def tick(cur, now: datetime | None = None, channels: list[str] | None = None, se
         if notify.quiet(now, d.quiet):
             continue
         quiet_all = False
-        mine = [i for i in xs if any(t.name == d.name for t in notify.targets(config, "request.inbox", i["who"]))]
+        mine = [i for i in xs if i.get("task_kind") not in DONE_TASK_KINDS
+                and any(t.name == d.name for t in notify.targets(config, "request.inbox", i["who"]))]
         dh = _history(rows, d.name)
         batch = due(mine, dh, now, escalate)
         if not batch:

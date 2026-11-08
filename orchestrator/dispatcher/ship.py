@@ -8,8 +8,10 @@
   release.approved            {release_id, by, via}   承認ボタン。staging で確かめた版を prod に出す
   release.rollback_requested  {repo, env, by, via}    その環境を、いま出ている版の 1 つ前の版に戻す
   release.reseed_requested    {env, by, via}          触れる環境の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env。release_id はいまその環境の版）
+  release.restart_requested   {repo, env, advance_seconds, reset_clock, by, via}
+                                                      触れる環境の部品を再起動し、サーバーの時計を進める（ADR 0028 の scenario_time。DB は残す）
 結果（同じ release の correlation_id で）:
-  release.built / release.deployed / release.rolled_back / release.reseeded / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
+  release.built / release.deployed / release.rolled_back / release.reseeded / release.restarted / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
   release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ。入れ直しのたびにも）
   release.touchable（触れる環境の入口。ship.yaml の touch の環境に出す・戻す・入れ直すたびに。URL・QR を付ける入口・ログインの手がかり）
 
@@ -32,8 +34,13 @@ import stoppage
 
 WORK = os.environ.get("SHIP_WORKDIR", "/ship")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,40}$")
-REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested")
-RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.ship_failed")
+REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested", "release.restart_requested")
+RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.restarted", "release.ship_failed")
+# 時計を進める上限（ADR 0028 の scenario_time）。1 回に進める量と、進めた量の合計。翌日・暦月の境をまたぐのに足りる幅に限る
+ADVANCE_MAX_SECONDS = 7 * 24 * 3600
+OFFSET_MAX_SECONDS = 62 * 24 * 3600
+# 時計を 0 に戻す出来事（compose の変数を渡し直さずに作り直すもの）。その後の時計は 0
+CLOCK_RESETTING = ("release.deployed", "release.rolled_back", "release.reseeded")
 # 触れる環境（ADR 0028 の touchable_env）。人の端末（スマートフォン）から届く工場の機械の名前と、画面の待ち受け。
 # どちらも端末ごとの値なのでリポジトリに書かず、orchestrator/.env か docker-compose.override.yml で渡す。
 # 待ち受けがなければ製品の compose の既定（127.0.0.1）のままで、入口の URL はこの機械からしか開けない
@@ -196,6 +203,36 @@ def request_reseed(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, s
         return False, f"{env} にまだ版が出ていない"
     record(cur, "release.reseed_requested", rid, {"repo": repo, "env": env, "by": by, "via": via})
     return True, f"{env} の DB を空にして、{rid} の合成シードから入れ直す依頼をした"
+
+
+def clock_offset(cur, repo: str, env: str) -> int:
+    """その環境のサーバーの時計を、いま何秒進めているか。最後の再起動（release.restarted）の値で、その後に出す・戻す・入れ直すがあれば 0"""
+    cur.execute("select name, payload from events where name = any(%s) and payload->>'repo'=%s and payload->>'env'=%s order by id desc limit 1",
+                (list(CLOCK_RESETTING) + ["release.restarted"], repo, env))
+    r = cur.fetchone()
+    if not r or r["name"] != "release.restarted":
+        return 0
+    return int(r["payload"].get("clock_offset_seconds") or 0)
+
+
+def request_restart(cur, repo: str, env: str, by: str, via: str, advance_seconds: int = 0, reset_clock: bool = False) -> tuple[bool, str]:
+    """触れる環境の部品（ship.yaml の touch.restart）を再起動し、サーバーの時計を advance_seconds 進める（reset_clock なら 0 に戻す）依頼。
+    DB は残す。どの環境で何を進められるかは shipper が ship.yaml の touch で確かめる"""
+    if env == "prod":
+        return False, "本番は再起動しない・時計を進めない"
+    if not isinstance(advance_seconds, int) or isinstance(advance_seconds, bool) or not 0 <= advance_seconds <= ADVANCE_MAX_SECONDS:
+        return False, f"1 回に進める時計は 0〜{ADVANCE_MAX_SECONDS // 3600} 時間"
+    if reset_clock and advance_seconds:
+        return False, "時計を戻すときは進めない（別々に依頼する）"
+    if not reset_clock and clock_offset(cur, repo, env) + advance_seconds > OFFSET_MAX_SECONDS:
+        return False, f"進めた時計の合計が {OFFSET_MAX_SECONDS // 86400} 日を超える。reset_clock で 0 に戻してから進める"
+    rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
+    if not rid:
+        return False, f"{env} にまだ版が出ていない"
+    record(cur, "release.restart_requested", rid, {"repo": repo, "env": env, "advance_seconds": advance_seconds,
+                                                   "reset_clock": bool(reset_clock), "by": by, "via": via})
+    what = "時計を 0 に戻して" if reset_clock else (f"時計を {advance_seconds // 3600} 時間進めて" if advance_seconds else "")
+    return True, f"{env}（{rid}）を{what}再起動する依頼をした"
 
 
 def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, str]:
@@ -370,6 +407,25 @@ def reseed(cur, cfg: dict, path: str, repo: str, env: str, rel: dict, common: di
     return round(time.monotonic() - t0, 1)
 
 
+def restart(cfg: dict, path: str, repo: str, env: str, rel: dict, offset: int) -> tuple[float, list[str]]:
+    """触れる環境の部品（touch.restart、既定は確かめる部品）を作り直して再起動する。DB は残す。
+    時計の変数（touch.clock_env）に offset 秒を渡す。作り直すのは、compose の変数をコンテナに入れ直すため"""
+    t = touch_config(cfg, env)
+    if not t:
+        raise RuntimeError(f"{env} は触れる環境ではない（ship.yaml の touch.environments）")
+    if offset and not t.get("clock_env"):
+        raise RuntimeError("この製品はサーバーの時計を進められない（ship.yaml の touch.clock_env がない）")
+    services = [str(s) for s in (t.get("restart") or [cfg["verify"]["service"]])]
+    e = compose_env(cfg, repo, env, rel)
+    if t.get("clock_env"):
+        e[str(t["clock_env"])] = str(int(offset))
+    t0 = time.monotonic()
+    compose = ["docker", "compose", "-f", os.path.join(path, cfg["compose"])]
+    sh(compose + ["up", "-d", "--wait", "--force-recreate", "--no-deps", *services], env=e, timeout=600)
+    verify(cfg, repo, env, rel)
+    return round(time.monotonic() - t0, 1), services
+
+
 def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
     """触れる環境なら、入口（URL）とログインの手がかりを release.touchable に残す。失敗しても出荷は失敗にしない（手がかりが欠けるだけ）"""
     t = touch_config(cfg, env)
@@ -448,6 +504,18 @@ def handle(cur, ev: dict):
             cfg = ship_config(path)
             secs = reseed(cur, cfg, path, repo, env, rel, common)
             record(cur, "release.reseeded", rid, {**common, "env": env, "ok": True, "seconds": secs, "by": p.get("by"), "via": p.get("via")})
+            touch_points(cur, cfg, repo, env, rel, common)
+        elif name == "release.restart_requested":
+            env = p["env"]
+            if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:
+                raise RuntimeError(f"{env} の版が依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
+            offset = 0 if p.get("reset_clock") else clock_offset(cur, repo, env) + int(p.get("advance_seconds") or 0)
+            path, _ = source(repo, rel["app_version"])
+            cfg = ship_config(path)
+            secs, services = restart(cfg, path, repo, env, rel, offset)
+            record(cur, "release.restarted", rid, {**common, "env": env, "ok": True, "seconds": secs, "services": services,
+                                                   "advance_seconds": int(p.get("advance_seconds") or 0), "clock_offset_seconds": offset,
+                                                   "by": p.get("by"), "via": p.get("via")})
             touch_points(cur, cfg, repo, env, rel, common)
     except Exception as e:  # noqa: BLE001  失敗は記録して停止に開き、次の依頼へ
         record(cur, "release.ship_failed", rid, {**common, "request": name, "error": str(e)[-1500:]})

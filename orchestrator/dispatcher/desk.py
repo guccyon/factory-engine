@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
@@ -42,6 +44,22 @@ TRANSITIONS = {
     "running": ("delivered",),
     "delivered": ("accepted", "closed", "routed", "open"),                         # open は続き・差し戻し（相談役の振り分けから）
 }
+# 単発の依頼のループの値（definitions/desk.yaml の loop を写す。食い違いはテストで見る。仮置き。運用パラメータとして工場が調整してよい）
+LOOP = {
+    "targets": {"ack": 60,
+                "route": {"default": 300, "direct_line": 300, "operate": 300, "quick": 300, "analysis": 900},
+                "deliver": {"operate": 300, "quick": 900, "analysis": 7200}},
+    "progress_at": 0.8,
+    "max_follow_ups": 5,
+    "remind_after_days": [3, 7],
+    "to_operator_after_days": 10,
+    "decline_reasons": {"no_operation": "決まった操作の一覧にない", "no_data_source": "工場がつながっていないデータ源が要る",
+                        "needs_production_data": "本番のデータが要る（後のフェーズ）", "too_large": "単発で受けるには大きすぎる",
+                        "no_capability": "工場がまだ持たない対応（集計・分析など）"},
+    "alternatives": {"other_path": "できる範囲の別の対応の種類（チケット化など）", "add_capability": "工場に足す提案（建設者に回す）",
+                     "to_human": "人に回す（運用主）"},
+}
+TZ = ZoneInfo(os.environ.get("REPORT_TZ", "Asia/Tokyo"))
 TOKEN_PREFIX = "fdk_"
 MAX_BODY = 8000          # 1 通の上限（文字数）。長い資料は製品のリポジトリに置いて参照を渡してもらう
 MAX_TITLE = 80
@@ -153,7 +171,7 @@ def _event(cur, name: str, conversation_id: int, payload: dict) -> int:
 
 
 def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, level: str | None = None, due: str | None = None,
-                      source_ref: str | None = None, derived_from: int | None = None) -> dict:
+                      source_ref: str | None = None, derived_from: int | None = None, notify_to: list[str] | None = None) -> dict:
     """相談を開く。依頼（request）と問い合わせ（inquiry）の 2 種類だけ。返り値は会話（相手の返事は read_conversation で取る）。
     source_ref は依頼の来た口（GitHub の Issue の URL。ADR 0039 の決定 1）、derived_from は断りから別案として始めた元の会話（決定 4）"""
     if kind not in KINDS:
@@ -172,7 +190,8 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
     if derived_from is not None:
         if _conversation(cur, who, derived_from)["product"] != product:
             raise DeskError(400, "別案は元の依頼と同じ製品で開く")
-    wanted = {k: v for k, v in (("level", level), ("due", due)) if v is not None}
+    notify_to = check_notify(cur, notify_to)
+    wanted = {k: v for k, v in (("level", level), ("due", due), ("notify", notify_to)) if v is not None}
     title = body.strip().splitlines()[0][:MAX_TITLE]
     cur.execute("insert into desk_conversations(kind, product, opened_by, title, wanted, source_ref, derived_from) "
                 "values (%s,%s,%s,%s,%s,%s,%s) returning *", (kind, product, who["name"], title, Jsonb(wanted), source_ref, derived_from))
@@ -183,12 +202,50 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
     _event(cur, "desk.message", c["id"], {"author": who["name"], "role": "requester", "body": body})
     if kind == "request":
         # 受付（ADR 0039 の決定 2・3）: 中身は読まずに、受け付けたことと次に起きることをすぐ返す
-        _event(cur, "desk.message", c["id"], {"author": "factory", "role": "factory", "kind": "ack", "body": ACK_TEXT.format(id=c["id"])})
+        ahead, by = route_eta(cur, c["created_at"])
+        _event(cur, "desk.message", c["id"], {"author": "factory", "role": "factory", "kind": "ack", "body": ack_text(c["id"], ahead, by),
+                                              "route_by": by.isoformat(), "ahead": ahead})
     return c
 
 
-ACK_TEXT = ("依頼 {id} を受け付けました。次は振り分けです。相談役が、決まった操作で済むか、チケットに切るかを決めて、5 分ほどで返します"
-            "（問いがあればそのときに聞きます）。")
+NOTIFY_DESK_ONLY = "desk"   # 知らせは窓口の会話だけ（Slack などには送らない）
+
+
+def check_notify(cur, notify_to) -> list[str] | None:
+    """知らせの受け取り方（ADR 0039 の決定 5a。会話の notify 欄、wanted.notify に持つ）。選べるのは notifications.yaml にある宛先の名前か
+    desk（窓口の会話だけ）。依頼の本文に書かれた宛先には送らない。None は既定（done.task の宛先）"""
+    if notify_to is None:
+        return None
+    if isinstance(notify_to, str):
+        notify_to = [notify_to]
+    if not isinstance(notify_to, list) or not notify_to or len(notify_to) > 5 or not all(isinstance(x, str) for x in notify_to):
+        raise DeskError(400, "notify は宛先の名前の並び（5 つまで）か desk")
+    import notify
+    cfg = notify.cached(cur)
+    allowed = {n for n, d in cfg.destinations.items() if d.party in notify.KINDS["done.task"]["parties"]}
+    bad = [x for x in notify_to if x != NOTIFY_DESK_ONLY and x not in allowed]
+    if bad:
+        raise DeskError(400, f"notify は通知の設定にある宛先の名前か desk（{' / '.join(sorted(allowed)) or '宛先なし'}）: {', '.join(bad)}")
+    return sorted(set(notify_to))
+
+
+def route_eta(cur, now: datetime) -> tuple[int, datetime]:
+    """振り分けを返せる目安の時刻（決定 3）。窓口の枠に先に積まれている相談の数だけ、振り分けの目安を足す（枠が埋まっているとき）"""
+    cur.execute("select count(*) as n from jobs where kind='desk_consult' and state='queued' and not cancel_requested")
+    ahead = cur.fetchone()["n"]
+    return ahead, now + timedelta(seconds=LOOP["targets"]["route"]["default"] * (1 + ahead))
+
+
+def clock(t: datetime) -> str:
+    """依頼者に見せる時刻（製品の時間帯。日をまたぐなら日付も）"""
+    lt, now = t.astimezone(TZ), datetime.now(TZ)
+    return f"{lt:%H:%M}" if lt.date() == now.date() else f"{lt:%m/%d %H:%M}"
+
+
+def ack_text(cid: int, ahead: int, by: datetime) -> str:
+    wait = f"先に {ahead} 件の相談があるので、{clock(by)} ごろまでに返します" if ahead else f"{clock(by)} ごろまで（5 分ほど）に返します"
+    return (f"依頼 {cid} を受け付けました。次は振り分けです。相談役が、決まった操作で済むか、チケットに切るか、受けられないかを決めて、"
+            f"{wait}（問いがあればそのときに聞きます）。")
 
 
 def post_message(cur, who: dict, conversation_id: int, body: str) -> dict:
@@ -283,15 +340,26 @@ def finish(cur, conversation_id: int, reason: str, by: str, *, note: str = "", p
     done = cur.fetchone()
     _event(cur, "desk.closed", conversation_id, {"by": by, "reason": reason, "note": note, "from": c["state"],
                                                   "record": closing_record(cur, done), **payload})
+    _resolve_inbox(cur, conversation_id, by, reason)
     return done
+
+
+def _resolve_inbox(cur, conversation_id: int, by: str, outcome: str) -> None:
+    """終えた会話の受信トレイの件（確認・受取確認・断り・返事待ち）を消す（取り下げで閉じた依頼の件を開いたままにしない）"""
+    import inbox
+    cur.execute("select distinct o.payload->>'key' as key from events o where o.name='inbox.requested' and o.correlation_id=%s",
+                (corr(conversation_id),))
+    for r in cur.fetchall():
+        inbox.resolve(cur, r["key"], by, outcome)
 
 
 def closing_record(cur, c: dict) -> dict:
     """閉じたときの記録（ADR 0039 の決定 7 の表。外側のループの束ねる材料）。events の時刻から決定論で組み立てる。
     今は対応の種類・時間・費用・往復・結末まで。進め方・断りの理由・主題は、その段を入れたときに足す"""
-    cur.execute("select name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
+    cur.execute("select id, name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
     evs = cur.fetchall()
     t0 = c["created_at"]
+    ms = milestones(c, evs)
 
     def first(*names):
         e = next((e for e in evs if e["name"] in names), None)
@@ -303,7 +371,81 @@ def closing_record(cur, c: dict) -> dict:
             "sec_routed": first("desk.routed", "desk.drafted"), "sec_delivered": first("desk.delivered", "desk.tickets_created"),
             "cost_usd": float(c.get("cost_usd") or 0), "rounds": c.get("rounds") or 0, "follow_ups": c.get("follow_ups") or 0,
             "reroutes": sum(1 for e in evs if e["name"] == "desk.routed") - 1 if any(e["name"] == "desk.routed" for e in evs) else 0,
-            "outcome": c.get("close_reason"), "derived_from": c.get("derived_from"), "superseded_by": c.get("superseded_by")}
+            "outcome": c.get("close_reason"), "derived_from": c.get("derived_from"), "superseded_by": c.get("superseded_by"),
+            "late": sorted({(e["payload"] or {}).get("milestone") for e in evs if e["name"] == "desk.late"} - {None}),
+            "met_route": all(m["end"] <= m["deadline"] for m in ms if m["milestone"] == "route" and m["end"]),
+            "met_deliver": all(m["end"] <= m["deadline"] for m in ms if m["milestone"] == "deliver" and m["end"]),
+            "met_ack": first_reply is not None and (first_reply["occurred_at"] - t0).total_seconds() <= LOOP["targets"]["ack"],
+            "declined": next(((e["payload"] or {}).get("reason") for e in reversed(evs) if e["name"] == "desk.declined"), None),
+            "cap_hit": any(e["name"] == "desk.cap_hit" for e in evs)}
+
+
+QUIET_KINDS = ("ack", "progress")   # 工場の返事のうち、マイルストーンを終えないもの（受付の返事・途中の様子）
+
+
+def route_target(path: str | None) -> int:
+    t = LOOP["targets"]["route"]
+    return t.get(path or "default", t["default"])
+
+
+def milestones(c: dict, evs: list[dict]) -> list[dict]:
+    """応答時間の目安のマイルストーン（決定 3）を events から決定論で切り出す。返り値は
+    [{milestone: route|deliver, key, start, deadline, end（まだなら None）, target_sec}]。
+      route:   依頼者の発言（振り分けの前・続き・差し戻し）から、工場の次の返事（問い・振り分け・下書き・断り・誤りの知らせ）まで。
+               振り分けた後の言い足し（記録だけ）は数えない
+      deliver: 実行に入った（確認された・確認を飛ばした）時から提出まで。analysis は振り分けで示した時刻（deliver_by）があればそれ
+    最初の返事（ack）は closing_record の met_ack で見る"""
+    out, busy, open_route, route_ev, run = [], False, None, None, None
+    path = c.get("path")
+    for e in evs:
+        p, name = e["payload"] or {}, e["name"]
+        if name == "desk.routed":
+            route_ev = p
+        if name in ("desk.message", "desk.answered") and p.get("role") == "requester":
+            if not busy and open_route is None:
+                open_route = {"milestone": "route", "key": f"route:{e['id']}", "start": e["occurred_at"]}
+        elif name in ("desk.message", "desk.answered", "desk.drafted", "desk.routed", "desk.declined") and p.get("kind") not in QUIET_KINDS:
+            if open_route is not None:
+                open_route["end"] = e["occurred_at"]
+                open_route["path"] = (route_ev or {}).get("path") if name == "desk.routed" else None
+                out.append(open_route)
+                open_route = None
+        if name == "desk.routed":
+            busy = True
+        elif name in ("desk.rerouted", "desk.closed"):
+            busy = False
+        if name == "desk.confirmed_run":
+            run = {"milestone": "deliver", "key": f"deliver:{e['id']}", "start": e["occurred_at"], "path": (route_ev or {}).get("path") or path,
+                   "deliver_by": (route_ev or {}).get("deliver_by")}
+        elif name in ("desk.delivered", "desk.closed") and run is not None:
+            run["end"] = e["occurred_at"]
+            out.append(run)
+            run = None
+    if open_route is not None and c["state"] not in ENDED:
+        out.append({**open_route, "end": None, "path": None})
+    if run is not None and c["state"] not in ENDED:
+        out.append({**run, "end": None})
+    for m in out:
+        if m["milestone"] == "route":
+            m["target_sec"] = route_target(m.get("path"))
+            m["deadline"] = m["start"] + timedelta(seconds=m["target_sec"])
+        else:
+            target = LOOP["targets"]["deliver"].get(m.get("path"))
+            by = _parse_time(m.pop("deliver_by", None)) if m.get("path") == "analysis" else None
+            m["deadline"] = by or (m["start"] + timedelta(seconds=target) if target else None)
+            m["target_sec"] = round((m["deadline"] - m["start"]).total_seconds()) if m["deadline"] else None
+            m.pop("deliver_by", None)
+    return [m for m in out if m.get("deadline")]
+
+
+def _parse_time(v) -> datetime | None:
+    if not isinstance(v, str):
+        return None
+    try:
+        t = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def list_conversations(cur, who: dict, limit: int = 50) -> list[dict]:
@@ -326,9 +468,72 @@ def read_conversation(cur, who: dict, conversation_id: int, after: int = 0) -> d
     cur.execute("select id, source_ref, title, state, priority from tickets where desk_conversation_id=%s order by id", (conversation_id,))
     tickets = [{**t, "level": ops.level_of(t["priority"])} for t in cur.fetchall()]
     d = latest_draft(cur, conversation_id)
-    return {"conversation": view_conversation(c), "messages": messages, "tickets": tickets,
+    return {"conversation": view_conversation(c), "status": status_view(cur, c), "messages": messages, "tickets": tickets,
             "draft": {"draft_id": d["id"], **d["payload"]} if d else None,
             "last_id": messages[-1]["id"] if messages else after}
+
+
+STEP_JA = {"open": ("振り分け", "相談役が対応の種類を決めて返します"),
+           "waiting_requester": ("振り分け", "相談役の問いへの返事を待っています"),
+           "drafted": ("振り分け", "下書きの確認を待っています（confirm）"),
+           "confirmed": ("振り分け", "下書きからチケットを起票します"),
+           "answered": ("提出", "回答しました。続きがあれば返事をください"),
+           "routed": ("振り分け", "振り分けました。確認か実行に進みます"),
+           "awaiting_confirm": ("確認", "実行してよいかの答えを待っています（実行する・やめる）"),
+           "running": ("実行", "実行しています。終わったら提出します"),
+           "delivered": ("提出", "受け取ったかの答えを待っています"),
+           "accepted": ("終わり", "受け取って完了しました"),
+           "handed_off": ("終わり", "チケットにして製品のラインに渡しました（進み具合はチケットの状態で）"),
+           "closed": ("終わり", "閉じました")}
+CLOSE_JA = {"accepted": "受け取った", "declined": "断りに納得した", "superseded": "別案の依頼に引き継いだ", "withdrawn": "取り下げた",
+            "handed_off": "チケットにして渡した"}
+
+
+def status_view(cur, c: dict) -> dict:
+    """依頼者に見えるもの（ADR 0039 の決定 6）。どの入口（MCP・API・コンソール）から読んでも同じ。
+    今のステップと次に何が起きるか・いつ頃か、振り分けの結果、途中の様子、提出（成果物と所見・受け取りの選択肢）、断りの理由と代わりの案"""
+    cur.execute("select id, name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
+    evs = cur.fetchall()
+
+    def last(name):
+        return next((e for e in reversed(evs) if e["name"] == name), None)
+
+    step, nxt = STEP_JA.get(c["state"], (c["state"], ""))
+    open_ms = [m for m in milestones(c, evs) if m["end"] is None]
+    out = {"step": step, "next": nxt, "by": open_ms[-1]["deadline"].isoformat() if open_ms else None, "path": c.get("path")}
+    r = last("desk.routed")
+    if r:
+        p = r["payload"] or {}
+        out["route"] = {"round": p.get("round"), "path": p.get("path"), "declined": bool(p.get("declined")), "op": p.get("op"),
+                        "what": (p.get("preview") or {}).get("text"), "tier": p.get("tier"), "why": p.get("why") or "",
+                        "request": p.get("request") or {}, "deliver_by": p.get("deliver_by")}
+    pr = last("desk.message") if c["state"] in ("open", "running") else None
+    if pr and (pr["payload"] or {}).get("kind") == "progress":
+        out["progress"] = {"at": pr["occurred_at"].isoformat(), "body": pr["payload"].get("body")}
+    d = last("desk.delivered")
+    if d:
+        p = d["payload"] or {}
+        out["delivered"] = {"round": p.get("round"), "at": d["occurred_at"].isoformat(), "ok": p.get("ok"), "summary": p.get("summary"),
+                            "cap_hit": bool(p.get("cap_hit")), "declined": bool(p.get("declined"))}
+    dc = last("desk.declined")
+    if dc and d and d["id"] > dc["id"]:
+        p = dc["payload"] or {}
+        out["declined"] = {"reason": p.get("reason"), "reason_ja": LOOP["decline_reasons"].get(p.get("reason"), p.get("reason")),
+                           "why": p.get("why") or "", "alternatives": p.get("alternatives") or []}
+    if c["state"] == "awaiting_confirm":
+        out["answer"] = {"how": "confirm に answer", "options": [{"id": "run", "label": "実行する"}, {"id": "cancel", "label": "やめる"}]}
+    elif c["state"] == "delivered":
+        declined = bool((out.get("delivered") or {}).get("declined"))
+        out["answer"] = {"how": "messages に answer（more・return は body に一言）",
+                         "options": ([{"id": "accept", "label": "納得した"}, {"id": "more", "label": "別案で進める"}, {"id": "return", "label": "断りを差し戻す"}]
+                                     if declined else
+                                     [{"id": "accept", "label": "受け取った"}, {"id": "more", "label": "続きを頼む"}, {"id": "return", "label": "差し戻す"}])}
+    if c["state"] in ENDED:
+        out["closed"] = {"reason": c.get("close_reason"), "reason_ja": CLOSE_JA.get(c.get("close_reason")), "by": c.get("closed_by"),
+                         "superseded_by": c.get("superseded_by")}
+    if c.get("derived_from"):
+        out["derived_from"] = c["derived_from"]
+    return out
 
 
 def view_conversation(c: dict) -> dict:
@@ -395,12 +600,18 @@ def confirm_route(cur, who: dict, conversation_id: int, option: str, note: str =
 
 
 def receive(cur, who: dict, conversation_id: int, option: str, note: str = "") -> dict:
-    """提出の受取確認に答える。accept（受け取った）・more（続き。一言が要る）・return（差し戻す。一言が要る）"""
+    """提出の受取確認に答える。accept（受け取った）・more（続き。一言が要る）・return（差し戻す。一言が要る）。
+    断りの提出なら accept（納得した）・more（別案で進める。一言は任意）・return（断りを差し戻す。一言が要る）"""
     if option not in RECEIPT_ANSWERS:
         raise DeskError(400, f"answer は {' / '.join(RECEIPT_ANSWERS)}")
-    if option != "accept":
+    # 断りの提出（決定 4）なら、同じ 3 つの語を 納得した・別案で進める・断りを差し戻す として受ける（道具を増やさない）
+    cur.execute("select payload from events where correlation_id=%s and name='desk.delivered' order by id desc limit 1", (corr(conversation_id),))
+    declined = bool(((cur.fetchone() or {}).get("payload") or {}).get("declined"))
+    if option == "return" or (option == "more" and not declined):
         note = _text(note, 2000)
-    return _answer_step(cur, who, conversation_id, "desk_receipt", "delivered", option, note or "")
+    elif note:
+        note = _text(note, 2000)
+    return _answer_step(cur, who, conversation_id, "desk_decline" if declined else "desk_receipt", "delivered", option, note or "")
 
 
 # ------------------------------------------------------------------ チケット（明確な指示は壁打ちを通さず即時に通す）
@@ -496,7 +707,28 @@ def inbox_product(item: dict) -> str | None:
     return None
 
 
-def _inbox_visible(who: dict, item: dict) -> bool:
+_DESK_TASK = re.compile(r"^task:desk_[a-z]+:(\d+):\d+$")
+
+
+def _desk_owner(cur, item: dict) -> dict | None:
+    """窓口の単発の依頼の件（task:desk_confirm|desk_receipt|desk_decline|desk_waiting:<会話>:<回>）なら、その会話の製品と依頼者"""
+    m = _DESK_TASK.match(item.get("key") or "")
+    if not m or cur is None:
+        return None
+    cur.execute("select product, opened_by from desk_conversations where id=%s", (int(m.group(1)),))
+    return cur.fetchone() or {"product": None, "opened_by": None}
+
+
+def _inbox_visible(who: dict, item: dict, cur=None) -> bool:
+    owner = _desk_owner(cur, item)
+    if owner is not None:
+        # 窓口の依頼の件は、その会話の製品を見られる運用主と、会話を開いた依頼者本人だけ（ほかの依頼者の件は見せない）
+        if item.get("who") == "owner":   # 運用主に回した件（依頼者の返事待ちなど）
+            return who["role"] == "operator" and bool(owner["product"]) and can_product(who, owner["product"])
+        if not owner["product"] or not can_product(who, owner["product"]):
+            return False
+        item.setdefault("product", owner["product"])
+        return who["role"] == "operator" or owner["opened_by"] == who["name"]
     roles = INBOX_WHO.get(who["role"], ())
     if roles is not None:
         allowed = (item.get("answer") or {}).get("allowed") or [item.get("who")]
@@ -514,7 +746,7 @@ def _inbox_summary(item: dict) -> dict:
     rec = a.get("recommended")
     return {"key": item["key"], "kind": item["kind"], "kind_label": inbox.KINDS.get(item["kind"], item["kind"]),
             "who": item["who"], "who_label": inbox.WHO.get(item["who"], item["who"]), "title": item["title"], "action": item.get("action") or "",
-            "url": item.get("url") or "", "product": inbox_product(item), "since": inbox._iso(item.get("since")), "age_sec": item.get("age_sec"),
+            "url": item.get("url") or "", "product": item.get("product") or inbox_product(item), "since": inbox._iso(item.get("since")), "age_sec": item.get("age_sec"),
             "answerable": bool(a), "irreversible": bool(a.get("irreversible")),
             "recommended": next((o["label"] for o in a.get("options") or [] if o["id"] == rec), None) if rec else None,
             "answered": item.get("answered")}
@@ -523,7 +755,7 @@ def _inbox_summary(item: dict) -> dict:
 def inbox_list(cur, who: dict, *, include_answered: bool = False) -> dict:
     """自分が答えてよい受信トレイの件。待ちの長い順。include_answered で、答え済みで反映を待っている件も入れる"""
     import inbox
-    xs = [i for i in inbox.items(cur, include_answered=include_answered) if _inbox_visible(who, i)]
+    xs = [i for i in inbox.items(cur, include_answered=include_answered) if _inbox_visible(who, i, cur)]
     return {"count": sum(1 for i in xs if not i.get("answered")), "items": [_inbox_summary(i) for i in xs]}
 
 
@@ -533,7 +765,7 @@ def _inbox_item(cur, who: dict, key) -> dict:
         raise DeskError(400, "key は受信トレイの件の key（inbox_list の key）")
     it = inbox.find(cur, key)
     # 見えない件は「ない」と同じに返す（ほかの人の件があることも漏らさない）
-    if it is None or not _inbox_visible(who, it):
+    if it is None or not _inbox_visible(who, it, cur):
         a = inbox.last_answer(cur, key) if it is None and who["role"] == "operator" else None
         if a:   # 答えて閉じた件（運用主にだけ、誰が何と答えたかを返す）
             raise DeskError(409, f"この件はすでに{inbox.answered_text(a)}")

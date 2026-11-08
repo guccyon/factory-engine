@@ -27,7 +27,10 @@ GOVERNANCE_WHERE = ("(q.kind = any(%(gov_kinds)s) or q.correlation_id like 'comm
 DESK_KINDS = ("desk_consult",)
 DESK_WHERE = "(q.kind = any(%(desk_kinds)s))"
 LINE_WHERE = f"(not {GOVERNANCE_WHERE} and not {DESK_WHERE})"
-ARGS = {"gov_kinds": list(GOVERNANCE_KINDS), "desk_kinds": list(DESK_KINDS)}
+# 知見の委員会は同時に 1 つだけ（2026-11-08 オーナー）。並べて流すと知見が競合・矛盾する。後の検討が前の議決を直すこともあるので、
+# 検討の課題はジョブとして順番待ちに積み、委員会は 1 つずつ順に処理する。governance の枠を増やしても委員会どうしは並ばない
+COMMITTEE_KINDS = ("committee_review", "committee_weekly")
+ARGS = {"gov_kinds": list(GOVERNANCE_KINDS), "desk_kinds": list(DESK_KINDS), "committee_kinds": list(COMMITTEE_KINDS)}
 
 
 def defaults() -> dict:
@@ -104,6 +107,9 @@ def claim_governance(cur) -> dict | None:
     """委員会と知見の流れの枠に空きがあれば、そのジョブを 1 つ取り出す。ラインの一時停止の間も取り出す"""
     if running(cur)["governance"] >= spec(cur)["governance"]:
         return None
+    cur.execute("select 1 from jobs where state='running' and kind = any(%s) limit 1", (list(COMMITTEE_KINDS),))
+    if cur.fetchone():   # 委員会が動いている間は、ほかの委員会のジョブを取り出さない（事例の分析などは取り出す）
+        return _claim(cur, f"({GOVERNANCE_WHERE} and not (q.kind = any(%(committee_kinds)s)))")
     return _claim(cur, GOVERNANCE_WHERE)
 
 

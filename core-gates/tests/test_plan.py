@@ -71,7 +71,8 @@ def test_versions_reads_git_heads(tmp_path):
 
 def test_facts(tmp_path):
     assert pl.facts(None)["has_design_system"] is False
-    assert pl.facts(tmp_path) == {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": []}
+    assert pl.facts(tmp_path) == {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": [],
+                                 "adr_ids": [], "contract_files": []}
     (tmp_path / "specs" / "design").mkdir(parents=True)
     (tmp_path / "specs" / "design" / "README.md").write_text("x")
     assert pl.facts(tmp_path)["has_design_system"] is False      # トークンがなければ、まだない
@@ -88,7 +89,8 @@ def test_schema_matches_definitions():
     assert "alternatives" in pl.schema(DEFS)["required"]
     assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized"}
     assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design",
-                                       "no_requirements", "no_stories", "unknown_story", "story_exists"}
+                                       "no_requirements", "no_stories", "unknown_story", "story_exists",
+                                       "unknown_adr", "unknown_contract", "breaking_contract", "no_contract_diff"}
     assert s["stories"]["items"]["properties"]["action"]["enum"] == list(DEFS["upstream"]["story_actions"]) == ["add", "change", "keep"]
     assert s["requirements"]["required"] == DEFS["upstream"]["requirements"]["required"]
     assert {"requirements", "stories"} <= set(pl.schema(DEFS)["required"])
@@ -127,7 +129,9 @@ def test_plan_stages_reads_and_decides(tmp_path, monkeypatch):
     out = pl.plan(issue, {"round": 2, "size_table": table}, DEFS, repo)
     assert "| backend+web | 4 | 22 | 48 | 70 | 1 |" in seen["sizes"] and "sizes.md" in seen["prompt"]
     assert seen["step"] == "plan" and "2 回目" in seen["prompt"] and "デザインシステムは ある" in seen["prompt"]
-    assert "specs/design/tokens.yaml" in seen["files"] and "knowledge/k1.yaml" in seen["files"] and "specs/shot.png" not in seen["files"]
+    # 知見は丸写しにせず、計画の業務で選んだものだけ（ADR 0040 の決定 7 の 3）。形の崩れた k1 は渡らない
+    assert "specs/design/tokens.yaml" in seen["files"] and "knowledge/k1.yaml" not in seen["files"] and "specs/shot.png" not in seen["files"]
+    assert out["knowledge_ids"] == [] and out["knowledge_selection"]["work"] == ["plan.workflow"]
     assert "返事です" in seen["comments"]
     assert (out["decision"], out["steps"], out["guards"], out["advisories"], out["round"]) == ("ready", ["implement"], [], [], 2)
     assert out["cost_usd"] == 0.05 and out["versions"]["prompt"] == pl.PROMPT_VERSION and out["versions"]["product"] is None
@@ -252,3 +256,90 @@ def test_pre_implement_phase_does_not_reissue_upstream(monkeypatch):
     assert out["requirements"] is None and out["stories"] == [] and "no_stories" not in out["advisories"]
     out = pl.plan({"title": "t", "body": "b"}, {}, DEFS, None)
     assert out["requirements"]["acceptance_criteria"] == ["通知が届く"] and "no_stories" in out["advisories"]
+
+
+# ------------------------------------------------------------------ 従う ADR・新しい判断と契約の差分（P4 の typed_upstream）
+def test_adr_ids_and_contract_files(tmp_path):
+    a = tmp_path / "docs" / "adr"
+    a.mkdir(parents=True)
+    for n in ("0003-backend-layers.md", "0004-schema-expand-contract.md", "README.md", "draft.md"):
+        (a / n).write_text("x")
+    c = tmp_path / "specs" / "contracts"
+    (c / "api" / "student-app").mkdir(parents=True)
+    (c / "api" / "coach-app").mkdir(parents=True)
+    (c / "api" / "coach-app" / ".gitkeep").write_text("")
+    (c / "api" / "student-app" / "openapi.yaml").write_text("x")
+    (c / "README.md").write_text("x")
+    assert pl.adr_ids(tmp_path) == ["0003", "0004"] and pl.adr_ids(None) == []
+    assert pl.contract_files(tmp_path) == ["specs/contracts/api/", "specs/contracts/api/coach-app/", "specs/contracts/api/student-app/",
+                                           "specs/contracts/api/student-app/openapi.yaml"]
+    f = pl.facts(tmp_path)
+    assert f["adr_ids"] == ["0003", "0004"] and "specs/contracts/api/student-app/openapi.yaml" in f["contract_files"]
+
+
+def test_schema_has_adrs_and_contracts():
+    s = pl.schema(DEFS)
+    u = DEFS["upstream"]
+    assert {"adrs", "contract_changes"} <= set(s["required"])
+    p = s["properties"]
+    assert p["adrs"]["properties"]["new"]["items"]["required"] == u["adr"]["required"] == ["title", "context", "decision", "alternatives", "consequences"]
+    assert p["contract_changes"]["items"]["properties"]["kind"]["enum"] == list(u["contracts"]["kinds"]) == ["add", "change", "remove"]
+    assert p["contract_changes"]["items"]["properties"]["compat_impact"]["enum"] == ["none", "additive", "breaking"]
+    assert {"unknown_adr", "unknown_contract", "breaking_contract", "no_contract_diff"} <= set(DEFS["advisories"])
+
+
+CF = {"adr_ids": ["0003", "0004"], "contract_files": ["specs/contracts/api/", "specs/contracts/api/student-app/",
+                                                      "specs/contracts/api/student-app/openapi.yaml", "specs/contracts/api/coach-app/"]}
+NEW_ADR = {"title": "予約の取り消しは開始 24 時間前まで", "context": "c", "decision": "d", "alternatives": ["前日まで", ""], "consequences": "r"}
+
+
+def test_decisions_and_contracts_normalizes():
+    out = {"adrs": {"follow": [{"id": "0004", "why": "列を足す"}, {"id": "ADR 3", "why": "層"}, {"id": "0099", "why": "x"}, {"id": "0004", "why": "dup"}],
+                    "new": [NEW_ADR, {"title": "", "decision": "x"}]},
+           "contract_changes": [
+               {"contract": "specs/contracts/api/student-app/openapi.yaml", "kind": "change", "compat_impact": "additive",
+                "operations": ["POST /bookings/{id}/cancel"], "summary": "取り消し"},
+               {"contract": "specs/contracts/api/coach-app/openapi.yaml", "kind": "add", "compat_impact": "additive", "summary": "新しい枝"},
+               {"contract": "specs/contracts/api/nope/openapi.yaml", "kind": "add", "compat_impact": "additive", "summary": "枝がない"},
+               {"contract": "apps/backend/x.rs", "kind": "change", "compat_impact": "none", "summary": "契約の外"},
+               {"contract": "specs/contracts/api/student-app/openapi.yaml", "kind": "remove", "compat_impact": "additive",
+                "operations": ["GET /old"], "summary": "古い操作を消す"}]}
+    adrs, cs, marks = pl.decisions_and_contracts(out, CF, "ready", DEFS)
+    assert adrs["follow"] == [{"id": "0004", "why": "列を足す"}, {"id": "0003", "why": "層"}]
+    assert adrs["new"] == [{"status": "proposed", "title": NEW_ADR["title"], "context": "c", "decision": "d", "alternatives": ["前日まで"], "consequences": "r"}]
+    assert [(c["contract"].split("/")[3], c["kind"], c["compat_impact"]) for c in cs] == [
+        ("student-app", "change", "additive"), ("coach-app", "add", "additive"), ("student-app", "remove", "breaking")]   # remove は breaking にする
+    assert marks == ["unknown_adr", "unknown_contract", "breaking_contract"]
+
+
+def test_decisions_and_contracts_only_when_ready_and_marks_missing_diff():
+    assert pl.decisions_and_contracts({"adrs": {"follow": [{"id": "0004", "why": "w"}], "new": []}}, CF, "ask", DEFS) == ({"follow": [], "new": []}, [], [])
+    adrs, cs, marks = pl.decisions_and_contracts({"size": {"layers": ["contract", "backend"]}}, CF, "split", DEFS)
+    assert (adrs, cs, marks) == ({"follow": [], "new": []}, [], ["no_contract_diff"])
+
+
+def test_plan_returns_adrs_and_contracts(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "docs" / "adr").mkdir(parents=True)
+    (repo / "docs" / "adr" / "0004-schema-expand-contract.md").write_text("# ADR 0004")
+    (repo / "specs" / "contracts" / "api" / "student-app").mkdir(parents=True)
+    (repo / "specs" / "contracts" / "api" / "student-app" / "openapi.yaml").write_text("openapi: 3.1.0")
+    seen = {}
+
+    def fake(step, prompt, *, schema=None, tier=None, max_turns=3, retries=3):
+        seen["prompt"], seen["adr"] = prompt, Path("adr/0004-schema-expand-contract.md").exists()
+        return agent_runner.Result(output={**O(steps=["implement"], scale="none"), "summary": "s", "evidence": [], "interpretation": "i",
+                                           "size": {"layers": ["contract", "backend"], "turns_band": "S", "basis": "b"},
+                                           "requirements": REQ, "stories": [],
+                                           "adrs": {"follow": [{"id": "0004", "why": "列を足す"}], "new": [NEW_ADR]},
+                                           "contract_changes": [{"contract": "specs/contracts/api/student-app/openapi.yaml", "kind": "change",
+                                                                 "compat_impact": "additive", "operations": ["POST /x"], "summary": "s"}]},
+                                   cost_usd=0.0, model="m")
+
+    monkeypatch.setattr(agent_runner, "run", fake)
+    out = pl.plan({"title": "t", "body": "b"}, {}, DEFS, repo)
+    assert seen["adr"] and "いまある番号: 0004" in seen["prompt"] and "specs/contracts/api/student-app/openapi.yaml" in seen["prompt"]
+    assert out["adrs"]["follow"][0]["id"] == "0004" and out["adrs"]["new"][0]["status"] == "proposed"
+    assert out["contract_changes"][0]["operations"] == ["POST /x"] and not {"no_contract_diff", "unknown_contract"} & set(out["advisories"])
+    out = pl.plan({"title": "t", "body": "b"}, {"phase": "implement"}, DEFS, repo)   # 実装の手前の判定では出し直さない
+    assert out["adrs"] == {"follow": [], "new": []} and out["contract_changes"] == []

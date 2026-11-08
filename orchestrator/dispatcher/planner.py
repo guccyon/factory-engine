@@ -12,6 +12,7 @@
 
 着手できる判定（ready・split）では、型つきの上流の成果物（P4 の typed_upstream）として、要件（Requirements）と
 このタスクが増やす・変える・守るユーザーストーリーを artifacts（Requirements）に残し、Issue の本文の節に書く。後の役は本文を読む。
+従う ADR と新しく残す判断は artifacts（ADR。status proposed）に、契約の差分は artifacts（ContractDiff）に残し、同じ節に書く。
 
 判断の根拠（3 層・とらなかった経路・入力の版・当てた guard と印）は Plan と plan.decided に残し、経路ごとの結果と突き合わせて
 後で見返す（factoryctl plan show）。状態は制御プレーンの artifacts（Plan）と events（plan.*）に置く（ADR 0020）。
@@ -43,11 +44,16 @@ ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナ�
                "design_after_implement": "実装の後にデザインの役がある", "no_size": "大きさの見積もりがない",
                "split_after_design": "大きいので、画面が決まってから実装の手前で切る", "no_requirements": "要件（受け入れ条件）がない",
                "no_stories": "画面を含むのにユーザーストーリーの宣言がない", "unknown_story": "製品にないストーリーの id を落とした",
-               "story_exists": "増やすストーリーの id がもうあるので、変えるにした"}
+               "story_exists": "増やすストーリーの id がもうあるので、変えるにした", "unknown_adr": "製品にない ADR の番号を落とした",
+               "unknown_contract": "製品にない契約の置き場の差分を落とした", "breaking_contract": "互換を壊す契約の差分がある",
+               "no_contract_diff": "契約の層を触るのに契約の差分がない"}
 # definitions/planner.yaml の upstream と同じ値
 REQ_MARK, REQ_MARK_END = "<!-- factory-requirements:v1 -->", "<!-- /factory-requirements -->"
 STORY_ACTION_JA = {"add": "増やす", "change": "変える", "keep": "守る"}
 STORIES_DIR = "specs/stories/"
+ADR_DIR, CONTRACTS_DIR = "docs/adr/", "specs/contracts/"
+CONTRACT_KIND_JA = {"add": "足す", "change": "変える", "remove": "消す"}
+COMPAT_JA = {"none": "互換に影響なし", "additive": "足すだけ（互換を保つ）", "breaking": "互換を壊す"}
 SIZE_TABLE_DAYS = 60     # プランナーに渡す実績の表の期間（ADR 0036 の 1）
 LAYER_JA = {"db": "DB", "contract": "契約", "backend": "backend", "web": "Web", "mobile": "モバイル", "docs": "文書", "other": "その他"}
 OVERSIZE_JA = {"layers": "触る層が多い", "files": "変わる見込みのファイルが多い", "turns": "見込みのターンが多い"}
@@ -73,6 +79,7 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                "agent_ready": p.get("ready"), "versions": result.get("versions") or {},
                "size": p.get("size"), "oversize": result.get("oversize") or [], "tasks": result.get("tasks") or [], "phase": result.get("phase"),
                "requirements": result.get("requirements"), "stories": result.get("stories") or [],
+               "adrs": adrs_of(result), "contract_changes": contracts_of(result),
                "model": result.get("model"), "cost_usd": result.get("cost_usd"), "num_turns": result.get("num_turns")}
     if isinstance(result.get("workflow"), dict):   # ワークフローの宣言（ADR 0038）。決まりで直した後の形と、直した印
         payload["workflow"], payload["workflow_marks"] = result["workflow"], result.get("workflow_marks") or []
@@ -82,7 +89,14 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
     req = result.get("requirements")
     if isinstance(req, dict) and req.get("acceptance_criteria"):   # 型つきの上流の成果物（artifacts.yaml の Requirements）
         cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Requirements',%s,%s,'plan',%s)",
-                    (corr, job_id, Jsonb({"repo": repo, "issue": issue, "plan_id": pid, **req, "stories": payload["stories"]})))
+                    (corr, job_id, Jsonb({"repo": repo, "issue": issue, "plan_id": pid, **req, "stories": payload["stories"],
+                                          "adrs_follow": payload["adrs"]["follow"]})))
+    for a in payload["adrs"]["new"]:   # 新しく残す判断（artifacts.yaml の ADR）。ファイルは実装役が同じ PR で書く
+        cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('ADR',%s,%s,'plan',%s)",
+                    (corr, job_id, Jsonb({"repo": repo, "issue": issue, "plan_id": pid, **a})))
+    for c in payload["contract_changes"]:   # 契約の差分（artifacts.yaml の ContractDiff）
+        cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('ContractDiff',%s,%s,'plan',%s)",
+                    (corr, job_id, Jsonb({"repo": repo, "issue": issue, "plan_id": pid, **c})))
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.decided',%s,%s,%s)",
                 (corr, job_id, Jsonb({"plan_id": pid, "repo": repo, "issue": issue, "round": payload["round"], "decision": payload["decision"],
                                       "steps": payload["steps"], "efforts": [s.get("effort") for s in payload["step_details"] if isinstance(s, dict)],
@@ -91,6 +105,9 @@ def record(cur, repo: str, issue: int, corr: str, job_id: int, result: dict) -> 
                                       "size": payload["size"], "oversize": payload["oversize"], "tasks": len(payload["tasks"]), "phase": payload["phase"],
                                       "requirements": bool(isinstance(req, dict) and req.get("acceptance_criteria")),
                                       "stories": [{"action": x.get("action"), "id": x.get("id")} for x in payload["stories"] if isinstance(x, dict)],
+                                      "adrs": {"follow": [x.get("id") for x in payload["adrs"]["follow"]], "new": len(payload["adrs"]["new"])},
+                                      "contracts": [{"contract": c.get("contract"), "kind": c.get("kind"), "compat_impact": c.get("compat_impact")}
+                                                    for c in payload["contract_changes"]],
                                       "versions": payload["versions"], "model": payload["model"], "cost_usd": payload["cost_usd"],
                                       **({"workflow": workflow_summary(payload["workflow"]), "workflow_marks": payload["workflow_marks"]} if "workflow" in payload else {})})))
     return pid
@@ -108,8 +125,45 @@ def rationale(p: dict, steps: list[str]) -> list[str]:
     return lines
 
 
-def requirements_section(plan_id: int, req: dict | None, stories: list[dict]) -> str:
-    """Issue の本文に書く「要件とユーザーストーリー」の節（後の役が本文から読む）"""
+def adrs_of(result: dict) -> dict:
+    a = result.get("adrs") if isinstance(result.get("adrs"), dict) else {}
+    return {"follow": [x for x in a.get("follow") or [] if isinstance(x, dict)], "new": [x for x in a.get("new") or [] if isinstance(x, dict)]}
+
+
+def contracts_of(result: dict) -> list[dict]:
+    return [c for c in result.get("contract_changes") or [] if isinstance(c, dict)]
+
+
+def decisions_lines(adrs: dict, contracts: list[dict]) -> list[str]:
+    """節の「判断（ADR）」と「契約の差分」"""
+    lines = []
+    if adrs["follow"] or adrs["new"]:
+        lines.append("判断（ADR）:")
+        lines += [f"- 従う ADR {a.get('id')}: {a.get('why') or ''}" for a in adrs["follow"]]
+        for a in adrs["new"]:
+            lines.append(f"- 新しく残す: **{a.get('title')}**")
+            lines += [f"  - {k}: {a[f]}" for f, k in (("context", "文脈"), ("decision", "決定"), ("consequences", "結果")) if a.get(f)]
+            if a.get("alternatives"):
+                lines.append("  - とらなかった案: " + "／".join(a["alternatives"]))
+        if adrs["new"]:
+            lines += ["", f"実装役へ: 新しく残す判断は、この変更と同じ PR で `{ADR_DIR}<次の番号>-<名前>.md` に書く（状態は「提案（工場）」、"
+                      "既存の ADR の見出し 文脈・決定・結果 に合わせる）。"]
+        lines.append("")
+    if contracts:
+        lines.append("契約の差分:")
+        for c in contracts:
+            ops = f"（{'、'.join(f'`{o}`' for o in c.get('operations') or [])}）" if c.get("operations") else ""
+            lines.append(f"- `{c.get('contract')}` を{CONTRACT_KIND_JA.get(c.get('kind'), c.get('kind'))}{ops}・"
+                         f"{COMPAT_JA.get(c.get('compat_impact'), c.get('compat_impact'))}: {c.get('summary') or ''}")
+        lines += ["", "実装役へ: 契約のファイルを先に直し、実装はそれに合わせる。"]
+        if any(c.get("compat_impact") == "breaking" for c in contracts):
+            lines[-1] += "互換を壊す差分は、足す（expand）→ 移す → 消す（contract）に分け、消す段は人の承認を待つ（製品の ADR 0004）。"
+        lines.append("")
+    return lines
+
+
+def requirements_section(plan_id: int, req: dict | None, stories: list[dict], adrs: dict | None = None, contracts: list[dict] | None = None) -> str:
+    """Issue の本文に書く「要件とユーザーストーリー」の節（後の役が本文から読む）。従う ADR・新しい判断・契約の差分も同じ節に書く"""
     lines = [REQ_MARK, "## 要件とユーザーストーリー（プランナー）", ""]
     if req:
         lines += ["受け入れ条件:"] + [f"- {a}" for a in req.get("acceptance_criteria") or []]
@@ -127,6 +181,7 @@ def requirements_section(plan_id: int, req: dict | None, stories: list[dict]) ->
             lines.append(f"{head}: {st.get('why') or ''}")
         lines += ["", f"実装役へ: 増やす・変えるストーリーは、この変更と同じ PR で `{STORIES_DIR}<id>.yaml` に書く（既存のストーリーと actors.yaml の書き方に合わせる）。"
                   "守るストーリーの流れは壊さない（QA 役が回帰で流す）。", ""]
+    lines += decisions_lines(adrs or {"follow": [], "new": []}, contracts or [])
     lines += [f"<sub>Plan {plan_id}</sub>", REQ_MARK_END]
     return "\n".join(lines)
 
@@ -140,18 +195,25 @@ def replace_requirements(body: str, section: str) -> str:
 
 def write_requirements(gh, repo: str, issue: int, plan_id: int, result: dict) -> bool:
     """要件とストーリーを Issue の本文の節に書く（前の判定の節は置き換える）。出すものがなければ書かない"""
-    req, stories = result.get("requirements"), result.get("stories") or []
-    if not gh or not ((isinstance(req, dict) and req.get("acceptance_criteria")) or stories):
+    req, stories, adrs, contracts = result.get("requirements"), result.get("stories") or [], adrs_of(result), contracts_of(result)
+    if not gh or not ((isinstance(req, dict) and req.get("acceptance_criteria")) or stories or adrs["follow"] or adrs["new"] or contracts):
         return False
     it = gh("GET", f"repos/{repo}/issues/{issue}") or {}
-    gh("PATCH", f"repos/{repo}/issues/{issue}", {"body": replace_requirements(it.get("body") or "", requirements_section(plan_id, req, stories))})
+    gh("PATCH", f"repos/{repo}/issues/{issue}",
+       {"body": replace_requirements(it.get("body") or "", requirements_section(plan_id, req, stories, adrs, contracts))})
     return True
 
 
 def upstream_note(result: dict) -> str:
     st = result.get("stories") or []
     by = "、".join(f"{STORY_ACTION_JA.get(x.get('action'), x.get('action'))} `{x.get('id')}`" for x in st) or "なし"
-    return f"要件とユーザーストーリーを本文の「要件とユーザーストーリー（プランナー）」の節に書きました（ストーリー: {by}）。"
+    adrs, contracts = adrs_of(result), contracts_of(result)
+    extra = ""
+    if adrs["follow"] or adrs["new"]:
+        extra += f"、ADR: 従う {len(adrs['follow'])}・新しく残す {len(adrs['new'])}"
+    if contracts:
+        extra += f"、契約の差分 {len(contracts)}"
+    return f"要件とユーザーストーリーを本文の「要件とユーザーストーリー（プランナー）」の節に書きました（ストーリー: {by}{extra}）。"
 
 
 def questions_comment(plan_id: int, round_: int, max_rounds: int, summary: str, questions: list[dict], guards: list[str]) -> str:

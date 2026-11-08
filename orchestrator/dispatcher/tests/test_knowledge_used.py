@@ -43,3 +43,25 @@ def test_nothing_when_no_ids():
     dispatcher.record_knowledge_used(cur, "c", 7, "o/r", 1, {"pr_url": "u"}, None)
     dispatcher.record_knowledge_used(cur, "c", 7, "o/r", 1, {"knowledge_ids": []}, None)
     assert cur.rows == []
+
+
+def test_records_body_fix_role_and_entry():
+    """ADR 0040 の決定 7 の 2: 本文の直しが受け取った知見も残す。issue は PR の番号"""
+    cur = Cur()
+    sel = {"work": ["dev.describe"], "values": {"roles": ["body_fix"]}, "fit": {"K-0006": {"score": 4.5}}}
+    dispatcher.record_knowledge_used(cur, "c", 9, "o/r", 1118, {"pr_url": "u", "knowledge_ids": ["K-0006"], "knowledge_selection": sel}, None, role="body_fix")
+    (sql, params), = cur.rows
+    obj = params[3].obj
+    assert obj["role"] == "body_fix" and obj["entry"] == "body_fix" and obj["work"] == ["dev.describe"]
+    assert obj["fit"] == {"K-0006": {"score": 4.5}}
+
+
+def test_records_preference_ids_only():
+    """ADR 0040 の決定 6: 好みは id だけを残し、中身は書かない"""
+    cur = Cur()
+    inp = {"requester_preferences": [{"id": "P-0003", "statement": "表より箇条書き"}]}
+    dispatcher.record_preferences_used(cur, "desk:1", 10, inp, role="desk.consult")
+    (sql, params), = cur.rows
+    assert params[0] == "requester_preference.used" and params[3].obj == {"role": "desk.consult", "ids": ["P-0003"]}
+    dispatcher.record_preferences_used(cur, "desk:1", 11, {}, role="desk.consult")
+    assert len(cur.rows) == 1
