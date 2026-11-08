@@ -267,13 +267,13 @@ function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
 function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
 // 受信トレイの画面は実際の大きさの 1/4（160〜480px）で出す。高解像度のスクリーンショットでも画面の全体が見える
 document.addEventListener("load",e=>{const g=e.target;if(g.tagName==="IMG"&&g.classList.contains("q")&&g.naturalWidth)g.style.width=Math.round(Math.min(480,Math.max(160,g.naturalWidth/4)))+"px"},true);
-// 受信トレイの件を Claude に渡す（11-08）。Claude 越しに中身を確かめて答えるとき、どの件かを伝える文をコピーする。
+// 受信トレイの「プロンプト」（11-08）。AI エージェント越しに中身を確かめて答えるとき、どの課題かを伝えるプロンプトをコピーする。
 // 決め手は件の key（工場の MCP の inbox_read・inbox_answer が受け取るもの）。URL は人が開き直すため
-function shareText(i){return `工場の受信トレイの件を一緒に確認したい。\n件: ${i.title}\nkey: ${i.key}\n工場の MCP の inbox_read に key「${i.key}」を渡して中身を読み、問いと案を見せてほしい（答えは私がはっきり選んでから inbox_answer で送る）。\n画面: ${location.origin}${ibHref(i.key)}`}
+function shareText(i){return `以下の判断待ちの課題のサポートをして\n\nタイトル: ${i.title}\nパラメータ: ${i.key}\n\nMCPの inbox_read を使って内容を確認し詳細を説明してください。回答は inbox_answer で送ります。\n受信トレイのURL: ${location.origin}${ibHref(i.key)}`}
 async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();
  let ok=false;try{ok=document.execCommand("copy")}catch(_){}a.remove();return ok}}
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-share]");if(!b||!S)return;const i=((S.inbox||{}).items||[]).find(x=>x.key===b.dataset.share);if(!i)return;
- copyText(shareText(i)).then(ok=>toast(ok?"Claude に渡す文をコピーしました。Claude との会話に貼り付けてください":"コピーできませんでした"))});
+ copyText(shareText(i)).then(ok=>toast(ok?"プロンプトをコピーしました。AI エージェントとの会話に貼り付けてください":"コピーできませんでした"))});
 // ---- 停止のアラート（11-08）。何が止まり・どれのことで・次に何をするかを 1 行ずつ。押すと詳しく（記録・リンク・やり直す）。
 // × で画面から消す（停止そのものは閉じない。消したものは「消したもの」で見られ、戻せる）
 let alAll=false,alGone=false;const alOpen=new Set(),alLog={};const AL_LIM=5;
@@ -360,7 +360,7 @@ function ibDetail(ib,key){const i=ib.items.find(x=>x.key===key);
  const xs=ibItems(ib),k=xs.findIndex(x=>x.key===key),prev=k>0?xs[k-1]:null,next=k>=0&&k<xs.length-1?xs[k+1]:null;
  const nav=`<span class="pn">${prev?`<a href="${ibHref(prev.key)}" data-nav>← 前</a>`:'<span class="off">← 前</span>'}${next?`<a href="${ibHref(next.key)}" data-nav>次 →</a>`:'<span class="off">次 →</span>'}</span>`;
  const meta=[esc(ib.who[i.who]||i.who),esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref),extLink(i.url)].filter(Boolean).join(" · ");
- return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="Claude に渡す文（件の key・題・この画面の URL）をコピーする。Claude は工場の MCP の inbox_read にこの key を渡して中身を読む">Claude に渡す</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
+ return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="AIエージェントとこの課題の判断をするためのプロンプトをクリップボードにコピーします。">プロンプト</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
 function ibBody(i){const n=0;
  if(i.key.startsWith("choice:")){const cs=i.key==="choice:exit_capture"?(S.choices||[]).filter(c=>c.kind==="exit_capture"):(S.choices||[]).filter(c=>"choice:"+c.id===i.key);
   if(i.answered||!cs.length)return answerView(i,n);
