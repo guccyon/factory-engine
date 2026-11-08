@@ -273,7 +273,7 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
             "prompt": PROMPT_VERSION}
 
 
-PROMPT_VERSION = "8"   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "9"   # 9: 知見を計画の業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。問いの文を変えたら上げる（判断の入力の版として残す）
 
 
 def phase_note(inp: dict) -> str:
@@ -313,7 +313,7 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
 - issue.md: チケットの本文
 - comments.md: これまでのコメント（工場からの問いと、起票者の返事）
 - specs/: 製品の規範（デザインシステムは {ds}。glossary.yaml が用語集）
-- knowledge/: 製品の知見（あれば。プロダクトの既定が入っている）
+- knowledge/knowledge.md: 製品の知見のうち、計画の業務に効くと工場が選んだもの（委員会が確認済み以上にしたもの。あれば。プロダクトの既定が入っている）
 - specs/stories/: 製品のユーザーストーリー（1 本 1 ファイル。いまある id: {sids}。actors.yaml が利用者の種類）
 - sizes.md: この製品の実績の表（層の組ごとの、変わったファイルの数とターンの中央値。工場が過去の PR から数えたもの）
 - inflight.md: いま流れている・待っているタスクと、それが触る（見込みの）ファイル、よく衝突するファイル（工場の記録から）
@@ -396,7 +396,7 @@ def caps_md(hits: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def stage(root: Path, issue: dict, repo_dir: Path | None, sizes: list[dict] | None = None, inp: dict | None = None):
+def stage(root: Path, issue: dict, repo_dir: Path | None, sizes: list[dict] | None = None, inp: dict | None = None) -> dict:
     inp = inp or {}
     (root / "sizes.md").write_text(sizes_md(sizes or []), encoding="utf-8")
     (root / "inflight.md").write_text(inflight_md(inp.get("inflight") or [], inp.get("hot_files") or {}), encoding="utf-8")
@@ -408,9 +408,9 @@ def stage(root: Path, issue: dict, repo_dir: Path | None, sizes: list[dict] | No
     (root / "comments.md").write_text("\n".join(lines)[:MAX_TEXT] or "（コメントなし）\n", encoding="utf-8")
     if repo_dir and (repo_dir / "specs").is_dir():
         shutil.copytree(repo_dir / "specs", root / "specs", ignore=shutil.ignore_patterns("*.jpg", "*.png", "*.pdf", "*.mp4"))
-    k = repo_dir / ".factory-config" / "knowledge" if repo_dir else None
-    if k and k.is_dir():
-        shutil.copytree(k, root / "knowledge")
+    # 知見はこの回の業務（plan.workflow）で選んだものだけ（ADR 0040 の決定 7 の 3）。丸写しにすると仮説や Engine 宛ての知見まで読む
+    import knowledge_context
+    return knowledge_context.stage(repo_dir, root / "knowledge", "plan", {"request_form": ["ticket"]})
 
 
 def plan(issue: dict, inp: dict, defs: dict, repo_dir: Path | None) -> dict:
@@ -419,7 +419,7 @@ def plan(issue: dict, inp: dict, defs: dict, repo_dir: Path | None) -> dict:
     f = facts(repo_dir)
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        stage(root, issue, repo_dir, inp.get("size_table") or [], inp)
+        ksel = stage(root, issue, repo_dir, inp.get("size_table") or [], inp)
         cwd = os.getcwd()
         os.chdir(root)   # agent_runner はカレントディレクトリでエージェントを動かす
         try:
@@ -443,6 +443,7 @@ def plan(issue: dict, inp: dict, defs: dict, repo_dir: Path | None) -> dict:
     return {"workflow": wf, "workflow_marks": wf_marks, "decision": decision, "steps": steps, "guards": guards, "advisories": marks, "round": round_, "facts": f,
             "tasks": tasks, "requirements": req, "stories": stories, "oversize": oversize(out, defs), "phase": inp.get("phase"),
             "versions": versions(defs, repo_dir), "plan": out,
+            "knowledge_ids": ksel["ids"], "knowledge_selection": {k: ksel[k] for k in ("work", "values", "fit")},
             "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns}
 
 

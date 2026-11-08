@@ -248,6 +248,24 @@ def build(repo: Path, role: str, today: date, job: Job | None = None) -> tuple[s
     return text, ids, skipped, fit
 
 
+def stage(repo_dir: Path | None, dest: Path, role: str, values: dict | None = None, today: date | None = None) -> dict:
+    """エージェントの作業ディレクトリに、この回の業務で選んだ知見を dest/knowledge.md として置く（ADR 0040 の決定 7）。
+    プランナー・窓口のように製品のリポジトリを丸ごと読む役が、知見のディレクトリを丸写しにしないためのもの。
+    返り値は {ids, work, values, fit}（結果に載せ、dispatcher が knowledge.used に残す）。知見がなければ何も置かない"""
+    empty = {"ids": [], "work": [], "values": {}, "fit": {}}
+    if not repo_dir or not (repo_dir / ".factory-config" / "knowledge").is_dir():
+        return empty
+    try:
+        job = Job(role, values={**manifest_values(repo_dir), **(values or {})})
+        text, ids, _, fit = build(repo_dir, role, today or date.today(), job)
+    except Exception:  # noqa: BLE001  知見がなくても役は動ける
+        return empty
+    if ids:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "knowledge.md").write_text(text, encoding="utf-8")
+    return {"ids": ids, "work": job.work, "values": job.values, "fit": fit}
+
+
 def manifest_values(repo: Path) -> dict:
     """製品の manifest から分かる軸の値（製品の段階）"""
     try:
