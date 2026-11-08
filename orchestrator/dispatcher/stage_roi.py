@@ -1,5 +1,7 @@
 """工程ごとの ROI（2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）。LLM は使わない。
 
+集計はここ 1 か所。建設日報（health/daily/status_report.py）と工場の操業レポート（report_health.py の節 stages）が同じものを使う。
+
 最終成果物の品質を、費用とリードタイムを含めて ROI で見て、ボトルネックがどの工程にあるかを分かるようにする。
 問題がありそうな工程が見つかったら、その工程の既定のモデルを替える（definitions/agents.yaml）判断の根拠にする。
 
@@ -20,13 +22,16 @@ from __future__ import annotations
 import os
 import statistics
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
 
 WINDOW_DAYS = int(os.environ.get("ROI_WINDOW_DAYS", "14"))
-AGENTS = Path(os.environ.get("ROADMAP") or Path(__file__).resolve().parents[2] / "definitions" / "roadmap.yaml").parent / "agents.yaml"
+# agents.yaml の置き場所の候補（作業ツリー・supervisor の /definitions）。dispatcher のイメージには definitions/ がないので、読めなければ TIER_MODEL の写しを使う
+AGENTS_CANDIDATES = [Path(os.environ["ROADMAP"]).parent / "agents.yaml"] if os.environ.get("ROADMAP") else []
+AGENTS_CANDIDATES += [Path(__file__).resolve().parents[2] / "definitions" / "agents.yaml", Path("/definitions/agents.yaml")]
+TIER_MODEL = {"tier-large": "Opus", "tier-judge": "Opus", "tier-small": "Sonnet", "tier-light": "Haiku"}   # agents.yaml の tiers の写し（テストで見る）
 MIN_N = 5   # 比べる側ごとにこれより少なければ「参考」
 
 STAGE_JA = {
@@ -41,13 +46,15 @@ FIX_STAGES = ("implement:ci_failed", "implement:review_fix", "implement:incomple
 MODEL_JA = {"claude-opus-5-5": "Opus", "claude-sonnet-5-5": "Sonnet", "claude-haiku-5-5": "Haiku"}
 
 
-def tier_models(path: Path = AGENTS) -> dict[str, str]:
-    """tier → モデルの短い名前（agents.yaml の tiers）"""
-    try:
-        tiers = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("tiers") or {}
-    except Exception:  # noqa: BLE001
-        return {}
-    return {k: MODEL_JA.get(v.get("model"), v.get("model") or k) for k, v in tiers.items() if isinstance(v, dict)}
+def tier_models(path: Path | None = None) -> dict[str, str]:
+    """tier → モデルの短い名前（agents.yaml の tiers）。読めなければ写し"""
+    for c in ([path] if path else AGENTS_CANDIDATES):
+        try:
+            tiers = (yaml.safe_load(c.read_text(encoding="utf-8")) or {}).get("tiers") or {}
+        except Exception:  # noqa: BLE001
+            continue
+        return {k: MODEL_JA.get(v.get("model"), v.get("model") or k) for k, v in tiers.items() if isinstance(v, dict)}
+    return dict(TIER_MODEL)
 
 
 def stage_of(kind: str | None, cont: str | None) -> str:
@@ -174,28 +181,43 @@ def experiment(by_corr: dict[str, list[dict]], routes: dict[str, dict], merges: 
 
 
 # ------------------------------------------------------------------ 取得元
+JOB_COLS = ["id", "corr", "kind", "model_tier", "state", "attempt", "enqueued_at", "started_at", "finished_at", "cost", "cont"]
+
+
+def _rows(cur, cols: list[str]) -> list[dict]:
+    """タプルの cursor でも dict_row の cursor でも同じ形に"""
+    return [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def fetch(cur, start, end) -> dict:
+    """[start, end) に終わったジョブと、その周りの記録で集計する（操業レポートの期間と、日報の直近 N 日で共通）"""
+    cur.execute("""
+      select j.id, j.correlation_id as corr, j.kind, j.model_tier, j.state, j.attempt, j.enqueued_at, j.started_at, j.finished_at,
+             (select (e.payload->>'cost_usd')::float from events e where e.name='job.finished' and e.job_id=j.id order by e.id desc limit 1) as cost,
+             (select e.payload->'continue'->>'reason' from events e where e.name='job.enqueued' and e.job_id=j.id order by e.id limit 1) as cont
+        from jobs j where j.finished_at >= %s and j.finished_at < %s and j.state in ('succeeded','failed')""", (start, end))
+    jobs = _rows(cur, JOB_COLS)
+    corrs = sorted({j["corr"] for j in jobs})
+    cur.execute("select distinct on (correlation_id) correlation_id as corr, payload from events where name='model.routed' and correlation_id = any(%s) "
+                "order by correlation_id, id desc", (corrs,))
+    routes = {r["corr"]: r["payload"] for r in _rows(cur, ["corr", "payload"])}
+    cur.execute("select payload from events where name='defect.recorded' and occurred_at >= %s and occurred_at < %s", (start, end))
+    defects = [r["payload"] for r in _rows(cur, ["payload"])]
+    cur.execute("select correlation_id as corr, min(occurred_at) as at from events where name='pr.merged' and correlation_id = any(%s) group by 1", (corrs,))
+    merges = {r["corr"]: r["at"] for r in _rows(cur, ["corr", "at"])}
+    v = compute(jobs, routes, defects, merges, tier_models())
+    v["window_days"] = round((end - start).total_seconds() / 86400)
+    return v
+
+
 def view(conn, days: int = WINDOW_DAYS) -> dict | None:
-    """制御プレーンから集計する。数えられなくてもレポートは出す"""
+    """建設日報の直近 days 日。数えられなくてもレポートは出す"""
     if conn is None:
         return None
     try:
+        end = datetime.now(timezone.utc)
         with conn.cursor() as cur:
-            cur.execute("""
-              select j.id, j.correlation_id, j.kind, j.model_tier, j.state, j.attempt, j.enqueued_at, j.started_at, j.finished_at,
-                     (select (e.payload->>'cost_usd')::float from events e where e.name='job.finished' and e.job_id=j.id order by e.id desc limit 1) as cost,
-                     (select e.payload->'continue'->>'reason' from events e where e.name='job.enqueued' and e.job_id=j.id order by e.id limit 1) as cont
-                from jobs j where j.finished_at > now() - make_interval(days => %s) and j.state in ('succeeded','failed')""", (days,))
-            cols = ["id", "corr", "kind", "model_tier", "state", "attempt", "enqueued_at", "started_at", "finished_at", "cost", "cont"]
-            jobs = [dict(zip(cols, r)) for r in cur.fetchall()]
-            corrs = sorted({j["corr"] for j in jobs})
-            cur.execute("select distinct on (correlation_id) correlation_id, payload from events where name='model.routed' and correlation_id = any(%s) "
-                        "order by correlation_id, id desc", (corrs,))
-            routes = {c: p for c, p in cur.fetchall()}
-            cur.execute("select payload from events where name='defect.recorded' and occurred_at > now() - make_interval(days => %s)", (days,))
-            defects = [p for (p,) in cur.fetchall()]
-            cur.execute("select correlation_id, min(occurred_at) from events where name='pr.merged' and correlation_id = any(%s) group by 1", (corrs,))
-            merges = {c: t for c, t in cur.fetchall()}
-        return compute(jobs, routes, defects, merges, tier_models())
+            return fetch(cur, end - timedelta(days=days), end)
     except Exception as e:  # noqa: BLE001
         print("[status-report] 工程ごとの ROI を数えられない:", repr(e), file=sys.stderr)
         return None

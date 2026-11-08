@@ -226,3 +226,45 @@ def test_send_now_does_not_count_for_the_morning(cur):
     cur.execute("select count(*) as n from events where name='report.built'")
     assert cur.fetchone()["n"] == 0                                          # 試し送りは組み立てを残さない
     assert report._attempts(cur, "report.factory_health", START) == {}       # 毎朝の送信は手で送った分を数えない
+
+
+def test_health_stages_section_and_assessment(cur):
+    """工程と ROI（2026-11-08「確信度の高い工程から安いモデルを試す」）: 直近 14 日の工程ごとの数と、実装が一発で通らない・Sonnet の試しが劣るときの見立て"""
+    from psycopg.types.json import Jsonb
+    h = lambda x: START + timedelta(hours=x)   # noqa: E731
+
+    def job(corr, tier, kind="implement", cont=None, wait=0.2, run=0.5, at=1.0, cost=2.0):
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, model_tier, state, enqueued_at, started_at, finished_at) "
+                    "values (%s,'o/app',1,%s,%s,'succeeded',%s,%s,%s) returning id", (corr, kind, tier, h(at), h(at + wait), h(at + wait + run)))
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.finished',%s,%s,%s)", (corr, jid, Jsonb({"state": "succeeded", "cost_usd": cost})))
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (corr, jid, Jsonb({"continue": {"reason": cont}} if cont else {})))
+        return jid
+
+    for n in range(6):   # 試す側 6 件（うち 3 件は指摘の直しが要った）、既定の側 6 件（全部一発）
+        for arm, tier in (("trial", "tier-small"), ("control", "tier-large")):
+            corr = f"github:o/app#{arm}{n}"
+            cur.execute("insert into events(name, correlation_id, payload) values ('model.routed',%s,%s)",
+                        (corr, Jsonb({"experiment": "implement_small_sonnet", "arm": arm, "tier": tier})))
+            jid = job(corr, tier, cost=1.0 if arm == "trial" else 3.0)
+            if arm == "trial" and n < 3:
+                job(corr, tier, cont="review_fix", at=3.0, cost=2.0)
+                cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('defect.recorded',%s,%s,%s)",
+                            (corr, Jsonb({"found_in": "pr", "introduced_job": jid}), h(2)))
+    job("github:o/app#old", "tier-large", at=-24 * 20)   # 14 日より前は数えない
+    rep = report_health.build(cur, START, END)
+    sec = next(s for s in rep.sections if s.id == "stages")
+    assert sec.parties == ("provider",)
+    got = {i.label: i.value for i in sec.items if i.kind == "metric"}
+    assert got["実装のジョブ"] == 12 and got["実装が一発で通った割合"] == 75.0
+    assert got["実装 1 件あたりに混入した Defect"] == 0.25
+    assert got["モデルの試し: 試す側の一発で通った割合"] == 50.0 and got["モデルの試し: 既定の側（Opus）の一発で通った割合"] == 100.0
+    assert got["モデルの試し: 通った 1 件あたりの費用（既定の側を 100）"] is None   # マージがないので出さない
+    assert got["費用のボトルネック"].startswith("実装（")
+    assert any(i.kind == "entry" and i.label == "直し（指摘）（Sonnet）" for i in sec.items)
+    report_health.assess(rep)
+    texts = [f["text"] for f in rep.findings]
+    assert any("Opus より一発で通る割合が 50.0 pt 低い" in t for t in texts)
+    assert all("事業主" not in t for t in texts)
+    assert sec not in report.visible(rep, "business_owner")   # 提供元の中の話なので事業主には出さない
