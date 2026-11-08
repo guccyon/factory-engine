@@ -109,3 +109,33 @@ def test_index_must_be_regenerated_and_inventory_lists_stale(tmp_path, capsys):
     capsys.readouterr()
     kc.main(["--repo", str(r), "--inventory", "--today", "2027-02-01"])
     assert '"K-0001"' in capsys.readouterr().out
+
+
+# 作用先の軸（ADR 0040）
+NEW_SCOPE = "scope: {work: [dev.describe], artifacts: [PR.body], request_form: [ticket]}"
+OLD_SCOPE = 'scope: {contexts: [scheduling], roles: [implementer], paths: ["apps/**"]}'
+
+
+def test_axes_scope_passes(tmp_path):
+    rc, out = run(tmp_path, {"K-0001.yaml": GOOD.replace(OLD_SCOPE, NEW_SCOPE) + "acts_on: context\n"})
+    assert rc == 0, out
+
+
+def test_axes_values_must_be_in_vocabulary(tmp_path):
+    bad = GOOD.replace(OLD_SCOPE, "scope: {work: [dev.coding], purpose: [rewrite], artifacts: [PRBody]}") + "acts_on: brain\n"
+    rc, out = run(tmp_path, {"K-0001.yaml": bad})
+    assert rc == 1 and "scope.work の値 ['dev.coding']" in out and "scope.purpose" in out and "scope.artifacts" in out and "acts_on は" in out
+
+
+def test_axes_need_work_or_artifacts_unless_legacy(tmp_path):
+    rc, out = run(tmp_path, {"K-0001.yaml": GOOD.replace(OLD_SCOPE, "scope: {purpose: [adopt]}")})
+    assert rc == 1 and "work（業務）か artifacts（成果物）" in out
+    (tmp_path / "b").mkdir()
+    rc, out = run(tmp_path / "b", {"K-0001.yaml": GOOD})   # 今の roles・contexts・paths だけの知見は移し替えまで通す
+    assert rc == 0, out
+
+
+def test_axes_reject_unknown_keys_and_requester(tmp_path):
+    bad = GOOD.replace(OLD_SCOPE, "scope: {work: [dev.build], audience: [coach], requester: [someone]}")
+    rc, out = run(tmp_path, {"K-0001.yaml": bad})
+    assert rc == 1 and "['audience']" in out and "制御プレーンの DB" in out

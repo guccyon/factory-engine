@@ -1,0 +1,136 @@
+# 業務のツリー（ADR 0040 の決定 1・4）。第 0 版
+#
+# 知見の作用先の主軸。業務は「業務を実行する能力」（2026-11-04 のケイパビリティのメタモデルの「工程」）で、
+# 成果物（同じく「工程の間を流れる型」）は knowledge.yaml の軸 artifacts で持つ。
+# 多段はツリーの深さで表す。親のノードに付いた知見は子のすべてに効く。
+# 業務のノードは「動詞＋対象」くらいの粒度にとどめ、背景（作業の目的・製品の段階・依頼の形・コードの出どころなど）は
+# ツリーに入れず knowledge.yaml の axes で持つ（組み合わせの数だけノードが増えるのを避ける）。
+#
+# id はドットで親子を表す（dev.design.screen の親は dev.design、その親は dev）。id は再利用しない。
+# 領域（domain: biz / dev / ops / cross）は属性で持ち、id には入れない。領域とカテゴリの切り方は Gen2 で決めるので、
+# 置き場所が変わっても id を付け替えずに済むようにする（ADR 0040 の「Gen2 で決めること」1）。
+#
+# 製品の CI は Engine の固定した版の core-gates/knowledge_check.py だけを取るので、ノードの id はそのファイルにも写して持つ
+# （食い違いは core-gates/tests/test_work_definitions.py で見る）。
+#
+# 中身は第 0 版（2026-11-07）。今のワークフローのステップ（workflow.yaml）、工程ごとのエージェント（agents.yaml）、
+# 単発の依頼の道（ADR 0037）、窓口のタスクの型（desk.yaml）、成果物の型（artifacts.yaml）から起こした。
+# ノードを足す・分ける・名前を変えるのはこのファイルの PR で。Gen2 のケイパビリティのモデルに引き継ぐ下書き。
+
+schema_version: "0.1"
+status: draft
+
+domains:
+  biz:   { ja: 企画, en: Business }
+  dev:   { ja: 開発, en: Dev }
+  ops:   { ja: 運用, en: Ops }
+  cross: { ja: 領域をまたぐもの }
+
+# 業務のノード。kind は flow（工程）か resource（資源）。artifacts は主に出す成果物（knowledge.yaml の軸 artifacts の語彙）
+nodes:
+  biz:                        { ja: 企画, domain: biz }
+  biz.discover:               { ja: ドメインを理解する, domain: biz, artifacts: [Requirements] }
+  biz.propose:                { ja: 改善を提案する, domain: biz, artifacts: [Opportunity] }
+  biz.quality_policy:         { ja: 守る品質と重要度を決める, domain: biz }
+
+  plan:                       { ja: 計画, domain: biz }
+  plan.requirements:          { ja: 要件とストーリーにする, domain: biz, artifacts: [Requirements] }
+  plan.workflow:              { ja: チケットの進め方を宣言する, domain: biz, artifacts: [Plan] }
+  plan.route:                 { ja: 依頼を振り分ける, domain: biz, artifacts: [Request, TaskSetDraft] }
+
+  analyze:                    { ja: 分析と報告, domain: biz, note: "2026-11-04 のメタモデルの図にない。置き場は Gen2 で決める" }
+  analyze.report:             { ja: 集計して報告書にまとめる, domain: biz, artifacts: [KPIReport] }
+  analyze.quick:              { ja: 小さな問いに答える, domain: biz }
+
+  dev:                        { ja: 開発, domain: dev }
+  dev.design:                 { ja: デザイン, domain: dev }
+  dev.design.system:          { ja: デザインシステムを保つ, domain: dev, artifacts: [DesignSystemSpec] }
+  dev.design.screen:          { ja: バックログの画面を仕上げる, domain: dev, artifacts: [DesignConcept] }
+  dev.design.proposal:        { ja: 依頼に応じて案を出す, domain: dev, artifacts: [DesignConcept] }
+  dev.contract:               { ja: 契約（API・イベント・DB）を書く, domain: dev }
+  dev.build:                  { ja: 実装する, domain: dev, artifacts: [PR.code] }
+  dev.describe:               { ja: 変更の説明を書く, domain: dev, artifacts: [PR.body] }
+  dev.ci:                     { ja: 決定論の検査を回す, domain: dev }
+  dev.review:                 { ja: 検査と裁き, domain: dev }
+  dev.review.inspect:         { ja: 差分を検査する, domain: dev, artifacts: [InspectionReport] }
+  dev.review.judge:           { ja: 仮決めと指摘を裁く, domain: dev, artifacts: [Judgment] }
+  dev.review.design:          { ja: デザインを検査する, domain: dev, artifacts: [DesignReview] }
+
+  ops:                        { ja: 運用, domain: ops }
+  ops.qa:                     { ja: ストーリーを流して確かめる, domain: ops }
+  ops.diagnose:               { ja: QA で落ちた原因を診る, domain: ops }
+  ops.release:                { ja: 組み立てて出荷する, domain: ops, artifacts: [Release] }
+  ops.runtime:                { ja: 触れる環境を用意する, domain: ops, kind: resource }
+  ops.incident:               { ja: 障害に対応する, domain: ops, artifacts: [Incident] }
+  ops.operate:                { ja: 決定論の操作を動かす, domain: ops, note: "2026-11-04 のメタモデルの図にない（ADR 0037 の操作）" }
+
+  desk:                       { ja: 窓口, domain: cross, note: "2026-11-04 では Ops の「CS の窓口」。人との接点を領域にするかは Gen2" }
+  desk.converse:              { ja: 依頼者とやりとりする, domain: cross }
+
+  govern:                     { ja: Govern（守らせる・測る）, domain: cross }
+  govern.design_review:       { ja: 設計を定期に診断する, domain: cross, artifacts: [DesignReview] }
+  govern.health:              { ja: 工場の健康を報告する, domain: cross, artifacts: [FactoryHealthReport] }
+
+  learn:                      { ja: Learn（学ぶ）, domain: cross }
+  learn.case:                 { ja: 出来事を分析する, domain: cross, artifacts: [CaseAnalysis] }
+  learn.committee:            { ja: 知見を審査する, domain: cross, artifacts: [CommitteeDecision, CommitteeWeekly] }
+
+# 成果物の型の細分（knowledge.yaml の軸 artifacts の語彙に足す）。artifacts.yaml の型の下に「型.部分」で置く。親の型に付いた知見は部分にも効く
+artifact_parts:
+  PR.code: { ja: PR のコードとテスト }
+  PR.body: { ja: PR 本文 }
+
+# 入口から業務への対応（決定 4）。入口は作用先ではなく「この回にどの業務をするか」を渡すだけ。
+# null は業務を持たない（決定論で動き、エージェントに知見を渡さない）。
+from_workflow_steps:          # workflow.yaml の steps。道（paths）によって変わるものは by_path
+  design_system: [dev.design.system]
+  ui_design:
+    default: [dev.design.screen]
+    by_path: { quick: [dev.design.proposal], analysis: [dev.design.proposal] }
+  implement: [dev.build, dev.describe]
+  checks: [dev.ci]
+  inspect: [dev.review.inspect]
+  judge: [dev.review.judge]
+  merge: null
+  qa: [ops.qa]
+  ship: [ops.release]
+  learn: null
+  confirm: null
+  execute:
+    default: null
+    by_path: { operate: [ops.operate], quick: [analyze.quick], analysis: [analyze.report] }
+  reconcile: null
+  respond: [desk.converse]
+
+from_agent_steps:             # agents.yaml の steps（ワークフローの外の役も含む）
+  implement: [dev.build, dev.describe]
+  clarify.asker: [desk.converse]
+  clarify.persona: null       # 評価用の架空の要求者
+  clarify.grader: null        # 評価用の採点役
+  inspect: [dev.review.inspect]
+  judge: [dev.review.judge]
+  body_fix: [dev.describe]
+  design_review: [govern.design_review]
+  case_review: [learn.case]
+  ui_design: [dev.design.screen]
+  design_system: [dev.design.system]
+  ui_design_review: [dev.review.design]
+  plan: [plan.workflow]
+  desk.consult: [desk.converse, plan.route]
+  committee_review: [learn.committee]
+  committee_weekly: [learn.committee]
+  qa: [ops.qa]
+  pairwise: null              # 判定器の評価
+
+from_continue_reasons:        # 続きのジョブの理由（dispatcher/continuation.py の REASONS）。どれも実装と PR 本文の更新をする
+  incomplete: [dev.build, dev.describe]
+  conflict: [dev.build, dev.describe]
+  ci_failed: [dev.build, dev.describe]
+  review_fix: [dev.build, dev.describe]
+
+from_desk_task_kinds:         # desk.yaml の task_kinds（窓口から切ったタスク。チケットとしてラインに流れる）
+  requirements: [plan.requirements]
+  design: [dev.design.screen]
+  contract: [dev.contract]
+  implement: [dev.build, dev.describe]
+  answer: [analyze.report]

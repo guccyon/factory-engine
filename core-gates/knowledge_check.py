@@ -3,6 +3,7 @@
 
 製品の .factory-config/knowledge/ を読み、委員会に持ち込む前に機械で確かめられることを見る。LLM を使わない。
   - 形: 必須項目、値（テーマ・種類・確かさ・状態・機密区分・担保）、id とファイル名の一致、id の重複
+  - 作用先: scope の軸と閉じた語彙（業務のノード・成果物の型・目的・段階・依頼の形・コードの出どころ）、業務か成果物のどちらか、acts_on（ADR 0040）
   - 期限: review_by が確かさの既定の日数（仮説 30 日・確認済み 90 日）を超えていない。settled は期限なしでよいが、担保（enforcement.solutions）か規範（evidence の spec）が要る
   - 参照: supersedes と superseded_by が両側にある、置き換えられた知見が active のまま残っていない、evidence の case が cases/ にある
   - 個人情報: 知見・事例記録・議決の全文に、メール・電話番号・利用者 ID の形（UUID）・カード番号・IP アドレス・秘密情報の形がない
@@ -42,6 +43,35 @@ ID_RE = re.compile(r"^K-\d{4,}$")
 CASE_RE = re.compile(r"^C-\d{4,}$")
 DECISION_RE = re.compile(r"^D-\d{4,}$")
 RESTRICTED_RE = re.compile(r"^R-\d{4,}$")
+
+# 作用先の軸（ADR 0040、正本は definitions/knowledge.yaml の axes と definitions/work.yaml）。製品の CI はこのファイルだけを取るので写して持つ。
+# 食い違いは core-gates/tests/test_work_definitions.py で見る
+WORK_NODES = [
+    "biz", "biz.discover", "biz.propose", "biz.quality_policy",
+    "plan", "plan.requirements", "plan.workflow", "plan.route",
+    "analyze", "analyze.report", "analyze.quick",
+    "dev", "dev.design", "dev.design.system", "dev.design.screen", "dev.design.proposal", "dev.contract",
+    "dev.build", "dev.describe", "dev.ci", "dev.review", "dev.review.inspect", "dev.review.judge", "dev.review.design",
+    "ops", "ops.qa", "ops.diagnose", "ops.release", "ops.runtime", "ops.incident", "ops.operate",
+    "desk", "desk.converse", "govern", "govern.design_review", "govern.health", "learn", "learn.case", "learn.committee",
+]
+ARTIFACT_TYPES = [
+    "Signal", "Request", "TaskSetDraft", "Opportunity", "Requirements", "Ticket", "PR", "InspectionReport", "Release", "Incident",
+    "KPIReport", "Retrospective", "ProcessRetrospective", "HumanChoice", "DesignConcept", "DesignSystemSpec", "Plan", "DesignReview",
+    "CaseAnalysis", "CommitteeDecision", "CommitteeWeekly", "Lesson", "Question", "Approval", "Routine", "Judgment", "Stoppage",
+    "FactoryHealthReport", "PR.code", "PR.body",
+]
+CLOSED_AXES = {
+    "work": WORK_NODES,
+    "artifacts": ARTIFACT_TYPES,
+    "purpose": ["new_feature", "change", "bugfix", "refactor", "adopt", "migrate"],
+    "product_stage": ["development", "launch", "operating"],
+    "request_form": ["ticket", "one_off"],
+    "code_origin": ["factory", "adopted"],
+}
+OPEN_AXES = ["roles", "contexts", "change_types", "files", "paths"]   # 製品の語彙か glob。roles の語彙の検査は移し替えのあと
+LEGACY_SCOPE = {"roles", "contexts", "paths"}
+ACTS_ON = ["context", "engine", "process"]
 
 # 個人情報と秘密情報の形。知見は抽象化して書く（「生徒 A さん」ではなく「予約の確定待ちの生徒」）
 PII = {
@@ -121,9 +151,7 @@ def check_item(k: dict, cases: set[str], decisions: set[str]) -> list[str]:
     dec = str(k.get("decided_by") or "")
     if dec.startswith("committee:") and dec.split(":", 1)[1] not in decisions:
         e.append(f"{f}: decided_by の議決 {dec} が committee/ にない")
-    scope = k.get("scope") or {}
-    if isinstance(scope, dict) and set(scope) - {"contexts", "roles", "paths"}:
-        e.append(f"{f}: scope のキーは contexts・roles・paths だけ（{sorted(set(scope) - {'contexts', 'roles', 'paths'})}）")
+    e += check_scope(f, k)
     for ev in k.get("evidence") or []:
         if not isinstance(ev, dict) or len(ev) != 1:
             e.append(f"{f}: evidence は 1 項目に 1 つの参照（例: - case: C-0001）")
@@ -158,6 +186,36 @@ def check_item(k: dict, cases: set[str], decisions: set[str]) -> list[str]:
         has_norm = any(isinstance(ev, dict) and "spec" in ev for ev in k.get("evidence") or [])
         if not (has_solution or has_norm):
             e.append(f"{f}: settled は決定論の担保（enforcement.solutions）か規範（evidence の spec）が要る")
+    return e
+
+
+def check_scope(f: str, k: dict) -> list[str]:
+    """作用先の軸（ADR 0040）。閉じた語彙の軸は値を見る。業務か成果物のどちらかが要る（roles・contexts・paths だけの今の知見は移し替えまで除く）"""
+    e = []
+    scope = k.get("scope") or {}
+    if not isinstance(scope, dict):
+        return [f"{f}: scope は軸ごとの値の並び（例: work: [dev.describe]）"]
+    if "requester" in scope:
+        e.append(f"{f}: scope に requester は書かない。依頼者ごとの好みは制御プレーンの DB に置く（ADR 0040 の決定 6）")
+    unknown = set(scope) - set(CLOSED_AXES) - set(OPEN_AXES) - {"requester"}
+    if unknown:
+        e.append(f"{f}: scope の軸は {sorted(CLOSED_AXES) + OPEN_AXES} のどれか（{sorted(unknown)}）")
+    for axis, vocab in CLOSED_AXES.items():
+        vals = scope.get(axis)
+        if vals is None:
+            continue
+        if not isinstance(vals, list) or not vals:
+            e.append(f"{f}: scope.{axis} は値の並び（空にしない。どの値でも効くなら書かない）")
+            continue
+        bad = [v for v in vals if v not in vocab]
+        if bad:
+            e.append(f"{f}: scope.{axis} の値 {bad} は語彙にない（definitions/{'work.yaml' if axis == 'work' else 'knowledge.yaml の axes'}）")
+    if "files" in scope and "paths" in scope:
+        e.append(f"{f}: scope の files と paths は同じ軸（paths は古い名前）。files だけにする")
+    if not (scope.get("work") or scope.get("artifacts")) and not (set(scope) & LEGACY_SCOPE):
+        e.append(f"{f}: scope に work（業務）か artifacts（成果物）のどちらかが要る")
+    if k.get("acts_on") is not None and k.get("acts_on") not in ACTS_ON:
+        e.append(f"{f}: acts_on は {ACTS_ON} のどれか（{k.get('acts_on')}）")
     return e
 
 
