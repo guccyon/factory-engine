@@ -8,7 +8,8 @@
 - エージェントの答えに重ねる決定論は安全のための最小限（guards）だけ。よくある例との食い違いは advisories として印を付けるだけで経路は変えない
 - 根拠は 3 層（根拠・解釈・確信度）と、とらなかった経路と理由、入力の版（Engine・製品のコミット、定義の版）で残す
 - 型つきの上流の成果物（P4 の typed_upstream）: 着手できるなら、要件（Requirements）と、このタスクが増やす・変える・守るユーザーストーリーを出す。
-  ストーリーの id は製品の specs/stories/ と決定論で突き合わせる（planner.yaml の upstream）
+  ストーリーの id は製品の specs/stories/ と決定論で突き合わせる（planner.yaml の upstream）。
+  あわせて、従う ADR と新しく残す判断（ADR）、契約の差分（ContractDiff）を出し、ADR の番号と契約の置き場を製品と突き合わせる
 - 材料は一時ディレクトリに写してから読ませる。読むだけで、何も書かない
 
 使い方:
@@ -54,15 +55,42 @@ def story_ids(repo_dir: Path | None) -> list[str]:
     return ids
 
 
+ADR_FILE = re.compile(r"^(\d{4})-.+\.md$")
+
+
+def adr_ids(repo_dir: Path | None) -> list[str]:
+    """製品の docs/adr/ にある ADR の番号（NNNN-名前.md）"""
+    d = repo_dir / "docs" / "adr" if repo_dir else None
+    if not d or not d.is_dir():
+        return []
+    return sorted({m.group(1) for p in d.iterdir() if p.is_file() and (m := ADR_FILE.match(p.name))})
+
+
+def contract_files(repo_dir: Path | None) -> list[str]:
+    """製品の specs/contracts/ にある契約のファイル（README と .gitkeep は除く）と、空の枝（ディレクトリ。末尾 /）"""
+    d = repo_dir / "specs" / "contracts" if repo_dir else None
+    if not d or not d.is_dir():
+        return []
+    out = []
+    for p in sorted(d.rglob("*")):
+        rel = str(p.relative_to(repo_dir))
+        if p.is_dir():
+            out.append(rel + "/")
+        elif p.name not in ("README.md", ".gitkeep"):
+            out.append(rel)
+    return out[:80]
+
+
 def facts(repo_dir: Path | None) -> dict:
-    """製品のリポジトリから決定論で読める事実（デザインシステムの有無、知見の置き場の有無、ユーザーストーリーの id）"""
+    """製品のリポジトリから決定論で読める事実（デザインシステムの有無、知見の置き場の有無、ユーザーストーリーの id、ADR の番号、契約のファイル）"""
     if not repo_dir:
-        return {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": []}
+        return {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": [], "adr_ids": [], "contract_files": []}
     d = repo_dir / "specs" / "design"
     files = sorted(str(p.relative_to(repo_dir)) for p in d.rglob("*") if p.is_file()) if d.is_dir() else []
     has_tokens = any("token" in Path(f).name for f in files)
     return {"has_design_system": has_tokens, "design_files": files[:50],
-            "has_knowledge": (repo_dir / ".factory-config" / "knowledge").is_dir(), "story_ids": story_ids(repo_dir)}
+            "has_knowledge": (repo_dir / ".factory-config" / "knowledge").is_dir(), "story_ids": story_ids(repo_dir),
+            "adr_ids": adr_ids(repo_dir), "contract_files": contract_files(repo_dir)}
 
 
 def desk_defs() -> dict:
@@ -73,6 +101,7 @@ def schema(defs: dict) -> dict:
     import desk_consult   # タスクのまとまりの型は窓口の相談役と同じ（ADR 0036 の 2）
     import workflow       # ワークフローの宣言（ADR 0038）
     a, roles, u = defs["asking"], list(defs["roles"]), defs["upstream"]
+    ua, uc = u["adr"], u["contracts"]
     layers = [x["layer"] for x in defs["sizing"]["layers"]] + ["other"]
     step = {"type": "object", "properties": {
         "role": {"type": "string", "enum": roles},
@@ -115,11 +144,26 @@ def schema(defs: dict) -> dict:
             "title": {"type": "string"},
             "actor": {"type": "string"}},
             "required": ["action", "id", "why"]}},
+        "adrs": {"type": "object", "properties": {
+            "follow": {"type": "array", "maxItems": ua["max_follow"], "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "why": {"type": "string"}}, "required": ["id", "why"]}},
+            "new": {"type": "array", "maxItems": ua["max_new"], "items": {"type": "object", "properties": {
+                "title": {"type": "string"}, "context": {"type": "string"}, "decision": {"type": "string"},
+                "alternatives": {"type": "array", "maxItems": 4, "items": {"type": "string"}},
+                "consequences": {"type": "string"}}, "required": list(ua["required"])}}},
+            "required": ["follow", "new"]},
+        "contract_changes": {"type": "array", "maxItems": uc["max_changes"], "items": {"type": "object", "properties": {
+            "contract": {"type": "string"},
+            "kind": {"type": "string", "enum": list(uc["kinds"])},
+            "compat_impact": {"type": "string", "enum": list(uc["compat"])},
+            "operations": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+            "summary": {"type": "string"}},
+            "required": ["contract", "kind", "compat_impact", "summary"]}},
         "workflow": workflow.schema(workflow.load()),
         "interpretation": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
         "required": ["ready", "steps", "design_scale", "design_direction_given", "summary", "alternatives", "questions",
-                     "evidence", "interpretation", "confidence", "requirements", "stories"]}
+                     "evidence", "interpretation", "confidence", "requirements", "stories", "adrs", "contract_changes"]}
 
 
 NO_DESIGN_SYSTEM_QUESTION = {
@@ -260,6 +304,69 @@ def upstream(out: dict, f: dict, decision: str, scale: str, defs: dict) -> tuple
     return req, stories, sorted(set(marks), key=marks.index)
 
 
+def decisions_and_contracts(out: dict, f: dict, decision: str, defs: dict) -> tuple[dict, list[dict], list[str]]:
+    """従う ADR・新しく残す判断（ADR）と契約の差分（ContractDiff）を整える。返り値は (adrs, 契約の差分, 印)。着手できる判定（ready・split）だけで出す
+    - 従う ADR: 番号（4 桁）が製品の docs/adr/ にないものは落とす（印 unknown_adr）
+    - 新しい判断: title と decision のないものは落とす。状態は proposed で始める
+    - 契約の差分: specs/contracts/ の外・ない契約の change・remove・枝のない add は落とす（印 unknown_contract）。remove は breaking にする。
+      breaking があれば印 breaking_contract。見積もりの層に contract があるのに差分がなければ印 no_contract_diff"""
+    empty = {"follow": [], "new": []}
+    if decision not in ("ready", "split"):
+        return empty, [], []
+    u, marks = defs["upstream"], []
+    ua, uc = u["adr"], u["contracts"]
+    a = out.get("adrs") if isinstance(out.get("adrs"), dict) else {}
+    known, follow, seen = set(f.get("adr_ids") or []), [], set()
+    for x in a.get("follow") or []:
+        if not isinstance(x, dict):
+            continue
+        m = re.match(r"^(?:ADR[ -]?)?(\d{1,4})", str(x.get("id") or "").strip(), re.I)
+        aid = m.group(1).zfill(4) if m else ""
+        if aid not in known:
+            marks.append("unknown_adr")
+            continue
+        if aid not in seen and len(follow) < ua["max_follow"]:
+            seen.add(aid)
+            follow.append({"id": aid, "why": str(x.get("why") or "").strip()})
+    new = []
+    for x in a.get("new") or []:
+        if not isinstance(x, dict) or not str(x.get("title") or "").strip() or not str(x.get("decision") or "").strip():
+            continue
+        new.append({"status": "proposed", "title": x["title"].strip(), "context": str(x.get("context") or "").strip(),
+                    "decision": x["decision"].strip(), "alternatives": texts(x.get("alternatives")),
+                    "consequences": str(x.get("consequences") or "").strip()})
+        if len(new) >= ua["max_new"]:
+            break
+    files = set(f.get("contract_files") or [])
+    dirs = {p for p in files if p.endswith("/")}
+    root = uc["dir"]
+    contracts, cseen = [], set()
+    for c in out.get("contract_changes") or []:
+        if not isinstance(c, dict) or c.get("kind") not in uc["kinds"] or c.get("compat_impact") not in uc["compat"]:
+            continue
+        path = str(c.get("contract") or "").strip().lstrip("./")
+        parent = path.rsplit("/", 1)[0] + "/" if "/" in path else ""
+        ok = path.startswith(root) and ".." not in path.split("/") and (path in files if c["kind"] != "add" else (path in files or parent in dirs))
+        if not ok:
+            marks.append("unknown_contract")
+            continue
+        compat = "breaking" if c["kind"] == "remove" else c["compat_impact"]
+        key = (path, tuple(texts(c.get("operations"))))
+        if key in cseen:
+            continue
+        cseen.add(key)
+        contracts.append({"contract": path, "kind": c["kind"], "compat_impact": compat,
+                          "operations": texts(c.get("operations"))[:10], "summary": str(c.get("summary") or "").strip()})
+        if len(contracts) >= uc["max_changes"]:
+            break
+    if any(c["compat_impact"] == "breaking" for c in contracts):
+        marks.append("breaking_contract")
+    sz = out.get("size") if isinstance(out.get("size"), dict) else {}
+    if not contracts and "contract" in (sz.get("layers") or []):
+        marks.append("no_contract_diff")
+    return {"follow": follow, "new": new}, contracts, sorted(set(marks), key=marks.index)
+
+
 def git_head(path: Path | None) -> str | None:
     if not path or not (path / ".git").exists():
         return None
@@ -273,7 +380,7 @@ def versions(defs: dict, repo_dir: Path | None) -> dict:
             "prompt": PROMPT_VERSION}
 
 
-PROMPT_VERSION = "9"   # 9: 知見を計画の業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "10"   # 10: 従う ADR・新しい判断と契約の差分を出す（P4 の typed_upstream）。9: 知見を計画の業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。問いの文を変えたら上げる（判断の入力の版として残す）
 
 
 def phase_note(inp: dict) -> str:
@@ -304,6 +411,11 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
     u = defs["upstream"]
     actions = "、".join(f"{k}（{v}）" for k, v in u["story_actions"].items())
     sids = "、".join(f.get("story_ids") or []) or "（まだない）"
+    ua, uc = u["adr"], u["contracts"]
+    aids = "、".join(f.get("adr_ids") or []) or "（まだない）"
+    cfiles = "、".join(f.get("contract_files") or []) or "（まだない）"
+    ckinds = "、".join(f"{k}（{v}）" for k, v in uc["kinds"].items())
+    compat = "、".join(f"{k}（{v}）" for k, v in uc["compat"].items())
     import workflow
     workflow_section = workflow.prompt_section(workflow.load())
     return f"""あなたは仮想開発事業部のプランナーです。入ってきたチケットを読み、着手できるかと、どの役をどの順で通すかを決めます。
@@ -315,6 +427,8 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
 - specs/: 製品の規範（デザインシステムは {ds}。glossary.yaml が用語集）
 - knowledge/knowledge.md: 製品の知見のうち、計画の業務に効くと工場が選んだもの（委員会が確認済み以上にしたもの。あれば。プロダクトの既定が入っている）
 - specs/stories/: 製品のユーザーストーリー（1 本 1 ファイル。いまある id: {sids}。actors.yaml が利用者の種類）
+- adr/: 製品の ADR（docs/adr/ の写し。いまある番号: {aids}）
+- specs/contracts/: 製品の契約（API は OpenAPI、境界間のイベントは AsyncAPI。いまあるファイルと枝: {cfiles}）
 - sizes.md: この製品の実績の表（層の組ごとの、変わったファイルの数とターンの中央値。工場が過去の PR から数えたもの）
 - inflight.md: いま流れている・待っているタスクと、それが触る（見込みの）ファイル、よく衝突するファイル（工場の記録から）
 - caps.md: この製品で上限に当たった過去の事例（同じ外れを繰り返さないための材料）
@@ -358,6 +472,13 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
 - stories: このタスクが触るユーザーストーリー（{u['max_stories']} 本まで）。action は {actions}。
   change・keep は specs/stories/ にある id をそのまま書く。add は新しい id（英小文字と -）と、title（「<誰が>が<何>できる」）・actor（actors.yaml の id）も書く。
   why にこのタスクとの関係を 1 文で。画面や利用者の流れに触るなら、少なくとも守るストーリーを探す。流れに関係しない変更なら空でよい
+- adrs: follow はこのタスクが従う製品の ADR（adr/ にある 4 桁の番号と、どこに効くかを why に 1 文で。{ua['max_follow']} つまで）。
+  new はこのタスクで新しく残すべき判断（{ua['max_new']} つまで）。後から理由を知りたくなる・取り消しにくい・ほかのタスクにも効く判断だけにし、
+  title・context（なぜ決める必要があるか）・decision（何をどう決めるか）・alternatives（とらなかった案）・consequences（決めた結果どうなるか）を、
+  チケットと既存の ADR から読めることだけで書く。ふつうの実装の選択は書かない。なければ両方空でよい。ファイルは実装役が同じ PR で docs/adr/ に書く
+- contract_changes: 契約の差分（{uc['max_changes']} つまで）。contract は specs/contracts/ からのパス（上の一覧のファイル、add なら一覧の枝の下）、
+  kind は {ckinds}、compat_impact は {compat}、operations は足す・変える・消す操作やスキーマ（例: "POST /bookings/{{id}}/cancel"、"schema Booking.cancelled_at"）、
+  summary に何のための差分かを 1 文で。size.layers に contract を入れるなら必ず書く。契約に触らないなら空にする
 {workflow_section}- 3 層で書く: evidence（根拠: 見たファイルと箇所）、interpretation（どう読んでその判断にしたか）、confidence（0〜1）
 - 日本語の平易な文で。識別子はそのまま
 """
@@ -408,6 +529,8 @@ def stage(root: Path, issue: dict, repo_dir: Path | None, sizes: list[dict] | No
     (root / "comments.md").write_text("\n".join(lines)[:MAX_TEXT] or "（コメントなし）\n", encoding="utf-8")
     if repo_dir and (repo_dir / "specs").is_dir():
         shutil.copytree(repo_dir / "specs", root / "specs", ignore=shutil.ignore_patterns("*.jpg", "*.png", "*.pdf", "*.mp4"))
+    if repo_dir and (repo_dir / "docs" / "adr").is_dir():   # 従う ADR と新しい判断を選ぶ材料（文書だけ）
+        shutil.copytree(repo_dir / "docs" / "adr", root / "adr", ignore=lambda _d, names: [n for n in names if not n.endswith(".md")])
     # 知見はこの回の業務（plan.workflow）で選んだものだけ（ADR 0040 の決定 7 の 3）。丸写しにすると仮説や Engine 宛ての知見まで読む
     import knowledge_context
     return knowledge_context.stage(repo_dir, root / "knowledge", "plan", {"request_form": ["ticket"]})
@@ -435,13 +558,15 @@ def plan(issue: dict, inp: dict, defs: dict, repo_dir: Path | None) -> dict:
     decision, g2, m2, tasks = size_check(out, decision, steps, defs, inp.get("phase"))
     req, stories, m3 = (None, [], []) if inp.get("phase") == "implement" else \
         upstream(out, f, decision, out.get("design_scale") if out.get("design_scale") in defs["design_scales"] else "none", defs)
-    guards, marks = guards + g2, marks + m2 + m3
+    adrs, contracts, m4 = ({"follow": [], "new": []}, [], []) if inp.get("phase") == "implement" else \
+        decisions_and_contracts(out, f, decision, defs)
+    guards, marks = guards + g2, marks + m2 + m3 + m4
     import workflow   # ワークフローの宣言（ADR 0038）。順番 1 は記録だけで、判断（decision）は変えない
     sz = out.get("size") if isinstance(out.get("size"), dict) else {}
     wf, wf_marks = workflow.normalize(out.get("workflow"), steps, out.get("steps") or [], out.get("expected_files") or [],
                                       sz.get("turns_band"), workflow.load())
     return {"workflow": wf, "workflow_marks": wf_marks, "decision": decision, "steps": steps, "guards": guards, "advisories": marks, "round": round_, "facts": f,
-            "tasks": tasks, "requirements": req, "stories": stories, "oversize": oversize(out, defs), "phase": inp.get("phase"),
+            "tasks": tasks, "requirements": req, "stories": stories, "adrs": adrs, "contract_changes": contracts, "oversize": oversize(out, defs), "phase": inp.get("phase"),
             "versions": versions(defs, repo_dir), "plan": out,
             "knowledge_ids": ksel["ids"], "knowledge_selection": {k: ksel[k] for k in ("work", "values", "fit")},
             "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns}
