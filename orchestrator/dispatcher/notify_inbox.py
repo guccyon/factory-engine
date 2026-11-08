@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from psycopg.types.json import Jsonb
 
@@ -92,11 +93,13 @@ def due(items: list[dict], hist: dict[str, dict], now: datetime, escalate: bool 
 REASON = {"new": "新しく", "renotify": "まだ残っている", "escalate": "長く待っているので代理にも"}
 
 
-def _link(url: str, dest: notify.Destination | None = None) -> str:
+def _link(url: str, dest: notify.Destination | None = None, key: str = "") -> str:
+    if dest is not None and dest.party == "business_owner":
+        return url if url.startswith("https://") else ""   # 操業コンソールは工場のマシンの中。事業主の宛先には付けない（ADR 0032 の R7）
+    if key and CONSOLE_URL:
+        return f"{CONSOLE_URL}/inbox/{quote(key, safe='')}"   # 受信トレイのメッセージの詳細（2026-11-07）。PR などの元のリンクは詳細に出る
     if url.startswith("https://"):
         return url
-    if dest is not None and dest.party == "business_owner":
-        return ""   # 操業コンソールは工場のマシンの中。事業主の宛先には付けない（ADR 0032 の R7）
     return CONSOLE_URL + url if url and CONSOLE_URL else ""
 
 
@@ -116,7 +119,7 @@ def render(batch: list[tuple[dict, str]], channel: str, dest: notify.Destination
             who = f"{mention(i['who'])} {who}"
         if why == "escalate":
             who += f" → {inbox.WHO.get(PROXY, PROXY)}" + (f" {mention(PROXY)}" if slack and mention(PROXY) else "")
-        link = _link(i.get("url") or "", dest)
+        link = _link(i.get("url") or "", dest, i.get("key") or "")
         title = (f"<{link}|{i['title']}>" if slack else f"[{i['title']}]({link})") if link else i["title"]
         wait = f"（{_dur(i['age_sec'])}待ち）" if i.get("age_sec") else ""
         key = f" `{i['key']}`" if i.get("answer") else ""   # Claude に「受信トレイの <key> に答えて」と言えるように（ADR 0034 の順番 2）

@@ -1,0 +1,376 @@
+"""操業コンソールの画面（1 枚の HTML。console.py が配る）。
+
+ページは URL で分ける（2026-11-07 オーナー）: / ホーム（ダッシュボード）、/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）、
+/line（ライン）、/ship（出荷）、/settings/<項目>（右上の歯車。ランナー・ラインと流量・Mac・工場の版）。/usage は usage_page.py の別ページ。
+サーバーはどのページにも同じ HTML を返し、画面の中で URL に合うページを描く。データは /api/state の 1 本（10 秒ごと）
+"""
+import re
+
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+
+PAGE = r"""<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>工場の操業コンソール</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2330;--sub:#5b6474;--line:#e2e5ea;--accent:#2f5bd3;--p0:#c62828;--p1:#d97706;--p2:#4b5563;--p3:#9ca3af;--ok:#1f7a4d;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root{--bg:#12151b;--card:#1b2029;--ink:#e6e9ef;--sub:#9aa3b2;--line:#2a313d;--accent:#7aa2ff;--p2:#9ca3af;--p3:#6b7280}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+header{padding:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;border-bottom:1px solid var(--line);background:var(--card)}
+h1{font-size:16px;margin:0 12px 0 0}.stat{white-space:nowrap;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--sub)}.stat b{color:var(--ink)}
+.bad b{color:var(--p0)}.sw{cursor:pointer;display:inline-flex;gap:8px;align-items:center}.sw b.on{color:var(--ok)}.sw input{appearance:none;-webkit-appearance:none;margin:0;width:36px;height:20px;border-radius:999px;background:var(--line);position:relative;cursor:pointer;transition:background .15s}.sw input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:left .15s}.sw input:checked{background:var(--ok)}.sw input:checked::after{left:18px}.sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}main{padding:16px;display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.lane{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:80px}
+.lane h2{font-size:13px;margin:0 0 8px;color:var(--sub);display:flex;justify-content:space-between}
+.it{border:1px solid var(--line);border-left:4px solid var(--p2);border-radius:8px;padding:8px;margin:0 0 8px}
+.it.p0{border-left-color:var(--p0)}.it.p1{border-left-color:var(--p1)}.it.p3{border-left-color:var(--p3)}.it.held{opacity:.6}
+.t{font-weight:600;word-break:break-word}.m{color:var(--sub);font-size:12px}.m a{color:var(--accent)}
+.badge{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;color:#fff;background:var(--p2);margin-right:4px}
+.badge.p0{background:var(--p0)}.badge.p1{background:var(--p1)}.badge.p3{background:var(--p3)}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}button,select{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
+button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stops{padding:0 16px}#stops div{margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
+#ship{padding:0 16px}.rel{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.rel .env b{font-size:15px}.touch{flex-basis:100%;display:flex;flex-wrap:wrap;gap:12px}.touch .e{border:1px solid var(--line);border-radius:8px;padding:8px;max-width:260px}
+.touch .e svg{display:block;width:160px;height:auto;margin-top:6px}.touch code{font-size:11px;word-break:break-all}button.go{background:var(--ok);color:#fff;border-color:var(--ok)}a.btn{font-size:12px;padding:3px 10px;border-radius:6px;background:var(--ok);color:#fff;text-decoration:none}
+#runners{padding:0 16px}.rn{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.rn h2{font-size:13px;margin:0 0 6px;color:var(--sub)}.rn table{border-collapse:collapse;width:100%;font-size:12px}.rn td,.rn th{text-align:left;padding:4px 8px 4px 0;border-top:1px solid var(--line);vertical-align:top}.rn th{color:var(--sub);font-weight:400;border-top:0}.rn code{font-size:11px;word-break:break-all}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--p3);margin-right:4px}.dot.on{background:var(--ok)}
+#choices{padding:0 16px}.ch{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:var(--card)}
+.opts{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin:8px 0}.opt{border:1px solid var(--line);border-radius:8px;padding:8px}
+.opt.rec{border-color:var(--ok)}.opt img{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}.ch input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(360px,100%)}
+#bell{position:relative;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:13px}#bell svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2}
+#bell .n{min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#bell.has .n{background:var(--p0);color:#fff}
+#inbox{padding:0 16px}#inbox[hidden]{display:none}.ib{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.ib h2{font-size:14px;margin:0 0 8px}
+.ib a{color:var(--accent)}.ib ul{list-style:none;margin:0;padding:0}.ib li{padding:8px 0;border-top:1px solid var(--line);display:grid;gap:2px}.ib li:first-child{border-top:0}.who{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--sub);margin-right:6px}
+.dt{margin:4px 0 0;display:grid;grid-template-columns:max-content 1fr;gap:2px 10px;font-size:12px}.dt dt{color:var(--sub)}.dt dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:560px){.dt{grid-template-columns:1fr}.dt dd{margin-bottom:4px}}
+.ans{margin-top:4px}.ans input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(320px,100%)}.ans.done{color:var(--ok);font-size:12px}.ib li.answered{opacity:.7}
+.ch:target,.rel:target,#ship:target{outline:2px solid var(--accent);outline-offset:2px}
+.zm{display:block;cursor:zoom-in}
+#zoom{position:fixed;inset:0;z-index:10;background:#0f1115;display:flex;flex-direction:column}#zoom[hidden]{display:none}
+#zoom .bar{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#e6e9ef;font-size:13px}#zoom .bar .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#zoom .bar a,#zoom .bar button{font:inherit;font-size:12px;padding:4px 10px;border:1px solid #4b5563;border-radius:6px;background:transparent;color:#e6e9ef;text-decoration:none;cursor:pointer}
+#zoom .vp{flex:1;overflow:auto;display:flex;padding:0 12px 12px}#zoom img{margin:0 auto auto;max-width:100%;background:#fff;border-radius:4px;cursor:zoom-out}
+#zoom.fit img{margin:auto;max-height:100%;cursor:zoom-in}
+#msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
+header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;font-size:16px;color:var(--ink);text-decoration:none;margin-right:8px}
+#hdr{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;min-width:0}
+#gear{margin-left:auto;display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#gear svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#gear:hover,#gear.on{color:var(--accent);background:var(--bg)}
+#nav{display:flex;gap:2px;padding:0 16px;background:var(--card);border-bottom:1px solid var(--line);overflow-x:auto}
+#nav a{padding:9px 12px;color:var(--sub);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}#nav a.on{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+#nav .n{display:inline-block;min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#nav .n.has{background:var(--p0);color:#fff}
+.banner{display:block;margin:12px 16px 0;padding:10px 12px;border:1px solid var(--accent);border-radius:10px;background:var(--card);color:var(--accent);text-decoration:none;font-weight:600}
+#view{padding:0 16px 32px}.card{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);min-width:0}
+.card h2{font-size:14px;margin:0 0 8px}.card h2 a{color:var(--ink);text-decoration:none}.card h2 .m{font-weight:400}
+.stop{margin-top:12px;padding:8px 10px;border-radius:8px;border:1px solid var(--warn);color:var(--warn);background:var(--card)}
+.rows{list-style:none;margin:0;padding:0}.rows li a{display:flex;gap:8px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line);color:var(--ink);text-decoration:none}.rows li:first-child a{border-top:0}.rows li a:hover .g{color:var(--accent)}
+.g{flex:1;min-width:0;word-break:break-word}.more{display:inline-block;margin-top:6px;color:var(--accent);font-size:13px}
+.tiles{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}.tile{border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.tile .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}.tile .v small{font-size:12px;font-weight:400;color:var(--sub);margin-left:3px}.tile .d{font-size:12px;font-weight:400;color:var(--sub);margin-left:8px}
+.tile.warn{border-color:var(--warn)}.tile.warn .v{color:var(--warn)}.tile.bad{border-color:var(--p0)}.tile.bad .v{color:var(--p0)}
+.spk{display:block;width:100%;height:34px;margin-top:4px}.spk path{fill:none;stroke:var(--accent);stroke-width:1.6;vector-effect:non-scaling-stroke}.spk circle{fill:var(--accent)}
+.sumline{margin:-2px 0 8px}.sumline.warn{color:var(--warn)}.sumline.bad{color:var(--p0)}
+.two{display:grid;gap:0 12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.kv{display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--sub)}.kv b{color:var(--ink)}.kv+.kv{margin-top:4px}
+/* 受信トレイ: 選ぶまでは一覧が全面、選ぶと左が細い一覧、右がメッセージの詳細 */
+.ibx{margin-top:12px;display:grid;grid-template-columns:1fr;border:1px solid var(--line);border-radius:10px;background:var(--card);min-height:60vh}
+.ibx.open{grid-template-columns:minmax(220px,320px) minmax(0,1fr)}.ib-l{min-width:0;display:flex;flex-direction:column}.ibx.open .ib-l{border-right:1px solid var(--line)}
+.ib-f{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}.tabs{display:flex;gap:4px}.tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+#ib-list{overflow:auto}.ibx.open #ib-list{max-height:calc(100vh - 170px)}.ir{display:grid;gap:2px;padding:9px 12px;border-bottom:1px solid var(--line);color:var(--ink);text-decoration:none}.ir:hover{background:var(--bg)}
+.ir.sel{background:var(--bg);box-shadow:inset 3px 0 0 var(--accent)}.ibx.open .ir .m2{display:none}.empty{padding:16px 12px}
+.ib-r{display:none;min-width:0;padding:12px 16px 20px}.ibx.open .ib-r{display:block;animation:slidein .18s ease-out}@keyframes slidein{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}
+@media(prefers-reduced-motion:reduce){.ibx.open .ib-r{animation:none}}
+.dh{display:flex;gap:10px;align-items:flex-start}.dh h2{font-size:16px;margin:0}.pn{display:flex;gap:8px;white-space:nowrap;font-size:13px}.pn a{color:var(--accent)}.pn .off{color:var(--line)}
+.x{font-size:16px;line-height:1;padding:3px 7px;border-radius:6px;color:var(--sub);text-decoration:none;border:1px solid var(--line)}.ask{margin-top:8px;padding:6px 10px;border-radius:6px;background:var(--bg)}
+.cd{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}.gal{display:grid;grid-template-columns:120px minmax(0,1fr);gap:12px;margin-top:8px}
+.thumbs{display:grid;gap:6px;align-content:start;max-height:70vh;overflow:auto}.th{display:grid;gap:3px;padding:4px;text-align:left;font-size:11px;border-radius:6px}.th img{width:100%;height:64px;object-fit:cover;object-position:top;border-radius:4px;background:#fff}
+.th.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}.noimg{display:grid;place-items:center;min-height:64px;color:var(--sub);font-size:11px;background:var(--bg);border-radius:4px}
+.stage{min-width:0}.big{display:block;max-height:max(320px,calc(100vh - 360px));overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff}.big img{display:block;width:100%;height:auto}div.big{min-height:200px}.dock{position:sticky;bottom:0;z-index:2;background:var(--card);border-top:1px solid var(--line);margin-top:10px;padding:8px 0 4px;box-shadow:0 -6px 12px -8px rgba(0,0,0,.18)}.dock .acts{margin-top:4px}.target .rel>.t{display:none}
+.stage input,.cd input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(380px,100%)}
+@media(max-width:760px){.ibx.open{grid-template-columns:1fr}.ibx.open .ib-l{display:none}.gal{grid-template-columns:1fr}.thumbs{grid-auto-flow:column;grid-auto-columns:96px;max-height:none}}
+.filters{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:12px}.src{display:inline-block;font-size:10px;padding:0 5px;margin-right:4px;border-radius:3px;background:var(--line);color:var(--sub)}
+#lanes{padding:12px 0 0}.targets{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.target{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}.target .th2{font-weight:700}.target .rel{margin-top:6px;border:0;padding:0}
+.set{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0 14px}.sn{display:grid;gap:2px;align-content:start;margin-top:12px}.sn a,.sn span{padding:7px 10px;border-radius:6px;color:var(--ink);text-decoration:none}.sn a.on{background:var(--card);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}.sn .later{color:var(--sub);font-size:12px}
+@media(max-width:640px){.set{grid-template-columns:1fr}.sn{grid-auto-flow:column;overflow-x:auto}}
+.tb{border-collapse:collapse;margin:8px 0}.tb td,.tb th{padding:4px 12px 4px 0;text-align:left;font-variant-numeric:tabular-nums}.tb th{color:var(--sub);font-weight:400}.tb input{width:70px;font:inherit;padding:2px 6px;border:1px solid var(--line);border-radius:6px}
+#set-b>.rn:first-of-type{margin-top:0}#set-b input#sc-reason{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(300px,100%)}
+a:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:640px){header{padding:8px 12px}#hdr{order:3;flex:0 0 100%;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}#gear{margin-left:auto}#view{padding:0 12px 24px}
+ .rows li a{flex-wrap:wrap}.rows li a .m{flex-basis:100%}.ib-r{padding:12px}.dh{flex-wrap:wrap}.dh h2{flex-basis:100%}}
+</style></head><body>
+<header><a class="brand" href="/" data-nav>工場の操業コンソール</a><span id="hdr"></span><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></header>
+<nav id="nav" aria-label="ページ"></nav>
+<div id="banner"></div>
+<div id="view"></div><div id="msg"></div>
+<div id="zoom" hidden role="dialog" aria-modal="true" aria-label="画面の拡大"><div class="bar"><span class="t" id="zoom-t"></span><button data-zm="-1" title="前の画面（←）">←</button><button data-zm="1" title="次の画面（→）">→</button><button data-zm="fit" title="幅に合わせる・全体を見る（画像のクリックでも切り替え）" id="zoom-fit">全体を見る</button><a id="zoom-tab" href="#" target="_blank" rel="noopener">別タブで開く</a><button data-zm="close" title="閉じる（Esc）">閉じる</button></div><div class="vp"><img id="zoom-img" alt=""></div></div>
+<script>
+const TOKEN="__TOKEN__";
+const LANES=[["human","対応が必要"],["running","作業中"],["queued","順番待ち"],["ready","投入待ち（上限）"],["waiting","依存待ち"],["review","検査・判定・マージ待ち"],["done","今日の済み"]];
+let levels={};
+const CAT={env:"実行環境",perm:"権限",human:"人の判断待ち","factory-bug":"工場の不具合",ticket:"チケット",external:"外部",budget:"予算・上限",idle:"ラインが空"};
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dur=s=>s==null?"":s<60?s+"秒":s<3600?Math.floor(s/60)+"分":Math.floor(s/3600)+"時間"+Math.floor(s%3600/60)+"分";
+const link=(u,t)=>u&&/^https:\/\//.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);
+function toast(t){const m=document.getElementById("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3000)}
+async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Console-Token":TOKEN},body:JSON.stringify(body||{})});
+ const j=await r.json().catch(()=>({}));toast(r.ok?"受け付けました":"失敗: "+(j.error||r.status));if(r.ok&&(path.startsWith("/api/choices/")||path==="/api/inbox/answer"))force=true;load();return r.ok}
+function acts(i){let h="";
+ if(i.ticket_id&&["waiting","ready","queued","running"].includes(i.stage)){
+  h+=`<select data-t="${i.ticket_id}" aria-label="優先度">`+Object.entries(levels).map(([k,v])=>`<option value="${k}" ${k===i.level?"selected":""}>${k} ${esc(v.name)}</option>`).join("")+`</select>`;
+  if(i.stage!=="running")h+=i.held?`<button data-a="resume" data-t="${i.ticket_id}">再開</button>`:`<button data-a="hold" data-t="${i.ticket_id}">保留</button>`}
+ if(i.job_id&&["queued","running"].includes(i.stage)&&!i.stopping)h+=`<button class="danger" data-a="stop" data-j="${i.job_id}">止める</button>`;
+ return h?`<div class="acts">${h}</div>`:""}
+const VER=r=>r?esc(r.split("@").pop()):"なし";
+function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
+ let b="";if(!r.pending.length){
+  if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
+  else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
+  if(!r.prod_held&&pr.previous&&!pr.rollback_blocked)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前の版に戻す（${VER(pr.previous)} へ）</button>`;
+  if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
+  if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
+ const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
+function pairsView(ps){return ps.map(p=>`<div class="rn" style="border-color:var(--accent)"><h2>新しいランナーの接続の依頼</h2><div><b>${esc(p.name||"?")}</b> <span class="m">${esc(p.platform||"")} · ${esc(p.version||"")}</span></div>
+ <div style="font-size:28px;font-weight:700;letter-spacing:.08em;margin:6px 0">${esc(p.code)}</div><div class="m">Mac のターミナルに同じ番号が出ていれば「許可」を押し、Mac 側でも y を押す。違えば「拒否」。10 分で切れる</div>
+ <div class="acts"><button class="go" data-pair="approve" data-p="${esc(p.pair_id)}">許可</button><button class="danger" data-pair="reject" data-p="${esc(p.pair_id)}">拒否</button></div></div>`).join("")}
+function runnersView(rs){if(!rs.length)return"";
+ return `<div class="rn"><h2>登録済みのランナー（工場の外の機械に入れた常駐プロセス）</h2><table><tr><th>機械</th><th>状態</th><th>版・道具</th><th>置き場</th><th></th></tr>${rs.map(r=>`<tr>
+  <td><b>${esc(r.name||"?")}</b><div class="m">${esc(r.kind||"")} ${esc(r.platform||"")}</div></td>
+  <td><span class="dot ${r.online?"on":""}"></span>${r.uninstall_pending?"外す依頼の処理待ち":r.online?"動いている":r.last_seen_age_sec==null?"連絡待ち":"連絡なし（"+dur(r.last_seen_age_sec)+"前）"}<div class="m">登録 ${esc((r.registered_at||"").slice(0,16).replace("T"," "))}</div></td>
+  <td>${esc(r.version||"")}<div class="m">${esc(r.tools||"")}${r.devices?" · 端末 "+esc(r.devices)+" 台":""}</div></td>
+  <td><code>${esc(r.path||"")}</code><div class="m">常駐 ${esc(r.label||"")}${r.xcode?" · "+esc(r.xcode):""}</div><div class="m">できること: ${esc(r.scope||"")}</div><div class="m">外しても残るもの: <code>${esc(r.home||"")}</code>・<code>${esc(r.logs||"")}</code>・トークン</div></td>
+  <td>${r.uninstall_pending?"":`<button class="danger" data-runner="${esc(r.id)}">外す</button>`}</td></tr>`).join("")}</table>
+  <div class="m">外すと工場とランナーの鍵を捨て、ランナーが自分の常駐（LaunchAgent）を外して止まる。手で外すときはその機械で <code>scripts/macrunner.sh uninstall</code></div></div>`}
+const WHO_ORDER=["owner","po","design_chief","builder","requester"];
+// 受信トレイの 1 件の答え方（ADR 0034 の決定 2）。押したら何が起きるか（effect）を必ず出す。取り返しのつかない作用は 2 度押し
+function answerView(i,n){const a=i.answer;
+ if(i.answered){const w=i.answered;return `<div class="ans done">答え済み: ${esc(w.by||"?")}（${esc({console:"操業コンソール",review_page:"レビューページ",factoryctl:"factoryctl",mcp:"Claude",github:"GitHub",slack:"Slack"}[w.via]||w.via||"")}）が『${esc(w.label||w.option||"")}』と回答。反映を待っている</div>`}
+ if(!a)return "";
+ const agg=i.key==="choice:exit_capture";   // まとめた実装後の画面: 印は画面ごとに下の欄で付ける
+ const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.note_hint?esc(a.note_hint):a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
+ const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"&&o.id.length<=2?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
+ const extra=a.extra.map(e=>`<button class="${e.id==="return"?"danger":""}" data-ib="${k}" data-o="${esc(e.id)}" data-n="${n}" data-need="${e.note_required?1:""}">${esc(e.label)}</button>`).join("");
+ return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?``:""}${opts}${extra}${note}</div></div>`}
+// 問いの中身（judge が人に回した判断の今の案・他の案・見立てなど）。答える前に読めるように件の下に出す
+function detailView(i){return i.detail&&i.detail.length?`<dl class="dt">${i.detail.map(d=>`<dt>${esc(d.label)}</dt><dd>${esc(d.text)}</dd>`).join("")}</dl>`:""}
+const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
+function card(i){const lv=i.level||"p2";let meta=[srcLink(i),i.pr_url?link(i.pr_url,"PR"):""];
+ if(i.job_id)meta.push(`ジョブ ${i.job_id}${i.kind&&i.kind!=="implement"?"（"+esc(i.kind)+"）":""}${i.attempt>1?" 試行"+i.attempt:""}`);
+ if(i.rank)meta.push(`${i.rank} 番目`);if(i.held)meta.push("保留中");
+ if(i.stage==="running")meta.push(`経過 ${dur(i.elapsed_sec)} / 打ち切り ${dur(i.timeout_sec)}`+(i.stopping?(i.preempted_for?" 割り込みで停止中":" 停止中"):""));
+ if(i.waiting_on&&i.waiting_on.length)meta.push("待っている: "+i.waiting_on.map(esc).join(" "));
+ if(i.note)meta.push(esc(i.note));
+ return `<div class="it ${lv}${i.held?" held":""}"><div class="t">${i.priority!=null?`<span class="badge ${lv}">${esc(lv)}</span>`:""}${esc(i.title||"（題名なし）")}</div><div class="m">${meta.filter(Boolean).join(" · ")}</div>${acts(i)}</div>`}
+function scaleView(sc,l){if(!sc)return"";const d=sc.desired,r=sc.running,n=(v)=>v==null?"?":v,paused=l&&l.draining;
+ const who=sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）";
+ return `<span class="stat ${paused?"bad":""}" title="流量（いま / 宣言）。${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b> · 窓口 <b>${n(r.desk)} / ${d.desk}</b></span>`}
+function lineView(l){if(!l)return"";const w=[l.running.length?`実行中 ${l.running.length} 件の終わり待ち`:"",l.shipping.length?`出荷 ${l.shipping.length} 件の処理待ち`:""].filter(Boolean).join("・");
+ return `<label class="stat sw ${l.draining&&!l.ready?"bad":""}" title="オフにすると順番待ちを取り出さない（実行中のジョブは最後まで流す）。工場の更新のとき">ライン <input type="checkbox" role="switch" id="line" ${l.draining?"":"checked"}><b class="${l.draining?"":"on"}">${l.draining?(l.ready?"一時停止中（更新してよい）":"一時停止中（"+w+"）"):"流している"}</b></label>`}
+const put=(id,h)=>{const e=document.getElementById(id);if(e&&e._h!==h){e._h=h;e.innerHTML=h}};
+document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.id==="line")return post(t.checked?"/api/factory/resume":"/api/factory/drain",{reason:"操業コンソール"});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
+document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
+ if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
+ if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r}).then(ok=>ok&&advance("release:"+s.dataset.r));else if(s.dataset.ship==="reseed")post("/api/releases/reseed",{repo:s.dataset.repo});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-ib]");if(!b)return;
+ const note=((document.querySelector(`input[data-note="${b.dataset.n}"]`)||{}).value||"").trim();
+ if(b.dataset.need&&!note)return toast("一言を入れてください");
+ if(b.dataset.irrev&&!b.classList.contains("armed")){b.dataset.label=b.textContent;b.classList.add("armed");b.textContent="もう一度押すと確定";setTimeout(()=>{b.classList.remove("armed");b.textContent=b.dataset.label},4000);return}
+ post("/api/inbox/answer",{key:b.dataset.ib,option:b.dataset.o,note}).then(ok=>{if(ok&&b.dataset.o!=="flag")advance(b.dataset.ib)})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-pair]");if(!b)return;post(`/api/runners/pairs/${b.dataset.p}/${b.dataset.pair}`,{reason:"操業コンソール"})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-runner]");if(!b)return;
+ if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと外す";setTimeout(()=>{b.classList.remove("armed");b.textContent="外す"},4000);return}
+ post(`/api/runners/${b.dataset.runner}/uninstall`,{reason:"操業コンソール"})});
+document.addEventListener("keydown",e=>{const t=e.target;if(e.key!=="Enter"||e.isComposing||e.keyCode===229||!t.matches("input[data-fnote]"))return;   // 229: Safari は変換の確定の Enter で isComposing を立てない（11-06「テーブルの」だけの印が 2 件送られた）e.preventDefault();
+ const b=document.querySelector(`button[data-ch=flag][data-c="${t.dataset.fnote}"][data-o="${t.dataset.o}"]`);if(b)b.click()});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]");if(!b)return;const id=b.dataset.c;
+ const fin=b.dataset.o?document.querySelector(`input[data-fnote="${id}"][data-o="${b.dataset.o}"]`):null;   // 実装後の画面は画面ごとの欄
+ const note=((fin||document.getElementById("note-"+id)||{}).value)||"";
+ if(b.dataset.ch==="seen")return post(`/api/choices/${id}/seen`,{reason:note}).then(ok=>ok&&advance("choice:"+id));
+ if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note}).then(ok=>ok&&advance("choice:"+id));
+ if(b.dataset.ch==="flag"){if(!note.trim()){if(fin)fin.focus();return toast("違和感の一言を入れてください")}return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note}).then(ok=>{if(ok&&fin){fin.value="";fin.placeholder="送りました。ほかにもあれば一言（Enter で送る）"}})}
+ if(!note.trim())return toast("戻す理由を一言入れてください");post(`/api/choices/${id}/return`,{reason:note}).then(ok=>ok&&advance("choice:"+id))});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b)return;
+ if(b.dataset.a==="stop"){if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと止める";setTimeout(()=>{b.classList.remove("armed");b.textContent="止める"},4000);return}
+  return post(`/api/jobs/${b.dataset.j}/stop`,{})}
+ post(`/api/tickets/${b.dataset.t}/${b.dataset.a}`,{})});
+// 画面の拡大（11-07）。画像を押すとその場で幅いっぱいに出す（縦長はスクロール）。押すと全体、← → で同じ問いの他の画面、Esc で閉じる。⌘/Ctrl＋クリックは別タブ
+let zl=[],zi=0;const Z=document.getElementById("zoom"),ZV=()=>Z.querySelector(".vp");
+function zshow(){const a=zl[zi];if(!a)return;const g=document.getElementById("zoom-img");g.src=a.src;g.alt=a.alt;
+ document.getElementById("zoom-t").textContent=`${a.alt}（${zi+1} / ${zl.length}）`;document.getElementById("zoom-tab").href=a.src;ZV().scrollTop=0}
+const zfit=on=>{Z.classList.toggle("fit",on);document.getElementById("zoom-fit").textContent=on?"幅に合わせる":"全体を見る"};
+function zclose(){Z.hidden=true;zfit(false);document.getElementById("zoom-img").removeAttribute("src")}
+const zstep=d=>{zi=(zi+d+zl.length)%zl.length;zshow()};
+document.addEventListener("click",e=>{const a=e.target.closest("a.zm");if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button)return;e.preventDefault();
+ const box=a.closest("[data-zl]"),src=a.getAttribute("href"),alt=(a.querySelector("img")||{}).alt||"";
+ zl=box?[...box.querySelectorAll("[data-zsrc]")].filter(x=>x.dataset.zsrc).map(x=>({src:x.dataset.zsrc,alt:x.dataset.zalt||""})):[];
+ if(!zl.length)zl=[{src,alt}];zi=Math.max(zl.findIndex(x=>x.src===src),0);zfit(false);Z.hidden=false;zshow()});
+Z.addEventListener("click",e=>{const b=e.target.closest("[data-zm]");
+ if(e.target.id==="zoom-img"||(b&&b.dataset.zm==="fit"))return zfit(!Z.classList.contains("fit"));
+ if(b&&b.dataset.zm==="close"||e.target.classList.contains("vp"))return zclose();
+ if(b)zstep(Number(b.dataset.zm))});
+document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){e.preventDefault();zclose()}else if(e.key==="ArrowRight"||e.key==="ArrowLeft"){e.preventDefault();zstep(e.key==="ArrowRight"?1:-1)}});
+// ---------------------------------------------------------------- ページ（11-07 の構成。ADR 0009 の決定 5 の簡易画面）
+// URL がページ: / ホーム（ダッシュボード）・/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）・/line・/ship・/settings/<項目>
+const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
+const SETTINGS=[["runners","ランナー"],["line","ラインと流量"],["mac","Mac"],["version","工場の版"]];
+const LATER=["サービスとの連携（OAuth）","credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
+let S=null,view="",gi={},ibTab="open",ibKind="",ibWho="";
+const enc=k=>encodeURIComponent(k);
+const ibHref=k=>"/inbox/"+enc(k);
+function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
+ if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
+ if(p==="/line"||p==="/ship")return[p.slice(1),""];
+ if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
+ return["home",""]}
+// 前の構成のリンク（通知や古いタブの /#choice-1・/#choices・/#ship）を新しいページに読み替える
+(()=>{if(location.pathname!=="/"||!location.hash)return;const h=location.hash.slice(1);let to="";
+ if(/^choice-\d+$/.test(h))to=ibHref("choice:"+h.slice(7));else if(h==="choices")to=ibHref("choice:exit_capture");else if(h==="ship")to="/ship";else if(h==="inbox")to="/inbox";
+ if(to)history.replaceState(null,"",to)})();
+function go(href){if(href!==location.pathname)history.pushState(null,"",href);render()}
+document.addEventListener("click",e=>{const a=e.target.closest("a[data-nav]");if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button)return;e.preventDefault();go(a.getAttribute("href"))});
+addEventListener("popstate",()=>render());
+const ago=s=>s==null?"":dur(s)+"待ち";
+const busy=id=>{const e=document.getElementById(id);return !!e&&(e.contains(document.activeElement)&&document.activeElement.matches("input,textarea")||[...e.querySelectorAll("input:not([type=checkbox]),textarea")].some(i=>i.value.trim()))};
+
+// ---- ホーム
+function todoView(ib){const xs=ib.items.filter(i=>!i.answered);
+ if(!xs.length)return `<h2>対応が必要なもの</h2><div class="m">いまはありません</div>`;
+ return `<h2>対応が必要なもの（${xs.length} 件）</h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
+  <a class="more" href="/inbox" data-nav>受信トレイをすべて見る →</a>`}
+function spark(series){const v=(series||[]).map(x=>typeof x==="number"?x:null),ns=v.filter(x=>x!=null);if(ns.length<2)return '<div class="m">推移はまだない</div>';
+ const lo=Math.min(...ns),hi=Math.max(...ns),W=140,H=34,X=i=>(i*(W-4)/(v.length-1)+2).toFixed(1),Y=x=>(hi===lo?H/2:H-3-(x-lo)*(H-6)/(hi-lo)).toFixed(1);
+ let d="",pen=false;v.forEach((x,i)=>{if(x==null){pen=false;return}d+=(pen?"L":"M")+X(i)+" "+Y(x)+" ";pen=true});
+ const li=v.length-1,last=v[li];
+ return `<svg class="spk" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}"/>${last!=null?`<circle cx="${X(li)}" cy="${Y(last)}" r="2.5"/>`:""}</svg>`}
+const num=(x,u)=>x==null?"不明":(typeof x==="number"?(Math.round(x*10)/10).toLocaleString():esc(x))+(u?`<small>${esc(u)}</small>`:"");
+function trendView(t){if(!t||!t.items.length)return `<h2>指標の推移</h2><div class="m">毎朝の操業レポート（工場の健康）がまだ組み立てられていない。組み立てられると、レポートが描いている指標の推移がここに出る</div>`;
+ const span=t.days.length?`${esc(t.days[0])} 〜 ${esc(t.days[t.days.length-1])}`:"";
+ return `<h2>指標の推移 <span class="m">毎朝の操業レポートと同じ数 · ${span}（${t.days.length} 日）</span></h2>
+  ${t.summary.length?`<div class="m sumline ${esc(t.level)}">${t.summary.map(esc).join(" ")}</div>`:""}
+  <div class="tiles">${t.items.map(i=>`<div class="tile ${esc(i.level)}"><div class="m">${esc(i.title)}</div><div class="v">${num(i.value,i.unit)}${i.delta!=null&&i.delta!==0?`<span class="d">${i.delta>0?"+":""}${Math.round(i.delta*10)/10}</span>`:""}</div>${spark(i.series)}</div>`).join("")}</div>`}
+function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
+ return `<h2><a href="/line" data-nav>ライン →</a></h2><div class="kv">${LANES.map(([k,n])=>`<span>${esc(n)} <b>${c(k)}</b></span>`).join("")}</div>`}
+function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
+function stopsView(st){return st.map(x=>`<div class="stop">止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("")}
+
+// ---- 受信トレイ（2 ペイン。選ぶまでは一覧が全面、選ぶと右に詳細）
+function ibItems(ib){return ib.items.filter(i=>(ibTab==="open"?!i.answered:!!i.answered)&&(!ibKind||i.kind===ibKind)&&(!ibWho||i.who===ibWho))}
+function ibFilters(ib){const n=ib.items.filter(i=>!i.answered).length,a=ib.items.length-n,opt=(m,v)=>Object.entries(m).map(([k,t])=>`<option value="${esc(k)}" ${k===v?"selected":""}>${esc(t)}</option>`).join("");
+ return `<div class="tabs"><button data-ibtab="open" class="${ibTab==="open"?"on":""}">未回答 ${n}</button><button data-ibtab="answered" class="${ibTab==="answered"?"on":""}">答え済み（反映待ち） ${a}</button></div>
+  <label class="m">種類 <select id="ib-kind"><option value="">すべて</option>${opt(ib.kinds,ibKind)}</select></label><label class="m">宛先 <select id="ib-who"><option value="">すべて</option>${opt(ib.who,ibWho)}</select></label>`}
+function ibList(ib,key){const xs=ibItems(ib);
+ if(!xs.length)return `<div class="m empty">${ibTab==="open"?"対応が必要なものはありません":"反映待ちの答えはありません"}</div>`;
+ return xs.map(i=>`<a class="ir ${i.key===key?"sel":""}" href="${ibHref(i.key)}" data-nav><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${esc(i.title)}</div>
+  <div class="m">${[esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref)].filter(Boolean).join(" · ")}</div><div class="m m2">${esc(i.action)}</div></a>`).join("")}
+function extLink(u){if(!u)return"";if(/^https:\/\//.test(u))return link(u,/github\.com\/[^/]+\/[^/]+\/pull\//.test(u)?"PR を開く":/github\.com/.test(u)?"GitHub で開く":"開く");
+ if(/^\/review\//.test(u))return `<a href="${esc(u)}" target="_blank" rel="noopener">レビューページを開く</a>`;return""}
+function ibDetail(ib,key){const i=ib.items.find(x=>x.key===key);
+ const close=`<a class="x" href="/inbox" data-nav title="閉じる（Esc）" aria-label="閉じる">✕</a>`;
+ if(!i)return `<div class="dh"><h2 class="g">メッセージが見つかりません</h2>${close}</div><div class="m">受信トレイにもうない（答えて閉じたか、解消した）。<a href="/inbox" data-nav>受信トレイに戻る</a></div>`;
+ const xs=ibItems(ib),k=xs.findIndex(x=>x.key===key),prev=k>0?xs[k-1]:null,next=k>=0&&k<xs.length-1?xs[k+1]:null;
+ const nav=`<span class="pn">${prev?`<a href="${ibHref(prev.key)}" data-nav>← 前</a>`:'<span class="off">← 前</span>'}${next?`<a href="${ibHref(next.key)}" data-nav>次 →</a>`:'<span class="off">次 →</span>'}</span>`;
+ const meta=[esc(ib.who[i.who]||i.who),esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref),extLink(i.url)].filter(Boolean).join(" · ");
+ return `<div class="dh"><h2 class="g">${esc(i.title)}</h2>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
+function ibBody(i){const n=0;
+ if(i.key.startsWith("choice:")){const cs=i.key==="choice:exit_capture"?(S.choices||[]).filter(c=>c.kind==="exit_capture"):(S.choices||[]).filter(c=>"choice:"+c.id===i.key);
+  if(i.answered||!cs.length)return answerView(i,n);
+  return `${i.answer?`<div class="m">答えると: ${esc(i.answer.effect)}</div>`:""}${cs.map(choiceDetail).join("")}`}
+ if(i.key.startsWith("release:")){const rid=i.key.slice(8),r=(S.releases||[]).find(x=>rid.startsWith(x.repo+"@"));
+  return i.answered||!r?answerView(i,n):`${i.answer?`<div class="m">答えると: ${esc(i.answer.effect)}</div>`:""}${shipView([r])}`}
+ return answerView(i,n)}
+// 画面の判断: 左に画面の一覧、中央に 1 枚を大きく（押すと拡大）、下にいま見ている画面への違和感と答え
+function choiceDetail(c){const sub=c.subject||{},os=c.options||[];
+ if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))
+  return `<div class="cd"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${os.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで比べて判断する</a></div></div>`;
+ const k=Math.min(gi[c.id]||0,Math.max(os.length-1,0)),o=os[k]||{},exit=c.kind==="exit_capture",img=x=>`/api/choices/${c.id}/image/${esc(x.id)}`;
+ const head=`<div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",sub.artifact_url?link(sub.artifact_url,"CI の成果物"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>`;
+ const thumbs=os.map((x,j)=>`<button class="th ${j===k?"on":""}" data-gi="${c.id}" data-k="${j}" data-zsrc="${x.image_key?img(x):""}" data-zalt="${esc(x.id)}. ${esc(x.label)}" title="${esc(x.label)}">${x.image_key?`<img loading="lazy" alt="" src="${img(x)}">`:'<span class="noimg">画像なし</span>'}<span>${esc(x.id)}. ${esc(x.label)}${x.id===c.recommended?"（推奨）":""}</span></button>`).join("");
+ const stage=o.image_key?`<a class="zm big" href="${img(o)}" target="_blank" rel="noopener" data-zk="${k}" title="押すと拡大（別タブは ⌘/Ctrl＋クリック）"><img alt="${esc(o.id)}. ${esc(o.label)}" src="${img(o)}"></a>`:'<div class="big noimg">画像なし</div>';
+ const per=`<div class="cap"><b>${esc(o.id)}. ${esc(o.label)}</b>${o.id===c.recommended?' <span class="m">（推奨）</span>':""} <span class="m">${k+1} / ${os.length} · ← → で前後の画面</span></div>${o.note?`<div class="m">${esc(o.note)}</div>`:""}
+  <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<input data-fnote="${c.id}" data-o="${esc(o.id)}" placeholder="この画面の違和感を一言（Enter で送る。例: 余白が詰まって見える）" maxlength="300"><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感を送る</button></div>`;
+ const tail=exit?`<div class="acts"><span class="m">全部見終えたら</span><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button></div>`
+  :`<div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button class="danger" data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div>`;
+ return `<div class="cd" id="choice-${c.id}">${head}<div class="gal" data-zl><div class="thumbs">${thumbs}</div><div class="stage">${stage}</div></div><div class="dock">${per}${tail}</div></div>`}
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-gi]");if(!b)return;gi[b.dataset.gi]=Number(b.dataset.k);force=true;render()});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-ibtab]");if(!b)return;ibTab=b.dataset.ibtab;force=true;render()});
+document.addEventListener("change",e=>{if(e.target.id==="ib-kind"||e.target.id==="ib-who"){if(e.target.id==="ib-kind")ibKind=e.target.value;else ibWho=e.target.value;force=true;render()}});
+function stepGallery(d){const g=document.querySelector("#view .gal");if(!g)return false;const ts=[...g.querySelectorAll("button[data-gi]")];if(ts.length<2)return false;
+ const id=ts[0].dataset.gi,k=((gi[id]||0)+d+ts.length)%ts.length;gi[id]=k;force=true;render();return true}
+document.addEventListener("keydown",e=>{if(!Z.hidden||e.target.matches("input,textarea,select")||e.metaKey||e.ctrlKey||e.altKey)return;const [v,key]=route();if(v!=="inbox")return;
+ if(e.key==="Escape"&&key){e.preventDefault();return go("/inbox")}
+ if(e.key==="ArrowRight"||e.key==="ArrowLeft"){if(stepGallery(e.key==="ArrowRight"?1:-1))e.preventDefault()}});
+// 答えたら次の未回答のメッセージへ（最後なら一覧へ）。実装後の画面のまとまりは、まだ見ていない問いが残る間は留まる
+function advance(answeredKey){const [v,key]=route();if(v!=="inbox"||!S)return;
+ if(key==="choice:exit_capture"&&(S.choices||[]).filter(c=>c.kind==="exit_capture").length>1)return;
+ const xs=S.inbox.items.filter(i=>!i.answered),k=xs.findIndex(i=>i.key===key),rest=xs.filter(i=>i.key!==key&&i.key!==answeredKey);
+ const next=rest.find((i,j)=>xs.indexOf(i)>k)||rest[0];go(next?ibHref(next.key):"/inbox")}
+
+// ---- ライン
+function srcLink(i){if(!i.ref)return"";const s=SRC[i.source]||i.source||"";const tag=s?`<span class="src">${esc(s)}</span>`:"";
+ return i.url&&/^https:\/\//.test(i.url)?`<a href="${esc(i.url)}" target="_blank" rel="noopener" title="元のチケットを開く">${tag}${esc(i.ref)}</a>`:tag+esc(i.ref)}
+const repoOf=i=>(i.ref||"").split("#")[0];
+let lnRepo="",lnSrc="";
+function lineFilters(items){const repos=[...new Set(items.map(repoOf).filter(Boolean))].sort(),srcs=[...new Set(items.map(i=>i.source).filter(Boolean))].sort();
+ const sel=(id,label,xs,v,name)=>`<label class="m">${label} <select id="${id}"><option value="">すべて</option>${xs.map(x=>`<option value="${esc(x)}" ${x===v?"selected":""}>${esc(name?name(x):x)}</option>`).join("")}</select></label>`;
+ return sel("ln-repo","リポジトリ",repos,lnRepo)+sel("ln-src","チケットの出どころ",srcs,lnSrc,x=>SRC[x]||x)}
+document.addEventListener("change",e=>{if(e.target.id==="ln-repo"||e.target.id==="ln-src"){if(e.target.id==="ln-repo")lnRepo=e.target.value;else lnSrc=e.target.value;force=true;render()}});
+
+// ---- 出荷（製品ごとに出荷先のカード。今は Web だけ。モバイルのストアや CDN は同じ形のカードで足す）
+function targetsOf(r){return r.targets||[{kind:"web",label:"Web",release:r}]}
+function shipPage(rs){if(!rs.length)return `<div class="m">出荷した製品はまだない</div>`;
+ return rs.map(r=>`<section class="card"><h2>${esc(r.repo)}</h2><div class="targets">${targetsOf(r).map(t=>`<div class="target"><div class="th2">${esc(t.label)}</div>${t.kind==="web"?shipView([t.release]):`<div class="m">${esc(t.note||"")}</div>`}</div>`).join("")}</div></section>`).join("")
+  +`<div class="m">出荷の指示は Claude からもできる（窓口の MCP）。モバイルのストアや CDN などの出荷先は、ここに同じ形のカードで足していく</div>`}
+
+// ---- 設定
+function scaleForm(sc){if(!sc)return `<div class="m">流量の宣言が読めない</div>`;const d=sc.desired,r=sc.running,n=v=>v==null?"?":v;
+ const L={workers:"ワーカー",tickets:"同時に進めるチケット",governance:"委員会",desk:"窓口"};
+ return `<div class="m">${sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）"}。factoryctl line scale と同じ</div>
+  <table class="tb"><tr><th></th><th>いま</th><th>宣言</th></tr>${Object.keys(L).map(k=>`<tr><td>${L[k]}</td><td>${n(r[k])}</td><td><input type="number" min="0" max="50" id="sc-${k}" value="${esc(d[k])}"></td></tr>`).join("")}</table>
+  <div class="acts"><input id="sc-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-scale>宣言を変える</button></div>`}
+document.addEventListener("click",e=>{if(!e.target.closest("button[data-scale]"))return;const body={reason:(document.getElementById("sc-reason")||{}).value||"操業コンソール"};
+ for(const k of ["workers","tickets","governance","desk"]){const v=(document.getElementById("sc-"+k)||{}).value;if(v!==""&&v!=null)body[k]=Number(v)}post("/api/line/scale",body)});
+function settingsBody(sec,s){const f=s.factory;
+ if(sec==="runners")return `<h2>ランナー</h2>${pairsView(s.runner_pairs||[])}${runnersView(s.runners||[])||'<div class="m">登録済みのランナーはない（工場の外の機械に入れた常駐プロセス。Mac なら scripts/macrunner.sh）</div>'}`;
+ if(sec==="line")return `<h2>ラインと流量</h2><div class="acts">${lineView(f.line)}</div>${scaleForm(f.scale)}`;
+ if(sec==="mac")return `<h2>Mac</h2>${f.host?`<div class="acts"><label class="stat sw" title="オンの間は工場の稼働中に Mac を眠らせない">起こしたまま <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label></div><div class="m">Mac 上の見張り（keep-awake.sh）が ${dur(f.host.agent_age_sec)}前に連絡</div>`:'<div class="m">Mac 上の見張り（keep-awake.sh）から連絡がない。Mac 以外で動いているか、見張りが止まっている</div>'}`;
+ return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
+
+// ---- 描画
+const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"]];
+function skeleton(v,arg){
+ if(v==="home")return `<div id="h-stops"></div><section class="card" id="h-todo"></section><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
+ if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
+ if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
+ if(v==="ship")return `<div id="ship"></div>`;
+ return `<div class="set"><nav class="sn">${SETTINGS.map(([k,n])=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(n)}</a>`).join("")}${LATER.map(n=>`<span class="later" title="今後">${esc(n)}（今後）</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
+let force=false;
+function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
+ const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
+ document.querySelectorAll("#nav a[data-v]").forEach(a=>a.classList.toggle("on",a.dataset.v===v));
+ document.getElementById("gear").classList.toggle("on",v==="settings");
+ const vw=document.getElementById("view");if(vw._sig!==sig){vw._sig=sig;vw.innerHTML=skeleton(v,arg);window.scrollTo(0,0)}
+ if(v==="settings")document.querySelectorAll(".sn a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="/settings/"+arg));
+ const pairs=(s.runner_pairs||[]).length;
+ put("banner",pairs&&!(v==="settings"&&arg==="runners")?`<a class="banner" href="/settings/runners" data-nav>新しいランナーの接続の依頼が ${pairs} 件。設定のランナーで許可か拒否を選ぶ →</a>`:"");
+ if(v==="home"){put("h-todo",todoView(ib));put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",stopsView(s.factory.open_stoppages))}
+ else if(v==="inbox"){document.querySelector(".ibx").classList.toggle("open",!!arg);put("ib-f",ibFilters(ib));put("ib-list",ibList(ib,arg));
+  if(!arg)put("ib-d","");else if(force||!busy("ib-d"))put("ib-d",ibDetail(ib,arg));
+  const sel=document.querySelector(".ir.sel");if(sel&&force)sel.scrollIntoView({block:"nearest"})}
+ else if(v==="line"){put("l-stops",stopsView(s.factory.open_stoppages));put("l-f",lineFilters(s.items));
+  const xs=s.items.filter(i=>(!lnRepo||repoOf(i)===lnRepo)&&(!lnSrc||i.source===lnSrc));
+  put("lanes",LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return `<section class="lane"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join(""))}
+ else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
+ else if(force||!busy("set-b"))put("set-b",settingsBody(arg,s));
+ force=false}
+async function load(){if(document.hidden&&!force)return;let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
+ S=s;levels=s.levels;const f=s.factory,hb=f.heartbeat_age_sec,ib=s.inbox||{count:0};
+ put("hdr",[
+  `<span class="stat ${hb==null||hb>180?"bad":""}">工場長 <b>${hb==null?"未起動":hb>180?dur(hb)+"前に停止":"動いている"}</b></span>`,
+  `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
+  scaleView(f.scale,f.line),
+  `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
+  `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="投入待ちの段（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">段の残り <b>${f.planned}</b></span>`,
+  lineView(f.line)].join(" "));
+ const n=document.getElementById("nav-n");n.textContent=ib.count;n.classList.toggle("has",ib.count>0);
+ document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";
+ render()}
+document.getElementById("nav").innerHTML=NAV.map(([h,t,v])=>`<a href="${h}" data-nav data-v="${v}">${t}${v==="inbox"?' <span class="n" id="nav-n">0</span>':""}</a>`).join("")+`<a href="/usage">使用量</a>`;
+load();setInterval(load,10000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
+</script></body></html>"""
