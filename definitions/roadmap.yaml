@@ -141,7 +141,7 @@ phases:
     ja: Operate
     weight_weeks: 6
     items:
-      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }   # ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える
+      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }   # ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える。最小形（計画・工場長の立場、問い返し 1 回、根拠の id の確かめ）は dispatcher/desk_answer.py。済の条件は窓口の MCP から実際の問いを 1 本流して desk.answered が残ること
       - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
       - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
       - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）

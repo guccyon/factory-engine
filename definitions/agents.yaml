@@ -56,6 +56,8 @@ steps:
     tier: tier-small
   desk.consult:               # 窓口の相談役（core-gates/desk_consult.py。会話と規範の写しを読むだけ。問いか、Request とタスクのまとまりの下書き。ADR 0030 の 3）
     tier: tier-judge
+  desk.answer:                # 窓口の回答役（core-gates/desk_answer.py。会話と工場の記録・規範の写しを読むだけ。立場を選んで根拠つきで答える。ADR 0030 の 4）
+    tier: tier-small          # 読むだけで工場を変えない答えなので Sonnet から（確信度の高い工程から安いモデルを試す。日報の工程ごとの ROI で見直す）
   committee_review:           # 知見の委員会の 4 役（core-gates/committee_review.py。材料の写しを読むだけ。ADR 0024）
     tier: tier-judge
   committee_weekly:           # 知見の委員会の週 1 の定例の議長（core-gates/committee_weekly.py。材料の写しを読むだけ。ADR 0024）
