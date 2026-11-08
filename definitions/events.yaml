@@ -242,6 +242,26 @@ events:
     source: control_plane
     required: [conversation_id, milestone, key, target_sec]
     note: "ADR 0039 の決定 3・7。応答時間の目安を過ぎた（Learn の desk_late の材料）。milestone は route | deliver、path は対応の種類。1 つのマイルストーンに 1 回（dedupe_key は desk.late:<会話>:<鍵>）"
+  desk.reminded:
+    source: control_plane
+    required: [conversation_id, round, nth, after_days, step]
+    note: "ADR 0039 の決定 4・5。依頼者の答え（確認・受取確認・断り）がないので知らせ直した（definitions/desk.yaml の loop.remind_after_days。仮置き 3 日・7 日）。会話は閉じない"
+  desk.escalated:
+    source: control_plane
+    required: [conversation_id, round, after_days, reason]
+    note: "ADR 0039 の決定 4。知らせ直しても答えがないので、運用主の受信トレイに「依頼者の返事待ち」（task:desk_waiting:<会話>:<回>）を出した。会話は閉じない。依頼者が答えたら件は消える"
+  desk.notice_requested:
+    source: control_plane
+    required: [conversation_id, what, round, text]
+    note: "ADR 0039 の決定 5a。提出・断り・知らせ直しの知らせを積んだ（what は delivered | declined | reminder1 | reminder2）。to は依頼者が選んだ宛先（会話の wanted.notify。なければ done.task の既定、desk なら窓口の会話だけ）。送るのは dispatcher の周回"
+  desk.notified:
+    source: control_plane
+    required: [conversation_id, notice_id, sent, failed, try, done]
+    note: "ADR 0039 の決定 5a。知らせを送った結果（宛先ごと）。送れなかった宛先は間を空けてやり直す。desk_only は窓口の会話だけで知らせた"
+  desk.notice_gave_up:
+    source: control_plane
+    required: [conversation_id, notice_id, failed]
+    note: "ADR 0039 の決定 5a。決まった回数やり直しても送れなかったので、運用主の受信トレイ（task:desk_notice_failed）に回した"
   desk.cap_hit:
     source: control_plane
     required: [conversation_id, round, cap]

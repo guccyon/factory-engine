@@ -295,3 +295,127 @@ def test_cap_hit_delivers_partial_with_choices(cur):
     body = cur.fetchone()["payload"]["body"]
     assert "上限（費用 $2）" in body and "残りの 1 か月" in body and "analysis" in body
     assert inbox.find(cur, f"task:desk_receipt:{cid}:1")                                # 受取確認を取る（選ぶまで完了にしない）
+
+
+@needs_db
+def test_requester_sees_own_desk_items_in_inbox(cur):
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    other = desk.create_token(cur, "cs-2", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "レポートを送り直して"})[1]["conversation"]["id"]
+    consult_route(cur, cid, {"path": "operate", "op": "report.send", "params": {}, "why": ""})
+    st, out = call("GET", "/api/desk/inbox", tok)
+    assert st == 200 and [i["key"] for i in out["items"]] == [f"task:desk_confirm:{cid}:1"] and out["items"][0]["product"] == REPO
+    assert call("GET", "/api/desk/inbox", other)[1]["items"] == []                     # ほかの依頼者の件は見せない
+    assert call("GET", f"/api/desk/inbox/task:desk_confirm:{cid}:1", other)[0] == 404
+    st, out = call("POST", f"/api/desk/inbox/task:desk_confirm:{cid}:1/answer", tok, {"option": "run"})
+    assert st == 200 and state(cur, cid)["state"] == "running"
+
+
+@needs_db
+def test_remind_then_operator_and_never_close(cur):
+    from datetime import timedelta
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "レポートを送り直して"})[1]["conversation"]["id"]
+    consult_route(cur, cid, {"path": "operate", "op": "report.send", "params": {}, "why": ""})
+    call("POST", f"/api/desk/conversations/{cid}/confirm", tok, {"answer": "run"})
+    desk_line.run_operations(cur, config=notify.parse(DOC), poster=lambda *a: True)
+    cur.execute("select occurred_at from events where correlation_id=%s and name='desk.delivered'", (desk.corr(cid),))
+    t = cur.fetchone()["occurred_at"]
+    assert desk_line.remind(cur, t + timedelta(days=2)) == 0
+    assert desk_line.remind(cur, t + timedelta(days=3, minutes=1)) == 1                # 3 日で知らせ直す
+    assert desk_line.remind(cur, t + timedelta(days=4)) == 0
+    assert desk_line.remind(cur, t + timedelta(days=11)) == 2                          # 7 日の知らせ直しと、運用主へ
+    it = inbox.find(cur, f"task:desk_waiting:{cid}:1")
+    assert it["who"] == "owner" and it["answer"]["type"] == "ack"
+    op = desk.create_token(cur, "ops", "operator", [REPO], "test")
+    assert [i["key"] for i in call("GET", "/api/desk/inbox", op)[1]["items"]] == [f"task:desk_receipt:{cid}:1", f"task:desk_waiting:{cid}:1"]
+    assert [i["key"] for i in call("GET", "/api/desk/inbox", tok)[1]["items"]] == [f"task:desk_receipt:{cid}:1"]   # 依頼者には運用主の件を見せない
+    assert state(cur, cid)["state"] == "delivered"                                      # 勝手に完了にしない
+    st, out = call("GET", f"/api/desk/conversations/{cid}", tok)
+    assert out["status"]["step"] == "提出" and [o["id"] for o in out["status"]["answer"]["options"]] == ["accept", "more", "return"]
+    call("POST", f"/api/desk/conversations/{cid}/messages", tok, {"answer": "accept"})
+    assert inbox.find(cur, f"task:desk_waiting:{cid}:1") is None                        # 依頼者が答えたら運用主の件も消える
+
+
+@needs_db
+def test_withdraw_resolves_inbox_items(cur):
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "レポートを送り直して"})[1]["conversation"]["id"]
+    consult_route(cur, cid, {"path": "operate", "op": "report.send", "params": {}, "why": ""})
+    assert inbox.find(cur, f"task:desk_confirm:{cid}:1")
+    call("POST", f"/api/desk/conversations/{cid}/close", tok, {"reason": "要らなくなった"})
+    assert inbox.find(cur, f"task:desk_confirm:{cid}:1") is None
+    st, out = call("GET", f"/api/desk/conversations/{cid}", tok)
+    assert out["status"]["step"] == "終わり" and out["status"]["closed"]["reason"] == "withdrawn"
+
+
+@needs_db
+def test_status_shows_decline_and_route(cur):
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "本番の売上"})[1]["conversation"]["id"]
+    st, out = call("GET", f"/api/desk/conversations/{cid}", tok)
+    assert out["status"]["step"] == "振り分け" and out["status"]["by"]                    # いつ頃か
+    consult_decline(cur, cid, {"reason": "needs_production_data", "alternatives": [{"kind": "other_path", "text": "staging で出す"}]})
+    s = call("GET", f"/api/desk/conversations/{cid}", tok)[1]["status"]
+    assert s["declined"]["reason_ja"].startswith("本番のデータ") and s["declined"]["alternatives"][0]["text"] == "staging で出す"
+    assert [o["label"] for o in s["answer"]["options"]] == ["納得した", "別案で進める", "断りを差し戻す"] and s["route"]["declined"]
+
+
+DOC_SLACK = {**DOC, "destinations": {**DOC["destinations"], "owner_ops": {"connection": "o", "mentions": {"cs-1": "<@U1>"}}}}
+
+
+@needs_db
+def test_notice_goes_to_default_destination_with_mention(cur):
+    cur.execute("insert into events(name, payload) values ('notify.config_changed', %s)", (Jsonb({"repo": REPO, "doc": DOC_SLACK}),))
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "本番の売上"})[1]["conversation"]["id"]
+    consult_decline(cur, cid, {"reason": "needs_production_data", "alternatives": [{"kind": "to_human", "text": "運用主に聞く"}]})
+    got = []
+    cfg = notify.parse(DOC_SLACK)
+    assert desk_line.send_notices(cur, config=cfg, poster=lambda d, t: got.append((d.name, t)) or True) == 1
+    assert got[0][0] == "owner_ops" and got[0][1].startswith("<@U1> 窓口の依頼") and "受けられません" in got[0][1]   # 事業主の宛先（既定）
+    assert desk_line.send_notices(cur, config=cfg, poster=lambda d, t: got.append(d.name) or True) == 0           # 1 回だけ
+    assert "desk.notified" in names(cur, cid)
+
+
+@needs_db
+def test_notify_field_chooses_destination_or_desk_only(cur):
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    assert call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "x", "notify": ["https://hooks.slack.com/x"]})[0] == 400
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "本番の売上", "notify": ["provider_ops"]})[1]["conversation"]["id"]
+    assert state(cur, cid)["wanted"]["notify"] == ["provider_ops"]
+    consult_decline(cur, cid, {"reason": "needs_production_data", "alternatives": []})
+    got = []
+    desk_line.send_notices(cur, config=notify.parse(DOC), poster=lambda d, t: got.append(d.name) or True)
+    assert got == ["provider_ops"]
+    cid2 = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "本番の売上", "notify": "desk"})[1]["conversation"]["id"]
+    consult_decline(cur, cid2, {"reason": "needs_production_data", "alternatives": []})
+    got.clear()
+    desk_line.send_notices(cur, config=notify.parse(DOC), poster=lambda d, t: got.append(d.name) or True)
+    assert got == []                                                                    # 窓口の会話だけ
+    cur.execute("select payload from events where correlation_id=%s and name='desk.notified'", (desk.corr(cid2),))
+    assert cur.fetchone()["payload"]["desk_only"] is True
+
+
+@needs_db
+def test_notice_retries_then_operator(cur):
+    from datetime import datetime, timedelta, timezone
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "本番の売上"})[1]["conversation"]["id"]
+    consult_decline(cur, cid, {"reason": "needs_production_data", "alternatives": []})
+    cfg, now = notify.parse(DOC), datetime.now(timezone.utc)
+    fail = lambda d, t: False  # noqa: E731
+    desk_line.send_notices(cur, config=cfg, poster=fail, now=now)
+    assert desk_line.send_notices(cur, config=cfg, poster=fail, now=now + timedelta(seconds=10)) == 0   # 間を空ける
+    desk_line.send_notices(cur, config=cfg, poster=fail, now=now + timedelta(seconds=400))
+    desk_line.send_notices(cur, config=cfg, poster=fail, now=now + timedelta(seconds=800))
+    assert "desk.notice_gave_up" in names(cur, cid)
+    cur.execute("select payload->>'key' as k from events where name='inbox.requested' and payload->>'kind'='desk_notice_failed'")
+    assert cur.fetchone()["k"].startswith(f"desk_notice_failed:{cid}:")
+    assert desk_line.send_notices(cur, config=cfg, poster=lambda d, t: True, now=now + timedelta(days=1)) == 0
+
+
+def test_done_task_items_not_doubled_by_inbox_notice():
+    import notify_inbox
+    assert set(notify_inbox.DONE_TASK_KINDS) == {"desk_receipt", "desk_decline"}
+    assert notify.KINDS["done.task"]["status"] == "ready" if URL else True

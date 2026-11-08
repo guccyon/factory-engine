@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SERVER = {"name": "factory-desk", "version": "0.3.1"}
+SERVER = {"name": "factory-desk", "version": "0.4.0"}
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 HTTP_TIMEOUT = 75   # 会話を読むときの待ち（最大 60 秒）より長く
 
@@ -50,7 +50,9 @@ TOOLS = [
          "product": {"type": "string", "description": "対象の製品（owner/repo）"},
          "body": {"type": "string", "description": "依頼者の言葉（言い換えずにそのまま）"},
          "level": {**LEVEL, "description": "希望の優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）"},
-         "due": {"type": "string", "description": "希望の期限（例 2026-11-30、今月中）"}},
+         "due": {"type": "string", "description": "希望の期限（例 2026-11-30、今月中）"},
+         "notify": {"type": "array", "items": {"type": "string"},
+                    "description": "提出の知らせの受け取り方（依頼者が選んだときだけ）。工場の通知の設定にある宛先の名前か desk（窓口の会話だけ）。省けば既定（Slack）"}},
          "required": ["kind", "product", "body"]}},
     {"name": "desk_reply",
      "description": "相談に返事・言い足しを書く（相談役の問いへの答え、下書きの直したいところ）。書くと相談役が次の周回で動く。"
@@ -62,6 +64,7 @@ TOOLS = [
          "answer": {"type": "string", "enum": ["accept", "more", "return"]}}, "required": ["conversation_id"]}},
     {"name": "desk_read",
      "description": "会話を読む。after（最後に見た発言の id）より後の発言と、最新の下書き（draft）・作ったチケットを返す。"
+                    "status に今のステップ・次に起きること・いつ頃か（by）・振り分けの結果・途中の様子・提出・断りの理由と代わりの案・答えの選択肢がまとまっている。依頼者にはまず status を伝える。"
                     "wait（秒、60 まで）を渡すと新しい発言が来るまで待つ。次に読むときは返ってきた last_id を after に渡す",
      "inputSchema": {"type": "object", "properties": {
          "conversation_id": {"type": "integer"}, "after": {"type": "integer", "default": 0},
@@ -157,7 +160,7 @@ def _inbox_path(key) -> str:
 def call_tool(name: str, a: dict, call=http) -> dict:
     """道具 1 つを API 1 回に写す"""
     if name == "desk_open":
-        body = {k: a[k] for k in ("kind", "product", "body", "level", "due") if a.get(k) is not None}
+        body = {k: a[k] for k in ("kind", "product", "body", "level", "due", "notify") if a.get(k) is not None}
         return call("POST", "/api/desk/conversations", body)
     if name == "desk_reply":
         if a.get("answer"):   # 受取確認（一言は body。accept なら省ける）

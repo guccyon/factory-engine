@@ -295,6 +295,17 @@ docker compose exec dispatcher factoryctl hold 12
   - dispatcher の周回（`desk_line.watch`）が、目安の 8 割を過ぎても返事のないマイルストーンに「今どこまで・目安の時刻」を会話に書き（`desk.progress`）、目安を過ぎたら `desk.late` を残す（どちらも 1 つのマイルストーンに 1 回）。閉じたときの記録に `late`・`met_ack`・`met_route`・`met_deliver` を足した
   - 断り: 相談役が `route.path: decline`（理由は決まった語、代わりの案を 1〜3 つ）を返すと、`desk.declined` を残して断りを提出し、受信トレイに `task:desk_decline:<会話>:<回>` を出す。答えは受取確認と同じ語で、`accept` は納得した（`declined` で完了）、`more` は別案で進める（代わりの案を別の依頼として新しい会話で開き、元に `superseded_by`・新しい方に `derived_from`。元は `superseded` で完了）、`return` は断りを差し戻す（理由が要る。同じ会話で振り分けから）
   - 上限: 実行役が `cap_hit`（と残り `remaining`）を返したら、決まったところまでを提出し、次の選択肢（続ける・`analysis` に切り替える・やめる）を添えて受取確認を取る（`desk.cap_hit`）。`quick`・`analysis` の実行役を入れたときに使う
+- 受取確認の知らせ直しと、依頼者に見えるもの（ADR 0039 の順番 4）:
+  - 依頼者の答え（確認・受取確認・断り）がないと、確認を頼んだ・提出した時から 3 日・7 日で会話に知らせ直し（`desk.reminded`）、10 日で運用主の受信トレイに「依頼者の返事待ち」（`task:desk_waiting:<会話>:<回>`、見たら閉じる）を出す（`desk.escalated`）。会話は閉じない。依頼者が答えたら運用主の件も消える。値は `loop.remind_after_days`・`loop.to_operator_after_days`
+  - 会話を読むと `status`（今のステップ・次に起きること・いつ頃か・振り分けの結果・途中の様子・提出・断りの理由と代わりの案・答えの選択肢・終わり方）が付く（`desk.status_view`）。窓口・MCP・コンソールのどこから読んでも同じ
+  - 依頼者の受信トレイ（`inbox_list`）に、自分の会話の件（確認・受取確認・断り）が出る。ほかの依頼者の件と、運用主に回した件は見せない
+  - 会話を終えたら（取り下げを含む）、その会話の受信トレイの件を消す
+- 提出の知らせ方（ADR 0039 の順番 5。決定 5a）:
+  - 依頼を開くときに `notify`（通知の設定にある宛先の名前の並びか `desk`＝窓口の会話だけ）を選べる。会話の `wanted.notify` に持つ。依頼の本文の宛先には送らない
+  - 提出・断り・知らせ直しを `desk.notice_requested` に積み、dispatcher の周回（`desk_line.send_notices`）が送る。宛先は `notify`、なければ `done.task` の既定（事業主の宛先。Gen1 は Slack）。中身は会話の番号・題・要約・答え方だけ
+  - メンションは宛先の `mentions` に手で書いた分だけ（依頼者の名前か `requester` の鍵）。利用者の認証が入るまで自動では付けない
+  - 送れなければ 5 分ずつ空けて 3 回までやり直し、それでもだめなら運用主の受信トレイに `task:desk_notice_failed` を出す
+  - 受取確認・断りの件（`desk_receipt`・`desk_decline`）は受信トレイの通知（`request.inbox`）では重ねて送らない
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
