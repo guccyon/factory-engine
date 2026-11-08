@@ -26,6 +26,7 @@ import desk
 import inbox
 import operations
 import ops
+import requester_prefs
 
 KIND = "desk_consult"
 WAITING_LABEL, TRIGGER_LABEL = "factory:desk-waiting", "factory:plan"
@@ -33,6 +34,7 @@ MAX_ROUNDS = 3
 MAX_USD = float(os.environ.get("DESK_CONSULT_MAX_USD", "2"))   # 相談 1 件の費用の上限（ADR 0030 の 6。仮置き）
 KIND_JA = {"requirements": "要件", "design": "画面", "contract": "契約", "implement": "実装", "answer": "成果物"}
 EFFORT_JA = {"light": "軽い", "standard": "ふつう", "deep": "重い"}
+CONSULT_WORK = ["desk.converse", "plan.route"]   # 相談役の業務（definitions/work.yaml の from_agent_steps の desk.consult）
 MARKER = "<!-- factory:desk conversation={cid} draft={draft} task={key} -->"
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)   # supervisor.DEP_RE と同じ
 
@@ -85,7 +87,10 @@ def consult_input(cur, c: dict) -> dict:
             "messages": [{k: m.get(k) for k in ("author", "role", "kind", "body", "at", "options")} for m in msgs if m.get("kind") != "ack"],
             "operations": operations.catalog(),   # 振り分け（ADR 0039 の決定 2）。決まった操作で済む依頼は operate に
             "questions_asked": questions_asked(msgs), "force_draft": False, "tickets": tickets,
-            "previous_draft": ({k: d["payload"].get(k) for k in ("request", "tasks", "unresolved", "overlaps")} if d else None)}
+            "previous_draft": ({k: d["payload"].get(k) for k in ("request", "tasks", "unresolved", "overlaps")} if d else None),
+            # 依頼者ごとの好み（ADR 0040 の決定 6）。窓口と振り分けの業務に効く、依頼者が自分で言ったものだけ
+            "requester": c.get("opened_by"),
+            "requester_preferences": requester_prefs.for_job(cur, c["product"], c.get("opened_by"), CONSULT_WORK)}
 
 
 def enqueue(cur, model_tier: str, repos: list[str]) -> list[int]:

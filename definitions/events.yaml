@@ -450,6 +450,10 @@ events:
     source: control_plane
     required: [repo, issue, role, ids]
     note: "ADR 0024 の 6。implement のワーカー（ADR 0040 の決定 7 の 2 から body_fix、3 から plan・desk.consult も。role に役を入れる）が、委員会が採用した active で確認済み以上の知見（core-gates/knowledge_context.py が選ぶ）を文脈に渡した。ids は K-NNNN。pr_url と continue_reason を添える（プランナー・窓口では pr_url がない）。ADR 0040 で entry（ticket / continue / 実装以外は役の名前）、work（この回の業務のノード）、values（突き合わせた軸の値）、fit（知見ごとの適応度の内訳）も添える。知見に従った作業の差し戻しや、60 日使われない知見を数えるのは測る側。dedupe はジョブごと"
+  requester_preference.used:
+    source: control_plane
+    required: [role, ids]
+    note: "ADR 0040 の決定 6。依頼者が分かる回（今は窓口の相談役）に、依頼者ごとの好み（制御プレーンの requester_preferences、active で confirmed のもの）を渡した。ids は P-NNNN だけで、中身は書かない（人に紐づく情報）。dedupe はジョブごと"
   committee.revise:
     source: control_plane
     required: [pr_url, head_sha, votes]

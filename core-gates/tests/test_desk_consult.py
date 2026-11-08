@@ -149,3 +149,11 @@ def test_route_section_only_with_catalog():
     assert s["properties"]["route"]["properties"]["op"]["enum"] == ["", "report.send"] and "route" in s["required"]
     p = dc.prompt(DEFS, {"operations": OPS})
     assert "最初に振り分ける" in p and "report.send" in p and "今朝のレポートを送り直して" in p
+
+
+def test_requester_md_is_separate_and_prefers_request():
+    """ADR 0040 の決定 6: 依頼者の好みは知見と別のファイル。依頼の文面を優先すると書く"""
+    import desk_consult as dc2
+    assert dc2.requester_md({}) == ""
+    md = dc2.requester_md({"requester": "alice", "requester_preferences": [{"id": "P-0003", "statement": "表より箇条書き", "work": [], "verified_at": "2026-11-08"}]})
+    assert md.startswith("# この依頼者（alice）の好み") and "P-0003" in md and "依頼の文面を優先" in md

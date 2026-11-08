@@ -293,6 +293,7 @@ docker compose exec dispatcher factoryctl hold 12
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/006_desk_loop.sql   # 単発の依頼のループの状態と列（冪等。足すだけ）
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/007_requester_preferences.sql   # 依頼者ごとの好み（ADR 0040 の決定 6。冪等。足すだけ）
 docker compose up -d --build desk
 docker compose exec dispatcher factoryctl desk token create builder --role operator     # トークンはこのときだけ出る
 T=fdk_...   # 出たトークン
