@@ -304,7 +304,7 @@ docker compose exec dispatcher factoryctl hold 12
   - 依頼を開くときに `notify`（通知の設定にある宛先の名前の並びか `desk`＝窓口の会話だけ）を選べる。会話の `wanted.notify` に持つ。依頼の本文の宛先には送らない
   - 提出・断り・知らせ直しを `desk.notice_requested` に積み、dispatcher の周回（`desk_line.send_notices`）が送る。宛先は `notify`、なければ `done.task` の既定（事業主の宛先。Gen1 は Slack）。中身は会話の番号・題・要約・答え方だけ
   - メンションは宛先の `mentions` に手で書いた分だけ（依頼者の名前か `requester` の鍵）。利用者の認証が入るまで自動では付けない
-  - 送れなければ 5 分ずつ空けて 3 回までやり直し、それでもだめなら運用主の受信トレイに `task:desk_notice_failed` を出す
+  - 宛先の送らない時間（`quiet`）は明けた周回で送る。送れなければ 5 分ずつ空けて 3 回までやり直し、それでもだめなら運用主の受信トレイに `task:desk_notice_failed` を出す
   - 受取確認・断りの件（`desk_receipt`・`desk_decline`）は受信トレイの通知（`request.inbox`）では重ねて送らない
 
 ```bash

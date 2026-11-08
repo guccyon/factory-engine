@@ -779,10 +779,14 @@ def send_notices(cur, config=None, poster=None, now=None) -> int:
         cur.execute("select occurred_at, payload from events where name='desk.notified' and correlation_id=%s and (payload->>'notice_id')::bigint=%s "
                     "order by id", (n["correlation_id"], nid))
         tries = cur.fetchall()
-        if tries and now < tries[-1]["occurred_at"] + timedelta(seconds=NOTICE_RETRY_SEC):
+        if tries and tries[-1]["payload"].get("failed") and now < tries[-1]["occurred_at"] + timedelta(seconds=NOTICE_RETRY_SEC):
             continue
         done_before = {x for t in tries for x in t["payload"].get("sent") or []}
         dests = [d for d in notice_targets(cfg, p.get("to")) if d.name not in done_before]
+        later = [d for d in dests if notify.quiet(now, d.quiet)]   # 送らない時間の宛先は、明けた周回で送る（やり直しには数えない）
+        dests = [d for d in dests if d not in later]
+        if later and not dests:
+            continue
         sent, failed = [], []
         for d in dests:
             mention = d.mention(p.get("requester") or "") or d.mention("requester")
@@ -792,12 +796,12 @@ def send_notices(cur, config=None, poster=None, now=None) -> int:
                 notify._log("desk notice failed", d.name, repr(e)[:200])
                 ok = False
             (sent if ok else failed).append(d.name)
-        done = not failed
+        done = not failed and not later
         _event(cur, "desk.notified", n["correlation_id"], {"conversation_id": p["conversation_id"], "notice_id": nid, "what": p.get("what"),
                                                           "sent": sent, "failed": failed, "try": len(tries) + 1, "done": done,
                                                           **({"desk_only": True} if not dests and not done_before else {})})
         sent_n += len(sent)
-        if not done and len(tries) + 1 >= NOTICE_RETRIES:
+        if failed and sum(1 for t in tries if t["payload"].get("failed")) + 1 >= NOTICE_RETRIES:
             _event(cur, "desk.notice_gave_up", n["correlation_id"], {"conversation_id": p["conversation_id"], "notice_id": nid, "failed": failed})
             inbox.request(cur, f"{NOTICE_FAILED_KIND}:{p['conversation_id']}:{nid}", NOTICE_FAILED_KIND, "owner",
                           f"窓口の依頼 {p['conversation_id']} の知らせを {', '.join(failed)} に送れなかった（{NOTICE_RETRIES} 回）"[:300],

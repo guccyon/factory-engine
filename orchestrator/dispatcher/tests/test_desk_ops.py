@@ -419,3 +419,18 @@ def test_done_task_items_not_doubled_by_inbox_notice():
     import notify_inbox
     assert set(notify_inbox.DONE_TASK_KINDS) == {"desk_receipt", "desk_decline"}
     assert notify.KINDS["done.task"]["status"] == "ready" if URL else True
+
+
+@needs_db
+def test_notice_waits_for_quiet_hours(cur):
+    from datetime import datetime, timezone
+    doc = {**DOC, "destinations": {"owner_ops": {"connection": "o", "quiet": "22-7"}}}
+    tok = desk.create_token(cur, "cs-1", "requester", [REPO], "test")
+    cid = call("POST", "/api/desk/conversations", tok, {"kind": "request", "product": REPO, "body": "本番の売上"})[1]["conversation"]["id"]
+    consult_decline(cur, cid, {"reason": "needs_production_data", "alternatives": []})
+    cfg, got = notify.parse(doc), []
+    night = datetime(2026, 11, 8, 14, 0, tzinfo=timezone.utc)   # JST 23 時
+    assert desk_line.send_notices(cur, config=cfg, poster=lambda d, t: got.append(d.name) or True, now=night) == 0
+    morning = datetime(2026, 11, 8, 23, 0, tzinfo=timezone.utc)  # JST 8 時
+    assert desk_line.send_notices(cur, config=cfg, poster=lambda d, t: got.append(d.name) or True, now=morning) == 1
+    assert got == ["owner_ops"]
