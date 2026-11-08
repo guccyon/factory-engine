@@ -226,6 +226,13 @@ def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: di
                      dedupe_key=f"knowledge.used:{job_id}")
 
 
+def record_preferences_used(cur, corr, job_id, inp: dict | None, role: str):
+    """依頼者の好み（ADR 0040 の決定 6）を渡した記録。id（P-NNNN）だけを残し、中身は events に書かない"""
+    ids = [p.get("id") for p in ((inp or {}).get("requester_preferences") or []) if isinstance(p, dict) and isinstance(p.get("id"), str)][:20]
+    if ids:
+        record_event(cur, "requester_preference.used", corr, job_id, {"role": role, "ids": ids}, dedupe_key=f"requester_preference.used:{job_id}")
+
+
 def record_event(cur, name: str, correlation_id: str | None, job_id: int | None, payload: dict, dedupe_key: str | None = None):
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values (%s,%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (name, correlation_id, job_id, Jsonb(payload), dedupe_key))
@@ -640,6 +647,7 @@ def run_job(job: dict, reattaching: bool = False):
                 # 窓口の相談役（ADR 0030 の 3）: 問いか下書きを会話に書く。失敗も会話で依頼者に知らせる
                 if state == "succeeded" and result:
                     record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="desk.consult")
+                    record_preferences_used(cur, corr, job_id, judge_inp, role="desk.consult")
                 try:
                     desk_line.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
