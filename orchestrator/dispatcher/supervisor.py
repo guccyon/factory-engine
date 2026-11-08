@@ -83,7 +83,7 @@ RELEASE_TRAIN = [r.strip() for r in ENV.get("RELEASE_TRAIN", "").split(",") if r
 DAILY_REPORT_HOUR = int(ENV.get("DAILY_REPORT_HOUR", "5"))   # JST。claude.ai のページは 6 時にこの結果から描く。Mac が寝ていた日は起きたときに出す
 # 使用量の枠ごとの予算（2026-10-29 オーナー: Max の使用量は毎朝 7:00 から 5 時間ごとにリセット。1 日 約 $100 を枠ごとに均し、
 # 平日の日中は別の業務でも使うので夕方以降に寄せる）。「開始時:予算ドル」を JST で並べる。空にすると予算で止めない。値は仮置きで運用で直す
-# BUDGET_WINDOWS_WEEKDAY / BUDGET_WINDOWS_WEEKEND（既定と読み方は usage.py）
+# BUDGET_WINDOWS_WEEKDAY / BUDGET_WINDOWS_WEEKEND（既定と読み方は usage.py）。予算の宣言（budget.set）があればそちらが優先
 CONFLICT_FIX = ENV.get("SUPERVISOR_CONFLICT_FIX", "1") == "1"   # 衝突した工場の PR に、既定ブランチを取り込んで衝突を解くジョブを head ごとに 1 回積む。0 で止める
 CI_FIX = ENV.get("SUPERVISOR_CI_FIX", "1") == "1"   # CI が落ちた工場の PR に、同じ担当の続きのジョブを積む（PR ごとに CONTINUE_MAX 回まで。ADR 0017）。0 で止める
 DESIGN_REVIEW = ENV.get("DESIGN_REVIEW", "1") == "1"   # 週 1 回の設計の診断のジョブを積む（ADR 0022）。0 で止める
@@ -573,14 +573,14 @@ def judge_step(cur, manifests: dict):
         log("judge enqueued", r["pr_url"], "job", jid, "mode", mode)
 
 
-def budget_window(now: datetime) -> tuple[datetime, float] | None:
+def budget_window(now: datetime, decl: dict | None = None) -> tuple[datetime, float] | None:
     """今（JST）の使用量の枠の開始時刻と予算。枠の読み方は使用量の集計と 1 か所にまとめた（usage.py）"""
-    return usage.budget_windows(now)
+    return usage.budget_windows(now, decl)
 
 
 def over_budget(cur) -> dict | None:
     """今の枠の予算を使い切っていれば、その様子を返す（新しい実装と衝突の解消を積まない。作業中のもの・検査・judge・指摘の直しは止めない）"""
-    w = budget_window(datetime.now(timezone(timedelta(hours=9))))
+    w = budget_window(datetime.now(timezone(timedelta(hours=9))), usage.declared(cur))   # 宣言（設定・factoryctl budget）を周回ごとに読む
     if w is None:
         return None
     start, usd = w

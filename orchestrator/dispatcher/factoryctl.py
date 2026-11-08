@@ -18,6 +18,8 @@
   factoryctl drain status                          # 一時停止か、更新してよいか、何を待っているか。更新してよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
+  factoryctl budget [status]                       # 使用量の予算（毎日同じ額か曜日ごと。7:00 JST 区切り）と今日の予算
+  factoryctl budget set [--daily USD] [--mon USD .. --sun USD] [--mode daily|weekday] [--reason ..]   # 予算を宣言する。上げ直さずに次の周回から効く
   factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
   factoryctl drain allow --priority p0 [--reason ..]    # 一時停止のまま、優先度がその段以上のチケットのジョブ（着手判定・実装を含む）も流す。再開で消える
   factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
@@ -855,6 +857,27 @@ def main(argv):
         print(f"宣言: {st['by']}{'（' + st['reason'] + '）' if st['reason'] else ''}{' ' + st['at'] if st['at'] else '（環境変数の値）'}")
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")
+    elif cmd == "budget":
+        if len(argv) > 2 and argv[2] == "set":
+            try:
+                daily = float(opt(argv, "--daily")) if opt(argv, "--daily") is not None else None
+                week = {k: float(opt(argv, f"--{k}")) for k in usage.WEEKDAYS if opt(argv, f"--{k}") is not None}
+            except ValueError:
+                print("額はドルの数で渡す")
+                return 2
+            mode = opt(argv, "--mode") or ("weekday" if week and daily is None else ("daily" if daily is not None and not week else None))
+            if daily is None and not week and mode is None:
+                print("--daily か --mon..--sun（と --mode）のどれかを渡す")
+                return 2
+            try:
+                usage.set_budget(cur, "factoryctl", opt(argv, "--reason", ""), mode=mode, daily_usd=daily, weekday_usd=week)
+            except ValueError as e:
+                print(e)
+                return 2
+        b = usage.budget_spec(cur)
+        print(f"予算: {usage.BUDGET_MODE_JA[b['mode']]} — {usage.budget_text(b)}")
+        print(f"今日の予算: {'なし（予算で止めない）' if b['today_usd'] is None else '$' + format(b['today_usd'], ',.2f')}")
+        print(f"宣言: {b['by']}{'（' + b['reason'] + '）' if b['reason'] else ''}{' ' + b['at'] if b['at'] else '（環境変数の値）'}")
     elif cmd == "drain":
         if len(argv) > 2 and argv[2] == "status":
             return drain_report(cur)
