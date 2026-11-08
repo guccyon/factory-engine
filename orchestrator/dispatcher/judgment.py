@@ -23,6 +23,32 @@ LEVELS = ("element", "experience")
 # 後で選び直せる（reversible=true）ものは、確信度が下限以上なら judge が決める。judge が人に回しても推奨があれば工場が推奨を採る
 NO_VISIBLE_CHANGE_MIN = {"implementation": 0.5}
 USER_VISIBLE = ("none", "changes")
+
+# 判断の持ち主（ADR 0044 の決定 1・2）。judge が spec_of（product / factory）を書き、由来の印があれば factory に確定させる（core-gates/judge.py）。
+# product は依頼者が分かれば requester、分からなければ business。factory と、書いていないものは maintainer（迷ったら工場のメンテナー）
+SPEC_OF = ("product", "factory")
+DECIDERS = ("business", "requester", "maintainer")
+
+
+def requester_of(cur, corr: str) -> str | None:
+    """チケットの依頼者（窓口の会話から起票したチケットなら、その会話を開いた人。ADR 0030・0039）。分からなければ None"""
+    m = re.match(r"github:([\w.-]+/[\w.-]+)#(\d+)$", corr or "")
+    if not m:
+        return None
+    try:
+        cur.execute("select c.opened_by from events e join desk_conversations c on c.id::text = e.payload->>'conversation_id' "
+                    "where e.name='desk.ticket_filed' and (e.payload->>'url' = %s or e.payload->>'ref' = %s) order by e.id desc limit 1",
+                    (f"https://github.com/{m.group(1)}/issues/{m.group(2)}", f"{m.group(1)}#{m.group(2)}"))
+        r = cur.fetchone()
+    except Exception:  # noqa: BLE001  窓口の表がない工場でも判断の記録は続ける
+        return None
+    return (r or {}).get("opened_by")
+
+
+def decider(spec_of: str | None, requester: str | None) -> str:
+    if spec_of == "product":
+        return "requester" if requester else "business"
+    return "maintainer"
 RECOMMENDS = {"provisional": ("adopt", "replace"), "defect": ("adopt", "reject")}   # escalate のときの judge の推奨
 # v1 の類型 id で書かれたとき（古い指示のワーカー）の読み替え。読み替えたことは category_raw に残る
 V1_ALIASES = {"term_boundary": "system_interface", "interface": "system_interface", "design_choice": "implementation", "acceptance": "ui"}
@@ -265,6 +291,7 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
     同じ問いが人に戻っていた。11-01 rally #505。judge が人の決めた案を替えた。11-02 rally #581）。人の判断を引き継いだことを記録に残す"""
     tr = inp.get("track_record", {})
     decided = human_decided(cur, pr_url)
+    requester = requester_of(cur, corr)
     by_id = {p["artifact_id"]: p for p in inp.get("provisional", [])}
     adopted_defects, replaced, escalated, confidences = [], [], [], []
     rows = [("provisional", v) for v in verdicts.get("provisional", [])] + [("defect", v) for v in verdicts.get("defects", [])]
@@ -279,6 +306,7 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
         level = v.get("level") if v.get("level") in LEVELS else None
         user_visible = v.get("user_visible") if v.get("user_visible") in USER_VISIBLE else None
         reversible = v.get("reversible") if isinstance(v.get("reversible"), bool) else None
+        spec_of = v.get("spec_of") if v.get("spec_of") in SPEC_OF else None
         delegated = False
         if kind == "provisional":
             taken, delegated = no_visible_change_verdict(category, v.get("verdict"), v.get("confidence"), user_visible, reversible, v.get("recommend"))
@@ -302,6 +330,8 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
                    "evidence": (v.get("evidence") or "")[:MAX_LEN], "interpretation": (v.get("interpretation") or "")[:MAX_LEN],
                    "impact": (v.get("impact") or "")[:MAX_LEN], "precedent": (v.get("precedent") or "")[:MAX_LEN] or None, "level": level,
                    "user_visible": user_visible, "reversible": reversible,
+                   "spec_of": spec_of or "factory", "spec_basis": (v.get("spec_basis") or ("judge" if spec_of else "default"))[:300],
+                   "decider": decider(spec_of, requester), "requester": requester if spec_of == "product" else None,
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
