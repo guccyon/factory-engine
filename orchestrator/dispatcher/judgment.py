@@ -19,6 +19,10 @@ PRECEDENT_ONLY = {"aesthetic": 0.8}
 # 体験が変わるもの（level=experience、または level の書かれていないもの）は今までどおり
 ELEMENT_LEVEL_MIN = {"aesthetic": 0.5}
 LEVELS = ("element", "experience")
+# ADR 0042（2026-11-08 オーナー承認）: 内部実装（implementation）で、どの案でも利用者に見える振る舞いが同じ（user_visible=none）、
+# 後で選び直せる（reversible=true）ものは、確信度が下限以上なら judge が決める。judge が人に回しても推奨があれば工場が推奨を採る
+NO_VISIBLE_CHANGE_MIN = {"implementation": 0.5}
+USER_VISIBLE = ("none", "changes")
 RECOMMENDS = {"provisional": ("adopt", "replace"), "defect": ("adopt", "reject")}   # escalate のときの judge の推奨
 # v1 の類型 id で書かれたとき（古い指示のワーカー）の読み替え。読み替えたことは category_raw に残る
 V1_ALIASES = {"term_boundary": "system_interface", "interface": "system_interface", "design_choice": "implementation", "acceptance": "ui"}
@@ -122,6 +126,17 @@ def delegated_verdict(category: str, verdict: str | None, confidence=None, prece
         if not ok:
             return "escalate", True
     return verdict, False
+
+
+def no_visible_change_verdict(category: str, verdict: str | None, confidence=None, user_visible: str | None = None,
+                              reversible=None, recommend: str | None = None) -> tuple[str | None, bool]:
+    """ADR 0042。振る舞いが変わらず選び直せる内部実装の判断を、人に回さず決める。返り値は (裁き, 工場が推奨を採ったか)。
+    judge が escalate にしても、条件を満たし推奨（adopt / replace）があれば推奨を採る。条件を満たさないときは judge の裁きのまま"""
+    if verdict != "escalate" or category not in NO_VISIBLE_CHANGE_MIN:
+        return verdict, False
+    ok = (user_visible == "none" and reversible is True and recommend in ("adopt", "replace")
+          and isinstance(confidence, (int, float)) and confidence >= NO_VISIBLE_CHANGE_MIN[category])
+    return (recommend, True) if ok else (verdict, False)
 
 
 # ------------------------------------------------------------------ judge の入力（制御プレーンの記録だけから組み立てる）
@@ -262,6 +277,13 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
             src = inp["defects"][idx] if isinstance(idx, int) and 0 <= idx < len(inp.get("defects", [])) else {}
             category, question = "inspection", f"{src.get('rubric_id', '?')} {src.get('location', '')}".strip()
         level = v.get("level") if v.get("level") in LEVELS else None
+        user_visible = v.get("user_visible") if v.get("user_visible") in USER_VISIBLE else None
+        reversible = v.get("reversible") if isinstance(v.get("reversible"), bool) else None
+        delegated = False
+        if kind == "provisional":
+            taken, delegated = no_visible_change_verdict(category, v.get("verdict"), v.get("confidence"), user_visible, reversible, v.get("recommend"))
+            if delegated:   # 工場が judge の推奨を採った（ADR 0042）。人には回さない
+                v = {**v, "verdict": taken}
         verdict, forced = delegated_verdict(category, v.get("verdict"), v.get("confidence"), v.get("precedent"), level)
         if forced:   # judge の裁きは人に回すときの推奨として残す（受信トレイで「推奨」に出す）
             v = {**v, "verdict": verdict, "recommend": v.get("verdict") if v.get("verdict") in ("adopt", "replace") else v.get("recommend")}
@@ -279,10 +301,11 @@ def record_judged(cur, corr: str, job_id: int, pr_url: str, inp: dict, verdicts:
                    "decision": (v.get("replacement") if v.get("verdict") != "escalate" else None) or (src.get("decision") if kind == "provisional" else v.get("verdict")),
                    "evidence": (v.get("evidence") or "")[:MAX_LEN], "interpretation": (v.get("interpretation") or "")[:MAX_LEN],
                    "impact": (v.get("impact") or "")[:MAX_LEN], "precedent": (v.get("precedent") or "")[:MAX_LEN] or None, "level": level,
+                   "user_visible": user_visible, "reversible": reversible,
                    "score": {"self_reported": conf, "track_record": rec, "basis": basis},
                    "mode": mode, "mode_basis": mode_basis, "decided_by": "judge", "pr_url": pr_url, "subject": kind,
                    "source_artifact_id": v.get("artifact_id") if kind == "provisional" else None, "defect": src if kind == "defect" else None,
-                   "human_grade": None, "forced_escalation": forced, "carried_human_decision": carried,
+                   "human_grade": None, "forced_escalation": forced, "forced_delegation": delegated, "carried_human_decision": carried,
                    "already_applied": bool(v.get("already_applied")) if v.get("verdict") == "replace" else None,
                    # 人に回すときの judge の推奨（受信トレイの「推奨」。ADR 0034）。仮決めは adopt / replace（案は replacement）、指摘は adopt / reject
                    "recommend": v.get("recommend") if v.get("verdict") == "escalate" and v.get("recommend") in RECOMMENDS[kind] else None,

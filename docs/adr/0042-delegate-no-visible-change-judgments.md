@@ -1,6 +1,6 @@
 # ADR 0042: 利用者への振る舞いが変わらない実装の判断を judge に任せる
 
-- 状態: 提案（2026-11-08。決めどころ J1〜J4 はオーナーの判断待ち）
+- 状態: 承認（2026-11-08 オーナー。決めどころ J1〜J4 は推奨どおり）
 - 関係: ADR 0006（仮決めと出口の judge）、ADR 0025 の E4 と 2026-11-01・11-02 の改訂（見た目の要素レベルの自己承認。本 ADR は同じ考え方を内部実装に広げる）、ADR 0034（受信トレイで答える）、`definitions/judgments.yaml`、`core-gates/judge.py`・`severity.md`、`orchestrator/dispatcher/judgment.py`
 
 ## 文脈
@@ -46,7 +46,7 @@
    - judge が決めた判断も Judgment（`stage=judged`）に `user_visible`・`reversible`・`precedent` を含めて残す。人の採点（一致率）で後から確かめ、外れが続けば下限を上げるか、委任をやめる
    - `severity.md` と judge のプロンプトの「根拠がなければ人へ」に、「利用者への振る舞いが変わらない選択は、利益・不利益の根拠を要しない」を添える
 
-## 決めどころ
+## 決めどころ（2026-11-08 オーナー: すべて推奨どおり）
 
 | # | 問い | 推奨 | 他の案 |
 |---|---|---|---|
@@ -66,10 +66,17 @@
 | rally #995 | `bundling_status` の文の書き換え | なし（正本の中の注記） |
 | rally #931 | PR 本文の見出しの正をどこに置くか | なし（開発の道具） |
 
-人に回った判断の正確な内訳（類型ごとの件数と、本 ADR の条件で自律になる件数）は、制御プレーンの `artifacts`（`type='Judgment'`, `stage='judged'`, `verdict='escalate'`）から数えて、承認の前に本 ADR に書き足す。
+人に回った判断の正確な内訳（類型ごとの件数と、本 ADR の条件で自律になる件数）は、制御プレーンの `artifacts`（`type='Judgment'`, `stage='judged'`, `verdict='escalate'`）から数える。反映後は `forced_delegation` が true の記録で、工場が推奨を採った件数を数えられる。
 
 ## 結果
 
 - 人に回るのは、利用者への振る舞いか、後で戻しにくいことに関わる判断だけになる。オーナーが答える判断が、事業主として判断できるものに揃う
 - 内部実装の選び方が judge の物差し（正本との整合・前例・保守のしやすさ）で決まる。外れたときは、振る舞いが変わらないので、後のチケットで直せる
 - `user_visible` の読み違い（実は振る舞いが変わるのに `none` と書く）が新しい外れ方になる。人の採点で類型ごとの一致率を見て、外れが続けば委任を狭める
+
+## 実装
+
+- `core-gates/judge.py`: 仮決めの各件に `user_visible`・`reversible` を必須で書かせる。プロンプトに決定 2 の決まりを足す
+- `core-gates/severity.md`: 姿勢に「振る舞いが変わらず選び直せる内部実装の選択は、利益・不利益の根拠を要しない」を足す
+- `orchestrator/dispatcher/judgment.py`: `no_visible_change_verdict`（決定 3 の守り。下限は `NO_VISIBLE_CHANGE_MIN`）。記録に `user_visible`・`reversible`・`forced_delegation` を残す
+- `definitions/judgments.yaml`: `implementation` に `delegate_to_judge: no_visible_change`
