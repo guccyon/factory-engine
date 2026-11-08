@@ -29,7 +29,6 @@ from psycopg.types.json import Jsonb
 
 ENV = os.environ
 DATABASE_URL = ENV.get("DATABASE_URL", "postgres://factory:factory@postgres:5432/factory")
-GH_TOKEN = ENV.get("GH_TOKEN", "")
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
 INTERVAL = int(ENV.get("PR_EVENTS_INTERVAL_SEC", "60"))
 SOURCE = ENV.get("PR_EVENTS_SOURCE", "both")   # both | poll | webhook（webhook だけなら見逃しを拾えないので、商用でも both を薦める）
@@ -47,7 +46,7 @@ def db():
 
 
 def gh(method: str, path: str, body: dict | None = None):
-    return ghapi.request(method, path, body, user_agent="factory-pr-events", token=GH_TOKEN)   # GET は ETag で条件付き（上限に数えない 304）
+    return ghapi.request(method, path, body, user_agent="factory-pr-events")   # GET は ETag で条件付き（上限に数えない 304）
 
 
 def emit(cur, name: str, corr: str | None, payload: dict, dedupe_key: str) -> bool:

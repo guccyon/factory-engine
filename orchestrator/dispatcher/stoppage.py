@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
+import ghapp
+
 ENV = os.environ
 CATEGORIES = ("env", "perm", "human", "idle", "factory-bug", "ticket", "external", "budget")   # idle: ラインが空（積まれたチケットがない）。人の承認待ち（human）と分ける（2026-10-28）
 NOTIFIER = ENV.get("NOTIFIER", "github-issue")
@@ -84,7 +86,7 @@ def open_keys(cur, prefix: str = "") -> list[str]:
 def _gh(method: str, path: str, body: dict | None = None):
     req = urllib.request.Request(f"https://api.github.com/{path}", method=method,
                                  data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"Bearer {ENV['GH_TOKEN']}", "Accept": "application/vnd.github+json",
+                                 headers={"Authorization": f"Bearer {ghapp.token()}", "Accept": "application/vnd.github+json",
                                           "Content-Type": "application/json", "User-Agent": "factory-watcher"})
     with urllib.request.urlopen(req, timeout=30) as r:
         data = r.read()

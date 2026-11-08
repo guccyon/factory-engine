@@ -43,7 +43,7 @@ ENV = os.environ
 ROOT = ENV.get("SWAP_ROOT", "").rstrip("/")
 PROJECT = ENV.get("COMPOSE_PROJECT", "factory")
 # 子のプロセスに渡さないもの。GH_TOKEN などが環境にあると、compose の ${GH_TOKEN} が .env より優先されてしまう
-CHILD_ENV_DROP = ("GH_TOKEN", "DATABASE_URL", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "ENGINE_VERSION")
+CHILD_ENV_DROP = ("GH_TOKEN", "GH_APP_ID", "GH_APP_PRIVATE_KEY_B64", "GH_APP_INSTALLATION_ID", "DATABASE_URL", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "ENGINE_VERSION")
 GIT_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*",   # マウントした作業ツリーの持ち主がコンテナの外の人
            "GIT_TERMINAL_PROMPT": "0"}
 CONSOLE_URL = ENV.get("SWAP_CONSOLE_URL", "http://console:8790/api/state")

@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 import yaml
 from psycopg.types.json import Jsonb
 
+import ghapp
 import stoppage
 
 WORK = os.environ.get("SHIP_WORKDIR", "/ship")
@@ -302,7 +303,7 @@ def source(repo: str, version: str, commit: str | None = None) -> tuple[str, str
     path = os.path.join(WORK, "src", repo.replace("/", "__"), version)
     if not os.path.isdir(os.path.join(path, ".git")):
         shutil.rmtree(path, ignore_errors=True)
-        token = os.environ.get("GH_TOKEN", "")
+        token = ghapp.token(repo) if ghapp.available() else ""
         url = f"https://x-access-token:{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
         sh(["git", "clone", "--quiet", url, path], timeout=600)
         if commit:

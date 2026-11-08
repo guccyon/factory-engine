@@ -125,6 +125,7 @@ import design_line
 import drain
 import line
 import usage
+import ghapp
 import judgment
 import learn
 import ops
@@ -181,7 +182,7 @@ def plan_outcome_cmd(cur, argv, sub: str) -> int:
             import ghapi
 
             def gh(method, path, body=None):
-                return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+                return ghapi.request(method, path, body, user_agent="factoryctl", token=ghapp.token())
             log = lambda *a: print(*a, flush=True)  # noqa: E731
             if "--rescore" in argv:   # 数え方を変えたあと、残した突き合わせを組み立て直す
                 n = plan_outcome.rescore(cur, gh, log=log)
@@ -648,7 +649,7 @@ def desk_cmd(cur, argv):
             import ghapi
 
             def gh(method, path, body=None):
-                return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+                return ghapi.request(method, path, body, user_agent="factoryctl", token=ghapp.token())
             c = desk_line.open_from_issue(cur, gh, OPERATOR, m[1], int(m[2]))
             print(f"相談 {c['id']} として開きました。相談役が次の周回で問いか下書きを出します（factoryctl desk show {c['id']}）")
             return 0
@@ -759,7 +760,7 @@ def qa_cmd(cur, argv) -> int:
     import ghapi
 
     def gh(method, path, body=None):
-        return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
+        return ghapi.request(method, path, body, user_agent="factoryctl", token=ghapp.token())
     stories = [x for x in (opt(argv, "--stories", "") or "").split(",") if x]
     if sub == "explore":
         from datetime import datetime, timezone

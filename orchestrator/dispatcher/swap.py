@@ -217,7 +217,7 @@ def launch_args(sid: int, root: str, extra_mounts: list[str], image: str, networ
         args += ["-v", f"{m}:{m}"]
     # 値を書かない -e は dispatcher の環境から写す（停止の通知に GH_TOKEN を使う。更新役は子のプロセスには渡さない）
     args += ["-w", f"{root}/orchestrator", "-e", f"SWAP_ROOT={root}", "-e", f"COMPOSE_PROJECT={project}"]
-    for k in ("DATABASE_URL", "GH_TOKEN", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "REPORT_TZ", "FACTORY_MODE", "MODE_SCHEDULE"):
+    for k in ("DATABASE_URL", "GH_TOKEN", "GH_APP_ID", "GH_APP_PRIVATE_KEY_B64", "GH_APP_INSTALLATION_ID", "FACTORY_REPOS", "NOTIFIER", "STATUS_REPO", "STATUS_NUMBER", "REPORT_TZ", "FACTORY_MODE", "MODE_SCHEDULE"):
         args += ["-e", k]
     args += [image, "python", "/app/swapper.py", "run", str(sid)]
     return args
