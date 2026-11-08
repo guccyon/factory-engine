@@ -209,7 +209,7 @@ def comment(repo: str, issue: int, text: str):
 # ------------------------------------------------------------------ キュー（薄いワークフロー I/F：enqueue / claim / finish / cancel）
 def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: dict | None, role: str = "implement"):
     """ワーカーが文脈に渡した知見（ADR 0024 の 6）を knowledge.used に残す。使われ方（差し戻し・60 日使われない）は測る側が数える。
-    role は知見を受け取った役（implement・body_fix。ADR 0040 の決定 7）"""
+    role は知見を受け取った役（implement・body_fix・plan・desk.consult。ADR 0040 の決定 7）"""
     ids = [i for i in (result.get("knowledge_ids") or []) if isinstance(i, str)][:50]
     if ids:
         sel = result.get("knowledge_selection") if isinstance(result.get("knowledge_selection"), dict) else {}
@@ -217,7 +217,7 @@ def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: di
         record_event(cur, "knowledge.used", corr, job_id, {"repo": repo, "issue": issue, "role": role, "ids": ids, "pr_url": result.get("pr_url"),
                                                           "continue_reason": (cont or {}).get("reason"),
                                                           # ADR 0040: この回の業務・軸の値・入口・適応度の内訳（当たり外れを測る側が使う）
-                                                          "entry": "continue" if cont else ("body_fix" if role == "body_fix" else "ticket"),
+                                                          "entry": "continue" if cont else ("ticket" if role == "implement" else role),
                                                           "work": [w for w in (sel.get("work") or []) if isinstance(w, str)][:10],
                                                           "values": sel.get("values") if isinstance(sel.get("values"), dict) else {},
                                                           "fit": {i: fit[i] for i in ids if i in fit}},
@@ -627,6 +627,8 @@ def run_job(job: dict, reattaching: bool = False):
                     log("qa act failed", job_id, repr(e))
             elif kind == "desk_consult":
                 # 窓口の相談役（ADR 0030 の 3）: 問いか下書きを会話に書く。失敗も会話で依頼者に知らせる
+                if state == "succeeded" and result:
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="desk.consult")
                 try:
                     desk_line.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
@@ -634,6 +636,7 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "plan":
                 # プランナー（ADR 0025・0026）: 判定を残し、経路のラベル・起票者への問い・人への回付のどれかを行う
                 if state == "succeeded":
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="plan")
                     try:
                         pid = planner.record(cur, repo, issue, corr, job_id, result)
                         planner.act(cur, repo, issue, corr, job_id, pid, result, swap_label, comment, gh, (gh("GET", f"repos/{repo}/issues/{issue}") or {}).get("title") or "")

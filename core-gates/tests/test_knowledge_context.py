@@ -136,3 +136,27 @@ def test_main_reports_work_values_and_fit(tmp_path, capsys):
     assert out["ids"] == ["K-0001"] and out["work"] == ["dev.build", "dev.describe"]
     assert out["values"]["product_stage"] == ["development"] and out["fit"]["K-0001"]["parts"]["request_form"] == 2
     assert "業務 dev.describe" in (tmp_path / "k.md").read_text(encoding="utf-8")
+
+
+def test_stage_writes_only_selected_for_role(tmp_path):
+    """ADR 0040 の決定 7 の 3: プランナー・窓口は知見のディレクトリを丸写しにせず、業務で選んだものだけを読む"""
+    repo = tmp_path / "repo"
+    d = repo / ".factory-config" / "knowledge"
+    d.mkdir(parents=True)
+    base = {"theme": 4, "kind": "causal", "confidence": "confirmed", "evidence": [{"case": "C-0001"}], "status": "active",
+            "verified_at": "2026-11-01", "review_by": "2026-12-31", "confidentiality": "product", "decided_by": "committee:D-0001"}
+    (d / "K-0001.yaml").write_text(json.dumps({**base, "id": "K-0001", "statement": "計画の知見", "scope": {"work": ["plan.workflow"]}}), encoding="utf-8")
+    (d / "K-0002.yaml").write_text(json.dumps({**base, "id": "K-0002", "statement": "本文の知見", "scope": {"work": ["dev.describe"]}}), encoding="utf-8")
+    (d / "K-0003.yaml").write_text(json.dumps({**base, "id": "K-0003", "statement": "仮説", "confidence": "hypothesis", "scope": {"work": ["plan"]}}), encoding="utf-8")
+    dest = tmp_path / "work" / "knowledge"
+    sel = kx.stage(repo, dest, "plan", {"request_form": ["ticket"]}, today=date(2026, 11, 8))
+    assert sel["ids"] == ["K-0001"] and sel["work"] == ["plan.workflow"]
+    assert sorted(p.name for p in dest.iterdir()) == ["knowledge.md"]
+    assert "計画の知見" in (dest / "knowledge.md").read_text(encoding="utf-8")
+
+
+def test_stage_without_knowledge_writes_nothing(tmp_path):
+    dest = tmp_path / "knowledge"
+    assert kx.stage(tmp_path, dest, "plan") == {"ids": [], "work": [], "values": {}, "fit": {}}
+    assert kx.stage(None, dest, "desk.consult")["ids"] == []
+    assert not dest.exists()

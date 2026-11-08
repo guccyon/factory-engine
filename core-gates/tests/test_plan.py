@@ -127,7 +127,9 @@ def test_plan_stages_reads_and_decides(tmp_path, monkeypatch):
     out = pl.plan(issue, {"round": 2, "size_table": table}, DEFS, repo)
     assert "| backend+web | 4 | 22 | 48 | 70 | 1 |" in seen["sizes"] and "sizes.md" in seen["prompt"]
     assert seen["step"] == "plan" and "2 回目" in seen["prompt"] and "デザインシステムは ある" in seen["prompt"]
-    assert "specs/design/tokens.yaml" in seen["files"] and "knowledge/k1.yaml" in seen["files"] and "specs/shot.png" not in seen["files"]
+    # 知見は丸写しにせず、計画の業務で選んだものだけ（ADR 0040 の決定 7 の 3）。形の崩れた k1 は渡らない
+    assert "specs/design/tokens.yaml" in seen["files"] and "knowledge/k1.yaml" not in seen["files"] and "specs/shot.png" not in seen["files"]
+    assert out["knowledge_ids"] == [] and out["knowledge_selection"]["work"] == ["plan.workflow"]
     assert "返事です" in seen["comments"]
     assert (out["decision"], out["steps"], out["guards"], out["advisories"], out["round"]) == ("ready", ["implement"], [], [], 2)
     assert out["cost_usd"] == 0.05 and out["versions"]["prompt"] == pl.PROMPT_VERSION and out["versions"]["product"] is None
