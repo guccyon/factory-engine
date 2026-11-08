@@ -41,6 +41,9 @@ def test_night_and_charter_rotate():
     assert qa_line.night_of(datetime(2026, 11, 8, 17, 30, tzinfo=timezone.utc)) == "2026-11-08"   # 9 日 2:30 JST
     seen = [qa_line.charter_for(f"2026-11-{d:02d}") for d in range(1, 6)]
     assert sorted(seen) == sorted(qa_line.DEFS["explore"]["charters"])   # 5 晩で全部を 1 回ずつ
+    # supervisor は definitions/qa.yaml を読む（チャーターは {id, viewpoint, ja}）。積む入力は id にそろえる（11/8 の夜に dict のまま渡り、ワーカーが先頭の detour に倒れた）
+    full = {"explore": yaml.safe_load((ROOT / "definitions" / "qa.yaml").read_text(encoding="utf-8"))["explore"]}
+    assert [qa_line.charter_for(f"2026-11-{d:02d}", full) for d in range(1, 6)] == seen
 
 
 class FakeGH:
