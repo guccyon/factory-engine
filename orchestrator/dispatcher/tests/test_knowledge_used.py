@@ -43,3 +43,14 @@ def test_nothing_when_no_ids():
     dispatcher.record_knowledge_used(cur, "c", 7, "o/r", 1, {"pr_url": "u"}, None)
     dispatcher.record_knowledge_used(cur, "c", 7, "o/r", 1, {"knowledge_ids": []}, None)
     assert cur.rows == []
+
+
+def test_records_body_fix_role_and_entry():
+    """ADR 0040 の決定 7 の 2: 本文の直しが受け取った知見も残す。issue は PR の番号"""
+    cur = Cur()
+    sel = {"work": ["dev.describe"], "values": {"roles": ["body_fix"]}, "fit": {"K-0006": {"score": 4.5}}}
+    dispatcher.record_knowledge_used(cur, "c", 9, "o/r", 1118, {"pr_url": "u", "knowledge_ids": ["K-0006"], "knowledge_selection": sel}, None, role="body_fix")
+    (sql, params), = cur.rows
+    obj = params[3].obj
+    assert obj["role"] == "body_fix" and obj["entry"] == "body_fix" and obj["work"] == ["dev.describe"]
+    assert obj["fit"] == {"K-0006": {"score": 4.5}}
