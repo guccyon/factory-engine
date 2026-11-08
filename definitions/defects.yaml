@@ -1,0 +1,55 @@
+# Defect の型と品質の指標（ADR 0028 の決定 5。P5a の defect_metrics）
+#
+# Defect は「利用者に届くと困る食い違い」を、どこで見つけたかにかかわらず 1 つの型で events の defect.recorded に残したもの。
+# 来歴（ADR の C6）と同じく全属性 optional。分からない属性は null のまま残し、紐付け率（どれだけの Defect に属性が付いたか）を指標と並べて出す。
+# 指標は Govern（health/daily/status_report.py）が集計する。QA 自身には採点させない（ADR 0028 の決定 5）。
+# Incident（本番で利用者に影響が出たもの）は別の型で P5b（severity_budget）。本番で見つけた Defect は found_in: prod で同じ型に載る。
+
+schema_version: "0.1"
+status: draft
+
+# Defect 1 件の属性（events の defect.recorded の payload）。key と found_in と source 以外は optional
+fields:
+  key:         "同じ Defect とみなす目印（見つけた所ごと。dedupe は defect.recorded:<found_in>:<key>）"
+  found_in:    "どこで見つけた（下の stages の id）"
+  source:      "記録した仕組み（qa_line / judge / pr_events など）"
+  repo:        "製品のリポジトリ"
+  release_id:  "どの Release で見つけた（Release の前に見つけたものは null）"
+  change:      "どの変更（PR の URL）。QA で見つけたものは、直した PR が分かるまで null"
+  caused_in:   "原因の工程（下の causes の id）。分からなければ null"
+  introduced_in:  "混入させた工程（agents.yaml の steps の id。今は implement だけ）。PR の変更から、その PR の最新の版を書いたジョブを引いて決める。分からなければ null"
+  introduced_job: "混入させたジョブの id（jobs.id）"
+  introduced_tier: "混入させたジョブの tier（agents.yaml の tiers。モデルを比べる材料。2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）"
+  viewpoint:   "観点（QA は qa.yaml の viewpoints、PR の指摘はルーブリックの id、CI は ci:<チェック名>）"
+  severity:    "重要度（QA は qa.yaml の severities。PR の指摘は検査の severity）"
+  title:       "利用者の言葉で 1 行（なければ null）"
+  reproduce:   "再現手順の配列（なければ null）"
+  issue:       "起票した Issue の URL（あれば）"
+
+# 見つけた所（ADR 0028 の決定 5 の順）。before_merge はラインの中（マージの手前）で止めたもの
+stages:
+  - { id: upstream, ja: 上流,  before_merge: true,  note: "要件・設計の段階（プランナーの判定・設計の診断）。Gen1 はまだ記録する仕組みがない" }
+  - { id: pr,       ja: PR,    before_merge: true,  note: "検査と judge が採用した指摘（PR 本文だけの指摘は除く）" }
+  - { id: ci,       ja: CI,    before_merge: true,  note: "工場の PR の CI が落ちたチェック（PR とチェック名ごとに 1 件）" }
+  - { id: qa,       ja: QA,    before_merge: false, note: "QA 役が Release 候補で止めた Defect（hold）" }
+  - { id: diagnose, ja: 診断,  before_merge: false, note: "Release 候補の脆弱性などの診断（水際）。Gen1 はまだ記録する仕組みがない" }
+  - { id: prod,     ja: 本番,  before_merge: false, note: "本番で見つけたもの（利用者の報告・監視）。Gen1 の rally は本番を立てない" }
+
+# 原因の工程
+causes:
+  requirement: 要件
+  design:      設計
+  implement:   実装
+  test:        テスト
+  environment: 環境・データ
+
+# 品質の指標（Govern が集計する。日報の「品質（Defect）」）
+metrics:
+  window_days: 30
+  escape_prevention:
+    ja: 流出防止率
+    formula: "before_merge の所で見つけた Defect ÷ すべての Defect（直近 window_days 日）"
+    note: "2026-11-08 建設者の仮置き。ラインの中（マージの手前）で止めた割合。本番まで出た数は別に並べる。件数が 10 件より少ない間は参考"
+  found_in_distribution: { ja: 発見工程の分布, formula: "found_in ごとの件数" }
+  hotspots: { ja: 出やすい場所, formula: "viewpoint ごとの件数の多い順（上位 5）" }
+  link_rate: { ja: 紐付け率, formula: "release_id・change・caused_in・introduced_in のそれぞれが付いた Defect の割合" }

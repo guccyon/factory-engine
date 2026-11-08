@@ -8,6 +8,8 @@ QA のワーカー（エージェント）に、iOS シミュレーターの道�
 - 通す道具はジョブの種類ごとの一覧（QA は見る・操作する・ビルドする道具。sim_erase・sim_shutdown は通さない）。知らない道具・一覧の外は断る
 - 呼んだ道具は events の runner.relayed に残す（引数は道具と長さだけ。打った文字は残さない）
 - 道具の形（inputSchema）はランナーの一覧（macrunner/runner.py の TOOLS）の写し。test_runner_relay.py が食い違いを見る
+- 工場の側の道具（LOCAL_TOOLS）も同じ口で渡す。いまは触れる環境の再起動と時計の進め（env_restart。ADR 0028 の scenario_time）だけで、
+  Mac には送らず dispatcher が shipper に依頼する（local）。どの製品かは grant のときに決め、エージェントには選ばせない
 """
 from __future__ import annotations
 
@@ -53,22 +55,31 @@ TOOLS = {t["name"]: t for t in [
     _tool("ui_key", "キーを押す（return / delete / escape / tab / space / home）。idb が要る",
           {"udid": S_UDID, "key": {"type": "string", "enum": ["delete", "escape", "home", "return", "space", "tab"]}}, ["udid", "key"]),
 ]}
-# ジョブの種類ごとに通す道具（definitions/qa.yaml の runner_tools と同じ）
-KIND_TOOLS = {"qa": tuple(TOOLS)}
+# 工場の側の道具（definitions/qa.yaml の env_tools と同じ）。Mac ランナーではなく dispatcher が受ける
+LOCAL_TOOLS = {t["name"]: t for t in [
+    _tool("env_restart", "触れる環境のサーバーを再起動する（DB は残す）。advance_hours を渡すと、サーバーの時計をその時間だけ進めて再起動する"
+          "（翌日を確かめるなら 24）。reset_clock で進めた時計を 0 に戻す。終わるまで数十秒かかる。進めた時計は、次に版を出すと 0 に戻る",
+          {"advance_hours": {"type": "number", "minimum": 0, "maximum": 168, "description": "進める時間（0〜168）。0 なら再起動だけ"},
+           "reset_clock": {"type": "boolean", "description": "進めた時計を 0 に戻して再起動する（advance_hours とは一緒に使わない）"}}),
+]}
+# ジョブの種類ごとに通す道具（definitions/qa.yaml の runner_tools と env_tools と同じ）
+KIND_TOOLS = {"qa": tuple(TOOLS) + tuple(LOCAL_TOOLS)}
 CALL_TIMEOUT = {"app_build": 60, "build_status": 30}   # ビルドは build_status で待つので、呼び出し自体は短い
 
 
 class Relay:
-    def __init__(self, call, record, clock=time.time):
-        """call(tool, arguments, timeout) → {content, isError, runner_id}。record(job_id, payload) は events への記録"""
-        self.call, self.record, self.clock = call, record, clock
+    def __init__(self, call, record, clock=time.time, local=None):
+        """call(tool, arguments, timeout) → {content, isError, runner_id}。record(job_id, payload) は events への記録。
+        local(tool, arguments, grant) → {content, isError} は工場の側の道具（LOCAL_TOOLS）。なければその道具は断る"""
+        self.call, self.record, self.clock, self.local = call, record, clock, local
         self.lock = threading.Lock()
         self.grants: dict[str, dict] = {}
 
-    def grant(self, job_id: int, kind: str, ttl_sec: int) -> str:
+    def grant(self, job_id: int, kind: str, ttl_sec: int, repo: str | None = None) -> str:
         token = secrets.token_urlsafe(32)
         with self.lock:
-            self.grants[token] = {"job_id": job_id, "tools": KIND_TOOLS.get(kind, ()), "expires": self.clock() + ttl_sec, "calls": 0}
+            self.grants[token] = {"job_id": job_id, "tools": KIND_TOOLS.get(kind, ()), "expires": self.clock() + ttl_sec, "calls": 0,
+                                  "repo": repo}
         return token
 
     def revoke(self, job_id: int) -> int:
@@ -108,21 +119,23 @@ class Relay:
         if method == "ping":
             return 200, _ok(mid, {})
         if method == "tools/list":
-            return 200, _ok(mid, {"tools": [TOOLS[n] for n in g["tools"]]})
+            return 200, _ok(mid, {"tools": [TOOLS.get(n) or LOCAL_TOOLS[n] for n in g["tools"]]})
         if method == "tools/call":
             name, args = params.get("name"), params.get("arguments") or {}
             if name not in g["tools"] or not isinstance(args, dict):
                 return 200, _ok(mid, _err(f"この道具はこのジョブに渡していない: {name}"))
+            if name in LOCAL_TOOLS and self.local is None:
+                return 200, _ok(mid, _err(f"この工場ではこの道具を使えない: {name}"))
             t0 = self.clock()
             try:
-                res = self.call(name, args, CALL_TIMEOUT.get(name, 120))
+                res = self.local(name, args, g) if name in LOCAL_TOOLS else self.call(name, args, CALL_TIMEOUT.get(name, 120))
                 out = {"content": res.get("content") or [], "isError": bool(res.get("isError"))}
                 runner = res.get("runner_id")
             except Exception as e:  # noqa: BLE001  届かない・ランナーがいない・時間切れはエージェントに道具の失敗として返す
-                out, runner = _err(f"ランナーに届かない: {str(e)[:300]}"), None
+                out, runner = _err(f"{'工場' if name in LOCAL_TOOLS else 'ランナー'}に届かない: {str(e)[:300]}"), None
             g["calls"] += 1
             try:
-                self.record(g["job_id"], {"tool": name, "ok": not out["isError"], "runner": (runner or "")[:8] or None,
+                self.record(g["job_id"], {"tool": name, "ok": not out["isError"], "runner": "factory" if name in LOCAL_TOOLS else ((runner or "")[:8] or None),
                                           "ms": int((self.clock() - t0) * 1000), "args_len": len(json.dumps(args, ensure_ascii=False)), "n": g["calls"]})
             except Exception:  # noqa: BLE001  記録の失敗で道具は止めない
                 pass

@@ -35,6 +35,8 @@ def test_constants_match_definitions():
     assert (pn.MAX_ROUNDS, pn.MARKER) == (DEFS["asking"]["max_rounds"], DEFS["asking"]["answer_marker"])
     u = DEFS["upstream"]
     assert [pn.REQ_MARK, pn.REQ_MARK_END] == u["markers"] and set(pn.STORY_ACTION_JA) == set(u["story_actions"]) and pn.STORIES_DIR == u["stories_dir"]
+    assert (pn.ADR_DIR, pn.CONTRACTS_DIR) == (u["adr"]["dir"], u["contracts"]["dir"])
+    assert set(pn.CONTRACT_KIND_JA) == set(u["contracts"]["kinds"]) and set(pn.COMPAT_JA) == set(u["contracts"]["compat"])
 
 
 def test_requirements_section_replaces_the_previous_one():
@@ -338,3 +340,38 @@ def test_ask_does_not_write_requirements(cur):
     assert gh.patches == []
     cur.execute("select count(*) as n from artifacts where type='Requirements'")
     assert cur.fetchone()["n"] == 0
+
+
+ADRS = {"follow": [{"id": "0004", "why": "列を足す"}],
+        "new": [{"status": "proposed", "title": "取り消しは 24 時間前まで", "context": "c", "decision": "d", "alternatives": ["前日まで"], "consequences": "r"}]}
+CONTRACTS = [{"contract": "specs/contracts/api/student-app/openapi.yaml", "kind": "change", "compat_impact": "breaking",
+              "operations": ["POST /bookings/{id}/cancel"], "summary": "取り消し"}]
+
+
+def test_requirements_section_has_adrs_and_contracts():
+    sec = pn.requirements_section(3, {"acceptance_criteria": ["取り消せる"]}, [], ADRS, CONTRACTS)
+    assert "- 従う ADR 0004: 列を足す" in sec and "- 新しく残す: **取り消しは 24 時間前まで**" in sec and "  - とらなかった案: 前日まで" in sec
+    assert "docs/adr/<次の番号>-<名前>.md" in sec
+    assert "- `specs/contracts/api/student-app/openapi.yaml` を変える（`POST /bookings/{id}/cancel`）・互換を壊す: 取り消し" in sec
+    assert "人の承認を待つ" in sec
+    plain = pn.requirements_section(3, {"acceptance_criteria": ["取り消せる"]}, [])
+    assert "判断（ADR）" not in plain and "契約の差分" not in plain
+
+
+@needs_db
+def test_ready_records_adr_and_contract_diff(cur):
+    c, gh = Calls(), BodyGH()
+    r = res(steps=["implement"])
+    r["requirements"] = {"acceptance_criteria": ["取り消せる"], "non_goals": [], "success_definition": "s"}
+    r["adrs"], r["contract_changes"] = ADRS, CONTRACTS
+    pid = run(cur, c, r, gh)
+    assert "従う ADR 0004" in gh.body and "契約の差分:" in gh.body
+    assert "ADR: 従う 1・新しく残す 1、契約の差分 1" in c.comments[0]
+    cur.execute("select type, payload from artifacts where type in ('ADR','ContractDiff','Requirements') order by id")
+    rows = {x["type"]: x["payload"] for x in cur.fetchall()}
+    assert rows["ADR"]["plan_id"] == pid and rows["ADR"]["status"] == "proposed" and rows["ADR"]["decision"] == "d"
+    assert rows["ContractDiff"]["compat_impact"] == "breaking" and rows["ContractDiff"]["contract"].endswith("openapi.yaml")
+    assert rows["Requirements"]["adrs_follow"] == [{"id": "0004", "why": "列を足す"}]
+    cur.execute("select payload from events where name='plan.decided'")
+    ev = cur.fetchone()["payload"]
+    assert ev["adrs"] == {"follow": ["0004"], "new": 1} and ev["contracts"][0]["kind"] == "change"

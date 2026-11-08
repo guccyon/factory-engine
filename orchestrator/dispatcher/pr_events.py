@@ -21,6 +21,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+import defect
 import ghapi
 import psycopg
 from psycopg.rows import dict_row
@@ -104,6 +105,9 @@ def observe(cur, p: dict, source: str) -> list[str]:
     if failed:
         if emit(cur, "pr.ci_failed", p["corr"], {**base, "failed": failed}, f"pr.ci_failed:{url}@{sha}"):
             out.append("pr.ci_failed")
+            for name in failed:   # CI で見つけた Defect（ADR 0028 の決定 5）。PR とチェックごとに 1 件（同じチェックが head ごとに落ちても 1 件）
+                defect.safe_record(cur, "ci", f"{url}:{name}", "pr_events", log=log, correlation_id=p["corr"], repo=p["repo"],
+                                   change=url, caused_in="implement", viewpoint=f"ci:{name}")
     elif runs and all(r["status"] == "completed" for r in runs):
         if emit(cur, "pr.ci_passed", p["corr"], {**base, "checks": sorted({r["name"] for r in runs})}, f"pr.ci_passed:{url}@{sha}"):
             out.append("pr.ci_passed")

@@ -11,6 +11,9 @@
 使い方:
   core-gates/qa.py --repo-dir /work/product --input input.json --out-dir /work/qa --out qa.json
   core-gates/qa.py --check out/verdicts.yaml --repo-dir /work/product   # 形だけ確かめる（エージェントが自分で使う）
+  core-gates/qa.py --check-explore out/explore.yaml --charter detour --repo-dir /work/product   # 夜間の探索の形
+
+入力の mode が explore なら夜間の探索（P5a の nightly_explore）: その夜のチャーターに沿って寄り道し、out/explore.yaml（試したこと・見つけたもの・印）を返す
 
 依存: python3、PyYAML、chromium（CHROMIUM_BIN）、playwright-core（NODE_PATH）、agent_runner（工程 qa）
 """
@@ -161,6 +164,20 @@ mcp__macrunner__* の道具で、Mac の iOS シミュレーターを動かせ�
 """
 
 
+# 時間をまたぐ手順（ストーリーの time。ADR 0028 の scenario_time）。道具は dispatcher の中継（Mac ランナーと同じ口）で渡る
+TIME_WITH_TOOL = """- 時間をまたぐ手順（ストーリーの time: 翌日・再起動のあと・暦月の境）は、mcp__macrunner__env_restart で起こす。
+  これは Mac ではなく工場が受け、この環境のサーバーを再起動する（DB は残る）。advance_hours を渡すとサーバーの時計をその時間だけ進めて再起動する
+  （翌日なら、日本時間の日付が変わるよう 24。再起動だけなら 0）。終わるまで数十秒かかる。動くのはサーバーの時計だけで、ブラウザの時計は進まない
+- 再起動のあとは、ブラウザの文脈を閉じて開き直してから（アプリを開き直したことにする）、次の歩を流す
+- 時計を進めたら、流し終わったあとに必ず reset_clock: true で 0 に戻す（ほかのストーリーと人が同じ環境を使う）。使った回数・進めた時間・戻したことを interpretation に書く
+- 道具が失敗したら、その歩は skipped にし、exit そのものが時間をまたぐなら blocked にして、道具の返した文を interpretation に書く
+"""
+TIME_WITHOUT_TOOL = """- 時間をまたぐ手順（翌日・再起動のあと）は、ここではサーバーの再起動も時計の進めもできない（工場の中継が渡っていない）。その歩は skipped にし、
+  代わりに「ログインし直し・再読み込みで残るか」までを確かめて、ストーリー全体の decision は exit まで確かめられた範囲で決める
+  （exit そのものが時間をまたぐなら blocked にして、何が足りないかを interpretation に書く）
+"""
+
+
 def mobile_ref(inp: dict) -> str:
     """app_build の ref。環境に出ている版のコミット（release.built）にそろえる。分からなければ main で、そう書かせる"""
     c = inp.get("commit")
@@ -196,10 +213,7 @@ def prompt(defs: dict, stories: list[dict], env: dict, inp: dict, mobile: bool =
 - 画面が中継する API（同じオリジンの /api/*）を curl で直接見てもよい。ただし判定は「利用者に見えるもの」で決める
 - 別の利用者が絡む流れ（生徒が送り、コーチが受ける）は、ブラウザの文脈を 2 つ開いて交互に操作する
 - データは、ストーリーの preconditions を満たすために画面か API で作ってよい（合成シードの環境なので消えても困らない）。他のストーリーの前提を壊さない
-- 時間をまたぐ手順（翌日・再起動のあと）は、ここではサーバーの再起動も時計の進めもできない。その歩は skipped にし、
-  代わりに「ログインし直し・再読み込みで残るか」までを確かめて、ストーリー全体の decision は exit まで確かめられた範囲で決める
-  （exit そのものが時間をまたぐなら blocked にして、何が足りないかを interpretation に書く）
-
+{TIME_WITH_TOOL if mobile else TIME_WITHOUT_TOOL}
 {MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"], ref=mobile_ref(inp)) if mobile else ""}
 ## 判定の決まり（definitions/qa.yaml）
 - pass: {defs['decisions']['pass']}
@@ -227,8 +241,167 @@ def prompt(defs: dict, stories: list[dict], env: dict, inp: dict, mobile: bool =
 """
 
 
+
+# ------------------------------------------------------------------ 夜間の探索（nightly_explore）
+def charter_of(defs: dict, cid: str | None) -> dict:
+    """入力のチャーターの id から定義を引く。なければ先頭"""
+    cs = defs["explore"]["charters"]
+    return next((c for c in cs if c["id"] == cid), cs[0])
+
+
+def validate_explore(doc, defs: dict, charter: dict, story_ids: set[str], out_dir: Path | None = None) -> list[str]:
+    if not isinstance(doc, dict):
+        return ["explore.yaml の最上位は対応表（charter・tried・findings・interpretation・confidence）"]
+    errs = []
+    for k in defs["explore"]["result"]["required"]:
+        if k not in doc or (doc.get(k) in (None, "") and k != "findings"):
+            errs.append(f"{k} がない")
+    if doc.get("charter") not in (None, charter["id"]):
+        errs.append(f"charter は {charter['id']}（渡したチャーター）")
+    c = doc.get("confidence")
+    if not isinstance(c, (int, float)) or isinstance(c, bool) or not 0 <= c <= 1:
+        errs.append("confidence は 0〜1 の数")
+    tried = doc.get("tried")
+    if not isinstance(tried, list) or not tried:
+        errs.append("tried は 1 件以上の配列")
+    else:
+        for j, t in enumerate(tried):
+            if not isinstance(t, dict) or not t.get("did") or not t.get("saw"):
+                errs.append(f"tried[{j}] に did と saw が要る")
+    findings = doc.get("findings")
+    if not isinstance(findings, list):
+        errs.append("findings は配列（なければ []）")
+        findings = []
+    if len(findings) > int(defs["explore"]["findings_max"]):
+        errs.append(f"findings は {defs['explore']['findings_max']} 件まで（重い順に残す）")
+    for j, d in enumerate(findings):
+        if not isinstance(d, dict) or not d.get("title") or not d.get("actual"):
+            errs.append(f"findings[{j}] に title と actual が要る")
+            continue
+        if d.get("severity") not in defs["severities"]:
+            errs.append(f"findings[{j}].severity は {'・'.join(sorted(defs['severities']))} のどれか")
+        if d.get("viewpoint") not in defs["viewpoints"]:
+            errs.append(f"findings[{j}].viewpoint は {'・'.join(sorted(defs['viewpoints']))} のどれか")
+        if d.get("story_id") not in (None, "") and d["story_id"] not in story_ids:
+            errs.append(f"findings[{j}].story_id {d['story_id']!r} は specs/stories/ にない（近いものがなければ null）")
+    for j, f in enumerate(doc.get("flags") or []):
+        if not isinstance(f, dict) or f.get("viewpoint") not in ("aesthetic", "tone") or not f.get("note"):
+            errs.append(f"flags[{j}] は viewpoint（aesthetic・tone）と note")
+    if out_dir is not None:
+        for t in [*(tried if isinstance(tried, list) else []), *findings]:
+            for m in re.finditer(r"([A-Za-z0-9][A-Za-z0-9_-]{0,47}\.png)", json.dumps(t, ensure_ascii=False) if isinstance(t, dict) else ""):
+                if not (out_dir / m.group(1)).is_file():
+                    errs.append(f"スクリーンショット {m.group(1)} が out/ にない")
+    return errs
+
+
+def explore_prompt(defs: dict, charter: dict, stories: list[dict], env: dict, inp: dict, mobile: bool = False) -> str:
+    accounts = ((inp.get("touchable") or {}).get("accounts") or [])
+    ex = {"charter": charter["id"], "confidence": 0.7,
+          "tried": [{"actor": "student", "where": "予約の一覧", "did": "予約を取り消してから戻るを押した", "saw": "取り消した予約がまだ一覧にある",
+                     "story_id": stories[0]["id"] if stories else None}],
+          "findings": [{"title": "利用者の言葉で 1 行", "viewpoint": charter["viewpoint"], "severity": "s3", "where": "画面と場所",
+                        "reproduce": ["手順 1", "手順 2"], "expected": "利用者が期待すること", "actual": "見えたもの（03-cancel-back.png）",
+                        "story_id": None, "known_gap": False}],
+          "flags": [{"viewpoint": "aesthetic", "where": "画面と場所", "note": "人に見てほしい違和感"}],
+          "interpretation": "何を試し、どこが食い違っていて、どれを重く見たか"}
+    smap = [{"id": s["id"], "title": s.get("title"), "actor": s.get("actor"), "goal": s.get("goal"), "entry": s.get("entry"),
+             "must_not": s.get("must_not") or [], "known_gaps": s.get("known_gaps") or []} for s in stories]
+    return f"""あなたはソフトウェア工場の QA 役です。いまは人のいない夜で、探索テスト（exploratory testing）をします。
+QA の定義は「プロダクトの利用者（エンドユーザー、カスタマーサポート、運営担当）にとって使いやすいシステムであるかの品質を担保する」です。
+台本（ストーリーの steps）をなぞる判定は昼に別でやっています。今夜は下のチャーター（狙い）に沿って、利用者になったつもりで寄り道し、
+ストーリーが書いていないところで利用者が困ることを探してください。
+
+## 今夜のチャーター: {charter['id']}
+{charter['ja']}
+（見つけたものの観点は、ほかに当てはまらなければ {charter['viewpoint']}）
+
+## 作業の場所
+- 作業ディレクトリ（いまの場所）。製品のチェックアウトは product/（読むだけ。書き換えない・コミットしない）
+- 利用者の種類は product/specs/stories/actors.yaml、用語は product/specs/glossary.yaml、ストーリーの全文は product/specs/stories/
+- 環境の入口と、ログインの手がかりは env.json。ここに書いた URL 以外の環境（本番など）には繋がない
+- 成果物は out/ に置く: out/explore.yaml（下の形）と、根拠のスクリーンショット out/<2 桁の番号>-<短い名前>.png（1 枚 600KB まで、全部で 16 枚まで）
+
+## 道具
+- 画面はヘッドレスの Chromium を playwright-core で動かす。node で `const {{ chromium }} = require('playwright-core'); const b = await chromium.launch({{ executablePath: process.env.CHROMIUM_BIN, args: ['--no-sandbox'] }});`
+  （NODE_PATH は設定済み）。スマートフォンの利用者（生徒アプリ）は幅 390・高さ 844 で開く
+- 画面が中継する API（同じオリジンの /api/*）を curl で直接見てもよい。ただし見つけたものは「利用者に見えるもの」で書く
+- データは画面か API で作ってよい（合成シードの環境なので消えても困らない）。ただし、ほかの利用者のログインの手がかりを使えなくする操作（退会・停止）はしない
+- サーバーの再起動と時計の進めはできない
+{MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"], ref=mobile_ref(inp)) if mobile else ""}
+## 決まり
+- 見つけたものは {defs['explore']['findings_max']} 件まで、重い順。再現できたものだけ書く（再現の手順は利用者の操作で）
+- ストーリーの known_gaps に書いてある食い違いに当たったら known_gap: true を付ける。近いストーリーがあれば story_id に id を、なければ null
+- 見た目（色・余白・書体）と言葉の温度は見つけたものにしない。気になったら flags に書く（viewpoint は aesthetic か tone）
+- 観点: {json.dumps(defs['viewpoints'], ensure_ascii=False)}
+- 重要度: {json.dumps(defs['severities'], ensure_ascii=False)}
+- 何も見つからなくてもよい（findings: []）。試したこと（tried）は必ず書く。推測で見つけたものにしない
+
+## env.json の要点
+{json.dumps(env, ensure_ascii=False, indent=1)}
+ログインの手がかり（モックのトークン。画面のログインに使う）:
+{json.dumps(accounts, ensure_ascii=False, indent=1)}
+
+## 地図（ストーリーの要点。{len(smap)} 本）
+{yaml.safe_dump(smap, allow_unicode=True, sort_keys=False)}
+## 出力の形（out/explore.yaml）
+{yaml.safe_dump(ex, allow_unicode=True, sort_keys=False)}
+書いたら `python3 {HERE / 'qa.py'} --check-explore out/explore.yaml --charter {charter['id']} --repo-dir product` で形を確かめ、ok になるまで直してください。
+最後に、何を試して何を見つけたかを 3 行で答えて終わってください。
+"""
+
+
+def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
+    import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+    charter = charter_of(defs, inp.get("charter"))
+    stories = load_stories(repo_dir)
+    env = env_entries(repo_dir, inp.get("env") or "staging", inp.get("env_host") or defs["worker"]["env_host"])
+    env["release_id"] = inp.get("release_id")
+    base = {"mode": "explore", "charter": charter["id"], "night": inp.get("night"), "env": env["env"], "release_id": inp.get("release_id")}
+    if not env["entries"]:
+        return {"ok": False, "errors": [f"環境 {env['env']} の画面の入口が ship.yaml にない"], **base}
+    cost, usage, turns, model = 0.0, {}, 0, None
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "out").mkdir()
+        (root / "product").symlink_to(repo_dir.resolve(), target_is_directory=True)
+        (root / "env.json").write_text(json.dumps({**env, "accounts": (inp.get("touchable") or {}).get("accounts") or []},
+                                                  ensure_ascii=False, indent=1), encoding="utf-8")
+        state = str(root / ".agent-state")
+        mcp = relay_config(root)
+        text = explore_prompt(defs, charter, stories, env, inp, mobile=bool(mcp))
+        errs: list[str] = []
+        doc = None
+        for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
+            res = agent_runner.run_agentic("qa", text, max_turns=defs["explore"]["max_turns"], cwd=str(root), state_dir=state,
+                                           **({"mcp_config": mcp} if mcp else {}))
+            cost += res.cost_usd or 0
+            turns += res.num_turns or 0
+            model = res.model
+            for k, v in (res.usage or {}).items():
+                if isinstance(v, (int, float)):
+                    usage[k] = usage.get(k, 0) + v
+            doc = _load(root / "out" / "explore.yaml")
+            errs = validate_explore(doc, defs, charter, {s["id"] for s in stories}, root / "out") if not isinstance(doc, str) else [doc]
+            if not errs:
+                break
+            text = "out/explore.yaml に次の崩れがあります。直してください。\n" + "\n".join(f"- {e}" for e in errs)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        files = screenshots(root / "out")
+        for n in files:
+            shutil.copy2(root / "out" / n, out_dir / n)
+    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": bool(mcp), "stories": [], "verdicts": []})
+    if errs:
+        return {"ok": False, "errors": errs, **base}
+    known = {s["id"]: s.get("known_gaps") or [] for s in stories}
+    findings = [{**f, "known_gaps": known.get(f.get("story_id") or "", [])} for f in doc.get("findings") or []]
+    return {"ok": True, "files": files, "explore": {**doc, "charter": charter["id"], "findings": findings, "flags": doc.get("flags") or []}, **base}
+
+
 # ------------------------------------------------------------------ 本体
 def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
+    if inp.get("mode") == "explore":   # 夜間の探索（nightly_explore）
+        return run_explore(repo_dir, inp, out_dir, defs)
     import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
     stories = load_stories(repo_dir, inp.get("stories") or None)[: defs["worker"]["stories_max"]]
     if not stories:
@@ -288,6 +461,8 @@ def _load(p: Path):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check")
+    ap.add_argument("--check-explore")
+    ap.add_argument("--charter")
     ap.add_argument("--repo-dir", required=True)
     ap.add_argument("--input")
     ap.add_argument("--out-dir")
@@ -295,6 +470,13 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     defs = load_defs()
     repo_dir = Path(a.repo_dir)
+    if a.check_explore:
+        p = Path(a.check_explore)
+        doc = _load(p)
+        stories = {s["id"] for s in load_stories(repo_dir)}
+        errs = [doc] if isinstance(doc, str) else validate_explore(doc, defs, charter_of(defs, a.charter), stories, p.parent)
+        print("\n".join(errs) if errs else "ok")
+        return 1 if errs else 0
     if a.check:
         p = Path(a.check)
         doc = _load(p)

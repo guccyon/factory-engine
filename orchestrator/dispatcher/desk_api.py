@@ -6,7 +6,8 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
 
 認証: Authorization: Bearer <トークン>（factoryctl desk token create で発行。役割と対象の製品を持つ）
   GET  /api/desk/me                                    トークンの名前・役割・対象の製品
-  POST /api/desk/conversations                         {"kind": "request"|"inquiry", "product": "owner/repo", "body", "level"?: "p0".."p3", "due"?}
+  POST /api/desk/conversations                         {"kind": "request"|"inquiry", "product": "owner/repo", "body", "level"?: "p0".."p3", "due"?,
+                                                       "notify"?: [宛先の名前…] | "desk"} notify は提出の知らせ方（ADR 0039 の決定 5a。なければ done.task の既定）
                                                        相談を開く。返事は会話を読んで取る（相談のジョブは数分かかるので非同期）
   GET  /api/desk/conversations                         自分の相談の一覧（運用主はすべて）
   GET  /api/desk/conversations/<id>?after=<id>&wait=<秒>  会話と、after より後の発言。wait（最大 60）を渡すと、新しい発言が来るまで待って返す
@@ -82,7 +83,7 @@ def route(method: str, path: str, query: dict, body: dict, token: str | None, co
         if rest[:1] == ["conversations"]:
             if method == "POST" and len(rest) == 1:
                 c = desk.open_conversation(cur, who, body.get("kind"), body.get("product"), body.get("body"),
-                                           level=body.get("level"), due=body.get("due"))
+                                           level=body.get("level"), due=body.get("due"), notify_to=body.get("notify"))
                 return 201, desk.read_conversation(cur, who, c["id"])
             if method == "GET" and len(rest) == 1:
                 return 200, {"conversations": desk.list_conversations(cur, who)}

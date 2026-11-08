@@ -4,14 +4,19 @@
 - 操業 API（JSON）が正本で、画面はその利用者の 1 つ。将来の顧客向けアプリも同じ API を使う
   GET  /api/inbox                         受信トレイ: 人が対応するものの一覧（ADR 0026 の決定 7。inbox.py）。/api/state にも inbox として入る
   GET  /api/usage?days=14                 使用量: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
-  GET  /usage                             同じ中身のページ（usage_page.py）
+  GET  /usage                             同じ中身のページ（画面の中のページ。中身は GET /usage/body の HTML の断片。usage_page.py）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
+  POST /api/jobs/<id>/rerun               {"continue"?} 失敗したジョブを積み直す（factoryctl rerun と同じ。rerun.py）
+  GET  /api/jobs/<id>/log                 ジョブの作業の記録の最後の部分（オブジェクトストアの jobs/<id>/worker.log。鍵らしい文字列は伏せる）
+  POST /api/alerts/dismiss                {"key", "on"?} 停止のアラートを画面から消す（on=false で戻す）。停止そのものは閉じない（alerts.py）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
   POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
+  POST /api/budget                        {"mode"?: "daily"|"weekday", "daily_usd"?, "weekday_usd"?: {"mon".."sun"}, "reason"?} 使用量の予算の宣言（usage.set_budget）。
+                                          渡したものだけ変える。今の決め方は /api/state の factory.budget
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の更新のため（ADR 0020）
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
@@ -44,6 +49,7 @@ from urllib.parse import parse_qs, urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+import alerts
 import choice
 import drain
 import line
@@ -51,6 +57,7 @@ import inbox
 import judgment
 import ops
 import prototype
+import rerun
 import review_page
 import runners
 import ship
@@ -86,6 +93,28 @@ def read_design(key: str) -> bytes | None:
     finally:
         obj.close()
         obj.release_conn()
+
+
+SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{10,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
+                       r"(?i:(?:token|secret|password|api_key)\s*[=:]\s*)\S{8,})")
+LOG_TAIL_LINES = 80
+
+
+def job_log_tail(job_id: int) -> str | None:
+    """ジョブの作業の記録（worker.log）の最後の部分。停止のアラートから原因を見るため（2026-11-08）。鍵らしい文字列は伏せる"""
+    if store() is None:
+        return None
+    try:
+        obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), f"jobs/{job_id}/worker.log")
+    except Exception:  # noqa: BLE001  ない・読めない
+        return None
+    try:
+        data = obj.read()
+    finally:
+        obj.close()
+        obj.release_conn()
+    lines = data[-64000:].decode("utf-8", "replace").splitlines()[-LOG_TAIL_LINES:]
+    return SECRET_RE.sub("［伏せた］", "\n".join(lines))
 
 
 def store():
@@ -179,11 +208,14 @@ def snapshot(cur) -> dict:
     for r in cur.fetchall():
         items.append(item("done", ref=r["correlation_id"].split(":", 1)[1], title=r["title"] or "", pr_url=r["pr_url"], at=iso(r["occurred_at"]), note="マージ",
                           url=r["url"], source="github"))
-    cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload->>'error' as error, t.title from events e "
+    # 番号はチケットの source_ref か、ジョブのリポジトリと番号（owner/repo#n）。correlation_id の後ろ半分を使うと、委員会（committee:<PR の URL>）・
+    # 事例（case:<key>）・窓口（desk:<id>）のジョブで URL や key がリポジトリとして絞り込みに出ていた（11-08）
+    cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload->>'error' as error, t.title, t.source_ref, j.repo, j.issue_number from events e "
                 "left join jobs j on j.id=e.job_id left join tickets t on t.id=j.ticket_id "
                 "where e.name='job.finished' and e.payload->>'state'='failed' and e.occurred_at >= date_trunc('day', now()) order by e.id desc limit 20")
     for r in cur.fetchall():
-        items.append(item("done", job_id=r["job_id"], ref=(r["correlation_id"] or ":").split(":", 1)[1], title=r["title"] or "",
+        ref = r["source_ref"] or (f"{r['repo']}#{r['issue_number']}" if r["repo"] else (r["correlation_id"] or ":").split(":", 1)[1])
+        items.append(item("done", job_id=r["job_id"], ref=ref, title=r["title"] or "",
                           at=iso(r["occurred_at"]), note=f"失敗（{r['error']}）", failed=True))
     running = sum(1 for i in items if i["stage"] == "running")
     cur.execute("select count(*) as n from tickets where state='planned' and not held")
@@ -193,7 +225,7 @@ def snapshot(cur) -> dict:
         "runners": runners.view(cur),
         "runner_pairs": runners.pending_pairs(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur),
+        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur), "budget": usage.budget_spec(cur),
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
                     "planned": planned, "line_low_below": LINE_LOW_BELOW},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
@@ -306,6 +338,15 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         except (ValueError, TypeError) as e:
             return 400, {"error": str(e)}
         return 200, {"scale": line.status(cur)}
+    if path == "/api/budget":   # 使用量の予算の宣言（ADR 0029 の追記）。{mode, daily_usd, weekday_usd} のうち渡したものだけ変える
+        wk = body.get("weekday_usd")
+        if wk is not None and not isinstance(wk, dict):
+            return 400, {"error": "weekday_usd は {mon..sun: ドル}"}
+        try:
+            spec = usage.set_budget(cur, by, reason, mode=body.get("mode"), daily_usd=body.get("daily_usd"), weekday_usd=wk)
+        except (ValueError, TypeError) as e:
+            return 400, {"error": str(e)}
+        return 200, {"budget": spec}
     if path in ("/api/factory/drain", "/api/factory/resume"):
         drain.set_drain(cur, path.endswith("/drain"), by, reason)
         return 200, {"line": drain.status(cur)}
@@ -340,6 +381,15 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
     if m:
         before = ops.stop_job(cur, int(m.group(1)), by, reason)
         return (200, {"stopped_from": before}) if before else (409, {"error": "job is not active"})
+    m = re.fullmatch(r"/api/jobs/(\d+)/rerun", path)
+    if m:
+        new_id, msg = rerun.rerun(cur, int(m.group(1)), continue_draft=bool(body.get("continue")), requested_by=by)
+        return (200, {"job_id": new_id, "message": msg}) if new_id else (409, {"error": msg})
+    if path == "/api/alerts/dismiss":
+        key = str(body.get("key") or "")
+        if not alerts.set_dismissed(cur, key, body.get("on", True) is not False, by):
+            return 404, {"error": "no such stoppage"}
+        return 200, {"key": key}
     return 404, {"error": "not found"}
 
 
@@ -367,18 +417,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/state":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur), "trends": trends(cur),
-                                        "engine_version": version.engine_version()})
+                                        "alerts": alerts.view(cur), "engine_version": version.engine_version()})
         if self.path == "/api/inbox":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, inbox.view(cur))
-        if urlsplit(self.path).path in ("/api/usage", usage_page.PATH):
+        if urlsplit(self.path).path in ("/api/usage", usage_page.BODY_PATH):
             u = urlsplit(self.path)
             days = parse_qs(u.query).get("days", ["14"])[0]
             with db() as conn, conn.cursor() as cur:
                 v = usage.view(cur, days=min(max(int(days) if days.isdigit() else 14, 1), 90))
-            if u.path == usage_page.PATH:
-                return self._send(200, usage_page.render(v).encode(), "text/html; charset=utf-8")
+            if u.path == usage_page.BODY_PATH:   # 使用量のページの中身（画面の中の /usage が読み込む。タブとヘッダはほかのページと同じ）
+                return self._send(200, usage_page.body(v).encode(), "text/html; charset=utf-8")
             return self._json(200, v)
+        m = re.fullmatch(r"/api/jobs/(\d+)/log", urlsplit(self.path).path)
+        if m:
+            text = job_log_tail(int(m.group(1)))
+            return self._json(200, {"text": text}) if text is not None else self._json(404, {"error": "作業の記録が見つからない"})
         if self.path in ("/", "/index.html") or APP_PATH.fullmatch(urlsplit(self.path).path):   # 画面のページ（中身は画面の中で URL に合わせて描く）
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
         url = urlsplit(self.path)
