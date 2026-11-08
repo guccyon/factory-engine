@@ -32,7 +32,12 @@ record:
     self_reported:  "自己申告の確信度 0〜1"
     track_record:   "使えた実績（同じ類型での人の採点との一致率と件数）。蓄積前は null"
     basis:          "self_report | track_record（どちらで決めたか）"
-  other: [decision, alternatives, impact, mode, decided_by, category, taxonomy_version, human_grade, ticket_interpretation, category_v1]
+  other: [decision, alternatives, impact, mode, decided_by, category, taxonomy_version, human_grade, ticket_interpretation, category_v1, spec_of, spec_basis, decider, requester]
+
+# 判断の持ち主（ADR 0044 の決定 1・2）。judge が各件に spec_of を書き、由来の印（manifest の factory_owned_paths、acts_on が engine・process の知見の担保）があれば factory に確定する
+spec_of:
+  product: "製品自体の仕様。事業主（business）が決める。窓口から起票したチケットで依頼者が分かれば依頼者（requester）"
+  factory: "工場自体の仕様。工場のメンテナー（maintainer）が決める。書いていないもの・迷ったものもここ"
 
 # 段階（同じ判断が順に進む）
 stages:
