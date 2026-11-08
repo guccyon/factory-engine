@@ -1,15 +1,32 @@
 """依頼者ごとの好み（ADR 0040 の決定 6）。DB は使わない"""
 import os
 import sys
+from contextlib import contextmanager
 from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import requester_prefs as rp  # noqa: E402
 
 
+class Conn:
+    def __init__(self, cur):
+        self.cur = cur
+
+    @contextmanager
+    def transaction(self):   # psycopg の transaction() の代わり。外に取引がなければ張り、例外なら戻す
+        self.cur.sql.append("begin")
+        try:
+            yield
+        except Exception:
+            self.cur.sql.append("rollback")
+            raise
+        self.cur.sql.append("commit")
+
+
 class Cur:
     def __init__(self, rows=None, fail=False):
         self.rows, self.fail, self.sql = rows or [], fail, []
+        self.connection = Conn(self)
 
     def execute(self, sql, params=None):
         self.sql.append(sql)
@@ -40,4 +57,4 @@ def test_for_job_without_requester_or_table():
     assert rp.for_job(Cur(), "o/r", None, ["desk.converse"]) == []
     cur = Cur(fail=True)
     assert rp.for_job(cur, "o/r", "alice", ["desk.converse"]) == []
-    assert cur.sql[-1] == "rollback to savepoint requester_prefs"
+    assert cur.sql[-1] == "rollback"   # 失敗は取引ごと戻し、つないだ接続を壊さない

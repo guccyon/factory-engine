@@ -32,16 +32,15 @@ def for_job(cur, product: str, requester: str | None, work: list[str]) -> list[d
     """この回に渡す好み。依頼者が分からなければ渡さない"""
     if not requester or not product:
         return []
-    # 表がまだない DB（007 を当てる前）でも相談を止めない。失敗は savepoint で戻し、好みなしで進める
-    cur.execute("savepoint requester_prefs")
+    # 表がまだない DB（007 を当てる前）でも相談を止めない。失敗は戻し、好みなしで進める。
+    # 工場の接続は autocommit なので素の savepoint は使えない。transaction() は外に取引があれば savepoint、なければ取引を張る
     try:
-        cur.execute("select id, statement, work, axes, verified_at from requester_preferences "
-                    "where product=%s and requester=%s and status='active' and confidence='confirmed' "
-                    "order by verified_at desc, id desc limit %s", (product, requester, LIMIT * 3))
-        rows = cur.fetchall()
-        cur.execute("release savepoint requester_prefs")
+        with cur.connection.transaction():
+            cur.execute("select id, statement, work, axes, verified_at from requester_preferences "
+                        "where product=%s and requester=%s and status='active' and confidence='confirmed' "
+                        "order by verified_at desc, id desc limit %s", (product, requester, LIMIT * 3))
+            rows = cur.fetchall()
     except Exception:  # noqa: BLE001
-        cur.execute("rollback to savepoint requester_prefs")
         return []
     out = []
     for r in rows:
