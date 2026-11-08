@@ -229,6 +229,7 @@ def view(cur, now: datetime | None = None) -> dict:
     for s in rows:
         a = describe(cur, s)
         a["who_ja"] = WHO_JA.get(a["who"], a["who"])
+        a["inbox"] = s["category"] == "human"   # 人の判断待ちの停止は受信トレイにも出る。画面は「判断待ち」に寄せ、「工場の不調」には出さない（11-08）
         st = s.get("started_at")
         a["age_sec"] = int((now - st).total_seconds()) if hasattr(st, "tzinfo") and st and st.tzinfo else None
         if s["key"] in gone:

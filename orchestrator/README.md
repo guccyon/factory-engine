@@ -239,7 +239,8 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
   - 出荷 `/ship`: 製品ごとに出荷先のカード（今は Web の検証・本番だけ。モバイルのストアや CDN は同じ形のカードで足す）
   - 使用量 `/usage`: 下に別記。中身は `GET /usage/body` の HTML の断片で、タブとヘッダはほかのページと同じ
   - ヘルプ `/help`: ヘッダの数字（指示役・モード・流量・着手待ちのチケット）、止まっているものの種類、ラインの列の意味
-  - 止まっているもの（2026-11-08、`dispatcher/alerts.py`）: 開いている停止を 1 行ずつ「何が止まり・どれのことか（チケット・PR・更新の依頼）・何分前から」で出す（最初の 5 件、残りは「ほか N 件」）。押すと次にすること・対応する人・記録・リンク・「やり直す」（失敗した作業の積み直し。`factoryctl rerun` と同じ `rerun.py`）・作業の記録の最後の部分（`GET /api/jobs/<id>/log`、鍵らしい文字列は伏せる）。文は停止の種類と関係する記録から組み立て、工場の内側の記録の文（stoppage の what / waiting_for）は「工場の記録の文」として添えるだけ。× で画面から消せる（`POST /api/alerts/dismiss`、events の `alert.dismissed` / `alert.restored`。停止そのものは閉じない）。消したものは「消したもの」で見られ、戻せる。受信トレイの停止の件も同じ文。失敗した作業の停止は、次の作業が始まるかチケットが閉じると番人が閉じる
+  - ホームの「判断待ち」（受信トレイの未回答。プロダクトの判断）と「工場の不調」（保守の担当が直すもの）を分ける。人の判断待ちの停止（human）は受信トレイに出るので「工場の不調」には出さない（2026-11-08）
+  - 工場の不調（2026-11-08、`dispatcher/alerts.py`）: 開いている停止を 1 行ずつ「何が止まり・どれのことか（チケット・PR・更新の依頼）・何分前から」で出す（最初の 5 件、残りは「ほか N 件」）。押すと次にすること・対応する人・記録・リンク・「やり直す」（失敗した作業の積み直し。`factoryctl rerun` と同じ `rerun.py`）・作業の記録の最後の部分（`GET /api/jobs/<id>/log`、鍵らしい文字列は伏せる）。文は停止の種類と関係する記録から組み立て、工場の内側の記録の文（stoppage の what / waiting_for）は「工場の記録の文」として添えるだけ。× で画面から消せる（`POST /api/alerts/dismiss`、events の `alert.dismissed` / `alert.restored`。停止そのものは閉じない）。消したものは「消したもの」で見られ、戻せる。受信トレイの停止の件も同じ文。失敗した作業の停止は、次の作業が始まるかチケットが閉じると番人が閉じる
   - 設定 `/settings/<項目>`: ランナー・ラインと流量（`POST /api/line/scale` と同じ）・Mac（起こしたまま）・工場の版。連携・credential・Claude からのアクセス・工場の更新は今後
 - 操作: 優先度（p0 緊急・p1 急ぎ・p2 通常・p3 後回し）、保留・再開、止める。すべて events に `ticket.*` / `job.cancel_requested` として残る
 - API: `GET /api/state`、`POST /api/tickets/<id>/priority`（`{"level":"p1"}`）、`POST /api/tickets/<id>/hold`・`resume`、`POST /api/jobs/<id>/stop`・`rerun`、`POST /api/alerts/dismiss`（`{"key", "on"?}`）。操作には画面に埋めた合言葉のヘッダー `X-Console-Token` が要る

@@ -103,7 +103,7 @@ header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;
 .al-log{max-height:320px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;white-space:pre-wrap;word-break:break-all;margin:8px 0 0}
 .al-f{display:flex;gap:8px;margin-top:6px}.al-f:empty{display:none}.al-gone{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line)}.al-gone .al-t{color:var(--sub)}
 @media(max-width:640px){.al-h{flex-wrap:wrap}.al-t{flex-basis:calc(100% - 60px)}}
-#help-i{display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#help-i svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#help-i:hover,#help-i.on{color:var(--accent);background:var(--bg)}
+#flow{scroll-margin-top:150px}#help-i{display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#help-i svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#help-i:hover,#help-i.on{color:var(--accent);background:var(--bg)}
 .help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0}.help dt{font-weight:600}.help dd{margin:0}.help h3{font-size:13px;margin:14px 0 6px;color:var(--sub)}
 @media(max-width:640px){.help dl{grid-template-columns:1fr}.help dd{margin-bottom:6px}}
 a:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -240,7 +240,7 @@ function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
 (()=>{if(location.pathname!=="/"||!location.hash)return;const h=location.hash.slice(1);let to="";
  if(/^choice-\d+$/.test(h))to=ibHref("choice:"+h.slice(7));else if(h==="choices")to=ibHref("choice:exit_capture");else if(h==="ship")to="/ship";else if(h==="inbox")to="/inbox";
  if(to)history.replaceState(null,"",to)})();
-function go(href){if(href!==location.pathname)history.pushState(null,"",href);render()}
+function go(href){if(href!==location.pathname+location.hash)history.pushState(null,"",href);render();const h=href.split("#")[1],el=h&&document.getElementById(h);if(el)el.scrollIntoView({block:"start"})}
 document.addEventListener("click",e=>{const a=e.target.closest("a[data-nav]");if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button)return;e.preventDefault();go(a.getAttribute("href"))});
 addEventListener("popstate",()=>render());
 const ago=s=>s==null?"":dur(s)+"待ち";
@@ -248,8 +248,8 @@ const busy=id=>{const e=document.getElementById(id);return !!e&&(e.contains(docu
 
 // ---- ホーム
 function todoView(ib){const xs=ib.items.filter(i=>!i.answered);
- if(!xs.length)return `<h2>対応が必要なもの</h2><div class="m">いまはありません</div>`;
- return `<h2>対応が必要なもの（${xs.length} 件）</h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
+ if(!xs.length)return `<h2>判断待ち<span class="m"> プロダクトの判断（受信トレイ）</span></h2><div class="m">いまはありません</div>`;
+ return `<h2>判断待ち（${xs.length} 件）<span class="m"> プロダクトの判断（受信トレイ）</span></h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
   <a class="more" href="/inbox" data-nav>受信トレイをすべて見る →</a>`}
 function spark(series){const v=(series||[]).map(x=>typeof x==="number"?x:null),ns=v.filter(x=>x!=null);if(ns.length<2)return '<div class="m">推移はまだない</div>';
  const lo=Math.min(...ns),hi=Math.max(...ns),W=140,H=34,X=i=>(i*(W-4)/(v.length-1)+2).toFixed(1),Y=x=>(hi===lo?H/2:H-3-(x-lo)*(H-6)/(hi-lo)).toFixed(1);
@@ -286,9 +286,9 @@ function alertRow(a,gone){const open=alOpen.has(a.key),t=a.target;
   {label:"止まった種類",html:esc(a.category_ja)},a.record&&a.record.what?{label:"工場の記録の文",html:esc(a.record.what)+(a.record.waiting_for?" — "+esc(a.record.waiting_for):"")}:null].filter(Boolean);
  const jid=(a.links||[]).map(l=>l.log).find(x=>x!=null),lg=jid!=null&&alLog[jid]!=null?`<pre class="al-log">${esc(alLog[jid])}</pre>`:"";
  return `<div class="al open">${head}<div class="al-b"><div class="ask"><b>次にすること:</b> ${esc(a.todo||"建設者に回す")}</div><dl class="dt">${det.map(d=>`<dt>${esc(d.label)}</dt><dd>${d.html}</dd>`).join("")}</dl>${acts||links?`<div class="acts">${acts}${links}</div>`:""}${lg}</div></div>`}
-function alertsView(al){if(!al)return"";const xs=al.open||[],gs=al.dismissed||[];if(!xs.length&&!gs.length)return"";
+function alertsView(al){if(!al)return"";const xs=(al.open||[]).filter(a=>!a.inbox),gs=(al.dismissed||[]).filter(a=>!a.inbox);if(!xs.length&&!gs.length)return"";   // 人の判断待ちの停止は受信トレイ（判断待ち）に出すので、ここには出さない
  const cnt={};xs.forEach(a=>cnt[a.group]=(cnt[a.group]||0)+1);const shown=alAll?xs:xs.slice(0,AL_LIM);
- return `<section class="card alerts"><h2>止まっているもの（${xs.length} 件）<span class="m">${Object.entries(cnt).map(([g,n])=>esc(g)+" "+n).join("・")}</span></h2>
+ return `<section class="card alerts"><h2>工場の不調（${xs.length} 件）<span class="m">保守の担当が直すもの · ${Object.entries(cnt).map(([g,n])=>esc(g)+" "+n).join("・")}</span></h2>
  ${xs.length?shown.map(a=>alertRow(a,false)).join(""):'<div class="m">画面に出しているものはない</div>'}
  <div class="al-f">${xs.length>AL_LIM?`<button data-alall>${alAll?"少なく表示":`ほか ${xs.length-AL_LIM} 件も見る`}</button>`:""}${gs.length?`<button data-algone>${alGone?"消したものを閉じる":`消したもの（${gs.length} 件）`}</button>`:""}</div>
  ${alGone&&gs.length?`<div class="al-gone"><div class="m">画面から消したもの。止まり自体はまだ解けていない（解けるとここからも消える）</div>${gs.map(a=>alertRow(a,true)).join("")}</div>`:""}</section>`}
@@ -309,19 +309,26 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <h3>ヘッダ</h3><dl>
 <dt>指示役</dt><dd>工場の進行役（supervisor）が動いているか。60 秒ごとに合図を出しながら、依存が片付いたチケットを優先度の順にラインへ流し、工場の PR のマージの判定・検査と judge の開始・CI 落ちや衝突の直しの手配・日報・出荷のタイミングを回す。合図が 3 分途絶えると「〇分前に停止」と赤く出る。工場を動かしている Mac のスリープや停止を疑う</dd>
 <dt>モード</dt><dd>「人が並走」（attended）は、工場が決めきれなかった判断を人に回し、人の 1 タップで流す。「全面委任」（unattended）は、決めてよい範囲の中では工場が自分で判断して流す。切り替えはいまはコマンド（factoryctl mode set）か時間帯の設定（MODE_SCHEDULE。例: 夜は全面委任）だけ</dd>
-<dt>流量</dt><dd>「いま動いている数 / 上限」。上限は設定の「ラインと流量」で変えられる。下げても動いている作業は止めず、新しく始めないだけ</dd>
+<dt>流量</dt><dd id="flow"><svg viewBox="0 0 720 210" role="img" aria-label="ワーカーはレーンの数、チケットはレーンに載せる部品の数" style="width:100%;max-width:720px;display:block;margin:4px 0 8px">
+<g font-size="12" fill="currentColor"><text x="0" y="14">ワーカー＝レーンの数（同時に作業できる場所。増やすと並べて作れる）</text></g>
+<g stroke="var(--line)" stroke-width="18" stroke-linecap="round"><line x1="70" y1="45" x2="700" y2="45"/><line x1="70" y1="85" x2="700" y2="85"/><line x1="70" y1="125" x2="700" y2="125"/></g>
+<g font-size="11" fill="var(--sub)"><text x="0" y="49">レーン 1</text><text x="0" y="89">レーン 2</text><text x="0" y="129">レーン 3</text></g>
+<g fill="var(--accent)"><rect x="150" y="36" width="34" height="18" rx="4"/><rect x="330" y="76" width="34" height="18" rx="4"/></g>
+<g font-size="10" fill="#fff"><text x="155" y="49">#12</text><text x="335" y="89">#15</text></g>
+<g font-size="12" fill="currentColor"><text x="0" y="166">チケット＝レーンに同時に載せる部品の数（この図では 2）。レーンが空いていても、この数を超えて載せない</text>
+<text x="0" y="186" fill="var(--sub)">検査やマージを待つ PR も載ったまま数える。待ちが多いと、レーンが空いていても次に手を付けない</text></g></svg>「いま動いている数 / 上限」。上限は設定の「ラインと流量」で変えられる。下げても動いている作業は止めず、新しく始めないだけ</dd>
 <dt>　ワーカー</dt><dd>ラインで同時に動かす作業（ジョブ）の数。実装・検査・judge・デザインなど</dd>
 <dt>　チケット</dt><dd>同時に手を付けるチケットの数。作業中のものと、PR が開いたまま検査やマージを待っているものの両方を数える。満杯だとワーカーが空いていても次のチケットに手を付けない</dd>
-<dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。ラインを一時停止しても止まらない</dd>
+<dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。委員会どうしは数によらず常に 1 つずつ順に動く（並べると知見が競合・矛盾するため。検討の課題は順番待ちに積まれる）。ラインを一時停止しても止まらない</dd>
 <dt>　窓口</dt><dd>相談に答える係が同時に動く数。ラインを一時停止しても止まらず、ラインのワーカーを使わない</dd>
 <dt>今日の費用</dt><dd>今日終わった作業の消費を API の単価に換算した目安。定額の契約の実際の請求ではない。詳しくは「使用量」</dd>
 <dt>着手待ちのチケット</dt><dd>依存や上限で、まだ手を付けていないチケットの数（保留にしたものは除く）。少なくなる（既定は 2 件を切る）と赤くなり、番人が知らせる。積まないとラインが空になる</dd>
 <dt>ライン</dt><dd>スイッチがオンなら、順番待ちの作業を取り出して流している。オフ（一時停止）にすると新しく取り出さない。工場の更新の前に使う</dd>
 </dl>
-<h3>止まっているもの</h3><dl>
-<dt>止まっているもの</dt><dd>番人（ラインを見張る仕組み）が見つけた、作業が先に進めない状態。1 行を押すと、対象・次にすること・記録・やり直すボタンが出る。× で画面から消せる（止まり自体は解けない）。消したものは「消したもの」で見られ、戻せる。止まりが解けると自動で一覧から消える</dd>
+<h3>ホームの「判断待ち」と「工場の不調」</h3><dl>
+<dt>判断待ち</dt><dd>プロダクトの判断（画面の案・マージ・工場が決めきれなかった点など）。受信トレイで答える。答える人はプロダクトの持ち主（オーナー）か、件ごとの宛先</dd>
+<dt>工場の不調</dt><dd>番人（ラインを見張る仕組み）が見つけた、工場の側の止まり（作業の失敗・PR が CI や衝突で進めない・指示役の不在など）。工場の保守の担当（建設者）が直すもの。1 行を押すと、対象・次にすること・記録・やり直すボタンが出る。× で画面から消せる（止まり自体は解けない）。消したものは「消したもの」で見られ、戻せる。止まりが解けると自動で一覧から消える</dd>
 <dt>作業の失敗</dt><dd>1 つの作業（ジョブ）が失敗した。作業ごとに 1 件出る。同じチケットで何度も失敗すると同じチケットの行が並ぶ。「やり直す」で同じ作業を積み直す</dd>
-<dt>判断待ち</dt><dd>工場が決めきれずに人に回したもの。受信トレイで答える</dd>
 <dt>PR が進めない</dt><dd>工場の PR が衝突・CI 落ち・検査の指摘などで先に進めない</dd>
 <dt>工場の更新</dt><dd>工場自身の新しい版への更新を、決まりにより自動では進めず人に回したもの</dd>
 </dl>
@@ -401,8 +408,8 @@ function shipPage(rs){if(!rs.length)return `<div class="m">出荷した製品は
 
 // ---- 設定
 function scaleForm(sc){if(!sc)return `<div class="m">流量の宣言が読めない</div>`;const d=sc.desired,r=sc.running,n=v=>v==null?"?":v;
- const L={workers:"ワーカー",tickets:"同時に進めるチケット",governance:"委員会",desk:"窓口"};
- return `<div class="m">${sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）"}。factoryctl line scale と同じ</div>
+ const L={workers:"ワーカー（レーンの数）",tickets:"同時に進めるチケット（レーンに載せる数）",governance:"委員会と知見の流れ（委員会どうしは常に 1 つずつ）",desk:"窓口"};
+ return `<div class="m"><a href="/help#flow" data-nav>ワーカーとチケットの違い（図）→</a></div><div class="m">${sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）"}。factoryctl line scale と同じ</div>
   <table class="tb"><tr><th></th><th>いま</th><th>宣言</th></tr>${Object.keys(L).map(k=>`<tr><td>${L[k]}</td><td>${n(r[k])}</td><td><input type="number" min="0" max="50" id="sc-${k}" value="${esc(d[k])}"></td></tr>`).join("")}</table>
   <div class="acts"><input id="sc-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-scale>宣言を変える</button></div>`}
 document.addEventListener("click",e=>{if(!e.target.closest("button[data-scale]"))return;const body={reason:(document.getElementById("sc-reason")||{}).value||"操業コンソール"};
@@ -416,7 +423,7 @@ function settingsBody(sec,s){const f=s.factory;
 // ---- 描画
 const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"],["/usage","使用量","usage"]];
 function skeleton(v,arg){
- if(v==="home")return `<div id="h-stops"></div><section class="card" id="h-todo"></section><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
+ if(v==="home")return `<section class="card" id="h-todo"></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
  if(v==="ship")return `<div id="ship"></div>`;
