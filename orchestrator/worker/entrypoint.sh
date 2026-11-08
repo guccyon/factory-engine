@@ -212,12 +212,16 @@ fi
 
 # この製品の知見（ADR 0024 の 6）: 委員会が採用した active で確認済み以上の知見を、確かさと確認日を付けて文脈のファイルにする。
 # 選ぶのは core-gates/knowledge_context.py（決定論）。渡した id は FACTORY_RESULT の knowledge_ids に載せ、dispatcher が knowledge.used に残す。KNOWLEDGE_CONTEXT=0 で止める
+# 業務（ADR 0040）は役 implement から work.yaml で引く（実装と変更の説明を書く）。依頼の形はラインのチケット、製品の段階は manifest から
 KNOWLEDGE_NOTE=""
 KNOWLEDGE_IDS='[]'
+KNOWLEDGE_SEL='{}'
 if [ "${KNOWLEDGE_CONTEXT:-1}" != "0" ] && [ -z "${MECHANICAL:-}" ] && [ -d .factory-config/knowledge ]; then
-  KX=$(python3 /work/engine/core-gates/knowledge_context.py --repo . --role implement --out "${CONTEXT}/knowledge.md" 2>/dev/null || echo '{}')
+  KX=$(python3 /work/engine/core-gates/knowledge_context.py --repo . --role implement --set request_form=ticket --out "${CONTEXT}/knowledge.md" 2>/dev/null || echo '{}')
   KNOWLEDGE_IDS=$(jq -c '.ids // []' <<<"${KX}" 2>/dev/null || echo '[]')
   [ -z "${KNOWLEDGE_IDS}" ] && KNOWLEDGE_IDS='[]'
+  KNOWLEDGE_SEL=$(jq -c '{work: (.work // []), values: (.values // {}), fit: (.fit // {})}' <<<"${KX}" 2>/dev/null || echo '{}')
+  [ -z "${KNOWLEDGE_SEL}" ] && KNOWLEDGE_SEL='{}'
   echo "[worker] knowledge context ids=${KNOWLEDGE_IDS}"
   if [ "${KNOWLEDGE_IDS}" != "[]" ] && [ -s "${CONTEXT}/knowledge.md" ]; then
     KNOWLEDGE_NOTE="
@@ -404,9 +408,9 @@ CHANGE_TYPE="code_change"
 if ! git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" | grep -vqE '(\.md$|^docs/|^CLAUDE\.md$)'; then CHANGE_TYPE="docs_only"; fi
 
 echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg n "${PR_NUMBER}" --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg ct "${CHANGE_TYPE}" --arg files "${CHANGED}" \
-  --argjson lessons "${LESSONS_JSON}" --arg provisional "${PROVISIONAL}" --argjson knowledge "${KNOWLEDGE_IDS}" \
+  --argjson lessons "${LESSONS_JSON}" --arg provisional "${PROVISIONAL}" --argjson knowledge "${KNOWLEDGE_IDS}" --argjson ksel "${KNOWLEDGE_SEL}" \
   --arg incomplete "${INCOMPLETE}" --arg rc "${CLAUDE_RC}" \
-  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, provisional_raw:$provisional, knowledge_ids:$knowledge, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
+  '{pr_url:$pr, pr_number:($n|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber), change_types:[$ct], files:$files, lessons:$lessons, provisional_raw:$provisional, knowledge_ids:$knowledge, knowledge_selection:$ksel, incomplete:($incomplete=="1"), claude_exit:($rc|tonumber)}')"
 # 途中終了なら、PR は残したうえでジョブとしては失敗にする（dispatcher が factory:failed にして rerun を案内する）
 # 最後の行を `[ … ] && exit 4` にすると、条件が偽のときスクリプトの終了コードが 1 になる（T08 job 30 で成功が失敗扱いになった）
 if [ -n "${INCOMPLETE}" ]; then exit 4; fi

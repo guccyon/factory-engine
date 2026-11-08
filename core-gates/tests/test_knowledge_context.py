@@ -42,7 +42,7 @@ def test_passes_only_active_confirmed_or_settled_for_the_role(tmp_path):
         "K-0010": k("K-0010", confidentiality="client"),
         "K-0011": k("K-0011", status="superseded"),
     })
-    text, ids, skipped = kx.build(r, "implement", TODAY)
+    text, ids, skipped, _ = kx.build(r, "implement", TODAY)
     assert sorted(ids) == ["K-0001", "K-0005", "K-0008", "K-0009"]
     assert skipped["hypothesis"] == ["K-0002"]
     assert skipped["enforced"] == ["K-0004"]
@@ -58,7 +58,7 @@ def test_passes_only_active_confirmed_or_settled_for_the_role(tmp_path):
 def test_newest_first_and_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(kx, "MAX_ITEMS", 2)
     r = repo(tmp_path, {f"K-000{i}": k(f"K-000{i}", verified_at=f"2026-10-0{i}") for i in range(1, 5)})
-    _, ids, skipped = kx.build(r, "implement", TODAY)
+    _, ids, skipped, _ = kx.build(r, "implement", TODAY)
     assert ids == ["K-0004", "K-0003"]
     assert skipped["over_limit"] == ["K-0002", "K-0001"]
 
@@ -84,3 +84,55 @@ def test_main_writes_file_with_header(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["ids"] == ["K-0001"]
     body = out.read_text(encoding="utf-8")
     assert body.startswith("# この製品の知見") and "K-0001 の主張" in body
+
+
+# 業務と適応度で選ぶ（ADR 0040 の決定 3・4）
+def job(**values):
+    work = values.pop("work", None)
+    return kx.Job("implement", work=work, values=values)
+
+
+def test_role_maps_to_work_nodes_from_work_yaml():
+    j = kx.Job("implement")
+    assert j.work == ["dev.build", "dev.describe"] and "PR.body" in j.artifacts and "dev" in j.covered
+    assert kx.Job("body_fix").work == ["dev.describe"]
+
+
+def test_candidates_by_work_ancestors_and_artifacts(tmp_path):
+    r = repo(tmp_path, {
+        "K-0001": k("K-0001", scope="{work: [dev.describe]}"),
+        "K-0002": k("K-0002", scope="{work: [dev]}"),                    # 親のノード
+        "K-0003": k("K-0003", scope="{work: [dev.design.proposal]}"),    # ほかの業務
+        "K-0004": k("K-0004", scope="{artifacts: [PR]}"),                # 成果物の親の型
+        "K-0005": k("K-0005", scope="{work: [dev.describe]}", acts_on="engine"),
+    })
+    _, ids, skipped, fit = kx.build(r, "implement", TODAY, job(request_form=["ticket"]))
+    assert sorted(ids) == ["K-0001", "K-0002", "K-0004"]
+    assert skipped["other_work"] == ["K-0003"] and skipped["not_context"] == ["K-0005"]
+    assert ids[0] == "K-0001" and fit["K-0001"]["score"] > fit["K-0002"]["score"]   # 深いノードが先
+
+
+def test_axes_exclude_penalize_and_unknown(tmp_path):
+    r = repo(tmp_path, {
+        "K-0001": k("K-0001", scope="{work: [dev.build], purpose: [adopt]}"),
+        "K-0002": k("K-0002", scope="{work: [dev.build], purpose: [new_feature]}"),
+        "K-0003": k("K-0003", scope="{work: [dev.build], product_stage: [operating]}"),
+        "K-0004": k("K-0004", scope="{work: [dev.build], files: [\"apps/backend/**\"]}"),
+        "K-0005": k("K-0005", scope="{work: [dev.build], request_form: [one_off]}"),
+    })
+    _, ids, skipped, fit = kx.build(r, "implement", TODAY, job(purpose=["adopt"], product_stage=["development"], request_form=["ticket"]))
+    assert ids[0] == "K-0001" and fit["K-0001"]["parts"]["purpose"] == 2
+    assert sorted(skipped["mismatch"]) == ["K-0002", "K-0003", "K-0005"]
+    assert fit["K-0004"]["parts"]["files"] == -0.25          # ファイルは分からない
+    _, ids, _, fit = kx.build(r, "implement", TODAY, kx.Job("implement", values={"purpose": ["adopt"]}, files=["apps/backend/src/a.rs"]))
+    assert fit["K-0004"]["parts"]["files"] == 1
+
+
+def test_main_reports_work_values_and_fit(tmp_path, capsys):
+    r = repo(tmp_path, {"K-0001": k("K-0001", scope="{work: [dev.describe], request_form: [ticket]}")})
+    (r / ".factory-config" / "manifest.yaml").write_text("product_stage:\n  stage: development\n", encoding="utf-8")
+    kx.main(["--repo", str(r), "--out", str(tmp_path / "k.md"), "--today", "2026-11-05", "--set", "request_form=ticket"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["ids"] == ["K-0001"] and out["work"] == ["dev.build", "dev.describe"]
+    assert out["values"]["product_stage"] == ["development"] and out["fit"]["K-0001"]["parts"]["request_form"] == 2
+    assert "業務 dev.describe" in (tmp_path / "k.md").read_text(encoding="utf-8")
