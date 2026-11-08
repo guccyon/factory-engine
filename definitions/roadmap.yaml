@@ -115,8 +115,12 @@ phases:
     # 完了は「rally で、触れる環境と Mac ランナーの上で、ユーザーストーリーから QA 役の Verdict まで 1 本通り、夜間の探索が回った」。
     # 着手はラインの再開の指示の後。アーキテクチャに触れる点（QA 役と Verdict の型、Mac ランナー、Blueprint の欄、Defect/Incident の型）は ADR 0028
     items:
-      - { id: mac_runner, ja: "Mac ランナーが工場から呼べる（iOS シミュレーターの起動・インストール・画面の取得・操作・ログの回収をジョブから）", measure: { manual: todo } }   # Mac 上の MCP サーバー＋常駐。対話は要らないので Remote Control ではない。Gen1 は dispatcher から直接でもよい
-      - { id: one_orchestrator, ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した", measure: { manual: todo } }   # mac_runner を QA ワーカーのツールとして渡す。2026-11-06 dispatcher/runner_relay.py（ジョブごとの中継）。QA の判定で iOS のストーリーを 1 本通したら done
+      - id: mac_runner
+        ja: "Mac ランナーが工場から呼べる（iOS シミュレーターの起動・インストール・画面の取得・操作・ログの回収をジョブから）"
+        measure: { db: { target: 5, sql: "select count(distinct case when payload->>'tool' like 'ui\\_%' then 'ui' else payload->>'tool' end) from events where name = 'runner.relayed' and job_id is not null and (payload->>'ok')::boolean and (payload->>'tool' in ('sim_boot', 'app_install', 'screenshot', 'logs') or payload->>'tool' like 'ui\\_%')" } }   # Mac 上の MCP サーバー＋常駐。対話は要らないので Remote Control ではない。2026-11-08: ジョブから中継（runner_relay.py）越しに成功した道具の種類で数える。起動（sim_boot）・インストール（app_install）・画面の取得（screenshot）・操作（ui_*）・ログ（logs）の 5 つ
+      - id: one_orchestrator
+        ja: "QA 役の 1 セッションがサーバ側（環境・API・DB）と Mac 側（シミュレーター）の両方に指示して 1 本のシナリオを通した"
+        measure: { db: { target: 1, sql: "select count(distinct v.job_id) from events v where v.name = 'qa.verdict' and exists (select 1 from events r where r.name = 'runner.relayed' and r.job_id = v.job_id and (r.payload->>'ok')::boolean and r.payload->>'tool' = 'app_launch')" } }   # mac_runner を QA ワーカーのツールとして渡す。2026-11-06 dispatcher/runner_relay.py（ジョブごとの中継）。2026-11-08: Verdict を出した QA のジョブのうち、同じジョブで Mac ランナーのアプリの起動が通ったものを数える（11-06 のジョブ 4995 が該当の見込み）
       - { id: touchable_env, ja: "Release 候補ごとに触れる環境（backend ＋ Web ＋ モバイルのビルド）が 1 コマンドで立ち、シードが入り、人が URL と QR で触れる", measure: { db: { target: 1, sql: "select count(distinct payload->>'release_id') from events where name = 'release.touchable' and (payload->>'reachable_from_phone')::boolean" } } }   # Gen1 は staging を QA 環境として兼用でよい。使い捨ては P5b の ephemeral_env。factoryctl env up（orchestrator/README の「触れる環境」）。スマートフォンから届く入口を出した Release を数える
       - id: user_story
         ja: "ユーザーストーリー（誰が・何のため・入口と出口・してはいけないこと・読み手）の型があり、既存機能に 3 本以上遡って書かれた"
