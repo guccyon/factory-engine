@@ -31,9 +31,9 @@ kinds:
       business_owner: [business_owner]
     status: ready
   done.task:
-    ja: 窓口の依頼の完了報告
+    ja: 窓口の依頼の提出の知らせ（提出・断り・受け取りの知らせ直し。ADR 0039 の決定 5a）
     parties: [provider, business_owner]
-    defaults:
-      provider: []
-      business_owner: []
-    status: later
+    defaults:                     # 依頼者が会話の notify で手段を選ばなければ、事業主の宛先（Gen1 は Slack）。メンションは宛先の mentions に手で書いた分だけ
+      provider: [business_owner]
+      business_owner: [business_owner]
+    status: ready

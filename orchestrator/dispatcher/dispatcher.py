@@ -305,6 +305,8 @@ def poll_loop():
                     desk_line.run_operations(cur)
                 with db() as conn, conn.cursor() as cur:   # 応答時間の目安を見て、途中の様子と遅れを書く（ADR 0039 の順番 3）
                     desk_line.watch(cur)
+                with db() as conn, conn.cursor() as cur:   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる（ADR 0039 の順番 5）
+                    desk_line.send_notices(cur)
             except Exception as e:  # noqa: BLE001
                 log("desk filing failed", repr(e))
             try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の段を積む（ADR 0025・0026）

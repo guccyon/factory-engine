@@ -503,13 +503,24 @@ def deliver(cur, cid: int, round_: int, out: dict) -> None:
                                                           "inbox_key": f"task:{key}", **({"cap_hit": True} if cap else {})})
     inbox.request(cur, key, RECEIPT_KIND, "requester", f"窓口の依頼 {cid} を提出: {out['summary']}"[:300],
                   action="受け取ったか答える（受け取った・続きを頼む・差し戻す）", correlation_id=desk.corr(cid), by="desk")
+    notice(cur, cid, "delivered", round_, ("上限に当たったので、ここまでを提出しました: " if cap else "提出しました: ") + out["summary"],
+           "受け取った・続きを頼む・差し戻す のどれかで答えてください（窓口か受信トレイから）。")
 
 
 KEY_RE = re.compile(rf"^({CONFIRM_KIND}|{RECEIPT_KIND}|{DECLINE_KIND}):(\d+):(\d+)$")
 
 
 def answer(cur, key: str, option: str, by: str, via: str, note: str = "") -> tuple[bool, str]:
-    """受信トレイの件（desk_confirm・desk_receipt）への答え。inbox.answer の作用から呼ばれる（どの入口から来た答えもここを通る）"""
+    """受信トレイの件（desk_confirm・desk_receipt・desk_decline）への答え。inbox.answer の作用から呼ばれる（どの入口から来た答えもここを通る）。
+    答えが通ったら、運用主に回した「依頼者の返事待ち」の件も消す"""
+    ok, msg = _answer(cur, key, option, by, via, note)
+    m = KEY_RE.match(key or "")
+    if ok and m:
+        inbox.resolve(cur, f"{WAITING_KIND}:{m.group(2)}:{m.group(3)}", by, "answered")
+    return ok, msg
+
+
+def _answer(cur, key: str, option: str, by: str, via: str, note: str = "") -> tuple[bool, str]:
     m = KEY_RE.match(key or "")
     if not m:
         return False, f"窓口の件ではない: {key}"
@@ -591,6 +602,8 @@ def decline(cur, cid: int, job: dict, res: dict) -> None:
                                                           "summary": desk.LOOP["decline_reasons"][reason], "inbox_key": f"task:{key}"})
     inbox.request(cur, key, DECLINE_KIND, "requester", f"窓口の依頼 {cid} は受けられない: {desk.LOOP['decline_reasons'][reason]}"[:300],
                   action="断りに答える（納得した・別案で進める・断りを差し戻す）", correlation_id=desk.corr(cid), by="desk")
+    notice(cur, cid, "declined", n, f"今の工場では受けられません（{desk.LOOP['decline_reasons'][reason]}）。代わりの案を {len(alts)} つ添えました。",
+           "納得した・別案で進める・断りを差し戻す のどれかで答えてください（窓口か受信トレイから）。")
 
 
 def answer_decline(cur, c: dict, key: str, round_: int, option: str, by: str, via: str, note: str) -> tuple[bool, str]:
@@ -644,10 +657,53 @@ def _where(cur, c: dict, m: dict) -> str:
     return "実行の順番を待っています" if j else "実行に入ったところです"
 
 
+WAIT_STEPS = {"awaiting_confirm": ("desk.confirm_requested", CONFIRM_KIND, "実行してよいかの確認"),
+              "delivered": ("desk.delivered", None, "提出の受け取り")}
+WAITING_KIND = "desk_waiting"
+
+
+def remind(cur, now) -> int:
+    """依頼者の答え（確認・受取確認・断り）を待っている会話に知らせ直す（決定 4・5）。仮置き 3 日・7 日。
+    それでも答えがなければ運用主の受信トレイに「依頼者の返事待ち」を出す。どちらでも会話は閉じない（完了にできるのは依頼者だけ）"""
+    from datetime import timedelta
+    cur.execute("select * from desk_conversations where kind='request' and state in ('awaiting_confirm','delivered') order by id")
+    n = 0
+    for c in cur.fetchall():
+        cid, corr = c["id"], desk.corr(c["id"])
+        ev_name, _, what = WAIT_STEPS[c["state"]]
+        cur.execute("select occurred_at, payload from events where correlation_id=%s and name=%s order by id desc limit 1", (corr, ev_name))
+        e = cur.fetchone()
+        if not e:
+            continue
+        round_ = _round(cur, cid)
+        since = e["occurred_at"]
+        kind = (DECLINE_KIND if (e["payload"] or {}).get("declined") else RECEIPT_KIND) if c["state"] == "delivered" else CONFIRM_KIND
+        for i, days in enumerate(desk.LOOP["remind_after_days"]):
+            if now >= since + timedelta(days=days) and _event(cur, "desk.reminded", corr, {"conversation_id": cid, "round": round_, "nth": i + 1,
+                                                                                          "after_days": days, "step": c["state"]},
+                                                             f"desk.reminded:{cid}:{round_}:{days}"):
+                desk.factory_message(cur, cid, "factory", f"{what}をお待ちしています（{days} 日たちました）。答えるまで依頼は完了にしません。"
+                                     "受信トレイか窓口から答えてください。要らなくなったら会話を閉じてください。",
+                                     kind="reminder", payload={"round": round_, "nth": i + 1, "inbox_key": f"task:{kind}:{cid}:{round_}"})
+                notice(cur, cid, f"reminder{i + 1}", round_, f"{what}をお待ちしています（{days} 日たちました）。",
+                       "答えるまで依頼は完了にしません。要らなくなったら会話を閉じてください。")
+                n += 1
+        days = desk.LOOP["to_operator_after_days"]
+        if now >= since + timedelta(days=days) and _event(cur, "desk.escalated", corr, {"conversation_id": cid, "round": round_, "after_days": days,
+                                                                                       "step": c["state"], "reason": "no_answer"},
+                                                         f"desk.escalated:{cid}:{round_}"):
+            inbox.request(cur, f"{WAITING_KIND}:{cid}:{round_}", WAITING_KIND, "owner",
+                          f"窓口の依頼 {cid}（{c['opened_by']}）: {what}の返事が {days} 日ない（{c['title']}）"[:300],
+                          action="依頼者に直接確かめる（依頼は閉じない）", correlation_id=corr, by="desk")
+            n += 1
+    return n
+
+
 def watch(cur, now=None) -> int:
-    """振り分け・実行を待っている会話の目安を見て、途中の様子と遅れを書く。返り値は書いた件数"""
+    """振り分け・実行を待っている会話の目安を見て、途中の様子と遅れを書く。依頼者の答えを待つ会話には知らせ直す。返り値は書いた件数"""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
+    n_remind = remind(cur, now)
     cur.execute("select * from desk_conversations where kind='request' and state in ('open','running') order by id")
     n = 0
     for c in cur.fetchall():
@@ -670,4 +726,84 @@ def watch(cur, now=None) -> int:
                                                                          "path": m.get("path"), "target_sec": m["target_sec"],
                                                                          "deadline": m["deadline"].isoformat()}, f"desk.late:{cid}:{m['key']}"):
                 n += 1
-    return n
+    return n + n_remind
+
+
+# ------------------------------------------------------------------ 提出の知らせ方（ADR 0039 の決定 5a。順番 5）
+#   提出・断り・知らせ直しを、依頼者が会話の notify で選んだ宛先（なければ done.task の既定の宛先。Gen1 は Slack）に知らせる。
+#   知らせは一度 desk.notice_requested に積み、dispatcher の周回（send_notices）が送る。送れなければ間を空けて決まった回数やり直し、
+#   それでも送れなければ運用主の受信トレイに回す。事業主の宛先には工場の内部の情報を載せない（会話の番号・題・要約・答え方だけ）。
+#   メンションは宛先の mentions に手で書いた分だけ（依頼者の名前か requester の鍵）。利用者の認証が入るまで自動では付けない
+NOTICE_RETRIES = 3           # 送れなかったときのやり直しの回数（仮置き）
+NOTICE_RETRY_SEC = 300       # やり直しの間（仮置き）
+NOTICE_FAILED_KIND = "desk_notice_failed"
+
+
+def notice(cur, cid: int, what: str, round_: int, head: str, how: str) -> bool:
+    cur.execute("select title, opened_by, wanted from desk_conversations where id=%s", (cid,))
+    c = cur.fetchone()
+    text = f"窓口の依頼 {cid}「{c['title']}」: {head}\n{how}"
+    return _event(cur, "desk.notice_requested", desk.corr(cid), {"conversation_id": cid, "what": what, "round": round_, "text": text,
+                                                                "to": (c["wanted"] or {}).get("notify"), "requester": c["opened_by"]},
+                  f"desk.notice:{cid}:{what}:{round_}")
+
+
+def notice_targets(cfg, to) -> list:
+    import notify
+    if to == [desk.NOTIFY_DESK_ONLY]:
+        return []
+    if to:
+        return [cfg.destinations[n] for n in to if n in cfg.destinations]
+    return notify.targets(cfg, "done.task")
+
+
+def send_notices(cur, config=None, poster=None, now=None) -> int:
+    """積んだ知らせを送る。宛先ごとに送れたかを desk.notified に残す。返り値は送った宛先の数"""
+    from datetime import datetime, timedelta, timezone
+    import notify
+    now = now or datetime.now(timezone.utc)
+    cur.execute("""
+      select n.id, n.correlation_id, n.payload from events n
+       where n.name = 'desk.notice_requested'
+         and not exists (select 1 from events d where d.name in ('desk.notified','desk.notice_gave_up') and d.correlation_id = n.correlation_id
+                          and (d.payload->>'notice_id')::bigint = n.id and coalesce((d.payload->>'done')::boolean, true))
+       order by n.id""")
+    pending_ = cur.fetchall()
+    if not pending_:
+        return 0
+    cfg = config or notify.current(cur)
+    post = poster or notify.post
+    sent_n = 0
+    for n in pending_:
+        p, nid = n["payload"], n["id"]
+        cur.execute("select occurred_at, payload from events where name='desk.notified' and correlation_id=%s and (payload->>'notice_id')::bigint=%s "
+                    "order by id", (n["correlation_id"], nid))
+        tries = cur.fetchall()
+        if tries and tries[-1]["payload"].get("failed") and now < tries[-1]["occurred_at"] + timedelta(seconds=NOTICE_RETRY_SEC):
+            continue
+        done_before = {x for t in tries for x in t["payload"].get("sent") or []}
+        dests = [d for d in notice_targets(cfg, p.get("to")) if d.name not in done_before]
+        later = [d for d in dests if notify.quiet(now, d.quiet)]   # 送らない時間の宛先は、明けた周回で送る（やり直しには数えない）
+        dests = [d for d in dests if d not in later]
+        if later and not dests:
+            continue
+        sent, failed = [], []
+        for d in dests:
+            mention = d.mention(p.get("requester") or "") or d.mention("requester")
+            try:
+                ok = post(d, (mention + " " if mention else "") + p["text"])
+            except Exception as e:  # noqa: BLE001  知らせの失敗でループを止めない。やり直す
+                notify._log("desk notice failed", d.name, repr(e)[:200])
+                ok = False
+            (sent if ok else failed).append(d.name)
+        done = not failed and not later
+        _event(cur, "desk.notified", n["correlation_id"], {"conversation_id": p["conversation_id"], "notice_id": nid, "what": p.get("what"),
+                                                          "sent": sent, "failed": failed, "try": len(tries) + 1, "done": done,
+                                                          **({"desk_only": True} if not dests and not done_before else {})})
+        sent_n += len(sent)
+        if failed and sum(1 for t in tries if t["payload"].get("failed")) + 1 >= NOTICE_RETRIES:
+            _event(cur, "desk.notice_gave_up", n["correlation_id"], {"conversation_id": p["conversation_id"], "notice_id": nid, "failed": failed})
+            inbox.request(cur, f"{NOTICE_FAILED_KIND}:{p['conversation_id']}:{nid}", NOTICE_FAILED_KIND, "owner",
+                          f"窓口の依頼 {p['conversation_id']} の知らせを {', '.join(failed)} に送れなかった（{NOTICE_RETRIES} 回）"[:300],
+                          action="宛先の設定を確かめ、依頼者に直接知らせる", correlation_id=n["correlation_id"], by="desk")
+    return sent_n
