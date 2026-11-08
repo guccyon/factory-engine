@@ -49,7 +49,8 @@ KINDS = {
                        "defaults": {"provider": ("business_owner", "provider"), "business_owner": ("business_owner", "provider")}, "status": "ready"},
     "request.inbox": {"parties": ("business_owner",),
                       "defaults": {"provider": ("business_owner",), "business_owner": ("business_owner",)}, "status": "ready"},
-    "done.task": {"parties": ("provider", "business_owner"), "defaults": {"provider": (), "business_owner": ()}, "status": "later"},
+    "done.task": {"parties": ("provider", "business_owner"),
+                  "defaults": {"provider": ("business_owner",), "business_owner": ("business_owner",)}, "status": "ready"},
 }
 
 # 受信トレイの件を、誰の出番か（inbox.WHO）でどの組織に送るか（決定 5）。builder（建設の判断）は通知せず、建設者が問い合わせて拾う

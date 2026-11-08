@@ -12,6 +12,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 import continuation
+import model_route
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
@@ -57,7 +58,9 @@ def rerun(cur, job_id: int, *, continue_draft: bool = False, force: bool = False
     try:
         cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                     "values (%s,%s,%s,%s,'rerun',%s,%s,%s,%s) returning id",
-                    (corr, j["repo"], j["issue_number"], j["attempt"] + 1, os.environ.get("MODEL_TIER", "tier-large"),
+                    (corr, j["repo"], j["issue_number"], j["attempt"] + 1,
+                     model_route.tier_for(cur, corr, os.environ.get("MODEL_TIER", "tier-large"), reason=(cont or {}).get("reason"))
+                     if (j["kind"] or "implement") == "implement" else os.environ.get("MODEL_TIER", "tier-large"),
                      j["kind"], j["ticket_id"], j["priority"]))
     except psycopg.errors.UniqueViolation:
         return None, "an active job already exists for this issue"

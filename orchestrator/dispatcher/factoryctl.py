@@ -18,6 +18,8 @@
   factoryctl drain status                          # 一時停止か、更新してよいか、何を待っているか。更新してよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
+  factoryctl budget [status]                       # 使用量の予算（毎日同じ額か曜日ごと。7:00 JST 区切り）と今日の予算
+  factoryctl budget set [--daily USD] [--mon USD .. --sun USD] [--mode daily|weekday] [--reason ..]   # 予算を宣言する。上げ直さずに次の周回から効く
   factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
   factoryctl drain allow --priority p0 [--reason ..]    # 一時停止のまま、優先度がその段以上のチケットのジョブ（着手判定・実装を含む）も流す。再開で消える
   factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
@@ -50,11 +52,13 @@
 触れる環境（ADR 0028 の touchable_env。Gen1 は staging と兼ねる）。Release 候補を 1 コマンドで立て、シードを入れ、URL と QR を出す:
   factoryctl env up <repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]   # 版がなければ未 Release の PR から切る。--fresh は DB を空にしてシードから入れ直す
   factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
+  factoryctl env restart <repo> [--advance-hours N | --reset-clock] [--env staging]   # 再起動して時計を進める（DB は残す。時間をまたぐシナリオ）
 
 QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー（specs/stories/）を流し、ストーリーごとに Verdict を出す:
   factoryctl qa run <repo> [--stories id,id] [--env staging] [--priority p0|p1|p2|p3] [--through-pause] [--by ..]
       # 製品の固定 Issue（factory:qa）に積む。--stories を省けば active な全部（上限 6）。--through-pause はラインの一時停止の間もこれだけ流す
-  factoryctl qa show <repo> [--limit 10]                     # 最近の判定
+  factoryctl qa show <repo> [--limit 10]                     # 最近の判定と夜間の探索
+  factoryctl qa explore <repo> [--through-pause] [--by ..]   # 夜間の探索（nightly_explore）を今すぐ 1 回積む（その夜のチャーター。人が積んだものは無人の夜に数えない）
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -734,8 +738,8 @@ def qa_cmd(cur, argv) -> int:
     import qa_line
     sub = argv[2] if len(argv) > 2 else ""
     repo = argv[3] if len(argv) > 3 else ""
-    if sub not in ("run", "show") or "/" not in repo:
-        print("factoryctl qa run|show <owner/repo> ..."); return 2
+    if sub not in ("run", "show", "explore") or "/" not in repo:
+        print("factoryctl qa run|show|explore <owner/repo> ..."); return 2
     if sub == "show":
         rows = qa_line.latest(cur, repo, int(opt(argv, "--limit", "10")))
         for r in rows:
@@ -743,7 +747,12 @@ def qa_cmd(cur, argv) -> int:
                   f"（確信度 {r.get('confidence')}・Defect {r.get('defects')}・印 {r.get('flags')}）")
         if not rows:
             print("判定の記録がない（factoryctl qa run で流す）")
-        return 0 if rows else 1
+        nights = qa_line.explore_nights(cur, repo, 5)
+        for r in nights:
+            filed = [d["issue"] for d in r.get("defects") or [] if d.get("issue")]
+            print(f"{r['at']:%m-%d %H:%M} job {r['job_id']} 探索 {r.get('night')} の夜 {r.get('charter')}{'' if r.get('unattended') else '（人が積んだ）'}: "
+                  f"試した {r.get('tried')}・見つけた {r.get('findings')}・印 {len(r.get('flags') or [])}" + (f"（{' '.join(filed)}）" if filed else ""))
+        return 0 if rows or nights else 1
     level = opt(argv, "--priority", "p1")
     if level not in ops.LEVELS:
         print(f"--priority は {'・'.join(ops.LEVELS)} のどれか"); return 2
@@ -752,6 +761,21 @@ def qa_cmd(cur, argv) -> int:
     def gh(method, path, body=None):
         return ghapi.request(method, path, body, user_agent="factoryctl", token=os.environ["GH_TOKEN"])
     stories = [x for x in (opt(argv, "--stories", "") or "").split(",") if x]
+    if sub == "explore":
+        from datetime import datetime, timezone
+        night = qa_line.night_of(datetime.now(timezone.utc))
+        try:
+            got = qa_line.enqueue_explore(cur, gh, repo, night, by=opt(argv, "--by", "factoryctl"), unattended=False)
+        except psycopg.errors.UniqueViolation:
+            print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
+        print(f"enqueued job {got['job_id']}（夜間の探索・{repo}#{got['issue']}・チャーター {got['charter']}・版 {got['release_id'] or '不明'}）")
+        if drain.active(cur):
+            if "--through-pause" in argv:
+                drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "夜間の探索（factoryctl qa explore --through-pause）")
+                print("  ラインは一時停止中。このジョブだけ流す（drain allow）")
+            else:
+                print("  ラインは一時停止中なので、再開するまで流れない（--through-pause を付けて積み直す）")
+        return 0
     try:
         got = qa_line.enqueue(cur, gh, repo, env=opt(argv, "--env", "staging"), stories=stories, by=opt(argv, "--by", "factoryctl"), priority=level)
     except psycopg.errors.UniqueViolation:
@@ -833,6 +857,27 @@ def main(argv):
         print(f"宣言: {st['by']}{'（' + st['reason'] + '）' if st['reason'] else ''}{' ' + st['at'] if st['at'] else '（環境変数の値）'}")
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")
+    elif cmd == "budget":
+        if len(argv) > 2 and argv[2] == "set":
+            try:
+                daily = float(opt(argv, "--daily")) if opt(argv, "--daily") is not None else None
+                week = {k: float(opt(argv, f"--{k}")) for k in usage.WEEKDAYS if opt(argv, f"--{k}") is not None}
+            except ValueError:
+                print("額はドルの数で渡す")
+                return 2
+            mode = opt(argv, "--mode") or ("weekday" if week and daily is None else ("daily" if daily is not None and not week else None))
+            if daily is None and not week and mode is None:
+                print("--daily か --mon..--sun（と --mode）のどれかを渡す")
+                return 2
+            try:
+                usage.set_budget(cur, "factoryctl", opt(argv, "--reason", ""), mode=mode, daily_usd=daily, weekday_usd=week)
+            except ValueError as e:
+                print(e)
+                return 2
+        b = usage.budget_spec(cur)
+        print(f"予算: {usage.BUDGET_MODE_JA[b['mode']]} — {usage.budget_text(b)}")
+        print(f"今日の予算: {'なし（予算で止めない）' if b['today_usd'] is None else '$' + format(b['today_usd'], ',.2f')}")
+        print(f"宣言: {b['by']}{'（' + b['reason'] + '）' if b['reason'] else ''}{' ' + b['at'] if b['at'] else '（環境変数の値）'}")
     elif cmd == "drain":
         if len(argv) > 2 and argv[2] == "status":
             return drain_report(cur)
@@ -995,6 +1040,12 @@ def main(argv):
         return touch.up(cur, argv[3], release_id=opt(argv, "--release"), fresh="--fresh" in argv, by=opt(argv, "--by", "builder"),
                         timeout=float(opt(argv, "--timeout", "3600")), do_wait="--no-wait" not in argv,
                         log=lambda m: print(m, flush=True))
+    elif cmd == "env" and len(argv) > 3 and argv[2] == "restart":
+        ok, msg, _ = touch.restart(cur, argv[3], opt(argv, "--env", "staging"), advance_hours=float(opt(argv, "--advance-hours", "0")),
+                                   reset_clock="--reset-clock" in argv, by=opt(argv, "--by", "builder"),
+                                   do_wait="--no-wait" not in argv, log=lambda m: print(m, flush=True))
+        print(msg)
+        return 0 if ok else 1
     elif cmd == "env" and len(argv) > 3 and argv[2] == "show":
         t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
         print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")

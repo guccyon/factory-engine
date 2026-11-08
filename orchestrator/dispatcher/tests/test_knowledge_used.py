@@ -54,3 +54,14 @@ def test_records_body_fix_role_and_entry():
     obj = params[3].obj
     assert obj["role"] == "body_fix" and obj["entry"] == "body_fix" and obj["work"] == ["dev.describe"]
     assert obj["fit"] == {"K-0006": {"score": 4.5}}
+
+
+def test_records_preference_ids_only():
+    """ADR 0040 の決定 6: 好みは id だけを残し、中身は書かない"""
+    cur = Cur()
+    inp = {"requester_preferences": [{"id": "P-0003", "statement": "表より箇条書き"}]}
+    dispatcher.record_preferences_used(cur, "desk:1", 10, inp, role="desk.consult")
+    (sql, params), = cur.rows
+    assert params[0] == "requester_preference.used" and params[3].obj == {"role": "desk.consult", "ids": ["P-0003"]}
+    dispatcher.record_preferences_used(cur, "desk:1", 11, {}, role="desk.consult")
+    assert len(cur.rows) == 1

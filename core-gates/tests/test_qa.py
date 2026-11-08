@@ -121,6 +121,9 @@ def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
     pinned = qa.prompt(DEFS, [STORY], {"entries": []}, {"commit": "abc123", "release_id": "guccyon/rally@0.9.0"}, mobile=True)
     assert "ref: abc123" in pinned
     assert "mcp__macrunner__" not in qa.prompt(DEFS, [STORY], {"entries": []}, {})
+    # 時間をまたぐ手順（scenario_time）: 中継があれば env_restart で起こし、最後に時計を戻させる。なければ skipped
+    assert "mcp__macrunner__env_restart" in text and "reset_clock: true" in text
+    assert "サーバーの再起動も時計の進めもできない" in qa.prompt(DEFS, [STORY], {"entries": []}, {})
     d = product(tmp_path / "p")
     seen = {}
 
@@ -134,3 +137,60 @@ def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
     monkeypatch.setenv("RUNNER_RELAY_TOKEN", "t0k")
     res = qa.run(d, {}, tmp_path / "o", DEFS)
     assert res["ok"] and res["mobile"] and seen["mcp"].endswith(".mcp-relay.json")
+
+
+# ------------------------------------------------------------------ 夜間の探索（nightly_explore）
+def explore_doc(**kw):
+    d = {"charter": "detour", "confidence": 0.6, "interpretation": "戻るで崩れる",
+         "tried": [{"actor": "coach", "where": "チャット", "did": "送ってすぐ戻る", "saw": "二重に出る（02-dup.png）"}],
+         "findings": [{"title": "二重に出る", "viewpoint": "flow", "severity": "s3", "actual": "2 件", "story_id": "coach-replies"}],
+         "flags": [{"viewpoint": "tone", "note": "硬い"}]}
+    d.update(kw)
+    return d
+
+
+def test_validate_explore(tmp_path):
+    ch = qa.charter_of(DEFS, "detour")
+    assert qa.charter_of(DEFS, "nope")["id"] == DEFS["explore"]["charters"][0]["id"]
+    (tmp_path / "02-dup.png").write_bytes(b"x")
+    assert qa.validate_explore(explore_doc(), DEFS, ch, {"coach-replies"}, tmp_path) == []
+    assert qa.validate_explore(explore_doc(findings=[]), DEFS, ch, set(), None) == []   # 何も見つからなくてよい
+    errs = qa.validate_explore(explore_doc(tried=[], charter="other-user", confidence=2,
+                                           findings=[{"title": "x", "actual": "y", "severity": "s9", "viewpoint": "flow", "story_id": "ghost"}]),
+                               DEFS, ch, {"coach-replies"}, tmp_path)
+    assert any("tried" in e for e in errs) and any("charter" in e for e in errs) and any("confidence" in e for e in errs)
+    assert any("severity" in e for e in errs) and any("ghost" in e for e in errs)
+    many = explore_doc(findings=[{"title": f"t{i}", "actual": "a", "severity": "s3", "viewpoint": "flow"} for i in range(9)])
+    assert any("8 件まで" in e for e in qa.validate_explore(many, DEFS, ch, set(), None))
+    assert any("02-dup.png" in e for e in qa.validate_explore(explore_doc(), DEFS, ch, {"coach-replies"}, tmp_path / "none"))
+
+
+def test_run_explore(tmp_path, monkeypatch):
+    d = product(tmp_path)
+    calls = []
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        calls.append(text)
+        out = Path(cwd) / "out"
+        if len(calls) == 1:
+            (out / "explore.yaml").write_text("charter: detour\n")
+        else:
+            (out / "02-dup.png").write_bytes(b"\x89PNG")
+            (out / "explore.yaml").write_text(yaml.safe_dump(explore_doc(charter="come-back"), allow_unicode=True))
+        return sys.modules["agent_runner"].Result(output="", cost_usd=0.5, usage={}, model="m", num_turns=2)
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)
+    res = qa.run(d, {"mode": "explore", "charter": "come-back", "night": "2026-11-08", "release_id": "r1"}, tmp_path / "o", DEFS)
+    assert res["ok"] and res["mode"] == "explore" and res["charter"] == "come-back" and res["night"] == "2026-11-08"
+    assert len(calls) == 2 and "崩れ" in calls[1] and "今夜のチャーター: come-back" in calls[0] and "coach-replies" in calls[0]
+    assert "--check-explore" in calls[0] and res["files"] == ["02-dup.png"] and res["verdicts"] == []
+    assert res["explore"]["findings"][0]["known_gaps"] == STORY["known_gaps"]
+
+
+def test_check_explore_cli(tmp_path, capsys):
+    d = product(tmp_path)
+    p = tmp_path / "out" / "explore.yaml"
+    p.parent.mkdir()
+    p.write_text(yaml.safe_dump(explore_doc(tried=[{"did": "a", "saw": "b"}]), allow_unicode=True))
+    assert qa.main(["--check-explore", str(p), "--charter", "detour", "--repo-dir", str(d)]) == 0
+    assert capsys.readouterr().out.strip() == "ok"

@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import statistics
-from datetime import datetime
+from datetime import datetime, timedelta
 
+import stage_roi
 from report import Report, Section, entry, metric, note
 
 KIND = "report.factory_health"
@@ -20,6 +21,7 @@ SECTIONS = {
     "ship": ("出荷", ("provider", "business_owner")),
     "inbox": ("人の判断待ち", ("provider", "business_owner")),
     "cost": ("費用", ("provider", "business_owner")),
+    "stages": ("工程と ROI", ("provider",)),
 }
 DOWN = ("idle:", "drain:")   # ラインが動いていない時間に数える停止（ラインが空・一時停止）
 OPEN_MAX = 5                 # 開いている停止は長い順にここまで載せる
@@ -33,7 +35,12 @@ THRESHOLDS = {
     "incomplete": (2, 4),            # 途中終了したジョブ（件）
     "cost_ratio": (1.5, 2.5),        # 消費が前の 7 期間の平均の何倍か
     "budget_min": (60, 240),         # 予算の上限で止まっていた時間（分）
+    "impl_first_pass": (70.0, 50.0), # 実装が一発で通った割合（%）がこれを下回る（直近 ROI_DAYS 日、実装が MIN_JOBS 件以上のとき）
+    "wait_share": (50.0, 75.0),      # ジョブの時間のうち、積まれてから始まるまでの待ちの割合（%）
+    "defects_per_impl": (0.5, 1.0),  # 実装 1 件あたりに混入した Defect
+    "trial_drop_pt": (10.0, 20.0),   # モデルの試しで、試す側の一発で通った割合が既定の側より何 pt 低いか（両側が 5 件以上のとき）
 }
+ROI_DAYS = 14   # 工程と ROI は 1 日だと少ないので、期間の終わりから直近 14 日で見る
 MIN_JOBS = 3
 
 
@@ -150,7 +157,41 @@ def cost(cur, start: datetime, end: datetime):
             metric("予算の上限で止まっていた時間", round(stopped / 60), "分")]
 
 
-BUILDERS = {"line": line, "jobs": jobs, "ship": ship, "inbox": inbox, "cost": cost}
+def stages(cur, start: datetime, end: datetime):
+    """工程と ROI（2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）。期間の終わりから直近 ROI_DAYS 日。
+    どの工程が時間・費用を食い、一発で通らず、Defect を混入させているか。モデルの既定値を替える判断の根拠（集計は stage_roi.py）"""
+    v = stage_roi.fetch(cur, end - timedelta(days=ROI_DAYS), end)
+    if not v["jobs"]:
+        return [note(f"直近 {ROI_DAYS} 日に終わったジョブはありません")]
+    bn, per = v["bottleneck"], {}
+    for r in v["stages"]:
+        a = per.setdefault(r["stage"], {"jobs": 0, "fp": 0.0, "defects": 0})
+        a["jobs"] += r["jobs"]; a["fp"] += r["first_pass"] * r["jobs"]; a["defects"] += r["defects"]
+    impl = per.get("implement") or {"jobs": 0, "fp": 0.0, "defects": 0}
+    pc = lambda x: round(100 * x, 1) if isinstance(x, (int, float)) else None   # noqa: E731
+    # ボトルネックの工程は日によって替わるので、名前と割合を 1 つの値にする（項目の名前は推移で同じに保つ）
+    items = [metric("時間のボトルネック", f"{bn['time']['ja']}（{pc(bn['time']['share'])}%）" if bn.get("time") else None),
+             metric("費用のボトルネック", f"{bn['cost']['ja']}（{pc(bn['cost']['share'])}%）" if bn.get("cost") else None),
+             metric("待ちの割合（積まれてから始まるまで）", pc(bn.get("wait_share")), "%"),
+             metric("実装のジョブ", impl["jobs"], "件"),
+             metric("実装が一発で通った割合", pc(impl["fp"] / impl["jobs"]) if impl["jobs"] else None, "%"),
+             metric("実装 1 件あたりに混入した Defect", round(impl["defects"] / impl["jobs"], 2) if impl["jobs"] else None, "件")]
+    x = v.get("experiment")
+    if x:
+        a, b = x["arms"]["trial"], x["arms"]["control"]
+        items += [metric("モデルの試し: 試す側（Sonnet）のチケット", a["tickets"], "件"),
+                  metric("モデルの試し: 試す側の一発で通った割合", pc(a["first_pass"]), "%"),
+                  metric("モデルの試し: 既定の側（Opus）の一発で通った割合", pc(b["first_pass"]), "%"),
+                  metric("モデルの試し: 通った 1 件あたりの費用（既定の側を 100）", pc(x.get("cost_ratio")), "%")]
+    for r in v["stages"][:6]:
+        items.append(entry(f"{r['ja']}（{r['model']}）", f"{r['jobs']} 件・${r['cost_usd']:,.2f}・一発 {pc(r['first_pass'])}%・"
+                                                         f"待ち {stage_roi._m(r['wait_min'])}・Defect {r['defects']}"))
+    items.append(note(f"直近 {ROI_DAYS} 日（期間の終わりまで）。一発で通った: 実装は後から直し（CI 落ち・指摘・途中終了の続き）が要らなかった割合。"
+                      "Defect は PR の最新の版を書いた実装のジョブに付けて数える"))
+    return items
+
+
+BUILDERS = {"line": line, "jobs": jobs, "ship": ship, "inbox": inbox, "cost": cost, "stages": stages}
 CHARTS = [("line", "ラインが動いていた割合", "ラインの稼働（%）"), ("jobs", "終わったジョブ", "終わったジョブ（件）"),
           ("ship", "マージした PR", "マージした PR（件）"), ("cost", "消費（API 単価に換算）", "消費（USD）")]
 
@@ -229,6 +270,29 @@ def assess(rep: Report) -> Report:
     bm = val("cost", "予算の上限で止まっていた時間")
     flag("cost", "予算の上限で止まっていた時間", _lvl(bm, *THRESHOLDS["budget_min"]), f"予算の上限で {bm} 分止まっていた",
          "1 日の枠を見直すか、流量を下げて止まらずに流れるようにする")
+
+    # 工程と ROI（モデルの既定値を替える判断の根拠）
+    fp = val("stages", "実装が一発で通った割合")
+    impl_n = val("stages", "実装のジョブ")
+    flag("stages", "実装が一発で通った割合", _lvl(fp, *THRESHOLDS["impl_first_pass"], below=True) if isinstance(impl_n, int) and impl_n >= MIN_JOBS else "",
+         f"実装が一発で通ったのは {fp}% だけ",
+         "建設日報の「工程ごとの ROI」で、どのモデルの実装が直しを呼んでいるかを見る。小さいチケットの試し（Sonnet）が原因なら MODEL_ROUTE_SHARE を下げる")
+    ws = val("stages", "待ちの割合（積まれてから始まるまで）")
+    flag("stages", "待ちの割合（積まれてから始まるまで）", _lvl(ws, *THRESHOLDS["wait_share"]), f"ジョブの時間の {ws}% が待ち",
+         "流量（factoryctl line scale）か予算の枠が足りない見込み。速い・安いモデルに替えるより、詰まりをほどくのが先")
+    dpi = val("stages", "実装 1 件あたりに混入した Defect")
+    flag("stages", "実装 1 件あたりに混入した Defect", _lvl(dpi, *THRESHOLDS["defects_per_impl"]), f"実装 1 件あたり {dpi} 件の Defect を混入させている",
+         "出やすい観点（日報の品質）を見て、実装役のモデルを上げるか、知見・検査のルールに足す")
+    ta, tb = val("stages", "モデルの試し: 試す側の一発で通った割合"), val("stages", "モデルの試し: 既定の側（Opus）の一発で通った割合")
+    tn = val("stages", "モデルの試し: 試す側（Sonnet）のチケット")
+    if isinstance(ta, (int, float)) and isinstance(tb, (int, float)) and isinstance(tn, int) and tn >= stage_roi.MIN_N:
+        flag("stages", "モデルの試し: 試す側の一発で通った割合", _lvl(tb - ta, *THRESHOLDS["trial_drop_pt"]),
+             f"Sonnet の実装は Opus より一発で通る割合が {round(tb - ta, 1)} pt 低い",
+             "費用の差で割に合うかを日報で見る。合わなければ MODEL_ROUTE_SHARE を下げるか 0 にする")
+    cr = val("stages", "モデルの試し: 通った 1 件あたりの費用（既定の側を 100）")
+    if isinstance(cr, (int, float)) and isinstance(tn, int) and tn >= stage_roi.MIN_N:
+        flag("stages", "モデルの試し: 通った 1 件あたりの費用（既定の側を 100）", "warn" if cr >= 100 else "",
+             f"Sonnet で通した 1 件の費用が Opus の {cr}%（安くなっていない）", "直しが増えて安さが消えている。試しを止めるか、条件を狭める")
 
     order = {"bad": 0, "warn": 1}
     found.sort(key=lambda f: order.get(f["level"], 2))
