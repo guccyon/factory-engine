@@ -277,7 +277,8 @@ def night_of(now: datetime) -> str:
 def charter_for(night: str, defs: dict | None = None) -> str:
     """夜ごとに順番に替えるチャーター（夜の通し番号 % 数）"""
     cs = (defs or load_defs())["explore"]["charters"]
-    return cs[date.fromisoformat(night).toordinal() % len(cs)]
+    c = cs[date.fromisoformat(night).toordinal() % len(cs)]
+    return c["id"] if isinstance(c, dict) else c   # definitions/qa.yaml の写し（supervisor が読む）は {id, viewpoint, ja}、DEFS の写しは id だけ
 
 
 def explore_key(title: str) -> str:

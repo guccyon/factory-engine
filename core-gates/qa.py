@@ -451,7 +451,7 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
 
 def _load(p: Path):
     if not p.is_file():
-        return "out/verdicts.yaml がない"
+        return f"out/{p.name} がない"
     try:
         return yaml.safe_load(p.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
