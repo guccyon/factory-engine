@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
@@ -42,6 +44,20 @@ TRANSITIONS = {
     "running": ("delivered",),
     "delivered": ("accepted", "closed", "routed", "open"),                         # open は続き・差し戻し（相談役の振り分けから）
 }
+# 単発の依頼のループの値（definitions/desk.yaml の loop を写す。食い違いはテストで見る。仮置き。運用パラメータとして工場が調整してよい）
+LOOP = {
+    "targets": {"ack": 60,
+                "route": {"default": 300, "direct_line": 300, "operate": 300, "quick": 300, "analysis": 900},
+                "deliver": {"operate": 300, "quick": 900, "analysis": 7200}},
+    "progress_at": 0.8,
+    "max_follow_ups": 5,
+    "decline_reasons": {"no_operation": "決まった操作の一覧にない", "no_data_source": "工場がつながっていないデータ源が要る",
+                        "needs_production_data": "本番のデータが要る（後のフェーズ）", "too_large": "単発で受けるには大きすぎる",
+                        "no_capability": "工場がまだ持たない対応（集計・分析など）"},
+    "alternatives": {"other_path": "できる範囲の別の対応の種類（チケット化など）", "add_capability": "工場に足す提案（建設者に回す）",
+                     "to_human": "人に回す（運用主）"},
+}
+TZ = ZoneInfo(os.environ.get("REPORT_TZ", "Asia/Tokyo"))
 TOKEN_PREFIX = "fdk_"
 MAX_BODY = 8000          # 1 通の上限（文字数）。長い資料は製品のリポジトリに置いて参照を渡してもらう
 MAX_TITLE = 80
@@ -183,12 +199,29 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
     _event(cur, "desk.message", c["id"], {"author": who["name"], "role": "requester", "body": body})
     if kind == "request":
         # 受付（ADR 0039 の決定 2・3）: 中身は読まずに、受け付けたことと次に起きることをすぐ返す
-        _event(cur, "desk.message", c["id"], {"author": "factory", "role": "factory", "kind": "ack", "body": ACK_TEXT.format(id=c["id"])})
+        ahead, by = route_eta(cur, c["created_at"])
+        _event(cur, "desk.message", c["id"], {"author": "factory", "role": "factory", "kind": "ack", "body": ack_text(c["id"], ahead, by),
+                                              "route_by": by.isoformat(), "ahead": ahead})
     return c
 
 
-ACK_TEXT = ("依頼 {id} を受け付けました。次は振り分けです。相談役が、決まった操作で済むか、チケットに切るかを決めて、5 分ほどで返します"
-            "（問いがあればそのときに聞きます）。")
+def route_eta(cur, now: datetime) -> tuple[int, datetime]:
+    """振り分けを返せる目安の時刻（決定 3）。窓口の枠に先に積まれている相談の数だけ、振り分けの目安を足す（枠が埋まっているとき）"""
+    cur.execute("select count(*) as n from jobs where kind='desk_consult' and state='queued' and not cancel_requested")
+    ahead = cur.fetchone()["n"]
+    return ahead, now + timedelta(seconds=LOOP["targets"]["route"]["default"] * (1 + ahead))
+
+
+def clock(t: datetime) -> str:
+    """依頼者に見せる時刻（製品の時間帯。日をまたぐなら日付も）"""
+    lt, now = t.astimezone(TZ), datetime.now(TZ)
+    return f"{lt:%H:%M}" if lt.date() == now.date() else f"{lt:%m/%d %H:%M}"
+
+
+def ack_text(cid: int, ahead: int, by: datetime) -> str:
+    wait = f"先に {ahead} 件の相談があるので、{clock(by)} ごろまでに返します" if ahead else f"{clock(by)} ごろまで（5 分ほど）に返します"
+    return (f"依頼 {cid} を受け付けました。次は振り分けです。相談役が、決まった操作で済むか、チケットに切るか、受けられないかを決めて、"
+            f"{wait}（問いがあればそのときに聞きます）。")
 
 
 def post_message(cur, who: dict, conversation_id: int, body: str) -> dict:
@@ -289,9 +322,10 @@ def finish(cur, conversation_id: int, reason: str, by: str, *, note: str = "", p
 def closing_record(cur, c: dict) -> dict:
     """閉じたときの記録（ADR 0039 の決定 7 の表。外側のループの束ねる材料）。events の時刻から決定論で組み立てる。
     今は対応の種類・時間・費用・往復・結末まで。進め方・断りの理由・主題は、その段を入れたときに足す"""
-    cur.execute("select name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
+    cur.execute("select id, name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
     evs = cur.fetchall()
     t0 = c["created_at"]
+    ms = milestones(c, evs)
 
     def first(*names):
         e = next((e for e in evs if e["name"] in names), None)
@@ -303,7 +337,81 @@ def closing_record(cur, c: dict) -> dict:
             "sec_routed": first("desk.routed", "desk.drafted"), "sec_delivered": first("desk.delivered", "desk.tickets_created"),
             "cost_usd": float(c.get("cost_usd") or 0), "rounds": c.get("rounds") or 0, "follow_ups": c.get("follow_ups") or 0,
             "reroutes": sum(1 for e in evs if e["name"] == "desk.routed") - 1 if any(e["name"] == "desk.routed" for e in evs) else 0,
-            "outcome": c.get("close_reason"), "derived_from": c.get("derived_from"), "superseded_by": c.get("superseded_by")}
+            "outcome": c.get("close_reason"), "derived_from": c.get("derived_from"), "superseded_by": c.get("superseded_by"),
+            "late": sorted({(e["payload"] or {}).get("milestone") for e in evs if e["name"] == "desk.late"} - {None}),
+            "met_route": all(m["end"] <= m["deadline"] for m in ms if m["milestone"] == "route" and m["end"]),
+            "met_deliver": all(m["end"] <= m["deadline"] for m in ms if m["milestone"] == "deliver" and m["end"]),
+            "met_ack": first_reply is not None and (first_reply["occurred_at"] - t0).total_seconds() <= LOOP["targets"]["ack"],
+            "declined": next(((e["payload"] or {}).get("reason") for e in reversed(evs) if e["name"] == "desk.declined"), None),
+            "cap_hit": any(e["name"] == "desk.cap_hit" for e in evs)}
+
+
+QUIET_KINDS = ("ack", "progress")   # 工場の返事のうち、マイルストーンを終えないもの（受付の返事・途中の様子）
+
+
+def route_target(path: str | None) -> int:
+    t = LOOP["targets"]["route"]
+    return t.get(path or "default", t["default"])
+
+
+def milestones(c: dict, evs: list[dict]) -> list[dict]:
+    """応答時間の目安のマイルストーン（決定 3）を events から決定論で切り出す。返り値は
+    [{milestone: route|deliver, key, start, deadline, end（まだなら None）, target_sec}]。
+      route:   依頼者の発言（振り分けの前・続き・差し戻し）から、工場の次の返事（問い・振り分け・下書き・断り・誤りの知らせ）まで。
+               振り分けた後の言い足し（記録だけ）は数えない
+      deliver: 実行に入った（確認された・確認を飛ばした）時から提出まで。analysis は振り分けで示した時刻（deliver_by）があればそれ
+    最初の返事（ack）は closing_record の met_ack で見る"""
+    out, busy, open_route, route_ev, run = [], False, None, None, None
+    path = c.get("path")
+    for e in evs:
+        p, name = e["payload"] or {}, e["name"]
+        if name == "desk.routed":
+            route_ev = p
+        if name in ("desk.message", "desk.answered") and p.get("role") == "requester":
+            if not busy and open_route is None:
+                open_route = {"milestone": "route", "key": f"route:{e['id']}", "start": e["occurred_at"]}
+        elif name in ("desk.message", "desk.answered", "desk.drafted", "desk.routed", "desk.declined") and p.get("kind") not in QUIET_KINDS:
+            if open_route is not None:
+                open_route["end"] = e["occurred_at"]
+                open_route["path"] = (route_ev or {}).get("path") if name == "desk.routed" else None
+                out.append(open_route)
+                open_route = None
+        if name == "desk.routed":
+            busy = True
+        elif name in ("desk.rerouted", "desk.closed"):
+            busy = False
+        if name == "desk.confirmed_run":
+            run = {"milestone": "deliver", "key": f"deliver:{e['id']}", "start": e["occurred_at"], "path": (route_ev or {}).get("path") or path,
+                   "deliver_by": (route_ev or {}).get("deliver_by")}
+        elif name in ("desk.delivered", "desk.closed") and run is not None:
+            run["end"] = e["occurred_at"]
+            out.append(run)
+            run = None
+    if open_route is not None and c["state"] not in ENDED:
+        out.append({**open_route, "end": None, "path": None})
+    if run is not None and c["state"] not in ENDED:
+        out.append({**run, "end": None})
+    for m in out:
+        if m["milestone"] == "route":
+            m["target_sec"] = route_target(m.get("path"))
+            m["deadline"] = m["start"] + timedelta(seconds=m["target_sec"])
+        else:
+            target = LOOP["targets"]["deliver"].get(m.get("path"))
+            by = _parse_time(m.pop("deliver_by", None)) if m.get("path") == "analysis" else None
+            m["deadline"] = by or (m["start"] + timedelta(seconds=target) if target else None)
+            m["target_sec"] = round((m["deadline"] - m["start"]).total_seconds()) if m["deadline"] else None
+            m.pop("deliver_by", None)
+    return [m for m in out if m.get("deadline")]
+
+
+def _parse_time(v) -> datetime | None:
+    if not isinstance(v, str):
+        return None
+    try:
+        t = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def list_conversations(cur, who: dict, limit: int = 50) -> list[dict]:
@@ -395,12 +503,18 @@ def confirm_route(cur, who: dict, conversation_id: int, option: str, note: str =
 
 
 def receive(cur, who: dict, conversation_id: int, option: str, note: str = "") -> dict:
-    """提出の受取確認に答える。accept（受け取った）・more（続き。一言が要る）・return（差し戻す。一言が要る）"""
+    """提出の受取確認に答える。accept（受け取った）・more（続き。一言が要る）・return（差し戻す。一言が要る）。
+    断りの提出なら accept（納得した）・more（別案で進める。一言は任意）・return（断りを差し戻す。一言が要る）"""
     if option not in RECEIPT_ANSWERS:
         raise DeskError(400, f"answer は {' / '.join(RECEIPT_ANSWERS)}")
-    if option != "accept":
+    # 断りの提出（決定 4）なら、同じ 3 つの語を 納得した・別案で進める・断りを差し戻す として受ける（道具を増やさない）
+    cur.execute("select payload from events where correlation_id=%s and name='desk.delivered' order by id desc limit 1", (corr(conversation_id),))
+    declined = bool(((cur.fetchone() or {}).get("payload") or {}).get("declined"))
+    if option == "return" or (option == "more" and not declined):
         note = _text(note, 2000)
-    return _answer_step(cur, who, conversation_id, "desk_receipt", "delivered", option, note or "")
+    elif note:
+        note = _text(note, 2000)
+    return _answer_step(cur, who, conversation_id, "desk_decline" if declined else "desk_receipt", "delivered", option, note or "")
 
 
 # ------------------------------------------------------------------ チケット（明確な指示は壁打ちを通さず即時に通す）

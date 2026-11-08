@@ -149,3 +149,17 @@ def test_route_section_only_with_catalog():
     assert s["properties"]["route"]["properties"]["op"]["enum"] == ["", "report.send"] and "route" in s["required"]
     p = dc.prompt(DEFS, {"operations": OPS})
     assert "最初に振り分ける" in p and "report.send" in p and "今朝のレポートを送り直して" in p
+
+
+def test_decline_when_no_path_fits():
+    """どの対応の種類にも当てはまらない依頼は断る（ADR 0039 の決定 4）。理由と代わりの案を返す"""
+    alt = [{"kind": "add_capability", "text": "売上の集計を工場に足す"}]
+    out = {**O(tasks=[]), "route": {"path": "decline", "op": "", "params": [], "why": "本番の売上は見られない",
+                                    "decline": {"reason": "needs_production_data", "alternatives": alt}}}
+    d = dc.decide(out, {"operations": OPS}, DEFS)
+    assert d["outcome"] == "decline"
+    assert d["decline"] == {"reason": "needs_production_data", "why": "本番の売上は見られない", "alternatives": alt}
+    s = dc.schema(DEFS, OPS)["properties"]["route"]
+    assert "decline" in s["properties"]["path"]["enum"] and "needs_production_data" in s["properties"]["decline"]["properties"]["reason"]["enum"]
+    p = dc.prompt(DEFS, {"operations": OPS})
+    assert "path=decline" in p and "needs_production_data" in p and "add_capability" in p

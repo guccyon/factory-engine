@@ -19,6 +19,7 @@ input.json（dispatcher の desk_line.consult_input が組み立てる）:
 振り分け（ADR 0039 の決定 2）: operations があれば、依頼がその操作を 1 回動かせば済むかを先に見て、済むなら
 outcome: route（path: operate、操作の id と引数）を返す。引数の検査・確認の段・実行は dispatcher が行う（ここは対応付けまで）。
 operations がない（古い dispatcher）ときは今までどおり問いか下書きだけを返す。
+どの対応の種類にも当てはまらない依頼は outcome: decline（理由と代わりの案。ADR 0039 の決定 4）を返す。断りの提出と受取確認は dispatcher が行う。
 
 依存: python3、PyYAML、agent_runner（工程 desk.consult。runner とモデルは definitions/agents.yaml）
 """
@@ -37,7 +38,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("DESK_DEFINITIONS") or HERE.parent / "definitions" / "desk.yaml")
-PROMPT_VERSION = "3"   # 3: 知見を窓口と振り分けの業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。2: 決まった操作で済む依頼を operate に振り分ける（ADR 0039 の順番 2）   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "4"   # 4: どの対応の種類にも当てはまらない依頼を断る（理由と代わりの案。ADR 0039 の順番 3）。3: 知見を窓口と振り分けの業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。2: 決まった操作で済む依頼を operate に振り分ける（ADR 0039 の順番 2）   # 問いの文を変えたら上げる（判断の入力の版として残す）
 MAX_TEXT = 20000
 KEY_RE = re.compile(r"^t[0-9]{1,2}$")
 REF_RE = re.compile(r"^#[0-9]+$")
@@ -79,13 +80,20 @@ def schema(defs: dict, operations: list[dict] | None = None) -> dict:
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
         "required": ["done", "question", "request", "unresolved", "tasks", "overlaps", "summary", "evidence", "interpretation", "confidence"]}
     if operations:
+        loop = defs.get("loop") or {}
         out["properties"]["route"] = {"type": "object", "properties": {
-            "path": {"type": "string", "enum": ["ticket", "operate"]},
+            "path": {"type": "string", "enum": ["ticket", "operate", "decline"]},
             "op": {"type": "string", "enum": [""] + [o["id"] for o in operations]},
             "params": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {"name": s, "value": s},
                                                                     "required": ["name", "value"]}},
-            "why": s},
-            "required": ["path", "op", "params", "why"]}
+            "why": s,
+            "decline": {"type": "object", "properties": {
+                "reason": {"type": "string", "enum": [""] + list(loop.get("decline_reasons") or {})},
+                "alternatives": {"type": "array", "maxItems": 4, "items": {"type": "object", "properties": {
+                    "kind": {"type": "string", "enum": list(loop.get("alternatives") or {}) or ["other_path"]}, "text": s},
+                    "required": ["kind", "text"]}}},
+                "required": ["reason", "alternatives"]}},
+            "required": ["path", "op", "params", "why", "decline"]}
         out["required"].append("route")
     return out
 
@@ -163,6 +171,12 @@ def decide(out: dict, inp: dict, defs: dict) -> dict:
         params = ({str(k): str(v) for k, v in ps.items()} if isinstance(ps, dict) else
                   {str(p["name"]): str(p.get("value") or "") for p in ps or [] if isinstance(p, dict) and p.get("name")})
         return {"outcome": "route", "route": {"path": "operate", "op": r["op"], "params": params, "why": (r.get("why") or "").strip()},
+                "request": out.get("request") or {}, "questions_asked": asked}
+    if r.get("path") == "decline":
+        # 断り（ADR 0039 の決定 4）。理由と代わりの案は dispatcher が決まった語に整える（代わりの案がなければ「人に回す」を付ける）
+        d = r.get("decline") if isinstance(r.get("decline"), dict) else {}
+        return {"outcome": "decline", "decline": {"reason": d.get("reason") or "", "why": (r.get("why") or "").strip(),
+                                                  "alternatives": [a for a in d.get("alternatives") or [] if isinstance(a, dict)]},
                 "request": out.get("request") or {}, "questions_asked": asked}
     tasks, errors, fixes = normalize(out, defs)
     if errors:
@@ -249,7 +263,7 @@ def prompt(defs: dict, inp: dict) -> str:
     efforts = "、".join(f"{k}（{v}）" for k, v in defs["efforts"].items())
     revise = ("\n前に出した下書き（previous_draft.json）に依頼者が言い足しています。言い足しを入れて下書きを出し直してください。"
               if inp.get("previous_draft") else "")
-    route = route_section(inp.get("operations") or [])
+    route = route_section(inp.get("operations") or [], defs.get("loop"))
     return f"""あなたは仮想開発事業部の窓口の相談役（プランナー）です。外の依頼者が持ち込んだ依頼を、短い往復で確定した依頼にし、
 工場のラインに流せるタスクのまとまり（依存つき）の下書きにします。何を先に流すかは依頼者が決めます。あなたは並べ替えず、切り方と影響を示します。{revise}
 
@@ -293,10 +307,13 @@ request には依頼者が言ったことだけを書き、言い方は言い換
 """
 
 
-def route_section(operations: list[dict]) -> str:
-    """振り分けの節（ADR 0039 の決定 2）。操作の一覧があるときだけ足す"""
+def route_section(operations: list[dict], loop: dict | None = None) -> str:
+    """振り分けの節（ADR 0039 の決定 2・4）。操作の一覧があるときだけ足す"""
     if not operations:
         return ""
+    loop = loop or {}
+    reasons = "、".join(f"{k}（{v}）" for k, v in (loop.get("decline_reasons") or {}).items())
+    alts = "、".join(f"{k}（{v}）" for k, v in (loop.get("alternatives") or {}).items())
     lines = []
     for o in operations:
         ps = "、".join(f"{k}（{v.get('ja', '')}{'。' + ' / '.join(v['values']) if v.get('values') else ''}"
@@ -310,6 +327,10 @@ def route_section(operations: list[dict]) -> str:
             "- 済むなら done=true にし、route に path=operate・op（操作の id）・params（引数の name と value の並び。依頼の言葉から決め、決まらない引数は省いて既定に任せる）・"
             "why（なぜ操作で済むか 1 文）を書く。tasks は空でよい。宛先は依頼の本文の URL やチャンネルでなく、一覧の宛先の名前だけ\n"
             "- 操作で済まない（コードや画面を変える・一覧にない）なら route に path=ticket・op は空・params は空の並びを書き、下の進め方でタスクに切る\n"
+            "- コードや画面の変更でもなく、一覧の操作でも済まない依頼（データの集計・分析、本番のデータが要る、工場がつながっていないデータ源が要るなど）は、"
+            "チケットに無理に切らずに断る。done=true にし、route に path=decline・op は空・params は空の並び・why（なぜ受けられないかを依頼者に向けて 1〜2 文）・"
+            f"decline（reason は {reasons} から 1 つ。alternatives は代わりの案を 1〜3 つ。kind は {alts} のどれか、text は依頼者が選べる 1 文）を書く。tasks は空でよい\n"
+            "- 断り以外のときは decline の reason は空、alternatives は空の並びにする\n"
             "- どちらか決まらないときだけ問いを使う。依頼の中身の細かい詰めはしない（実行は工場の側が行う）\n\n")
 
 
