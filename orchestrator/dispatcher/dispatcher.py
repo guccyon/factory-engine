@@ -34,9 +34,11 @@ from psycopg.types.json import Jsonb
 import case
 import committee
 import continuation
+import model_route
 import design
 import design_line
 import qa_line
+import defect
 import runner_relay
 import design_system_line
 import desk_line
@@ -243,10 +245,12 @@ def enqueue(repo: str, issue: int, by: str, attempt: int = 1, kind: str = "imple
         it = issue_json or {}
         ticket = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=it.get("title") or "", url=it.get("html_url"),
                                    priority=ops.priority_from_labels([l.get("name", "") for l in it.get("labels") or []]), state="active")
+        # 実装は、小さいチケットの一部だけ別のモデルで流して比べる（model_route.py。2026-11-08 オーナー）
+        tier = model_route.tier_for(cur, corr, MODEL_TIER) if kind == "implement" else MODEL_TIER
         try:
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id",
-                        (corr, repo, issue, attempt, by, MODEL_TIER, kind, ticket["id"], ticket["priority"]))
+                        (corr, repo, issue, attempt, by, tier, kind, ticket["id"], ticket["priority"]))
         except psycopg.errors.UniqueViolation:
             return None   # すでに queued / running（二重実行の抑止 1 段目）
         job_id = cur.fetchone()["id"]
@@ -310,6 +314,10 @@ def poll_loop():
                     desk_line.advance_waiting(cur, gh, swap_label, comment, REPOS)
                 with db() as conn, conn.cursor() as cur:   # 確認の済んだ決まった操作を動かして提出する（ADR 0039 の順番 2）
                     desk_line.run_operations(cur)
+                with db() as conn, conn.cursor() as cur:   # 応答時間の目安を見て、途中の様子と遅れを書く（ADR 0039 の順番 3）
+                    desk_line.watch(cur)
+                with db() as conn, conn.cursor() as cur:   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる（ADR 0039 の順番 5）
+                    desk_line.send_notices(cur)
             except Exception as e:  # noqa: BLE001
                 log("desk filing failed", repr(e))
             try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の段を積む（ADR 0025・0026）
@@ -452,7 +460,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
-                   *([] if reattaching else relay_env(job_id, kind)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
+                   *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
             if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
@@ -623,7 +631,10 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "qa":
                 # QA 役（ADR 0028 の決定 2）: ストーリーごとの Verdict を残し、hold の Defect を起票し、固定 Issue にまとめを書く
                 try:
-                    if state == "succeeded":
+                    if state == "succeeded" and result.get("mode") == "explore":   # 夜間の探索（nightly_explore）: 1 晩 1 件の qa.explore と Defect の起票
+                        keys = qa_line.store_files(store_put, job_id, design_files)
+                        qa_line.record_explore(cur, gh, comment, repo, issue, corr, job_id, result, keys)
+                    elif state == "succeeded":
                         keys = qa_line.store_files(store_put, job_id, design_files)
                         recorded = qa_line.record(cur, repo, corr, job_id, result, keys)
                         qa_line.act(cur, gh, comment, repo, issue, corr, job_id, result, recorded, keys)
@@ -906,7 +917,7 @@ def is_body_only(d: dict) -> bool:
 
 def enqueue_body_fix(cur, repo: str, corr: str, pr_url: str, pr_number: int, defects: list[dict]):
     try:
-        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-small','body_fix') returning id",
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-light','body_fix') returning id",
                     (corr, repo, pr_number))
     except psycopg.errors.UniqueViolation:
         log("body_fix skipped (active job)", pr_url)
@@ -942,6 +953,11 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
     to_fix = [d for d in live if not is_body_only(d)]
+    for d in to_fix:   # PR で見つけた Defect（ADR 0028 の決定 5）。原因はその PR の実装。body だけの指摘は製品の Defect ではないので数えない
+        defect.safe_record(cur, "pr", f"{pr_url}:{d.get('rubric_id')}:{str(d.get('location') or '')[:120]}", "judge", log=log,
+                           correlation_id=corr, job_id=job_id, repo=repo, change=pr_url, caused_in="implement",
+                           viewpoint=d.get("rubric_id"), severity=d.get("severity"), title=str(d.get("evidence") or "")[:200] or None,
+                           reproduce=[d["location"]] if d.get("location") else None)
     if to_fix and REVIEW_FIX:
         # マージ前の指摘は差し戻しの Issue を切らず、同じ担当の続きのジョブで直す（ADR 0017）。上限・工場のブランチでないときは差し戻しへ
         try:
@@ -1369,7 +1385,9 @@ def recover() -> list[dict]:
             record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": error})
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,'recover',%s,%s,%s,%s) returning id",
-                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"], j["ticket_id"], j["priority"]))
+                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1,
+                         model_route.tier_for(cur, j["correlation_id"], MODEL_TIER) if j["kind"] == "implement" else MODEL_TIER,
+                         j["kind"], j["ticket_id"], j["priority"]))
             new_id = cur.fetchone()["id"]
             record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"],
                                                                          **continuation.carry_over(cur, j["id"])})   # 続ける先と入力を引き継ぐ
@@ -1397,11 +1415,29 @@ def _relay_record(job_id: int, payload: dict):
         record_event(cur, "runner.relayed", None, job_id, payload)
 
 
-def relay_env(job_id: int, kind: str) -> list[str]:
+def _relay_local(tool: str, arguments: dict, grant: dict) -> dict:
+    """工場の側の道具（runner_relay.LOCAL_TOOLS）。env_restart はそのジョブの製品の、QA を積んだときの環境を再起動して時計を進める
+    （ADR 0028 の scenario_time）。手を動かすのは shipper で、ここは依頼を書いて終わるまで待つだけ"""
+    import touch
+    if tool != "env_restart" or not grant.get("repo"):
+        raise RuntimeError(f"知らない道具か、製品の分からないジョブ: {tool}")
+    hours = arguments.get("advance_hours") or 0
+    if not isinstance(hours, (int, float)) or isinstance(hours, bool):
+        return runner_relay._err("advance_hours は数")
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("select payload->>'env' as env from events where name='qa.enqueued' and job_id=%s order by id limit 1", (grant["job_id"],))
+        r = cur.fetchone()
+        env = (r or {}).get("env") or "staging"
+        ok, msg, _ = touch.restart(cur, grant["repo"], env, advance_hours=float(hours), reset_clock=bool(arguments.get("reset_clock")),
+                                   by=f"qa:{grant['job_id']}", via="runner_relay", timeout=480, log=lambda m: None)
+    return {"content": [{"type": "text", "text": msg}], "isError": not ok}
+
+
+def relay_env(job_id: int, kind: str, repo: str | None = None) -> list[str]:
     """中継を使うジョブなら、このジョブだけの合言葉を作って docker run の引数を返す。網は compose の網（dispatcher に届く）"""
     if RELAY is None or kind not in runner_relay.KIND_TOOLS:
         return []
-    token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300)
+    token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300, repo=repo)
     return ["--network", JOB_DB_NETWORK, "-e", f"RUNNER_RELAY_URL=http://{RELAY_HOST}:{RELAY_PORT}/mcp", "-e", f"RUNNER_RELAY_TOKEN={token}"]
 
 
@@ -1427,7 +1463,7 @@ def main():
         threading.Thread(target=swap_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("RUNNER_RELAY", "1") == "1":
-        RELAY = runner_relay.Relay(_relay_call, _relay_record)
+        RELAY = runner_relay.Relay(_relay_call, _relay_record, local=_relay_local)
         runner_relay.serve(RELAY, RELAY_PORT)
         log(f"runner relay listening :{RELAY_PORT}")
     if ENV.get("WEBHOOK_SECRET"):

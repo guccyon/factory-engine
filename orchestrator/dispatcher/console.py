@@ -206,11 +206,14 @@ def snapshot(cur) -> dict:
     for r in cur.fetchall():
         items.append(item("done", ref=r["correlation_id"].split(":", 1)[1], title=r["title"] or "", pr_url=r["pr_url"], at=iso(r["occurred_at"]), note="マージ",
                           url=r["url"], source="github"))
-    cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload->>'error' as error, t.title from events e "
+    # 番号はチケットの source_ref か、ジョブのリポジトリと番号（owner/repo#n）。correlation_id の後ろ半分を使うと、委員会（committee:<PR の URL>）・
+    # 事例（case:<key>）・窓口（desk:<id>）のジョブで URL や key がリポジトリとして絞り込みに出ていた（11-08）
+    cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload->>'error' as error, t.title, t.source_ref, j.repo, j.issue_number from events e "
                 "left join jobs j on j.id=e.job_id left join tickets t on t.id=j.ticket_id "
                 "where e.name='job.finished' and e.payload->>'state'='failed' and e.occurred_at >= date_trunc('day', now()) order by e.id desc limit 20")
     for r in cur.fetchall():
-        items.append(item("done", job_id=r["job_id"], ref=(r["correlation_id"] or ":").split(":", 1)[1], title=r["title"] or "",
+        ref = r["source_ref"] or (f"{r['repo']}#{r['issue_number']}" if r["repo"] else (r["correlation_id"] or ":").split(":", 1)[1])
+        items.append(item("done", job_id=r["job_id"], ref=ref, title=r["title"] or "",
                           at=iso(r["occurred_at"]), note=f"失敗（{r['error']}）", failed=True))
     running = sum(1 for i in items if i["stage"] == "running")
     cur.execute("select count(*) as n from tickets where state='planned' and not held")

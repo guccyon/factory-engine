@@ -38,6 +38,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "quality"))
 import ingest as quality_ingest  # noqa: E402  内部品質の取り込み（health/quality/ingest.py、ADR 0019）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import stage_roi  # noqa: E402  工程ごとの ROI（モデルを替える判断の根拠。2026-11-08）
 
 ENV = os.environ
 # 内部品質の定期診断を取り込む製品（製品の CI に quality.yml があるもの）。既定は工場の製品すべて（quality.yml がなければ取り込むものがないだけ）
@@ -45,6 +47,7 @@ QUALITY_REPOS = [r.strip() for r in (ENV.get("QUALITY_REPOS") or ENV.get("FACTOR
 JST = timezone(timedelta(hours=9))   # slim イメージに tzdata がないので固定のオフセット
 HERE = Path(__file__).resolve().parent
 ROADMAP = Path(ENV.get("ROADMAP") or HERE.parent.parent / "definitions" / "roadmap.yaml")
+DEFECTS = ROADMAP.parent / "defects.yaml"   # Defect の型と品質の指標（ADR 0028 の決定 5）
 STATUS_REPO = ENV.get("STATUS_REPO", "guccyon/factory-engine")
 REPOS = [r.strip() for r in ENV.get("REPORT_REPOS", "guccyon/rally,guccyon/factory-engine").split(",") if r.strip()]
 BUILD_WORK_DIR = ENV.get("BUILD_WORK_DIR", "")
@@ -178,6 +181,52 @@ def workflow_view(conn, now: datetime | None = None) -> list[str]:
     except Exception as e:  # noqa: BLE001
         print("[status-report] ワークフローの宣言を数えられない:", repr(e), file=sys.stderr)
         return []
+
+
+def explore_view(conn, now: datetime | None = None) -> dict | None:
+    """昨夜の探索（ADR 0028 の nightly_explore）。前日の正午（JST）からの qa.explore と、回らなかった理由（supervisor.nightly_explore_skipped）。
+    Defect は起票した Issue、印（flags）は人が採点する材料として並べる。数えられなくてもレポートは出す"""
+    if conn is None:
+        return None
+    to = (now or datetime.now(timezone.utc)).astimezone(JST)
+    since = (to - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select payload, job_id from events where name='qa.explore' and occurred_at >= %s order by id", (since,))
+            runs = [{**r[0], "job_id": r[1]} for r in cur.fetchall()]
+            cur.execute("select payload from events where name='supervisor.nightly_explore_skipped' and occurred_at >= %s order by id", (since,))
+            skipped = [r[0] for r in cur.fetchall()]
+            cur.execute("select count(distinct payload->>'night') from events where name='qa.explore' and (payload->>'unattended')::boolean")
+            nights = cur.fetchone()[0]
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] 夜間の探索を数えられない:", repr(e), file=sys.stderr)
+        return None
+    return {"runs": runs, "skipped": [x for x in skipped if not any(r.get("repo") == x.get("repo") for r in runs)], "nights": nights}
+
+
+SKIP_JA = {"over_budget": "予算の枠を使い切っていた", "paused": "ラインが一時停止中だった"}
+
+
+def fmt_explore(ex: dict | None) -> list[str]:
+    """昨夜の探索の行（日次のコメントとダッシュボード）"""
+    if not ex or (not ex["runs"] and not ex["skipped"]):
+        return ["- 昨夜の探索の記録はない"]
+    lines = []
+    for r in ex["runs"]:
+        repo = r.get("repo", "").split("/")[-1]
+        lines.append(f"- {repo}（{r.get('night')} の夜・チャーター `{r.get('charter')}`・版 {r.get('release_id') or '不明'}{'・iOS あり' if r.get('mobile') else ''}"
+                     f"{'' if r.get('unattended') else '・人が積んだ'}）: 試した {r.get('tried')} 件・見つけた {r.get('findings')} 件・印 {len(r.get('flags') or [])} 件"
+                     + (f"・まとめ #{r['issue']}" if r.get("issue") else ""))
+        for d in r.get("defects") or []:
+            mark = "**" if d.get("severity") in ("s1", "s2") else ""
+            where = f" → {d['issue']}" if d.get("issue") else "（起票しない）"
+            lines.append(f"  - 🛑 {mark}[{d.get('severity')}/{d.get('viewpoint')}] {d.get('title')}{mark}{'（known_gap）' if d.get('known_gap') else ''}{where}")
+        for f in r.get("flags") or []:
+            lines.append(f"  - 印 [{f.get('viewpoint')}] {f.get('where') or ''}: {f.get('note')}")
+    for x in ex["skipped"]:
+        lines.append(f"- **{x.get('repo', '').split('/')[-1]}: 昨夜は回らなかった**（{SKIP_JA.get(x.get('reason'), x.get('reason'))}）")
+    lines.append(f"- 無人で回った夜の累計 {ex['nights']}（P5a の nightly_explore の目標 3）")
+    return lines
 
 
 def db_conn():
@@ -584,6 +633,68 @@ def change_cost(conn, weeks: int = 6) -> list[dict]:
              "jobs": med([x[2] for x in v]), "sendbacks": med([x[3] for x in v])} for (w, lv), v in sorted(groups.items())]
 
 
+def defect_metrics(rows: list[dict], defs: dict) -> dict:
+    """Defect（events の defect.recorded）から品質の指標を出す（definitions/defects.yaml の metrics）。LLM は使わない"""
+    stages = defs.get("stages") or []
+    before = {st["id"] for st in stages if st.get("before_merge")}
+    by_found = {st["id"]: 0 for st in stages}
+    views: dict[str, int] = {}
+    linked = {"release_id": 0, "change": 0, "caused_in": 0, "introduced_in": 0}
+    for r in rows:
+        f = r.get("found_in")
+        by_found[f] = by_found.get(f, 0) + 1
+        if r.get("viewpoint"):
+            views[str(r["viewpoint"])] = views.get(str(r["viewpoint"]), 0) + 1
+        for k in linked:
+            linked[k] += 1 if r.get(k) else 0
+    n = len(rows)
+    caught = sum(v for k, v in by_found.items() if k in before)
+    return {"window_days": (defs.get("metrics") or {}).get("window_days", 30), "total": n,
+            "escape_prevention": (caught / n) if n else None, "caught_before_merge": caught, "prod": by_found.get("prod", 0),
+            "by_found_in": [{"id": st["id"], "ja": st.get("ja") or st["id"], "n": by_found.get(st["id"], 0), "before_merge": bool(st.get("before_merge"))}
+                            for st in stages],
+            "hotspots": [{"viewpoint": k, "n": v} for k, v in sorted(views.items(), key=lambda x: (-x[1], x[0]))[:5]],
+            "link_rate": {k: (v / n if n else None) for k, v in linked.items()}}
+
+
+def defect_view(conn) -> dict | None:
+    """直近 window_days 日の Defect の指標（ADR 0028 の決定 5。P5a の defect_metrics）。数えられなくてもレポートは出す"""
+    if conn is None:
+        return None
+    try:
+        defs = yaml.safe_load(DEFECTS.read_text(encoding="utf-8"))
+        days = int((defs.get("metrics") or {}).get("window_days", 30))
+        with conn.cursor() as cur:
+            cur.execute("select payload from events where name='defect.recorded' and occurred_at > now() - make_interval(days => %s)", (days,))
+            rows = [p for (p,) in cur.fetchall()]
+        return defect_metrics(rows, defs)
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] Defect を数えられない:", repr(e), file=sys.stderr)
+        return None
+
+
+def fmt_defects(dm: dict | None) -> list[str]:
+    if not dm:
+        return ["（Defect の記録を読めませんでした）"]
+    if not dm["total"]:
+        return [f"（直近 {dm['window_days']} 日の Defect はまだありません）"]
+    ep = dm["escape_prevention"]
+    lines = [f"- **流出防止率 {pct(ep)}**（マージの手前で止めた {dm['caught_before_merge']} 件 ÷ 全 {dm['total']} 件、直近 {dm['window_days']} 日）"
+             + ("。件数が少ないので参考" if dm["total"] < 10 else "") + f"。本番まで出た Defect {dm['prod']} 件",
+             "- 発見工程の分布: " + "、".join(f"{x['ja']} {x['n']}" for x in dm["by_found_in"]),
+             ]
+    if dm["hotspots"]:
+        lines.append("- 出やすい観点: " + "、".join(f"`{h['viewpoint']}` {h['n']}" for h in dm["hotspots"]))
+    lr = dm["link_rate"]
+    lines.append(f"- 紐付け率: 版 {pct(lr['release_id'])}・変更 {pct(lr['change'])}・原因の工程 {pct(lr['caused_in'])}・混入させた工程 {pct(lr['introduced_in'])}")
+    shown = [x for x in dm["by_found_in"] if x["n"]]
+    if len(shown) >= 2:
+        xs = ", ".join(f'"{x["ja"]}"' for x in dm["by_found_in"])
+        ys = ", ".join(str(x["n"]) for x in dm["by_found_in"])
+        lines += ["", "```mermaid", "xychart-beta", '  title "発見工程ごとの Defect の件数"', f"  x-axis [{xs}]", f"  bar [{ys}]", "```"]
+    return lines
+
+
 def fmt_change_cost(cc: list[dict]) -> list[str]:
     if not cc:
         return ["（難易度の付いたマージはまだありません）"]
@@ -631,8 +742,10 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
-              "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
+    lines += ["## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
+              "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "",
+              "## 品質（Defect）", "", *fmt_defects(snap.get("defects")), "",
+              "## 工程ごとの ROI（費用・時間・一発で通ったか・混入した Defect）", "", *stage_roi.fmt(snap.get("stage_roi")), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
               "<sub>health/daily/status_report.py が生成（LLM 不使用）。日次の記録はこの Issue のコメント。</sub>"]
     return "\n".join(lines)
 
@@ -650,7 +763,15 @@ def render_daily(snap: dict, prev: dict | None) -> str:
         lines.append("- 動いたフェーズ: " + ("、".join(moved) if moved else "なし"))
     for repo, hist in (snap.get("quality") or {}).items():
         lines.append(f"- 内部品質: {fmt_quality({repo: hist[-2:] if len(hist) > 1 else hist})[0]}")
+    dm = snap.get("defects")
+    if dm and dm.get("total"):
+        lines.append(f"- 品質（Defect）: 流出防止率 {pct(dm['escape_prevention'])}（全 {dm['total']} 件）、発見工程 "
+                     + "・".join(f"{x['ja']} {x['n']}" for x in dm["by_found_in"] if x["n"]))
+    roi = stage_roi.daily_line(snap.get("stage_roi"))
+    if roi:
+        lines.append(roi)
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
+    lines += ["", "**夜間の探索（昨夜）**", *fmt_explore(snap.get("explore"))]
     lines += fmt_usage(snap.get("usage"))
     if snap.get("workflow"):
         lines += ["", "**ワークフローの宣言（記録だけ）**", *[f"- {x}" if not x.startswith("- ") else x for x in snap["workflow"]]]
@@ -739,7 +860,8 @@ def main() -> int:
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
-            "usage": usage_view(conn), "workflow": workflow_view(conn)}
+            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now),
+            "defects": defect_view(conn), "stage_roi": stage_roi.view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],

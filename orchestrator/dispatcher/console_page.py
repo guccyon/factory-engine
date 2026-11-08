@@ -134,7 +134,7 @@ function acts(i){let h="";
  return h?`<div class="acts">${h}</div>`:""}
 const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
- const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す",restart_requested:"再起動（時計を進める）"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
   if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
@@ -142,7 +142,7 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
   if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
  const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
- const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.restarted":"再起動した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
 function pairsView(ps){return ps.map(p=>`<div class="rn" style="border-color:var(--accent)"><h2>新しいランナーの接続の依頼</h2><div><b>${esc(p.name||"?")}</b> <span class="m">${esc(p.platform||"")} · ${esc(p.version||"")}</span></div>
  <div style="font-size:28px;font-weight:700;letter-spacing:.08em;margin:6px 0">${esc(p.code)}</div><div class="m">Mac のターミナルに同じ番号が出ていれば「許可」を押し、Mac 側でも y を押す。違えば「拒否」。10 分で切れる</div>
@@ -267,13 +267,13 @@ function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
 function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
 // 受信トレイの画面は実際の大きさの 1/4（160〜480px）で出す。高解像度のスクリーンショットでも画面の全体が見える
 document.addEventListener("load",e=>{const g=e.target;if(g.tagName==="IMG"&&g.classList.contains("q")&&g.naturalWidth)g.style.width=Math.round(Math.min(480,Math.max(160,g.naturalWidth/4)))+"px"},true);
-// 受信トレイの件を Claude に渡す（11-08）。Claude 越しに中身を確かめて答えるとき、どの件かを伝える文をコピーする。
+// 受信トレイの「プロンプト」（11-08）。AI エージェント越しに中身を確かめて答えるとき、どの課題かを伝えるプロンプトをコピーする。
 // 決め手は件の key（工場の MCP の inbox_read・inbox_answer が受け取るもの）。URL は人が開き直すため
-function shareText(i){return `工場の受信トレイの件を一緒に確認したい。\n件: ${i.title}\nkey: ${i.key}\n工場の MCP の inbox_read に key「${i.key}」を渡して中身を読み、問いと案を見せてほしい（答えは私がはっきり選んでから inbox_answer で送る）。\n画面: ${location.origin}${ibHref(i.key)}`}
+function shareText(i){return `以下の判断待ちの課題のサポートをして\n\nタイトル: ${i.title}\nパラメータ: ${i.key}\n\nMCPの inbox_read を使って内容を確認し詳細を説明してください。回答は inbox_answer で送ります。\n受信トレイのURL: ${location.origin}${ibHref(i.key)}`}
 async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();
  let ok=false;try{ok=document.execCommand("copy")}catch(_){}a.remove();return ok}}
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-share]");if(!b||!S)return;const i=((S.inbox||{}).items||[]).find(x=>x.key===b.dataset.share);if(!i)return;
- copyText(shareText(i)).then(ok=>toast(ok?"Claude に渡す文をコピーしました。Claude との会話に貼り付けてください":"コピーできませんでした"))});
+ copyText(shareText(i)).then(ok=>toast(ok?"プロンプトをコピーしました。AI エージェントとの会話に貼り付けてください":"コピーできませんでした"))});
 // ---- 停止のアラート（11-08）。何が止まり・どれのことで・次に何をするかを 1 行ずつ。押すと詳しく（記録・リンク・やり直す）。
 // × で画面から消す（停止そのものは閉じない。消したものは「消したもの」で見られ、戻せる）
 let alAll=false,alGone=false;const alOpen=new Set(),alLog={};const AL_LIM=5;
@@ -360,7 +360,7 @@ function ibDetail(ib,key){const i=ib.items.find(x=>x.key===key);
  const xs=ibItems(ib),k=xs.findIndex(x=>x.key===key),prev=k>0?xs[k-1]:null,next=k>=0&&k<xs.length-1?xs[k+1]:null;
  const nav=`<span class="pn">${prev?`<a href="${ibHref(prev.key)}" data-nav>← 前</a>`:'<span class="off">← 前</span>'}${next?`<a href="${ibHref(next.key)}" data-nav>次 →</a>`:'<span class="off">次 →</span>'}</span>`;
  const meta=[esc(ib.who[i.who]||i.who),esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref),extLink(i.url)].filter(Boolean).join(" · ");
- return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="Claude に渡す文（件の key・題・この画面の URL）をコピーする。Claude は工場の MCP の inbox_read にこの key を渡して中身を読む">Claude に渡す</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
+ return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="AIエージェントとこの課題の判断をするためのプロンプトをクリップボードにコピーします。">プロンプト</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
 function ibBody(i){const n=0;
  if(i.key.startsWith("choice:")){const cs=i.key==="choice:exit_capture"?(S.choices||[]).filter(c=>c.kind==="exit_capture"):(S.choices||[]).filter(c=>"choice:"+c.id===i.key);
   if(i.answered||!cs.length)return answerView(i,n);

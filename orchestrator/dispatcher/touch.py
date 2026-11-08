@@ -5,6 +5,7 @@ Gen1 は staging を QA の環境と兼ねる（使い捨ての環境は P5b の
 
   factoryctl env up <owner/repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]
   factoryctl env show <owner/repo> [--env staging]
+  factoryctl env restart <owner/repo> [--advance-hours N | --reset-clock] [--env staging]   # 時間をまたぐシナリオ（ADR 0028 の scenario_time）
 
 up の版の選び方: --release があればその版。なければ、まだどの Release にも入っていないマージ済みの PR があれば次の版の Release を切り、
 なければいま staging に出ている版のまま（出し直さない）。--fresh は出したあとに DB を空にして合成シードから入れ直す。
@@ -151,3 +152,22 @@ def up(cur, repo: str, release_id: str | None = None, fresh: bool = False, by: s
 def _last_request(cur, name: str, rid: str) -> int:
     cur.execute("select id from events where name=%s and payload->>'release_id'=%s order by id desc limit 1", (name, rid))
     return cur.fetchone()["id"]
+
+
+def restart(cur, repo: str, env: str = "staging", advance_hours: float = 0, reset_clock: bool = False, by: str = "builder",
+            via: str = "factoryctl env restart", timeout: float = 600, do_wait: bool = True, log=print) -> tuple[bool, str, int | None]:
+    """触れる環境を再起動し、サーバーの時計を進める（ADR 0028 の scenario_time）。DB は残す。
+    返り値 (ok, 説明, 進めている秒数)。QA のワーカーには dispatcher の中継（runner_relay の env_restart）からも呼ばれる"""
+    ok, m = ship.request_restart(cur, repo, env, by, via, advance_seconds=int(round(float(advance_hours) * 3600)), reset_clock=reset_clock)
+    log(m)
+    if not ok:
+        return False, m, None
+    rid = ship.status(cur, repo)["environments"].get(env, {}).get("release_id")
+    if not do_wait:
+        return True, m, None
+    req = _last_request(cur, "release.restart_requested", rid)
+    ok, m = wait(cur, req, timeout, settle=60, log=log)
+    if not ok:
+        return False, m, None
+    offset = ship.clock_offset(cur, repo, env)
+    return True, f"{env}（{rid}）を再起動した。サーバーの時計は実際より {offset / 3600:g} 時間進んでいる", offset

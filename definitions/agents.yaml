@@ -19,6 +19,7 @@ tiers:
   tier-large: {runner: claude-code, model: claude-opus-5-5}
   tier-judge: {runner: claude-code, model: claude-opus-5-5}
   tier-small: {runner: claude-code, model: claude-sonnet-5-5}
+  tier-light: {runner: claude-code, model: claude-haiku-5-5}   # 型の決まった短い書き足し（本文の追記など）。2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」
 
 steps:
   implement:                  # 実装（ツールあり、リポジトリを書き換える）。dispatcher の MODEL_TIER が tier を上書きする
@@ -36,8 +37,8 @@ steps:
   judge:                      # 出口の裁き（core-gates/judge.py）
     tier: tier-judge
     tools: none
-  body_fix:                   # PR 本文への追記（core-gates/body_fix.py）
-    tier: tier-small
+  body_fix:                   # PR 本文への追記（core-gates/body_fix.py）。2026-11-08 に Sonnet から Haiku へ（確信度の高い工程から試す）
+    tier: tier-light
     tools: none
   design_review:              # 週 1 回の設計の診断（core-gates/design_review.py。製品を読むだけ。ADR 0022）
     tier: tier-judge
@@ -64,3 +65,18 @@ steps:
     mode: agentic
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge
+
+# 工程のモデルを比べる試し（2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）。
+# 既定の tier はそのまま、条件に当たるチケットの一部だけ別の tier で流し、工程ごとの記録（費用・作業と待ちの時間・一発で通ったか・混入した Defect）を
+# 建設日報の「工程ごとの ROI」で比べる。検査・judge・QA は対象にしない（Opus のまま）。
+# dispatcher の model_route.py が同じ値を写して持つ（dispatcher のイメージには definitions/ を入れない。食い違いはテストで見る）
+experiments:
+  implement_small_sonnet:
+    step: implement
+    tier: tier-small            # 試す側（Sonnet）。外れた側と条件に当たらないチケットは既定の tier（MODEL_TIER）
+    share: 0.2                  # 条件に当たるチケットのうち試す側に回す割合。チケットの id から決定論で決める（やり直しでも同じ側）。運用の値（環境変数 MODEL_ROUTE_SHARE で上書き、0 で止める）
+    eligible:                   # プランナーの見積もり（ADR 0036 の size）がこれに当たる小さいチケット
+      turns_band: [S]
+      max_layers: 1             # 数える層（docs・other を除く）が 1 つまで。試験と文書だけの変更（数える層 0）も入る
+      exclude_layers: [db, contract]   # マイグレーションと契約は外す（壊れたときの影響が大きい）
+    back_to_default_on: [incomplete]   # 試す側で途中終了したら、続きは既定の tier に戻す（戻した回数も比べる材料）
