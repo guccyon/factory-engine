@@ -47,3 +47,17 @@ def test_record_once_and_unknown_cause_is_null(cur):
     with pytest.raises(ValueError):
         defect.record(cur, "どこか", "k", "t")
     assert defect.safe_record(cur, "どこか", "k", "t") is False   # 呼び出し元は止めない
+
+
+def test_introduced_by_the_job_that_wrote_the_pr(cur):
+    """混入させた工程・ジョブ・tier は、PR の最新の版を書いた実装のジョブから引く（モデルを比べる材料。2026-11-08）"""
+    pr = "https://github.com/o/app/pull/7"
+    for tier, state in (("tier-large", "succeeded"), ("tier-small", "succeeded"), ("tier-small", "failed")):
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, model_tier, state, finished_at, result) "
+                    "values ('github:o/app#3','o/app',3,'implement',%s,%s,now(),%s)", (tier, state, defect.Jsonb({"pr_url": pr})))
+    assert defect.record(cur, "ci", f"{pr}:test", "pr_events", change=pr, caused_in="implement") is True
+    assert defect.record(cur, "qa", "q1", "qa_line") is True   # 変更が分からないものは null のまま
+    cur.execute("select payload from events where name='defect.recorded' order by id")
+    a, b = [r["payload"] for r in cur.fetchall()]
+    assert (a["introduced_in"], a["introduced_job"], a["introduced_tier"]) == ("implement", 2, "tier-small")
+    assert b["introduced_in"] is None and b["introduced_job"] is None

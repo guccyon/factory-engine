@@ -24,6 +24,8 @@ import subprocess
 import psycopg
 from psycopg.types.json import Jsonb
 
+import model_route
+
 ENV = os.environ
 REASONS = ("incomplete", "conflict", "ci_failed", "review_fix")
 SIGNALED = ("ci_failed", "review_fix")   # 合図の中身（input）を標準入力で渡す理由
@@ -82,8 +84,9 @@ def enqueue(cur, *, repo: str, pr_number: int, pr_url: str, branch: str, head_sh
     t = cur.fetchone() or {}
     try:
         cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority) "
-                    "values (%s,%s,%s,%s,'tier-large','implement',%s,%s) returning id",
-                    (corr, repo, issue, by, t.get("id"), priority or t.get("priority") or 50))
+                    "values (%s,%s,%s,%s,%s,'implement',%s,%s) returning id",
+                    (corr, repo, issue, by, model_route.tier_for(cur, corr, os.environ.get("MODEL_TIER", "tier-large"), reason=reason),
+                     t.get("id"), priority or t.get("priority") or 50))
     except psycopg.errors.UniqueViolation:
         return None   # 同じ Issue のジョブがすでに動いている
     jid = cur.fetchone()["id"]

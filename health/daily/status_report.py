@@ -38,6 +38,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "quality"))
 import ingest as quality_ingest  # noqa: E402  内部品質の取り込み（health/quality/ingest.py、ADR 0019）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import stage_roi  # noqa: E402  工程ごとの ROI（モデルを替える判断の根拠。2026-11-08）
 
 ENV = os.environ
 # 内部品質の定期診断を取り込む製品（製品の CI に quality.yml があるもの）。既定は工場の製品すべて（quality.yml がなければ取り込むものがないだけ）
@@ -637,7 +639,7 @@ def defect_metrics(rows: list[dict], defs: dict) -> dict:
     before = {st["id"] for st in stages if st.get("before_merge")}
     by_found = {st["id"]: 0 for st in stages}
     views: dict[str, int] = {}
-    linked = {"release_id": 0, "change": 0, "caused_in": 0}
+    linked = {"release_id": 0, "change": 0, "caused_in": 0, "introduced_in": 0}
     for r in rows:
         f = r.get("found_in")
         by_found[f] = by_found.get(f, 0) + 1
@@ -684,7 +686,7 @@ def fmt_defects(dm: dict | None) -> list[str]:
     if dm["hotspots"]:
         lines.append("- 出やすい観点: " + "、".join(f"`{h['viewpoint']}` {h['n']}" for h in dm["hotspots"]))
     lr = dm["link_rate"]
-    lines.append(f"- 紐付け率: 版 {pct(lr['release_id'])}・変更 {pct(lr['change'])}・原因の工程 {pct(lr['caused_in'])}")
+    lines.append(f"- 紐付け率: 版 {pct(lr['release_id'])}・変更 {pct(lr['change'])}・原因の工程 {pct(lr['caused_in'])}・混入させた工程 {pct(lr['introduced_in'])}")
     shown = [x for x in dm["by_found_in"] if x["n"]]
     if len(shown) >= 2:
         xs = ", ".join(f'"{x["ja"]}"' for x in dm["by_found_in"])
@@ -742,7 +744,8 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
         lines.append("\n</details>\n")
     lines += ["## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
               "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "",
-              "## 品質（Defect）", "", *fmt_defects(snap.get("defects")), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
+              "## 品質（Defect）", "", *fmt_defects(snap.get("defects")), "",
+              "## 工程ごとの ROI（費用・時間・一発で通ったか・混入した Defect）", "", *stage_roi.fmt(snap.get("stage_roi")), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
               "<sub>health/daily/status_report.py が生成（LLM 不使用）。日次の記録はこの Issue のコメント。</sub>"]
     return "\n".join(lines)
 
@@ -764,6 +767,9 @@ def render_daily(snap: dict, prev: dict | None) -> str:
     if dm and dm.get("total"):
         lines.append(f"- 品質（Defect）: 流出防止率 {pct(dm['escape_prevention'])}（全 {dm['total']} 件）、発見工程 "
                      + "・".join(f"{x['ja']} {x['n']}" for x in dm["by_found_in"] if x["n"]))
+    roi = stage_roi.daily_line(snap.get("stage_roi"))
+    if roi:
+        lines.append(roi)
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
     lines += ["", "**夜間の探索（昨夜）**", *fmt_explore(snap.get("explore"))]
     lines += fmt_usage(snap.get("usage"))
@@ -855,7 +861,7 @@ def main() -> int:
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
             "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now),
-            "defects": defect_view(conn)}
+            "defects": defect_view(conn), "stage_roi": stage_roi.view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
     today = {"date": date, "overall": progress["overall"],

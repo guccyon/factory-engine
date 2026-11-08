@@ -15,6 +15,7 @@ python3 health/daily/status_report.py --publish     # 固定 Issue（factory:con
 - 頼みたいことの「承認待ちの PR」は、ラベル `factory:needs-approval`（supervisor の判定、`REPORT_REPOS`）と、マージに必ず人の承認が要るリポジトリ（`HUMAN_MERGE_REPOS`、既定 `guccyon/factory-engine`）の下書きでない開いた PR。待っている日数の長い順
 - 使用量: スナップショットの `usage` に、操業コンソールの `/usage` と同じ集計（orchestrator/dispatcher/usage.py）を入れ、日報に契約の週の消費とアカウントを足すかの判断の材料を出す。朝の報告の「工場の操業」はこれを読む
 - 夜間の探索: スナップショットの `explore` に、前日の正午（JST）からの `qa.explore`（Defect と印）と、回らなかった理由（`supervisor.nightly_explore_skipped`）を入れ、日報とページの「夜間の探索（昨夜）」に出す（ADR 0028 の nightly_explore）
+- 工程ごとの ROI（`stage_roi.py`）: スナップショットの `stage_roi` に、直近 14 日（`ROI_WINDOW_DAYS`）の工程×モデルごとの費用・作業と待ちの時間・一発で通った割合・混入させた Defect（`defect.recorded` の `introduced_job`）と、ボトルネック（時間・費用・一発で通りにくい・Defect）を入れる。モデルの試し（`definitions/agents.yaml` の `experiments`、`model.routed`）は、条件に当たったチケットを試す側と既定の側で比べる（通った 1 件あたりの費用・リードタイム・一発で通ったか・Defect）。既定のモデルを替える判断の根拠にする
 - ふだんは supervisor が 1 日 1 回走らせる（orchestrator/README.md）
 
 ## claude.ai のページ
