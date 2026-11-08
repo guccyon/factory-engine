@@ -13,6 +13,8 @@
 - 依存順の投入: `factory:planned` の Issue を工場のチケットに写し（ADR 0009）、本文の「依存: #12 #13」がすべて閉じたものを
   優先度の高い順に `factory:implement` に替える（同時に流すのは上限まで。緊急（p0）は上限を待たない。保留中は流さない）
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
+- 夜間の探索（ADR 0028 の nightly_explore）: JST の夜（definitions/qa.yaml の explore.hours）に、製品ごとに 1 晩 1 回、QA 役の探索のジョブを積む。
+  予算の枠を使い切っていれば次の枠を待つ。ラインの一時停止中は explore.through_pause が真ならこのジョブだけ流す
 - 出荷の列車（ADR 0012）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品の Release が今日まだなく、まだ Release に入っていない
   マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼する。
   prod へは承認ボタンを待つ
@@ -44,6 +46,7 @@ import case
 import committee
 import continuation
 import design
+import drain
 import judgment
 import line
 import learn
@@ -51,6 +54,7 @@ import version
 import ops
 import plan_outcome
 import process_learn
+import qa_line
 import report
 import serialize
 import ship
@@ -100,6 +104,9 @@ PROCESS_ISSUES = ENV.get("PROCESS_ISSUES", "1") == "1"   # 工程の信号の束
 PROCESS_ISSUES_PER_DAY = int(ENV.get("PROCESS_ISSUES_PER_DAY", "1"))   # 束の分析は 1 日 1 件なので、起票も 1 件まで
 ENGINE_REPO = ENV.get("ENGINE_REPO", "guccyon/factory-engine")   # 工場自体のリポジトリ（改善案の起票先）
 PROCESS_LABEL = "factory:process-proposal"
+# 夜間の探索（ADR 0028 の nightly_explore）。探索する製品（触れる環境を持つもの）。既定は出荷の列車の製品。空で止める
+NIGHTLY_EXPLORE = [r.strip() for r in ENV.get("NIGHTLY_EXPLORE", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
+QA_DEFS = ENV.get("QA_DEFINITIONS", "/definitions/qa.yaml")
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -1090,6 +1097,50 @@ def committee_weekly_step(cur, now: datetime | None = None):
         log("committee weekly enqueued", repo, week, "job", jid)
 
 
+def nightly_explore_step(cur, now: datetime | None = None):
+    """夜に 1 回、製品ごとに QA 役の探索のジョブを積む（ADR 0028 の nightly_explore）。判断は持たず、時刻・予算・一時停止を見るだけ。
+    積めなかった理由は 1 晩 1 回だけ supervisor.nightly_explore_skipped に残す（朝の日報が「昨夜は回らなかった」と出す）"""
+    if not NIGHTLY_EXPLORE or DRY_RUN:
+        return
+    try:
+        with open(QA_DEFS, encoding="utf-8") as f:
+            defs = {**qa_line.load_defs(), "explore": (yaml.safe_load(f) or {}).get("explore") or qa_line.DEFS["explore"]}
+    except OSError:
+        defs = qa_line.load_defs()
+    xd = defs["explore"]
+    now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
+    lo, hi = (int(h) for h in xd.get("hours") or [1, 5])
+    if not lo <= now.hour < hi:
+        return
+    night = qa_line.night_of(now)
+    for repo in NIGHTLY_EXPLORE:
+        key = f"supervisor.nightly_explore:{repo}:{night}"
+        cur.execute("select 1 from events where dedupe_key=%s", (key,))
+        if cur.fetchone():
+            continue
+        why = None
+        ob = over_budget(cur)
+        if ob:
+            why = {"reason": "over_budget", **ob}
+        elif drain.active(cur) and not xd.get("through_pause"):
+            why = {"reason": "paused"}
+        if why:
+            record(cur, "supervisor.nightly_explore_skipped", None, {"repo": repo, "night": night, **why}, f"supervisor.nightly_explore_skipped:{repo}:{night}:{why['reason']}")
+            continue
+        try:
+            got = qa_line.enqueue_explore(cur, gh, repo, night, defs=defs)
+        except psycopg.errors.UniqueViolation:
+            continue   # 同じ固定 Issue の QA のジョブが待ち・実行中。次の周回で
+        except Exception as e:  # noqa: BLE001  次の周回でやり直す
+            log("nightly explore enqueue failed", repo, repr(e)[:200])
+            continue
+        if drain.active(cur):
+            drain.allow(cur, [got["corr"]], "supervisor", f"夜間の探索（{night} の夜）")
+        record(cur, "supervisor.nightly_explore_enqueued", got["corr"], {"repo": repo, "night": night, "charter": got["charter"], "issue": got["issue"],
+                                                                          "job_id": got["job_id"], "release_id": got["release_id"], "through_pause": drain.active(cur)}, key)
+        log("nightly explore enqueued", repo, night, got["charter"], "job", got["job_id"])
+
+
 def plan_outcome_step(cur):
     """結果の出た工場の PR を、最新の Plan と突き合わせて plan.outcome に残す（ADR 0036 の 4a。決定的）"""
     try:
@@ -1124,6 +1175,7 @@ def tick():
         notify_report_step(cur)
         changelog_step(cur)
         release_train_step(cur)
+        nightly_explore_step(cur)
         learn_step(cur)
         rule_transition_step(cur)
         case_review_step(cur)

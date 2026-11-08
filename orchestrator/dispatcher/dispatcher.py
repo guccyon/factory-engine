@@ -306,6 +306,8 @@ def poll_loop():
                     desk_line.run_operations(cur)
                 with db() as conn, conn.cursor() as cur:   # 応答時間の目安を見て、途中の様子と遅れを書く（ADR 0039 の順番 3）
                     desk_line.watch(cur)
+                with db() as conn, conn.cursor() as cur:   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる（ADR 0039 の順番 5）
+                    desk_line.send_notices(cur)
             except Exception as e:  # noqa: BLE001
                 log("desk filing failed", repr(e))
             try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の段を積む（ADR 0025・0026）
@@ -619,7 +621,10 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "qa":
                 # QA 役（ADR 0028 の決定 2）: ストーリーごとの Verdict を残し、hold の Defect を起票し、固定 Issue にまとめを書く
                 try:
-                    if state == "succeeded":
+                    if state == "succeeded" and result.get("mode") == "explore":   # 夜間の探索（nightly_explore）: 1 晩 1 件の qa.explore と Defect の起票
+                        keys = qa_line.store_files(store_put, job_id, design_files)
+                        qa_line.record_explore(cur, gh, comment, repo, issue, corr, job_id, result, keys)
+                    elif state == "succeeded":
                         keys = qa_line.store_files(store_put, job_id, design_files)
                         recorded = qa_line.record(cur, repo, corr, job_id, result, keys)
                         qa_line.act(cur, gh, comment, repo, issue, corr, job_id, result, recorded, keys)

@@ -63,3 +63,41 @@ act:
   defect_labels: ["factory:qa-defect", "factory:fix-proposed"]   # hold の Defect。流すときは人が factory:fix-proposed を factory:planned に替える（差し戻しと同じ）
   defects_per_run_max: 5        # 1 回の判定で起票する Defect の上限（残りはまとめに載せるだけ）
   known_gap_issue: false        # known_gaps に当たった Defect は起票しない（ストーリーに既に書いてある。まとめに載せる）
+
+# 夜間の探索（ADR 0028 の決定 3 と P5a の nightly_explore）。台本（ストーリーの steps）どおりに流す判定と違い、その夜のチャーター（狙い）に沿って
+# 利用者として寄り道し、ストーリーが書いていないところの食い違いを探す。人のいない夜（unattended）に回し、結果は朝の報告に出す。
+# 流れ: supervisor が JST の hours の間に、製品ごとに 1 晩 1 回 QA のジョブ（入力の mode: explore）を固定 Issue（factory:qa）に積む
+# → ワーカー（core-gates/qa.py の探索）が out/explore.yaml を返す → dispatcher が QAExplore と qa.explore（1 晩 1 件）を残し、
+# 見つけたもの（findings）の Defect を判定と同じラベルで起票し、固定 Issue にまとめを書く → 日報（health/daily/status_report.py）が昨夜の分を載せる。
+# 見た目と言葉の温度は判定と同じく印（flags）として人に出す。印は人が採点して Golden Set に入れる（P5b の quality_learn の材料）。
+explore:
+  hours: [1, 5]                 # JST。この間に積む（5 時の日報の前に終わるように。予算の枠を使い切っていれば次の枠を待つ）
+  through_pause: true           # ラインの一時停止中も探索のジョブだけ流す（factoryctl qa run --through-pause と同じ）。予算の枠は守る
+  priority: p2                  # 夜は実装のチケットより後ろ
+  max_turns: 80
+  findings_max: 8               # 1 晩に返す見つけたものの上限（重い順）
+  defects_per_night_max: 3      # 1 晩に起票する Defect の上限（s4 と known_gap は起票しない。残りはまとめに載せる）
+  file_severities: [s1, s2, s3]
+  # チャーターは夜ごとに順番に替える（夜の通し番号 % 数）。viewpoint は見つけたものの既定の観点
+  charters:
+    - id: detour
+      viewpoint: flow
+      ja: "寄り道: 戻る・やり直す・途中でやめる・二度押す・空や長い入力・順番を変える"
+    - id: other-user
+      viewpoint: authz
+      ja: "別の利用者: 他人の id や URL を開く・権限のない役で操作する・ログアウトした後に戻る"
+    - id: come-back
+      viewpoint: persistence
+      ja: "戻ってくる: 再読み込み・ログインし直し・2 つのタブ・別の端末の幅で同じ人が開く"
+    - id: reader-words
+      viewpoint: words
+      ja: "読み手の言葉: 役ごとに、内部のコードや英語の取り残し・用語集と違う語・何をすればよいか分からない文言"
+    - id: first-time
+      viewpoint: flow
+      ja: "初めての人: 空の状態から、案内だけを頼りに目的（ストーリーの goal）にたどり着けるか"
+  # 結果の形（core-gates/qa.py が検査する。ワーカーは out/explore.yaml に書く）
+  result:
+    required: [charter, tried, findings, interpretation, confidence]
+    tried: "試したこと 1 件以上。{actor, where, did, saw, story_id（近いストーリーがあれば）}"
+    findings: "見つけたもの（なければ []）。{title, viewpoint, severity, where, reproduce, expected, actual, story_id, known_gap}"
+    flags: "任意。判定と同じ印 {viewpoint: aesthetic | tone, where, note}"
