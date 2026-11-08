@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import status_report as sr  # noqa: E402  先に読む（集計の orchestrator/dispatcher/stage_roi.py を探す道を足す）
 import stage_roi as roi  # noqa: E402
-import status_report as sr  # noqa: E402
 
 T0 = datetime(2026, 11, 8, 0, 0, tzinfo=timezone.utc)
 TIERS = {"tier-large": "Opus", "tier-judge": "Opus", "tier-small": "Sonnet", "tier-light": "Haiku"}
@@ -21,6 +21,8 @@ def job(i, corr, kind="implement", tier="tier-large", cost=1.0, wait=10, work=30
 def test_tier_models_from_definitions():
     tm = roi.tier_models()
     assert tm["tier-large"] == "Opus" and tm["tier-small"] == "Sonnet" and tm["tier-light"] == "Haiku"
+    assert tm == roi.TIER_MODEL   # dispatcher のイメージで使う写しと食い違わない
+    assert roi.tier_models(Path("/nonexistent/agents.yaml")) == roi.TIER_MODEL
 
 
 def test_stages_first_pass_defects_and_bottleneck():

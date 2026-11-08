@@ -38,8 +38,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "quality"))
 import ingest as quality_ingest  # noqa: E402  内部品質の取り込み（health/quality/ingest.py、ADR 0019）
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import stage_roi  # noqa: E402  工程ごとの ROI（モデルを替える判断の根拠。2026-11-08）
+# 工場側の集計（orchestrator/dispatcher）。supervisor の中では /app に、作業ツリーでは orchestrator/dispatcher にある
+for _d in ("/app", str(Path(__file__).resolve().parents[2] / "orchestrator" / "dispatcher")):
+    if Path(_d, "stage_roi.py").exists() and _d not in sys.path:
+        sys.path.append(_d)
+import stage_roi  # noqa: E402  工程ごとの ROI（工場の操業レポートと同じ集計。モデルを替える判断の根拠。2026-11-08）
 
 ENV = os.environ
 # 内部品質の定期診断を取り込む製品（製品の CI に quality.yml があるもの）。既定は工場の製品すべて（quality.yml がなければ取り込むものがないだけ）
