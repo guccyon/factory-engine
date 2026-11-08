@@ -211,8 +211,16 @@ def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: di
     """ワーカーが文脈に渡した知見（ADR 0024 の 6）を knowledge.used に残す。使われ方（差し戻し・60 日使われない）は測る側が数える"""
     ids = [i for i in (result.get("knowledge_ids") or []) if isinstance(i, str)][:50]
     if ids:
+        sel = result.get("knowledge_selection") if isinstance(result.get("knowledge_selection"), dict) else {}
+        fit = sel.get("fit") if isinstance(sel.get("fit"), dict) else {}
         record_event(cur, "knowledge.used", corr, job_id, {"repo": repo, "issue": issue, "role": "implement", "ids": ids, "pr_url": result.get("pr_url"),
-                                                          "continue_reason": (cont or {}).get("reason")}, dedupe_key=f"knowledge.used:{job_id}")
+                                                          "continue_reason": (cont or {}).get("reason"),
+                                                          # ADR 0040: この回の業務・軸の値・入口・適応度の内訳（当たり外れを測る側が使う）
+                                                          "entry": "continue" if cont else "ticket",
+                                                          "work": [w for w in (sel.get("work") or []) if isinstance(w, str)][:10],
+                                                          "values": sel.get("values") if isinstance(sel.get("values"), dict) else {},
+                                                          "fit": {i: fit[i] for i in ids if i in fit}},
+                     dedupe_key=f"knowledge.used:{job_id}")
 
 
 def record_event(cur, name: str, correlation_id: str | None, job_id: int | None, payload: dict, dedupe_key: str | None = None):
