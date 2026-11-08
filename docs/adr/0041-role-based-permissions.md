@@ -1,6 +1,6 @@
 # ADR 0041: 工場の権限を役ごとに分け、工程を変える変更は特権のラインで扱う
 
-- 状態: 提案（2026-11-08。決めどころ R1〜R6 はオーナーの判断待ち）
+- 状態: 承認（2026-11-08 オーナー。決めどころ R1〜R6 は推奨どおり）
 - 関係: ADR 0003（制御プレーン。秘密情報は .env、ワーカーは PR 作成まで）、ADR 0004（supervisor。決定 5 のマージ用トークンの分離）、ADR 0010（エージェントの差し替え）、ADR 0014（検査役の承認）、ADR 0024（知見の委員会）、ADR 0031（工場の自動更新）、ADR 0037・0039（単発の依頼の道）、`definitions/change_type_rules.yaml`、`definitions/agents.yaml`、製品の `.factory-config/manifest.yaml`（autonomy・phase_grants・always_human_approve）、Gen2 の設計の叩き台（役＝職能の組み合わせ＋モデル＋道具と権限＋裁量）
 
 ## 文脈
