@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SERVER = {"name": "factory-desk", "version": "0.3.0"}
+SERVER = {"name": "factory-desk", "version": "0.3.1"}
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 HTTP_TIMEOUT = 75   # 会話を読むときの待ち（最大 60 秒）より長く
 
@@ -55,6 +55,7 @@ TOOLS = [
     {"name": "desk_reply",
      "description": "相談に返事・言い足しを書く（相談役の問いへの答え、下書きの直したいところ）。書くと相談役が次の周回で動く。"
                     "工場が結果を提出した後は answer で受取確認に答える（accept 受け取った・more 続きを頼む・return 差し戻す。more と return は body に一言）。"
+                    "工場が依頼を断ったとき（提出が断り）は、accept 納得した・more 別案で進める（別の依頼として開く。body に案の番号や一言を添えてよい）・return 断りを差し戻す（body に理由）。"
                     "answer は依頼者が答えを決めたときだけ付ける",
      "inputSchema": {"type": "object", "properties": {
          "conversation_id": {"type": "integer"}, "body": {"type": "string"},

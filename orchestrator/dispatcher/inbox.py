@@ -61,7 +61,11 @@ DESK_ANSWERS = {
                      "extra": [{"id": "more", "label": "続きを頼む", "note_required": True},
                                {"id": "return", "label": "差し戻す（頼んだことと違う）", "note_required": True}],
                      "effect": "受け取ったら依頼を完了にする。続き・差し戻しは一言を添えて同じ会話で振り分けからやり直す"},
-}   # desk_line の CONFIRM_OPTIONS・RECEIPT_OPTIONS と同じ（食い違いはテストで見る）
+    "desk_decline": {"options": [{"id": "accept", "label": "納得した"}],
+                     "extra": [{"id": "more", "label": "別案で進める（別の依頼として開く）"},
+                               {"id": "return", "label": "断りを差し戻す", "note_required": True}],
+                     "effect": "納得なら依頼を断りとして完了にする。別案なら代わりの案を別の依頼として開き、元の依頼と結ぶ。差し戻すと理由を添えて振り分けからやり直す"},
+}   # desk_line の CONFIRM_OPTIONS・RECEIPT_OPTIONS・DECLINE_OPTIONS と同じ（食い違いはテストで見る）
 
 
 def _clip(v, n=MAX_LEN) -> str:

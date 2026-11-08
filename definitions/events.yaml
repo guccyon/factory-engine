@@ -221,7 +221,7 @@ events:
   desk.closed:
     source: control_plane
     required: [conversation_id, by, reason]
-    note: "ADR 0030・0039。会話を終えた。reason は accepted（受け取った）| declined（断りに納得）| superseded（別案へ）| withdrawn（依頼者の取り下げ）| handed_off（チケット化で渡した）。from は終える前の状態、note は依頼者の一言、record は閉じたときの記録（ADR 0039 の決定 7: path・sec_first_reply・sec_routed・sec_delivered・cost_usd・rounds・follow_ups・reroutes・outcome・derived_from・superseded_by）。取り下げで止めたジョブは cancelled_jobs"
+    note: "ADR 0030・0039。会話を終えた。reason は accepted（受け取った）| declined（断りに納得）| superseded（別案へ）| withdrawn（依頼者の取り下げ）| handed_off（チケット化で渡した）。from は終える前の状態、note は依頼者の一言、record は閉じたときの記録（ADR 0039 の決定 7: path・sec_first_reply・sec_routed・sec_delivered・cost_usd・rounds・follow_ups・reroutes・outcome・derived_from・superseded_by・late（目安を過ぎたマイルストーン）・met_ack・met_route・met_deliver・declined（断りの理由）・cap_hit）。取り下げで止めたジョブは cancelled_jobs"
   desk.routed:
     source: control_plane
     required: [conversation_id, from, state]
@@ -237,7 +237,15 @@ events:
   desk.progress:
     source: control_plane
     required: [conversation_id]
-    note: "ADR 0039 の決定 3。長くかかる実行の途中の様子（今どこまで・あとどれくらい）"
+    note: "ADR 0039 の決定 3。応答時間の目安の progress_at（仮置き 8 割）を過ぎても次の返事がないので、超える前に途中の様子（今どこまで・あとどれくらい）を会話に書いた。milestone は route | deliver、key はマイルストーンの鍵、deadline は目安の時刻。1 つのマイルストーンに 1 回（dedupe_key は desk.progress:<会話>:<鍵>）"
+  desk.late:
+    source: control_plane
+    required: [conversation_id, milestone, key, target_sec]
+    note: "ADR 0039 の決定 3・7。応答時間の目安を過ぎた（Learn の desk_late の材料）。milestone は route | deliver、path は対応の種類。1 つのマイルストーンに 1 回（dedupe_key は desk.late:<会話>:<鍵>）"
+  desk.cap_hit:
+    source: control_plane
+    required: [conversation_id, round, cap]
+    note: "ADR 0039 の決定 4・7。実行が上限に当たったので、決まったところまでを提出した（残り remaining と次の選択肢を添える）。Learn の desk_cap_hit の材料"
   desk.delivered:
     source: control_plane
     required: [conversation_id, from, state]
@@ -245,11 +253,11 @@ events:
   desk.received:
     source: control_plane
     required: [conversation_id, answer, by]
-    note: "ADR 0039 の決定 5。依頼者の受取確認。answer は accept（受け取った）| more（続き）| return（差し戻す。一言が要る）"
+    note: "ADR 0039 の決定 4・5。依頼者の受取確認。answer は accept（受け取った）| more（続き）| return（差し戻す。一言が要る）。断りの提出（declined: true）では accept は納得した、more は別案で進める（別の依頼として開く）、return は断りを差し戻す"
   desk.declined:
     source: control_plane
     required: [conversation_id, reason]
-    note: "ADR 0039 の決定 4。どの対応の種類にも当てはまらないので断った。理由（決まった語）と代わりの案"
+    note: "ADR 0039 の決定 4。どの対応の種類にも当てはまらないので断った。reason は決まった語（definitions/desk.yaml の loop.decline_reasons）、alternatives は代わりの案（kind は loop.alternatives、必ず 1 つ以上）。断りも提出して受取確認を取る"
   desk.rerouted:
     source: control_plane
     required: [conversation_id, from, state, answer]

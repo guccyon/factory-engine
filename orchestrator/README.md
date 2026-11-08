@@ -289,6 +289,12 @@ docker compose exec dispatcher factoryctl hold 12
   3. 確認: 段が `send` なら受信トレイに依頼者の件 `task:desk_confirm:<会話>:<回>`（実行する・やめる）を出す。窓口の `confirm` に `{"answer": "run"|"cancel"}`、操業コンソールの受信トレイのどちらから答えても `inbox.answer` を通る。`read` の段は飛ばす
   4. 実行: dispatcher の周回（`desk_line.run_operations`）が操作を 1 回だけ動かす（`op.started` で同じ回を 2 度動かさない）。最初の操作は `report.send`（`factoryctl report send` と同じ `report.send_now`）
   5. 提出: 会話に結果を書き、受信トレイに受取確認の件 `task:desk_receipt:<会話>:<回>`（受け取った・続きを頼む・差し戻す）を出す。窓口の `messages` に `{"answer": "accept"|"more"|"return", "body": 一言}`。受け取ったら `accepted` で完了、続き・差し戻しは同じ会話で相談役の振り分けからやり直す（続きは 5 回まで）。返事がなくても閉じない
+- 応答時間の目安・途中の様子・断り・上限（ADR 0039 の順番 3。値は `definitions/desk.yaml` の `loop`、dispatcher の写しは `desk.LOOP`）:
+  - 目安: 最初の返事 1 分、振り分け 5 分（`analysis` は 15 分）、提出は確認から `operate` 5 分・`quick` 15 分・`analysis` は振り分けで示した時刻（`deliver_by`。なければ 2 時間）。マイルストーンは `desk.milestones` が events から決定論で切り出す（振り分けは依頼者の発言から工場の次の返事まで。問いの返事待ちの間は数えない）
+  - 受付の返事で振り分けを返せる時刻を言う（窓口の枠に先に積まれた相談があれば、その分を足した時刻）
+  - dispatcher の周回（`desk_line.watch`）が、目安の 8 割を過ぎても返事のないマイルストーンに「今どこまで・目安の時刻」を会話に書き（`desk.progress`）、目安を過ぎたら `desk.late` を残す（どちらも 1 つのマイルストーンに 1 回）。閉じたときの記録に `late`・`met_ack`・`met_route`・`met_deliver` を足した
+  - 断り: 相談役が `route.path: decline`（理由は決まった語、代わりの案を 1〜3 つ）を返すと、`desk.declined` を残して断りを提出し、受信トレイに `task:desk_decline:<会話>:<回>` を出す。答えは受取確認と同じ語で、`accept` は納得した（`declined` で完了）、`more` は別案で進める（代わりの案を別の依頼として新しい会話で開き、元に `superseded_by`・新しい方に `derived_from`。元は `superseded` で完了）、`return` は断りを差し戻す（理由が要る。同じ会話で振り分けから）
+  - 上限: 実行役が `cap_hit`（と残り `remaining`）を返したら、決まったところまでを提出し、次の選択肢（続ける・`analysis` に切り替える・やめる）を添えて受取確認を取る（`desk.cap_hit`）。`quick`・`analysis` の実行役を入れたときに使う
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/004_desk.sql   # 既存の DB に表を足す（冪等）
