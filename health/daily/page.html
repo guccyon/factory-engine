@@ -156,6 +156,11 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
     <div class="meters" id="meters"></div>
   </section>
 
+  <section aria-label="夜間の探索" id="explore-sec" hidden>
+    <h2 style="margin-bottom:12px">夜間の探索（昨夜）</h2>
+    <div class="card" id="explore"></div>
+  </section>
+
   <section aria-label="自動マージの関所" id="gate-sec" hidden>
     <h2 style="margin-bottom:12px">自動マージできなかった PR と出入り<span class="gen1">Gen1 限定</span></h2>
     <div class="gate">
@@ -366,6 +371,29 @@ function render() {
       m.append(el("span", it.unknown ? "pill unknown" : "pill", it.value)); $("meters").append(m);
     });
   });
+
+  // 夜間の探索（ADR 0028 の nightly_explore）: 昨夜の Defect と、人に見てほしい印
+  const X = S.explore;
+  if (X && (X.runs.length || X.skipped.length)) {
+    $("explore-sec").hidden = false;
+    const box = $("explore"), SK = { over_budget: "予算の枠を使い切っていた", paused: "ラインが一時停止中だった" };
+    X.runs.forEach((r) => {
+      box.append(el("div", null, `${r.repo.split("/")[1]}（${r.night} の夜・チャーター ${r.charter}・版 ${r.release_id || "不明"}${r.mobile ? "・iOS あり" : ""}）: ` +
+        `試した ${r.tried} 件・見つけた ${r.findings} 件・印 ${(r.flags || []).length} 件`));
+      const ul = el("ul");
+      (r.defects || []).forEach((d) => {
+        const li = el("li", null, `[${d.severity}/${d.viewpoint}] `);
+        if (["s1", "s2"].includes(d.severity)) li.style.fontWeight = "700";
+        if (d.issue) { const a = el("a", null, d.title); a.href = d.issue; a.target = "_blank"; a.rel = "noopener"; li.append(a); }
+        else li.append(`${d.title}（起票しない${d.known_gap ? "・known_gap" : ""}）`);
+        ul.append(li);
+      });
+      (r.flags || []).forEach((f) => ul.append(el("li", "muted", `印 [${f.viewpoint}] ${f.where || ""}: ${f.note}`)));
+      if (ul.children.length) box.append(ul);
+    });
+    X.skipped.forEach((x) => { const d = el("div", null, `${x.repo.split("/")[1]}: 昨夜は回らなかった（${SK[x.reason] || x.reason}）`); d.style.fontWeight = "700"; box.append(d); });
+    box.append(el("div", "sub-note", `無人で回った夜の累計 ${X.nights}（P5a の nightly_explore の目標 3）。印は人が採点して Golden Set に入れる材料`));
+  }
 
   // 自動マージの関所（Gen1 限定）
   const G = S.merge_gate;

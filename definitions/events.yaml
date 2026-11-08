@@ -558,6 +558,18 @@ events:
     source: control_plane
     required: [tool, ok, runner, ms, args_len, n]
     note: "ADR 0028 の one_orchestrator。ジョブ（job_id）のワーカーが、dispatcher の中継（runner_relay.py）越しに Mac ランナーの道具を 1 回呼んだ。引数は長さだけ残す（打った文字は残さない）。通す道具は definitions/qa.yaml の runner_tools"
+  qa.explore:
+    source: control_plane
+    required: [repo, night, unattended, charter, release_id, env, mobile, tried, findings, defects, flags, explore_id, issue]
+    note: "ADR 0028 の nightly_explore。QA 役が夜にチャーターに沿って探索した 1 回（1 晩 1 件）。defects は見つけたもの（題・重要度・観点・起票した Issue。s4 と known_gap は起票しない）、flags は人に見てほしい印。unattended は supervisor が夜に積んだもの（roadmap の nightly_explore はこれの夜の数を数える）。同じ中身を artifacts の QAExplore に残す。朝の日報の「夜間の探索」が読む。dedupe は qa.explore:<job_id>"
+  supervisor.nightly_explore_enqueued:
+    source: control_plane
+    required: [repo, night, charter, issue, job_id, release_id, through_pause]
+    note: "ADR 0028 の nightly_explore。supervisor が夜（definitions/qa.yaml の explore.hours、JST）に、製品ごとに探索のジョブ（kind=qa、入力の mode: explore）を固定 Issue（factory:qa）に積んだ。through_pause はラインの一時停止中にこのジョブだけ流したか。dedupe は supervisor.nightly_explore:<repo>:<夜>"
+  supervisor.nightly_explore_skipped:
+    source: control_plane
+    required: [repo, night, reason]
+    note: "ADR 0028 の nightly_explore。夜の探索を積まなかった（reason は over_budget＝予算の枠を使い切っていた、paused＝一時停止中で explore.through_pause が偽）。同じ夜の後の周回で積めることもある。朝の日報が「昨夜は回らなかった」と出す。dedupe は supervisor.nightly_explore_skipped:<repo>:<夜>:<reason>"
   qa.defect_filed:
     source: control_plane
     required: [repo, release_id, story_id, verdict_id, title, severity, issue]

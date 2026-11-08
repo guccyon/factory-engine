@@ -441,6 +441,21 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally
 - Mac ランナー（iOS シミュレーター）は、dispatcher の中継（`runner_relay.py`、`one_orchestrator`）越しに QA のワーカーへ MCP の道具として渡す。ワーカーに渡すのはそのジョブだけの合言葉で、ランナーの鍵と窓口の合言葉は渡さない（`macrunner/PROTOCOL.md` の決めたいこと 1）。生徒アプリのストーリーはまず iOS で、ビルドできなければ Web 版で流す。`RUNNER_RELAY=0` で止める
 - まだないもの: 時間をまたぐ手順（`scenario_time`。いまは skipped にする）、ラインを差し止める裁量
 
+### 夜間の探索（P5a の nightly_explore）
+
+台本（ストーリーの steps）をなぞる判定とは別に、人のいない夜にチャーター（その夜の狙い）に沿って利用者として寄り道し、ストーリーが書いていないところの食い違いを探す。形と数値は `definitions/qa.yaml` の `explore`。
+
+```bash
+docker compose exec dispatcher factoryctl qa explore guccyon/rally [--through-pause]   # 今すぐ 1 回（人が積んだものは無人の夜に数えない）
+docker compose exec dispatcher factoryctl qa show guccyon/rally                        # 判定と最近の探索
+```
+
+- supervisor が JST の `explore.hours`（既定 1〜5 時）に、`NIGHTLY_EXPLORE` の製品（既定は `RELEASE_TRAIN` と同じ。空で止める）ごとに 1 晩 1 回、固定 Issue（`factory:qa`）に QA のジョブ（入力の `mode: explore`、優先度 p2）を積む。チャーターは夜ごとに順番に替える（寄り道・別の利用者・戻ってくる・読み手の言葉・初めての人）
+- 予算の枠を使い切っていれば積まずに次の枠を待つ。ラインの一時停止中は `explore.through_pause` が真ならこのジョブだけ流す（`drain allow`）。積まなかった理由は `supervisor.nightly_explore_skipped` に 1 晩 1 回
+- ワーカーは判定と同じ `worker/qa.sh` → `core-gates/qa.py`（Mac ランナーの中継があれば生徒アプリは iOS でも）。結果は `out/explore.yaml`（試したこと・見つけたもの・印）
+- dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。同じ題の開いた Defect があれば起票せずにその Issue に書く）。固定 Issue にまとめを書く
+- 朝 5 時の日報（`health/daily/status_report.py`）とページに「夜間の探索（昨夜）」として、Defect（s1・s2 は太字）と印、回らなかった理由を出す。印は人が採点して Golden Set に入れる材料
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
