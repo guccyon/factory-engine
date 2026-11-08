@@ -497,7 +497,7 @@ def sizes_md(rows: list[dict]) -> str:
 
 def inflight_md(inflight: list[dict], hot: dict) -> str:
     """流れているタスクと触るファイル（dispatcher が planner.attach_context で入れる）を、プランナーが読む表にする（ADR 0038 の 4b）"""
-    lines = ["# 流れている・待っているタスク", ""]
+    lines = ["# 流れている・待っているタスク", "", "active は実装に回ったもので、PR が開いているものを含む。このチケットと同じ目的のものがあれば同時に着手しない（ADR 0044）", ""]
     if not inflight:
         lines.append("（なし）")
     for t in inflight[:30]:

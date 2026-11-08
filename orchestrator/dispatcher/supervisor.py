@@ -673,6 +673,11 @@ def enqueue_step(cur, open_prs: set):
         if paused and t["priority"] < ops.PREEMPT_AT:   # 枠の予算を使い切ったら次の枠まで投入しない（p0 は止めない）
             continue
         corr = f"github:{repo}#{it['number']}"
+        dup = serialize.same_purpose(cur, repo, corr, it.get("title") or "")
+        if dup:   # 同じ目的のチケットが流れていれば投入しない（ADR 0044 の決定 8 の 4。人の判断を待つ PR でも待つ）
+            if serialize.record_duplicate(cur, corr, it.get("title") or "", dup):
+                log("duplicate held", corr, "behind", dup)
+            continue
         expected = serialize.expected_files(cur, corr, it.get("body")) if hot else set()
         if hot and any(serialize.touches(expected, h) for h in hot):
             # 衝突を避ける並べ方（ADR 0027 の 2）: 同じよく衝突するファイルに触るタスクが流れていれば、終わるまで投入しない

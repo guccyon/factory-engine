@@ -71,8 +71,9 @@ def test_sendback_closes_and_enforce_files_issue(cur):
     other = PR.replace("/12", "/13")
     enf = [{"knowledge": "K-0002", "level": "deterministic", "solution_kind": "ci_check", "proposal": "検査を足す"}]
     committee.record(cur, "o/r", 13, f"committee:{other}", None, result("enforce", pr_url=other, enforce=enf), gh, lambda *a: None)
-    assert len(calls) == 1 and calls[0][1] == "repos/o/r/issues" and "K-0002" in calls[0][2]["title"]
-    assert calls[0][2]["labels"] == ["factory:planned", "factory:learn"]
+    posts = [c for c in calls if c[0] == "POST"]   # 起票の前に、同じ題の開いている担保を GET で見る（ADR 0044）
+    assert len(posts) == 1 and posts[0][1] == "repos/o/r/issues" and "K-0002" in posts[0][2]["title"]
+    assert posts[0][2]["labels"] == ["factory:planned", "factory:learn"]
     assert committee.approved(cur, other) and not committee.approved(cur, PR)
 
 
@@ -227,3 +228,46 @@ def test_stuck_writer_without_pr_gives_up_its_turn(cur):
     filed(cur, 1, age="3 days")
     b = filed(cur, 2, 102)
     assert committee.turn(cur, "o/r") == b
+
+
+def test_enforce_joins_open_issue_instead_of_filing(cur):
+    # ADR 0044 の決定 8 の 1。2026-11-08 rally #1052（議決の担保）が開いている間に、週の定例が同じ担保 #1122 を起票した
+    calls, comments = [], []
+    title = "担保: K-0002 を ci_check で決定論にする"
+
+    def gh(m, p, b=None):
+        calls.append((m, p, b))
+        if m == "GET":
+            return [{"number": 60, "title": title}, {"number": 61, "title": title, "pull_request": {}}]
+        return {"html_url": "https://github.com/o/r/issues/77"}
+
+    comment = lambda repo, n, text: comments.append((n, text))
+    other = PR.replace("/12", "/13")
+    enf = [{"knowledge": "K-0002", "level": "deterministic", "solution_kind": "ci_check", "proposal": "検査を足す"}]
+    committee.record(cur, "o/r", 13, f"committee:{other}", None, result("enforce", pr_url=other, enforce=enf), gh, comment)
+    assert [c for c in calls if c[0] == "POST"] == []
+    assert comments[-1][0] == 60 and "もう一度決めました" in comments[-1][1] and "検査を足す" in comments[-1][1]
+    cur.execute("select payload from events where name='committee.enforce_joined'")
+    assert cur.fetchone()["payload"] == {"repo": "o/r", "title": title, "issue": 60}
+
+    week = {**WEEK_RESULT, "report": {**WEEK_RESULT["report"], "contradictions": [],
+                                      "enforce": [{"ids": ["K-0002"], "why": "繰り返す", "proposal": "lint", "solution_kind": "ci_check"}]}}
+    calls.clear()
+    committee.weekly_record(cur, "o/r", 50, "github:o/r#50", None, week, "2026-W46", gh, comment)
+    assert [c[2]["title"] for c in calls if c[0] == "POST"] == ["知見の見直し（2026-W46 の定例）"]   # 担保は起票せず、開いている #60 に足す
+    assert comments[-1][0] == 60
+
+
+def test_enforce_files_when_no_open_issue_or_lookup_fails(cur):
+    calls = []
+
+    def gh(m, p, b=None):
+        calls.append((m, p, b))
+        if m == "GET":
+            raise RuntimeError("down")
+        return {"html_url": "https://github.com/o/r/issues/77"}
+
+    other = PR.replace("/12", "/14")
+    enf = [{"knowledge": "K-0003", "level": "deterministic", "solution_kind": "lint", "proposal": "lint"}]
+    committee.record(cur, "o/r", 14, f"committee:{other}", None, result("enforce", pr_url=other, enforce=enf), gh, lambda *a: None)
+    assert [c[2]["title"] for c in calls if c[0] == "POST"] == ["担保: K-0003 を lint で決定論にする"]
