@@ -16,7 +16,7 @@ import model_route
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa")
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa")
 INCOMPLETE_CONTINUE_MAX = 1   # 途中終了の続きは 1 回まで（ADR 0036 の 6）
 
 
@@ -41,7 +41,7 @@ def rerun(cur, job_id: int, *, continue_draft: bool = False, force: bool = False
     j = cur.fetchone()
     if not j:
         return None, "no such job"
-    corr = j["correlation_id"] if j["kind"] == "desk_consult" else f"github:{j['repo']}#{j['issue_number']}"   # 窓口の相談役は会話（desk:<id>）に積む
+    corr = j["correlation_id"] if j["kind"] in ("desk_consult", "desk_answer") else f"github:{j['repo']}#{j['issue_number']}"   # 窓口の相談役・回答役は会話（desk:<id>）に積む
     carried = continuation.carry_over(cur, job_id) if j["kind"] == "implement" else {}
     cont = carried.get("continue")
     if continue_draft and not cont:   # 途中終了のドラフト PR のブランチから続ける（最初からやり直さない）

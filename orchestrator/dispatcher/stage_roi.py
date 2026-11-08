@@ -40,7 +40,7 @@ STAGE_JA = {
     "body_fix": "PR 本文の直し", "inspect": "検査", "judge": "判定（judge）", "plan": "プランナー", "clarify": "要求の確認",
     "ui_design": "デザイナー", "ui_design_review": "デザイン検査", "design_system": "デザインシステム", "qa": "QA",
     "design_review": "設計の診断", "case_review": "事例の分析", "committee_review": "知見の委員会", "committee_weekly": "委員会の定例",
-    "desk_consult": "窓口の相談役",
+    "desk_consult": "窓口の相談役", "desk_answer": "窓口の回答役",
 }
 FIX_STAGES = ("implement:ci_failed", "implement:review_fix", "implement:incomplete")   # 実装が一発で通らなかった印
 MODEL_JA = {"claude-opus-5-5": "Opus", "claude-sonnet-5-5": "Sonnet", "claude-haiku-5-5": "Haiku"}
