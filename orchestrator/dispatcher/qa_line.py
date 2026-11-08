@@ -14,6 +14,7 @@ import re
 
 from psycopg.types.json import Jsonb
 
+import defect
 import ops
 import touch
 
@@ -199,17 +200,25 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
         known = open_defects(gh, repo, defs["act"]["defect_labels"][0])
     except Exception:  # noqa: BLE001  読めなければまとめずに起票する（取りこぼすより重なる方を選ぶ）
         known = {}
+    def remember(v: dict, d: dict, key: str, where: str, issue: str | None):
+        """Defect の型（ADR 0028 の決定 5）で残す。同じ Issue に当たったもの・known_gaps のものは 1 回だけ。変更と原因の工程はまだ分からない"""
+        defect.safe_record(cur, "qa", f"{repo}:{key}:{where}", "qa_line", correlation_id=corr, job_id=job_id, repo=repo,
+                           release_id=v.get("release_id"), viewpoint=d.get("viewpoint"), severity=d.get("severity"), title=d.get("title"),
+                           reproduce=d.get("reproduce"), issue=issue)
+
     for r in recorded:
         v = r["verdict"]
         if v["decision"] != "hold":
             continue
         for i, d in enumerate(v.get("defects") or []):
-            if d.get("known_gap") and not defs["act"].get("known_gap_issue"):
-                continue
             key = defect_key(v["story_id"], d.get("step"), d.get("title") or "")
+            if d.get("known_gap") and not defs["act"].get("known_gap_issue"):
+                remember(v, d, key, "known_gap", None)
+                continue
             if key in known:   # 同じストーリーの同じ歩で開いている Defect がある: 起票せず、再現したことをその Issue に書く
                 url = known[key]
                 filed[(r["verdict_id"], i)] = f"{url}（既存）"
+                remember(v, d, key, url, url)
                 num = url.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
                 if num.isdigit():
                     comment(repo, int(num), f"QA 役の判定（ジョブ {job_id}・版 {v.get('release_id') or '不明'}・判定 {r['verdict_id']}）で、同じところでまた止まりました。"
@@ -220,6 +229,7 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
                 continue
             if sum(1 for u in filed.values() if not u.endswith("（既存）")) >= limit:
                 skipped.append(str(d.get("title"))[:60])
+                remember(v, d, key, "unfiled", None)
                 continue
             got = gh("POST", f"repos/{repo}/issues", {"title": f"QA: {str(d.get('title'))[:90]}",
                                                       "body": defect_body(repo, v, d, r["verdict_id"], issue),
@@ -227,6 +237,7 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
             url = got.get("html_url") or f"#{got.get('number')}"
             filed[(r["verdict_id"], i)] = url
             known[key] = url
+            remember(v, d, key, url, url)
             cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('qa.defect_filed',%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                         (corr, job_id, Jsonb({"repo": repo, "release_id": v.get("release_id"), "story_id": v["story_id"], "verdict_id": r["verdict_id"],
                                               "title": d.get("title"), "severity": d.get("severity"), "viewpoint": d.get("viewpoint"), "issue": url}),

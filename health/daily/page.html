@@ -156,6 +156,18 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
     <div class="meters" id="meters"></div>
   </section>
 
+  <section aria-label="品質（Defect）" id="defect-sec" hidden>
+    <h2 style="margin-bottom:12px">品質（Defect、直近 <span id="defect-days"></span> 日）</h2>
+    <div class="gate">
+      <div id="defect-card"></div>
+      <div class="card table-wrap">
+        <h2>発見工程の分布（上流 → 本番の順。マージの手前で止めたものが流出防止）</h2>
+        <table class="reasons"><thead><tr><th>見つけた所</th><th style="text-align:right">件数</th><th style="text-align:right">割合</th></tr></thead><tbody id="defect-found"></tbody></table>
+        <div class="sub-note" id="defect-note"></div>
+      </div>
+    </div>
+  </section>
+
   <section aria-label="自動マージの関所" id="gate-sec" hidden>
     <h2 style="margin-bottom:12px">自動マージできなかった PR と出入り<span class="gen1">Gen1 限定</span></h2>
     <div class="gate">
@@ -366,6 +378,22 @@ function render() {
       m.append(el("span", it.unknown ? "pill unknown" : "pill", it.value)); $("meters").append(m);
     });
   });
+
+  // 品質（Defect。ADR 0028 の決定 5）。流出防止率・発見工程の分布・出やすい観点・紐付け率
+  const D = S.defects;
+  if (D && D.total) {
+    $("defect-sec").hidden = false; $("defect-days").textContent = D.window_days;
+    $("defect-card").append(card({ title: "流出防止率", chart: el("div"),
+      figs: [["流出防止率", `${pct(D.escape_prevention)}%`], ["Defect", `${fmt(D.total)} 件`, true], ["本番まで出た", `${fmt(D.prod)} 件`, true]],
+      note: `マージの手前（上流・PR・CI）で止めた ${D.caught_before_merge} 件 ÷ 全 ${D.total} 件。` + (D.total < 10 ? "件数が少ないので参考。" : "") +
+        `紐付け率: 版 ${pct(D.link_rate.release_id)}%・変更 ${pct(D.link_rate.change)}%・原因の工程 ${pct(D.link_rate.caused_in)}%` }));
+    const top = Math.max(1, ...D.by_found_in.map((x) => x.n));
+    D.by_found_in.forEach((x) => {
+      const tr = el("tr"), td = el("td", null, x.ja + (x.before_merge ? "" : "（流出）")), bar = el("div", "hbar"); bar.style.width = `${(x.n / top) * 100}%`; td.append(bar);
+      tr.append(td, el("td", "n", fmt(x.n)), el("td", "n", `${Math.round((x.n / D.total) * 100)}%`)); $("defect-found").append(tr);
+    });
+    $("defect-note").textContent = D.hotspots.length ? "出やすい観点: " + D.hotspots.map((h) => `${h.viewpoint} ${h.n}`).join("、") : "";
+  }
 
   // 自動マージの関所（Gen1 限定）
   const G = S.merge_gate;

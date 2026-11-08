@@ -398,6 +398,8 @@ docker compose exec dispatcher factoryctl env up guccyon/rally            # 未 
 docker compose exec dispatcher factoryctl env up guccyon/rally --fresh    # 出したあとに検証の DB を空にして合成シードから入れ直す
 docker compose exec dispatcher factoryctl env up guccyon/rally --release guccyon/rally@0.9.0   # 版を選ぶ（Rollback ではなく、その版を staging に出し直す）
 docker compose exec dispatcher factoryctl env show guccyon/rally          # いまの版の入口
+docker compose exec dispatcher factoryctl env restart guccyon/rally --advance-hours 24   # 再起動してサーバーの時計を 24 時間進める（DB は残す）
+docker compose exec dispatcher factoryctl env restart guccyon/rally --reset-clock        # 進めた時計を 0 に戻して再起動
 ```
 
 - 入口の形は製品の `.factory-config/ship.yaml` の `touch`（入口の名前とポートの変数・QR を付けるか・ログインの手がかりを出すコマンド・DB を空にするコマンド）。shipper は出す・戻す・入れ直すたびに `release.touchable` に残し、操業コンソールの出荷の欄にも URL・QR・手がかりと「検証の DB をシードから入れ直す」（2 度押し）が出る
@@ -412,6 +414,7 @@ docker compose exec dispatcher factoryctl env show guccyon/rally          # い�
   どちらも空なら 127.0.0.1 のままで、入口はこの機械からだけ開ける（`env show` と操業コンソールにそう出る）
 - `--fresh` は検証の環境だけ（ship.yaml の `touch.environments` と `seed.environments` の両方に入っている環境）。本番の DB は入れ直さない
 - iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
+- 時間をまたぐシナリオ（ADR 0028 の `scenario_time`）: `env restart` は ship.yaml の `touch.restart` の部品（なければ `verify` の部品）を作り直して再起動し、`touch.clock_env` の変数にサーバーの時計を進める秒数を渡す（rally は backend の `CLOCK_OFFSET_SECONDS`）。DB は残す。進めた量は前の再起動に足していき、1 回 7 日・合計 62 日まで。次に版を出す・戻す・入れ直すと 0 に戻る。本番は受け付けない。依頼は events の `release.restart_requested`、結果は `release.restarted`（`clock_offset_seconds`）
 
 ## QA 役（ADR 0028 の決定 2。P5a の qa_verdict）
 
@@ -428,7 +431,9 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally
 - hold の Defect は製品の Issue（`factory:qa-defect`・`factory:fix-proposed`）に起票する（1 回 5 件まで。ストーリーの `known_gaps` に書いてあるものは起票せずまとめに載せる。同じストーリーの同じ歩で開いている Defect があれば、起票せずにその Issue に再現したことを書く）。流すときは差し戻しと同じく `factory:planned` に替える
 - 見た目と言葉の温度は判定しない。印としてまとめに載せて人に出す
 - Mac ランナー（iOS シミュレーター）は、dispatcher の中継（`runner_relay.py`、`one_orchestrator`）越しに QA のワーカーへ MCP の道具として渡す。ワーカーに渡すのはそのジョブだけの合言葉で、ランナーの鍵と窓口の合言葉は渡さない（`macrunner/PROTOCOL.md` の決めたいこと 1）。生徒アプリのストーリーはまず iOS で、ビルドできなければ Web 版で流す。`RUNNER_RELAY=0` で止める
-- まだないもの: 時間をまたぐ手順（`scenario_time`。いまは skipped にする）、ラインを差し止める裁量
+- 時間をまたぐ手順（ストーリーの `time`。`scenario_time`）: 中継で Mac ランナーの道具と一緒に `env_restart` を渡す（Mac には送らず dispatcher が受け、QA を積んだときの環境で `factoryctl env restart` と同じ依頼を書いて終わるまで待つ）。エージェントは翌日なら 24 時間進めて再起動し、ブラウザを開き直して次の歩を流し、最後に時計を 0 に戻す。中継がない（`RUNNER_RELAY=0`）ときは、その歩を skipped にする
+- Defect（ADR 0028 の決定 5。`defect_metrics`）: hold の Defect は、起票したもの・既存の Issue に当たったもの・known_gaps のもの・上限で起票しなかったものも events の `defect.recorded`（`found_in: qa`）に残す。judge が採用した検査の指摘（`found_in: pr`）と工場の PR の CI が落ちたチェック（`found_in: ci`）も同じ型で残す（`dispatcher/defect.py`、型は `definitions/defects.yaml`）。流出防止率と発見工程の分布は建設の日報（`health/daily/status_report.py` の「品質（Defect）」）に出る。QA 自身には採点させない
+- まだないもの: ラインを差し止める裁量、QA で見つけた Defect の変更と原因の工程の紐付け（直した PR が分かったときに足す）
 
 ## Learn ループ（ADR 0013）
 

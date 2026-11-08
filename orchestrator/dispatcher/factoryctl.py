@@ -50,6 +50,7 @@
 触れる環境（ADR 0028 の touchable_env。Gen1 は staging と兼ねる）。Release 候補を 1 コマンドで立て、シードを入れ、URL と QR を出す:
   factoryctl env up <repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]   # 版がなければ未 Release の PR から切る。--fresh は DB を空にしてシードから入れ直す
   factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
+  factoryctl env restart <repo> [--advance-hours N | --reset-clock] [--env staging]   # 再起動して時計を進める（DB は残す。時間をまたぐシナリオ）
 
 QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー（specs/stories/）を流し、ストーリーごとに Verdict を出す:
   factoryctl qa run <repo> [--stories id,id] [--env staging] [--priority p0|p1|p2|p3] [--through-pause] [--by ..]
@@ -995,6 +996,12 @@ def main(argv):
         return touch.up(cur, argv[3], release_id=opt(argv, "--release"), fresh="--fresh" in argv, by=opt(argv, "--by", "builder"),
                         timeout=float(opt(argv, "--timeout", "3600")), do_wait="--no-wait" not in argv,
                         log=lambda m: print(m, flush=True))
+    elif cmd == "env" and len(argv) > 3 and argv[2] == "restart":
+        ok, msg, _ = touch.restart(cur, argv[3], opt(argv, "--env", "staging"), advance_hours=float(opt(argv, "--advance-hours", "0")),
+                                   reset_clock="--reset-clock" in argv, by=opt(argv, "--by", "builder"),
+                                   do_wait="--no-wait" not in argv, log=lambda m: print(m, flush=True))
+        print(msg)
+        return 0 if ok else 1
     elif cmd == "env" and len(argv) > 3 and argv[2] == "show":
         t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
         print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")

@@ -134,7 +134,7 @@ function acts(i){let h="";
  return h?`<div class="acts">${h}</div>`:""}
 const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
- const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す"}[p.request]||p.request)).join("・")}</span>`:"";
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す",restart_requested:"再起動（時計を進める）"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
   if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
@@ -142,7 +142,7 @@ function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
   if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
  const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
- const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
+ const l=r.last;const last=l?`<span class="m">直近: ${esc({"release.deployed":"出荷","release.rolled_back":"戻した","release.built":"イメージを作った","release.reseeded":"シードから入れ直した","release.restarted":"再起動した","release.ship_failed":"失敗"}[l.name]||l.name)} ${VER(l.release_id)}${l.env?" "+esc({staging:"検証",prod:"本番"}[l.env]||l.env):""}${l.seconds!=null?" "+l.seconds+" 秒":""}${l.error?" — "+esc(l.error).slice(0,120):""}</span>`:"";
  return `<div class="rel"><span class="t">${esc(r.repo)}</span><span class="env">検証 <b>${VER(st.release_id)}</b></span><span class="env">本番 <b>${VER(pr.release_id)}</b></span>${busy}${b}${last}${tv}</div>`}).join("")}
 function pairsView(ps){return ps.map(p=>`<div class="rn" style="border-color:var(--accent)"><h2>新しいランナーの接続の依頼</h2><div><b>${esc(p.name||"?")}</b> <span class="m">${esc(p.platform||"")} · ${esc(p.version||"")}</span></div>
  <div style="font-size:28px;font-weight:700;letter-spacing:.08em;margin:6px 0">${esc(p.code)}</div><div class="m">Mac のターミナルに同じ番号が出ていれば「許可」を押し、Mac 側でも y を押す。違えば「拒否」。10 分で切れる</div>

@@ -121,6 +121,9 @@ def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
     pinned = qa.prompt(DEFS, [STORY], {"entries": []}, {"commit": "abc123", "release_id": "guccyon/rally@0.9.0"}, mobile=True)
     assert "ref: abc123" in pinned
     assert "mcp__macrunner__" not in qa.prompt(DEFS, [STORY], {"entries": []}, {})
+    # 時間をまたぐ手順（scenario_time）: 中継があれば env_restart で起こし、最後に時計を戻させる。なければ skipped
+    assert "mcp__macrunner__env_restart" in text and "reset_clock: true" in text
+    assert "サーバーの再起動も時計の進めもできない" in qa.prompt(DEFS, [STORY], {"entries": []}, {})
     d = product(tmp_path / "p")
     seen = {}
 
