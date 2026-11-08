@@ -124,6 +124,12 @@ def test_record_and_act(cur):
     cur.execute("select payload from events where name='qa.defect_filed'")
     assert cur.fetchone()["payload"]["severity"] == "s2"
     assert [r["story_id"] for r in qa_line.latest(cur, REPO)] == ["s-blocked", "s-hold", "s-pass"]
+    # Defect の型（ADR 0028 の決定 5）: 起票したものも known_gaps のものも found_in=qa で残す。もう 1 度 act しても増えない
+    cur.execute("select payload from events where name='defect.recorded' order by id")
+    ds = [r["payload"] for r in cur.fetchall()]
+    assert [(d["found_in"], d["title"], d["issue"]) for d in ds] == [("qa", "一覧が古い", f"https://github.com/{REPO}/issues/101"),
+                                                                      ("qa", "経緯が出ない", None)]
+    assert ds[0]["release_id"] == "r7" and ds[0]["viewpoint"] == "flow" and ds[0]["change"] is None and ds[0]["reproduce"] == ["開く"]
 
 
 def test_act_caps_defects(cur):
@@ -150,6 +156,8 @@ def test_act_does_not_refile_same_story_and_step(cur):
     assert [a[1] for a in said] == [50, 50, 5] and "また止まりました" in said[0][2]
     cur.execute("select count(*) as n from events where name='qa.defect_seen'")
     assert cur.fetchone()["n"] == 2
+    cur.execute("select count(*) as n from events where name='defect.recorded' and payload->>'issue' like '%/issues/50'")
+    assert cur.fetchone()["n"] == 1   # 同じ Issue に当たった Defect は 1 件として数える
     # 同じ回の中でも、同じ歩の 2 件目は 1 件目にまとめる
     recorded2 = qa_line.record(cur, REPO, "c", 1, r, {})
     gh2 = FakeGH()

@@ -574,6 +574,10 @@ events:
     source: control_plane
     required: [repo, release_id, story_id, verdict_id, title, severity, issue]
     note: "ADR 0028 の決定 2。hold の Defect を製品の Issue（factory:qa-defect・factory:fix-proposed）にした。known_gaps に当たったものと 1 回の上限を超えたものは起票せず、固定 Issue のまとめに載せる"
+  defect.recorded:
+    source: control_plane
+    required: [key, found_in, source]
+    note: "ADR 0028 の決定 5（P5a の defect_metrics）。Defect を見つけた所にかかわらず 1 つの型で残す。属性は definitions/defects.yaml の fields（全属性 optional で、分からなければ null。紐付け率を指標と並べる）。記録するのは QA 役の hold と夜間の探索の見つけたもの（qa_line）、judge が採用した検査の指摘（dispatcher）、工場の PR の CI が落ちたチェック（pr_events）。dedupe は defect.recorded:<found_in>:<key>。流出防止率と発見工程の分布は日報（status_report.py）が集計する"
   plan.decided:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]

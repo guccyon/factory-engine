@@ -37,6 +37,7 @@ import continuation
 import design
 import design_line
 import qa_line
+import defect
 import runner_relay
 import design_system_line
 import desk_line
@@ -449,7 +450,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
-                   *([] if reattaching else relay_env(job_id, kind)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
+                   *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
             if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
@@ -941,6 +942,11 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
     to_fix = [d for d in live if not is_body_only(d)]
+    for d in to_fix:   # PR で見つけた Defect（ADR 0028 の決定 5）。原因はその PR の実装。body だけの指摘は製品の Defect ではないので数えない
+        defect.safe_record(cur, "pr", f"{pr_url}:{d.get('rubric_id')}:{str(d.get('location') or '')[:120]}", "judge", log=log,
+                           correlation_id=corr, job_id=job_id, repo=repo, change=pr_url, caused_in="implement",
+                           viewpoint=d.get("rubric_id"), severity=d.get("severity"), title=str(d.get("evidence") or "")[:200] or None,
+                           reproduce=[d["location"]] if d.get("location") else None)
     if to_fix and REVIEW_FIX:
         # マージ前の指摘は差し戻しの Issue を切らず、同じ担当の続きのジョブで直す（ADR 0017）。上限・工場のブランチでないときは差し戻しへ
         try:
@@ -1396,11 +1402,29 @@ def _relay_record(job_id: int, payload: dict):
         record_event(cur, "runner.relayed", None, job_id, payload)
 
 
-def relay_env(job_id: int, kind: str) -> list[str]:
+def _relay_local(tool: str, arguments: dict, grant: dict) -> dict:
+    """工場の側の道具（runner_relay.LOCAL_TOOLS）。env_restart はそのジョブの製品の、QA を積んだときの環境を再起動して時計を進める
+    （ADR 0028 の scenario_time）。手を動かすのは shipper で、ここは依頼を書いて終わるまで待つだけ"""
+    import touch
+    if tool != "env_restart" or not grant.get("repo"):
+        raise RuntimeError(f"知らない道具か、製品の分からないジョブ: {tool}")
+    hours = arguments.get("advance_hours") or 0
+    if not isinstance(hours, (int, float)) or isinstance(hours, bool):
+        return runner_relay._err("advance_hours は数")
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("select payload->>'env' as env from events where name='qa.enqueued' and job_id=%s order by id limit 1", (grant["job_id"],))
+        r = cur.fetchone()
+        env = (r or {}).get("env") or "staging"
+        ok, msg, _ = touch.restart(cur, grant["repo"], env, advance_hours=float(hours), reset_clock=bool(arguments.get("reset_clock")),
+                                   by=f"qa:{grant['job_id']}", via="runner_relay", timeout=480, log=lambda m: None)
+    return {"content": [{"type": "text", "text": msg}], "isError": not ok}
+
+
+def relay_env(job_id: int, kind: str, repo: str | None = None) -> list[str]:
     """中継を使うジョブなら、このジョブだけの合言葉を作って docker run の引数を返す。網は compose の網（dispatcher に届く）"""
     if RELAY is None or kind not in runner_relay.KIND_TOOLS:
         return []
-    token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300)
+    token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300, repo=repo)
     return ["--network", JOB_DB_NETWORK, "-e", f"RUNNER_RELAY_URL=http://{RELAY_HOST}:{RELAY_PORT}/mcp", "-e", f"RUNNER_RELAY_TOKEN={token}"]
 
 
@@ -1426,7 +1450,7 @@ def main():
         threading.Thread(target=swap_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("RUNNER_RELAY", "1") == "1":
-        RELAY = runner_relay.Relay(_relay_call, _relay_record)
+        RELAY = runner_relay.Relay(_relay_call, _relay_record, local=_relay_local)
         runner_relay.serve(RELAY, RELAY_PORT)
         log(f"runner relay listening :{RELAY_PORT}")
     if ENV.get("WEBHOOK_SECRET"):

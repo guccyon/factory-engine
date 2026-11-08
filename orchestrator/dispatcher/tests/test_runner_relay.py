@@ -28,7 +28,8 @@ def test_tools_are_copies_of_the_runner_and_match_definitions():
         assert rt[name] == t, name   # 形はランナーの一覧の写し
     assert "sim_erase" not in rr.TOOLS and "sim_shutdown" not in rr.TOOLS
     qa = yaml.safe_load((ROOT / "definitions" / "qa.yaml").read_text(encoding="utf-8"))
-    assert list(rr.KIND_TOOLS["qa"]) == qa["runner_tools"]
+    assert list(rr.KIND_TOOLS["qa"]) == qa["runner_tools"] + qa["env_tools"]
+    assert not set(rr.LOCAL_TOOLS) & set(rt)   # 工場の側の道具はランナーの道具と名前がぶつからない
 
 
 class Clock:
@@ -38,7 +39,7 @@ class Clock:
         return self.t
 
 
-def relay(result=None, fail=None):
+def relay(result=None, fail=None, local=None):
     calls, recs = [], []
 
     def call(tool, args, timeout):
@@ -47,7 +48,7 @@ def relay(result=None, fail=None):
             raise RuntimeError(fail)
         return result or {"content": [{"type": "text", "text": "[]"}], "isError": False, "runner_id": "5c21c124abcd"}
     clk = Clock()
-    return rr.Relay(call, lambda j, p: recs.append((j, p)), clock=clk), calls, recs, clk
+    return rr.Relay(call, lambda j, p: recs.append((j, p)), clock=clk, local=local), calls, recs, clk
 
 
 def rpc(r, tok, method, params=None, mid=1):
@@ -109,3 +110,21 @@ def test_http_roundtrip():
         assert e.value.code == 401
     finally:
         srv.shutdown()
+
+
+def test_local_tools_go_to_the_factory_with_the_granted_repo():
+    """env_restart（ADR 0028 の scenario_time）は Mac に送らず、dispatcher の local が grant の製品で受ける"""
+    seen = []
+
+    def local(tool, args, g):
+        seen.append((tool, args, g["repo"], g["job_id"]))
+        return {"content": [{"type": "text", "text": "再起動した"}], "isError": False}
+    r, calls, recs, _ = relay(local=local)
+    tok = r.grant(7, "qa", 60, repo="o/app")
+    body = rpc(r, tok, "tools/call", {"name": "env_restart", "arguments": {"advance_hours": 24}})[1]
+    assert body["result"] == {"content": [{"type": "text", "text": "再起動した"}], "isError": False}
+    assert seen == [("env_restart", {"advance_hours": 24}, "o/app", 7)] and not calls
+    assert recs[0][1]["tool"] == "env_restart" and recs[0][1]["runner"] == "factory"
+    r2, calls2, _, _ = relay()   # local を渡していない工場では断る
+    body = rpc(r2, r2.grant(1, "qa", 60), "tools/call", {"name": "env_restart", "arguments": {}})[1]
+    assert body["result"]["isError"] and not calls2

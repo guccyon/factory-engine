@@ -35,6 +35,8 @@ CFG = {
                     {"label": "ポートのない入口", "port_env": "NOPE"}],
         "accounts": {"service": "postgres", "command": ["psql", "-c", "select 1"]},
         "reset": {"service": "postgres", "command": ["psql", "-c", "drop database"]},
+        "restart": ["backend"],
+        "clock_env": "CLOCK_OFFSET_SECONDS",
     },
 }
 
@@ -211,3 +213,80 @@ def test_wait_reports_failure(cur):
     ship.record(cur, "release.ship_failed", rid, {"repo": REPO, "request_id": req, "error": "build が落ちた"})
     ok, msg = touch.wait(cur, req, 1, poll=0, log=lambda m: None)
     assert ok is False and "build が落ちた" in msg
+
+
+def test_restart_requests_are_bounded(cur, docker):
+    """時間をまたぐシナリオ（ADR 0028 の scenario_time）: 本番・版のない環境・進めすぎは受け付けない"""
+    assert ship.request_restart(cur, REPO, "staging", "t", "test")[0] is False            # まだ版がない
+    assert ship.request_restart(cur, REPO, "prod", "t", "test")[0] is False
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=-1)[0] is False
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=ship.ADVANCE_MAX_SECONDS + 1)[0] is False
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=3600, reset_clock=True)[0] is False
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=86400)[0] is True
+
+
+def test_restart_advances_the_clock_and_keeps_the_db(cur, docker):
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    assert ship.clock_offset(cur, REPO, "staging") == 0
+    docker.clear()
+    ship.request_restart(cur, REPO, "staging", "qa:7", "runner_relay", advance_seconds=86400)
+    run_pending(cur)
+    cmds = [c for c in docker if "args" in c]
+    up = cmds[0]
+    assert "--force-recreate" in up["args"] and "--no-deps" in up["args"] and up["args"][-1] == "backend"
+    assert up["env"]["CLOCK_OFFSET_SECONDS"] == "86400"
+    assert not any("drop database" in c["args"] for c in cmds)                            # DB は残す
+    assert ship.clock_offset(cur, REPO, "staging") == 86400
+    cur.execute("select name, payload from events where correlation_id=%s order by id desc limit 2", (f"release:{rid}",))
+    rows = cur.fetchall()
+    assert [r["name"] for r in rows] == ["release.touchable", "release.restarted"]
+    assert rows[1]["payload"]["services"] == ["backend"] and rows[1]["payload"]["by"] == "qa:7"
+    ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=3600)         # 進めた分に足す
+    run_pending(cur)
+    assert ship.clock_offset(cur, REPO, "staging") == 90000
+    ship.request_restart(cur, REPO, "staging", "t", "test", reset_clock=True)
+    run_pending(cur)
+    assert ship.clock_offset(cur, REPO, "staging") == 0
+    ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=86400)
+    run_pending(cur)
+    ship.request_reseed(cur, REPO, "staging", "t", "test")                                 # 入れ直すと時計は 0 に戻る
+    run_pending(cur)
+    assert ship.clock_offset(cur, REPO, "staging") == 0
+    assert ship.pending(cur) == []
+
+
+def test_restart_without_clock_env_cannot_advance(cur, docker, monkeypatch):
+    cfg = {**CFG, "touch": {k: v for k, v in CFG["touch"].items() if k not in ("clock_env", "restart")}}
+    monkeypatch.setattr(ship, "ship_config", lambda path: cfg)
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=3600)
+    run_pending(cur)
+    cur.execute("select payload from events where name='release.ship_failed'")
+    assert "clock_env" in cur.fetchone()["payload"]["error"]
+    docker.clear()
+    ship.request_restart(cur, REPO, "staging", "t", "test")                               # 再起動だけならできる（確かめる部品）
+    run_pending(cur)
+    up = [c for c in docker if "args" in c][0]
+    assert up["args"][-1] == "backend" and "CLOCK_OFFSET_SECONDS" not in up["env"]
+
+
+def test_touch_restart_waits_and_reports_offset(cur, docker, monkeypatch):
+    real_wait = touch.wait
+
+    def fake_wait(c, request_id, timeout, log=print, **k):
+        run_pending(c)
+        return real_wait(c, request_id, 1, poll=0, log=log)
+    monkeypatch.setattr(touch, "wait", fake_wait)
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    ok, msg, offset = touch.restart(cur, REPO, advance_hours=24, log=lambda m: None)
+    assert ok and offset == 86400 and "24 時間進んでいる" in msg
+    assert touch.restart(cur, REPO, "prod", log=lambda m: None)[0] is False

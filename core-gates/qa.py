@@ -164,6 +164,20 @@ mcp__macrunner__* の道具で、Mac の iOS シミュレーターを動かせ�
 """
 
 
+# 時間をまたぐ手順（ストーリーの time。ADR 0028 の scenario_time）。道具は dispatcher の中継（Mac ランナーと同じ口）で渡る
+TIME_WITH_TOOL = """- 時間をまたぐ手順（ストーリーの time: 翌日・再起動のあと・暦月の境）は、mcp__macrunner__env_restart で起こす。
+  これは Mac ではなく工場が受け、この環境のサーバーを再起動する（DB は残る）。advance_hours を渡すとサーバーの時計をその時間だけ進めて再起動する
+  （翌日なら、日本時間の日付が変わるよう 24。再起動だけなら 0）。終わるまで数十秒かかる。動くのはサーバーの時計だけで、ブラウザの時計は進まない
+- 再起動のあとは、ブラウザの文脈を閉じて開き直してから（アプリを開き直したことにする）、次の歩を流す
+- 時計を進めたら、流し終わったあとに必ず reset_clock: true で 0 に戻す（ほかのストーリーと人が同じ環境を使う）。使った回数・進めた時間・戻したことを interpretation に書く
+- 道具が失敗したら、その歩は skipped にし、exit そのものが時間をまたぐなら blocked にして、道具の返した文を interpretation に書く
+"""
+TIME_WITHOUT_TOOL = """- 時間をまたぐ手順（翌日・再起動のあと）は、ここではサーバーの再起動も時計の進めもできない（工場の中継が渡っていない）。その歩は skipped にし、
+  代わりに「ログインし直し・再読み込みで残るか」までを確かめて、ストーリー全体の decision は exit まで確かめられた範囲で決める
+  （exit そのものが時間をまたぐなら blocked にして、何が足りないかを interpretation に書く）
+"""
+
+
 def mobile_ref(inp: dict) -> str:
     """app_build の ref。環境に出ている版のコミット（release.built）にそろえる。分からなければ main で、そう書かせる"""
     c = inp.get("commit")
@@ -199,10 +213,7 @@ def prompt(defs: dict, stories: list[dict], env: dict, inp: dict, mobile: bool =
 - 画面が中継する API（同じオリジンの /api/*）を curl で直接見てもよい。ただし判定は「利用者に見えるもの」で決める
 - 別の利用者が絡む流れ（生徒が送り、コーチが受ける）は、ブラウザの文脈を 2 つ開いて交互に操作する
 - データは、ストーリーの preconditions を満たすために画面か API で作ってよい（合成シードの環境なので消えても困らない）。他のストーリーの前提を壊さない
-- 時間をまたぐ手順（翌日・再起動のあと）は、ここではサーバーの再起動も時計の進めもできない。その歩は skipped にし、
-  代わりに「ログインし直し・再読み込みで残るか」までを確かめて、ストーリー全体の decision は exit まで確かめられた範囲で決める
-  （exit そのものが時間をまたぐなら blocked にして、何が足りないかを interpretation に書く）
-
+{TIME_WITH_TOOL if mobile else TIME_WITHOUT_TOOL}
 {MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"], ref=mobile_ref(inp)) if mobile else ""}
 ## 判定の決まり（definitions/qa.yaml）
 - pass: {defs['decisions']['pass']}
