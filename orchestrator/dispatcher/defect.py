@@ -11,13 +11,30 @@ from psycopg.types.json import Jsonb
 # definitions/defects.yaml の stages と causes の id の写し（dispatcher のイメージには definitions/ を入れない。test_defect.py が食い違いを見る）
 FOUND_IN = ("upstream", "pr", "ci", "qa", "diagnose", "prod")
 CAUSED_IN = ("requirement", "design", "implement", "test", "environment")
-FIELDS = ("repo", "release_id", "change", "caused_in", "viewpoint", "severity", "title", "reproduce", "issue")
+FIELDS = ("repo", "release_id", "change", "caused_in", "viewpoint", "severity", "title", "reproduce", "issue",
+          "introduced_in", "introduced_job", "introduced_tier")
+INTRODUCING_STEPS = ("implement",)   # 製品の変更を書く工程（混入させうる工程）
+
+
+def introducer(cur, change: str | None) -> dict:
+    """PR の変更（URL）から、その PR の最新の版を書いた実装のジョブを引く（混入させた工程・ジョブ・tier）。引けなければ空"""
+    if not change:
+        return {}
+    cur.execute("select id, kind, model_tier from jobs where kind = any(%s) and state='succeeded' and result->>'pr_url'=%s "
+                "order by finished_at desc nulls last, id desc limit 1", (list(INTRODUCING_STEPS), change))
+    r = cur.fetchone()
+    if not r:
+        return {}
+    r = r if isinstance(r, dict) else {"id": r[0], "kind": r[1], "model_tier": r[2]}
+    return {"introduced_in": r["kind"], "introduced_job": r["id"], "introduced_tier": r["model_tier"]}
 
 
 def record(cur, found_in: str, key: str, source: str, *, correlation_id: str | None = None, job_id: int | None = None, **fields) -> bool:
     """Defect を 1 件残す。同じ found_in と key は 1 回だけ。返り値は新しく残したか"""
     if found_in not in FOUND_IN:
         raise ValueError(f"found_in は {'・'.join(FOUND_IN)} のどれか: {found_in}")
+    if not fields.get("introduced_in"):   # 混入させた工程とモデル（比べる材料）。呼び出し元が渡さなければ PR から引く
+        fields = {**fields, **introducer(cur, fields.get("change"))}
     caused = fields.get("caused_in")
     payload = {"key": str(key)[:300], "found_in": found_in, "source": source,
                **{k: fields.get(k) for k in FIELDS}, "caused_in": caused if caused in CAUSED_IN else None}

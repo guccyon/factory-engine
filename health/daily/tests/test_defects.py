@@ -19,7 +19,7 @@ def test_escape_prevention_and_distribution():
     assert dm["total"] == 4 and dm["caught_before_merge"] == 3 and dm["escape_prevention"] == 0.75 and dm["prod"] == 0
     assert [(x["id"], x["n"]) for x in dm["by_found_in"]] == [("upstream", 0), ("pr", 1), ("ci", 2), ("qa", 1), ("diagnose", 0), ("prod", 0)]
     assert dm["hotspots"][0] == {"viewpoint": "ci:test", "n": 2}
-    assert dm["link_rate"] == {"release_id": 0.25, "change": 0.75, "caused_in": 0.75}
+    assert dm["link_rate"] == {"release_id": 0.25, "change": 0.75, "caused_in": 0.75, "introduced_in": 0.0}
     text = "\n".join(sr.fmt_defects(dm))
     assert "流出防止率 75%" in text and "参考" in text and "QA 1" in text and "xychart-beta" in text
 

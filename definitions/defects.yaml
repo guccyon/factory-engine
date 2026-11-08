@@ -17,6 +17,9 @@ fields:
   release_id:  "どの Release で見つけた（Release の前に見つけたものは null）"
   change:      "どの変更（PR の URL）。QA で見つけたものは、直した PR が分かるまで null"
   caused_in:   "原因の工程（下の causes の id）。分からなければ null"
+  introduced_in:  "混入させた工程（agents.yaml の steps の id。今は implement だけ）。PR の変更から、その PR の最新の版を書いたジョブを引いて決める。分からなければ null"
+  introduced_job: "混入させたジョブの id（jobs.id）"
+  introduced_tier: "混入させたジョブの tier（agents.yaml の tiers。モデルを比べる材料。2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）"
   viewpoint:   "観点（QA は qa.yaml の viewpoints、PR の指摘はルーブリックの id、CI は ci:<チェック名>）"
   severity:    "重要度（QA は qa.yaml の severities。PR の指摘は検査の severity）"
   title:       "利用者の言葉で 1 行（なければ null）"
@@ -49,4 +52,4 @@ metrics:
     note: "2026-11-08 建設者の仮置き。ラインの中（マージの手前）で止めた割合。本番まで出た数は別に並べる。件数が 10 件より少ない間は参考"
   found_in_distribution: { ja: 発見工程の分布, formula: "found_in ごとの件数" }
   hotspots: { ja: 出やすい場所, formula: "viewpoint ごとの件数の多い順（上位 5）" }
-  link_rate: { ja: 紐付け率, formula: "release_id・change・caused_in のそれぞれが付いた Defect の割合" }
+  link_rate: { ja: 紐付け率, formula: "release_id・change・caused_in・introduced_in のそれぞれが付いた Defect の割合" }

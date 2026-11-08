@@ -34,6 +34,7 @@ from psycopg.types.json import Jsonb
 import case
 import committee
 import continuation
+import model_route
 import design
 import design_line
 import qa_line
@@ -237,10 +238,12 @@ def enqueue(repo: str, issue: int, by: str, attempt: int = 1, kind: str = "imple
         it = issue_json or {}
         ticket = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=it.get("title") or "", url=it.get("html_url"),
                                    priority=ops.priority_from_labels([l.get("name", "") for l in it.get("labels") or []]), state="active")
+        # 実装は、小さいチケットの一部だけ別のモデルで流して比べる（model_route.py。2026-11-08 オーナー）
+        tier = model_route.tier_for(cur, corr, MODEL_TIER) if kind == "implement" else MODEL_TIER
         try:
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id",
-                        (corr, repo, issue, attempt, by, MODEL_TIER, kind, ticket["id"], ticket["priority"]))
+                        (corr, repo, issue, attempt, by, tier, kind, ticket["id"], ticket["priority"]))
         except psycopg.errors.UniqueViolation:
             return None   # すでに queued / running（二重実行の抑止 1 段目）
         job_id = cur.fetchone()["id"]
@@ -906,7 +909,7 @@ def is_body_only(d: dict) -> bool:
 
 def enqueue_body_fix(cur, repo: str, corr: str, pr_url: str, pr_number: int, defects: list[dict]):
     try:
-        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-small','body_fix') returning id",
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-light','body_fix') returning id",
                     (corr, repo, pr_number))
     except psycopg.errors.UniqueViolation:
         log("body_fix skipped (active job)", pr_url)
@@ -1374,7 +1377,9 @@ def recover() -> list[dict]:
             record_event(cur, "job.finished", j["correlation_id"], j["id"], {"state": "failed", "error": error})
             cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
                         "values (%s,%s,%s,%s,'recover',%s,%s,%s,%s) returning id",
-                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1, MODEL_TIER, j["kind"], j["ticket_id"], j["priority"]))
+                        (j["correlation_id"], j["repo"], j["issue_number"], j["attempt"] + 1,
+                         model_route.tier_for(cur, j["correlation_id"], MODEL_TIER) if j["kind"] == "implement" else MODEL_TIER,
+                         j["kind"], j["ticket_id"], j["priority"]))
             new_id = cur.fetchone()["id"]
             record_event(cur, "job.enqueued", j["correlation_id"], new_id, {"by": "recover", "attempt": j["attempt"] + 1, "previous": j["id"],
                                                                          **continuation.carry_over(cur, j["id"])})   # 続ける先と入力を引き継ぐ
