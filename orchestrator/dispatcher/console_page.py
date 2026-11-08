@@ -1,12 +1,13 @@
 """操業コンソールの画面（1 枚の HTML。console.py が配る）。
 
 ページは URL で分ける（2026-11-07 オーナー）: / ホーム（ダッシュボード）、/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）、
-/line（ライン）、/ship（出荷）、/settings/<項目>（右上の歯車。ランナー・ラインと流量・Mac・工場の版）。/usage は usage_page.py の別ページ。
+/line（ライン）、/ship（出荷）、/usage（使用量。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）、
+/settings/<項目>（右上の歯車。ランナー・ラインと流量・Mac・工場の版）。
 サーバーはどのページにも同じ HTML を返し、画面の中で URL に合うページを描く。データは /api/state の 1 本（10 秒ごと）
 """
 import re
 
-APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|usage|help|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
 
 PAGE = r"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -51,7 +52,7 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 #msg{position:fixed;bottom:12px;right:12px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:8px;display:none}
 header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;font-size:16px;color:var(--ink);text-decoration:none;margin-right:8px}
 #hdr{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;min-width:0}
-#gear{margin-left:auto;display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#gear svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#gear:hover,#gear.on{color:var(--accent);background:var(--bg)}
+#help-i{margin-left:auto}#gear{display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#gear svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#gear:hover,#gear.on{color:var(--accent);background:var(--bg)}
 #nav{display:flex;gap:2px;padding:0 16px;background:var(--card);border-bottom:1px solid var(--line);overflow-x:auto}
 #nav a{padding:9px 12px;color:var(--sub);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}#nav a.on{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
 #nav .n{display:inline-block;min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#nav .n.has{background:var(--p0);color:#fff}
@@ -82,18 +83,34 @@ header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;
 .th.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}.noimg{display:grid;place-items:center;min-height:64px;color:var(--sub);font-size:11px;background:var(--bg);border-radius:4px}
 .stage{min-width:0}.big{display:block;max-height:max(320px,calc(100vh - 360px));overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff}.big img{display:block;width:100%;height:auto}div.big{min-height:200px}.dock{position:sticky;bottom:0;z-index:2;background:var(--card);border-top:1px solid var(--line);margin-top:10px;padding:8px 0 4px;box-shadow:0 -6px 12px -8px rgba(0,0,0,.18)}.dock .acts{margin-top:4px}.target .rel>.t{display:none}
 .stage input,.cd input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(380px,100%)}
-@media(max-width:760px){.ibx.open{grid-template-columns:1fr}.ibx.open .ib-l{display:none}.gal{grid-template-columns:1fr}.thumbs{grid-auto-flow:column;grid-auto-columns:96px;max-height:none}}
+@media(max-width:760px){.ibx.open{grid-template-columns:1fr}.ibx.open .ib-l{display:none}}
+.cd .gal{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}.ti{display:grid;gap:4px;padding:6px;border:1px solid var(--line);border-radius:8px;max-width:100%}
+.ti.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}.ti img{display:block;width:240px;max-width:100%;height:auto;background:#fff;border-radius:4px;border:1px solid var(--line)}
+.ti .th{border:0;padding:2px 0;background:transparent;font-size:12px;text-align:left;max-width:min(480px,100%)}.ti .th.on{box-shadow:none;font-weight:600;color:var(--accent)}.ti .noimg{width:200px}
 .filters{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:12px}.src{display:inline-block;font-size:10px;padding:0 5px;margin-right:4px;border-radius:3px;background:var(--line);color:var(--sub)}
 #lanes{padding:12px 0 0}.targets{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.target{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}.target .th2{font-weight:700}.target .rel{margin-top:6px;border:0;padding:0}
 .set{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0 14px}.sn{display:grid;gap:2px;align-content:start;margin-top:12px}.sn a,.sn span{padding:7px 10px;border-radius:6px;color:var(--ink);text-decoration:none}.sn a.on{background:var(--card);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}.sn .later{color:var(--sub);font-size:12px}
 @media(max-width:640px){.set{grid-template-columns:1fr}.sn{grid-auto-flow:column;overflow-x:auto}}
 .tb{border-collapse:collapse;margin:8px 0}.tb td,.tb th{padding:4px 12px 4px 0;text-align:left;font-variant-numeric:tabular-nums}.tb th{color:var(--sub);font-weight:400}.tb input{width:70px;font:inherit;padding:2px 6px;border:1px solid var(--line);border-radius:6px}
 #set-b>.rn:first-of-type{margin-top:0}#set-b input#sc-reason{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(300px,100%)}
+/* 停止のアラート（11-08）: 1 行ずつ、押すと詳しく、× で消す */
+.alerts{border-color:var(--warn)}.alerts>h2{color:var(--warn)}.alerts>h2 .m{font-weight:400;margin-left:6px}
+.al{border-top:1px solid var(--line)}.alerts>.al:first-of-type{border-top:0}
+.al-h{display:flex;gap:8px;align-items:baseline;padding:7px 0;cursor:pointer}.al-h:hover .al-t{color:var(--accent)}
+.al-g{flex:none;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--warn);color:var(--warn)}
+.al-t{flex:1;min-width:0;word-break:break-word}.al-o{color:var(--sub)}.al-a{white-space:nowrap}
+.al-x{flex:none;padding:0 8px;color:var(--sub)}.al-b{padding:0 0 10px}.al-b .ask{margin-top:0}
+.al-log{max-height:320px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;white-space:pre-wrap;word-break:break-all;margin:8px 0 0}
+.al-f{display:flex;gap:8px;margin-top:6px}.al-f:empty{display:none}.al-gone{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line)}.al-gone .al-t{color:var(--sub)}
+@media(max-width:640px){.al-h{flex-wrap:wrap}.al-t{flex-basis:calc(100% - 60px)}}
+#flow{scroll-margin-top:150px}.figs{display:grid;gap:12px;margin:4px 0 10px}.figs figure{margin:0}.figs svg{display:block;width:100%;max-width:700px;height:auto}.figs figcaption{font-size:12px;color:var(--sub);margin-top:2px}#help-i{display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#help-i svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#help-i:hover,#help-i.on{color:var(--accent);background:var(--bg)}
+.help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0}.help dt{font-weight:600}.help dd{margin:0}.help h3{font-size:13px;margin:14px 0 6px;color:var(--sub)}
+@media(max-width:640px){.help dl{grid-template-columns:1fr}.help dd{margin-bottom:6px}}
 a:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-@media(max-width:640px){header{padding:8px 12px}#hdr{order:3;flex:0 0 100%;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}#gear{margin-left:auto}#view{padding:0 12px 24px}
+@media(max-width:640px){header{padding:8px 12px}#hdr{order:3;flex:0 0 100%;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}#help-i{margin-left:auto}#view{padding:0 12px 24px}
  .rows li a{flex-wrap:wrap}.rows li a .m{flex-basis:100%}.ib-r{padding:12px}.dh{flex-wrap:wrap}.dh h2{flex-basis:100%}}
 </style></head><body>
-<header><a class="brand" href="/" data-nav>工場の操業コンソール</a><span id="hdr"></span><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></header>
+<header><a class="brand" href="/" data-nav>工場の操業コンソール</a><span id="hdr"></span><a id="help-i" href="/help" data-nav title="ヘルプ（ヘッダの数字と言葉の意味）" aria-label="ヘルプ"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5"/><circle cx="12" cy="17.5" r=".6"/></svg></a><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></header>
 <nav id="nav" aria-label="ページ"></nav>
 <div id="banner"></div>
 <div id="view"></div><div id="msg"></div>
@@ -160,7 +177,7 @@ function card(i){const lv=i.level||"p2";let meta=[srcLink(i),i.pr_url?link(i.pr_
  return `<div class="it ${lv}${i.held?" held":""}"><div class="t">${i.priority!=null?`<span class="badge ${lv}">${esc(lv)}</span>`:""}${esc(i.title||"（題名なし）")}</div><div class="m">${meta.filter(Boolean).join(" · ")}</div>${acts(i)}</div>`}
 function scaleView(sc,l){if(!sc)return"";const d=sc.desired,r=sc.running,n=(v)=>v==null?"?":v,paused=l&&l.draining;
  const who=sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）";
- return `<span class="stat ${paused?"bad":""}" title="流量（いま / 宣言）。${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b> · 窓口 <b>${n(r.desk)} / ${d.desk}</b></span>`}
+ return `<span class="stat ${paused?"bad":""}" title="流量（いま動いている数 / 上限）。ワーカー: 同時に動かす作業、チケット: 同時に手を付けるチケット（PR の検査・マージ待ちを含む）、委員会: 知見をまとめる係、窓口: 相談に答える係。上限は ${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b> · 窓口 <b>${n(r.desk)} / ${d.desk}</b></span>`}
 function lineView(l){if(!l)return"";const w=[l.running.length?`実行中 ${l.running.length} 件の終わり待ち`:"",l.shipping.length?`出荷 ${l.shipping.length} 件の処理待ち`:""].filter(Boolean).join("・");
  return `<label class="stat sw ${l.draining&&!l.ready?"bad":""}" title="オフにすると順番待ちを取り出さない（実行中のジョブは最後まで流す）。工場の更新のとき">ライン <input type="checkbox" role="switch" id="line" ${l.draining?"":"checked"}><b class="${l.draining?"":"on"}">${l.draining?(l.ready?"一時停止中（更新してよい）":"一時停止中（"+w+"）"):"流している"}</b></label>`}
 const put=(id,h)=>{const e=document.getElementById(id);if(e&&e._h!==h){e._h=h;e.innerHTML=h}};
@@ -216,14 +233,14 @@ const enc=k=>encodeURIComponent(k);
 const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
- if(p==="/line"||p==="/ship")return[p.slice(1),""];
+ if(p==="/line"||p==="/ship"||p==="/usage"||p==="/help")return[p.slice(1),""];
  if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
  return["home",""]}
 // 前の構成のリンク（通知や古いタブの /#choice-1・/#choices・/#ship）を新しいページに読み替える
 (()=>{if(location.pathname!=="/"||!location.hash)return;const h=location.hash.slice(1);let to="";
  if(/^choice-\d+$/.test(h))to=ibHref("choice:"+h.slice(7));else if(h==="choices")to=ibHref("choice:exit_capture");else if(h==="ship")to="/ship";else if(h==="inbox")to="/inbox";
  if(to)history.replaceState(null,"",to)})();
-function go(href){if(href!==location.pathname)history.pushState(null,"",href);render()}
+function go(href){if(href!==location.pathname+location.hash)history.pushState(null,"",href);render();const h=href.split("#")[1],el=h&&document.getElementById(h);if(el)el.scrollIntoView({block:"start"})}
 document.addEventListener("click",e=>{const a=e.target.closest("a[data-nav]");if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button)return;e.preventDefault();go(a.getAttribute("href"))});
 addEventListener("popstate",()=>render());
 const ago=s=>s==null?"":dur(s)+"待ち";
@@ -231,8 +248,8 @@ const busy=id=>{const e=document.getElementById(id);return !!e&&(e.contains(docu
 
 // ---- ホーム
 function todoView(ib){const xs=ib.items.filter(i=>!i.answered);
- if(!xs.length)return `<h2>対応が必要なもの</h2><div class="m">いまはありません</div>`;
- return `<h2>対応が必要なもの（${xs.length} 件）</h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
+ if(!xs.length)return `<h2>判断待ち<span class="m"> プロダクトの判断（受信トレイ）</span></h2><div class="m">いまはありません</div>`;
+ return `<h2>判断待ち（${xs.length} 件）<span class="m"> プロダクトの判断（受信トレイ）</span></h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
   <a class="more" href="/inbox" data-nav>受信トレイをすべて見る →</a>`}
 function spark(series){const v=(series||[]).map(x=>typeof x==="number"?x:null),ns=v.filter(x=>x!=null);if(ns.length<2)return '<div class="m">推移はまだない</div>';
  const lo=Math.min(...ns),hi=Math.max(...ns),W=140,H=34,X=i=>(i*(W-4)/(v.length-1)+2).toFixed(1),Y=x=>(hi===lo?H/2:H-3-(x-lo)*(H-6)/(hi-lo)).toFixed(1);
@@ -248,7 +265,83 @@ function trendView(t){if(!t||!t.items.length)return `<h2>指標の推移</h2><di
 function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
  return `<h2><a href="/line" data-nav>ライン →</a></h2><div class="kv">${LANES.map(([k,n])=>`<span>${esc(n)} <b>${c(k)}</b></span>`).join("")}</div>`}
 function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
-function stopsView(st){return st.map(x=>`<div class="stop">止まっている: ${esc(x.what)}（${esc(CAT[x.category]||x.category)}）${x.waiting_for?" — 待っているもの: "+esc(x.waiting_for):""}</div>`).join("")}
+// 受信トレイの画面は実際の大きさの 1/4（160〜480px）で出す。高解像度のスクリーンショットでも画面の全体が見える
+document.addEventListener("load",e=>{const g=e.target;if(g.tagName==="IMG"&&g.classList.contains("q")&&g.naturalWidth)g.style.width=Math.round(Math.min(480,Math.max(160,g.naturalWidth/4)))+"px"},true);
+// 受信トレイの件を Claude に渡す（11-08）。Claude 越しに中身を確かめて答えるとき、どの件かを伝える文をコピーする。
+// 決め手は件の key（工場の MCP の inbox_read・inbox_answer が受け取るもの）。URL は人が開き直すため
+function shareText(i){return `工場の受信トレイの件を一緒に確認したい。\n件: ${i.title}\nkey: ${i.key}\n工場の MCP の inbox_read に key「${i.key}」を渡して中身を読み、問いと案を見せてほしい（答えは私がはっきり選んでから inbox_answer で送る）。\n画面: ${location.origin}${ibHref(i.key)}`}
+async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();
+ let ok=false;try{ok=document.execCommand("copy")}catch(_){}a.remove();return ok}}
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-share]");if(!b||!S)return;const i=((S.inbox||{}).items||[]).find(x=>x.key===b.dataset.share);if(!i)return;
+ copyText(shareText(i)).then(ok=>toast(ok?"Claude に渡す文をコピーしました。Claude との会話に貼り付けてください":"コピーできませんでした"))});
+// ---- 停止のアラート（11-08）。何が止まり・どれのことで・次に何をするかを 1 行ずつ。押すと詳しく（記録・リンク・やり直す）。
+// × で画面から消す（停止そのものは閉じない。消したものは「消したもの」で見られ、戻せる）
+let alAll=false,alGone=false;const alOpen=new Set(),alLog={};const AL_LIM=5;
+function alertRow(a,gone){const open=alOpen.has(a.key),t=a.target;
+ const head=`<div class="al-h" data-al="${esc(a.key)}" role="button" tabindex="0" aria-expanded="${open}"><span class="al-g">${esc(a.group)}</span><span class="al-t">${esc(a.title)}${t?`<span class="al-o"> — ${esc(t.label)}</span>`:""}</span><span class="m al-a">${a.age_sec!=null?dur(a.age_sec)+"前から":""}</span>${gone?`<button class="al-x" data-alr="${esc(a.key)}" title="アラートに戻す">戻す</button>`:`<button class="al-x" data-alx="${esc(a.key)}" title="このアラートを消す（消したものは「消したもの」で見られる）" aria-label="消す">×</button>`}</div>`;
+ if(!open)return `<div class="al">${head}</div>`;
+ const links=(a.links||[]).map(l=>l.log!=null?`<button data-allog="${l.log}">${esc(l.label)}</button>`:l.nav?`<a href="${esc(l.href)}" data-nav>${esc(l.label)}</a>`:link(l.href,l.label)).join(" ");
+ const acts=(a.actions||[]).map(x=>x.type==="rerun"?`<button class="go" data-rerun="${x.job_id}" data-cont="${x.continue?1:""}">${esc(x.label)}</button>`:"").join("");
+ const det=[t?{label:"対象",html:t.url?link(t.url,t.label):esc(t.label)}:null,{label:"対応する人",html:esc(a.who_ja)},...(a.detail||[]).map(d=>({label:d.label,html:esc(d.text)})),
+  {label:"止まった種類",html:esc(a.category_ja)},a.record&&a.record.what?{label:"工場の記録の文",html:esc(a.record.what)+(a.record.waiting_for?" — "+esc(a.record.waiting_for):"")}:null].filter(Boolean);
+ const jid=(a.links||[]).map(l=>l.log).find(x=>x!=null),lg=jid!=null&&alLog[jid]!=null?`<pre class="al-log">${esc(alLog[jid])}</pre>`:"";
+ return `<div class="al open">${head}<div class="al-b"><div class="ask"><b>次にすること:</b> ${esc(a.todo||"建設者に回す")}</div><dl class="dt">${det.map(d=>`<dt>${esc(d.label)}</dt><dd>${d.html}</dd>`).join("")}</dl>${acts||links?`<div class="acts">${acts}${links}</div>`:""}${lg}</div></div>`}
+function alertsView(al){if(!al)return"";const xs=(al.open||[]).filter(a=>!a.inbox),gs=(al.dismissed||[]).filter(a=>!a.inbox);if(!xs.length&&!gs.length)return"";   // 人の判断待ちの停止は受信トレイ（判断待ち）に出すので、ここには出さない
+ const cnt={};xs.forEach(a=>cnt[a.group]=(cnt[a.group]||0)+1);const shown=alAll?xs:xs.slice(0,AL_LIM);
+ return `<section class="card alerts"><h2>工場の不調（${xs.length} 件）<span class="m">保守の担当が直すもの · ${Object.entries(cnt).map(([g,n])=>esc(g)+" "+n).join("・")}</span></h2>
+ ${xs.length?shown.map(a=>alertRow(a,false)).join(""):'<div class="m">画面に出しているものはない</div>'}
+ <div class="al-f">${xs.length>AL_LIM?`<button data-alall>${alAll?"少なく表示":`ほか ${xs.length-AL_LIM} 件も見る`}</button>`:""}${gs.length?`<button data-algone>${alGone?"消したものを閉じる":`消したもの（${gs.length} 件）`}</button>`:""}</div>
+ ${alGone&&gs.length?`<div class="al-gone"><div class="m">画面から消したもの。止まり自体はまだ解けていない（解けるとここからも消える）</div>${gs.map(a=>alertRow(a,true)).join("")}</div>`:""}</section>`}
+function alToggle(k){alOpen.has(k)?alOpen.delete(k):alOpen.add(k);force=true;render()}
+document.addEventListener("click",e=>{let b;
+ if((b=e.target.closest("button[data-alx]"))){alOpen.delete(b.dataset.alx);return post("/api/alerts/dismiss",{key:b.dataset.alx})}
+ if((b=e.target.closest("button[data-alr]")))return post("/api/alerts/dismiss",{key:b.dataset.alr,on:false});
+ if((b=e.target.closest("button[data-alall]"))){alAll=!alAll;force=true;return render()}
+ if((b=e.target.closest("button[data-algone]"))){alGone=!alGone;force=true;return render()}
+ if((b=e.target.closest("button[data-allog]"))){const id=b.dataset.allog;if(alLog[id]!=null){delete alLog[id];force=true;return render()}
+  return fetch(`/api/jobs/${id}/log`).then(r=>r.json()).then(j=>{alLog[id]=j.text??("読めなかった: "+(j.error||""));force=true;render()}).catch(()=>toast("作業の記録を読めませんでした"))}
+ if((b=e.target.closest("button[data-rerun]"))){if(!b.classList.contains("armed")){const t=b.textContent;b.classList.add("armed");b.textContent="もう一度押すと積み直す";setTimeout(()=>{b.classList.remove("armed");b.textContent=t},4000);return}
+  return post(`/api/jobs/${b.dataset.rerun}/rerun`,{continue:!!b.dataset.cont})}
+ const h=e.target.closest(".al-h[data-al]");if(h&&!e.target.closest("button,a"))alToggle(h.dataset.al)});
+document.addEventListener("keydown",e=>{const h=e.target.closest&&e.target.closest(".al-h[data-al]");if(h&&e.target===h&&(e.key==="Enter"||e.key===" ")){e.preventDefault();alToggle(h.dataset.al)}});
+// ヘルプの流量の図（11-08 オーナー）。チケット＝1 台のベルトコンベアに同時に載せる部品の数（人は描かない。手を動かす数はワーカーで決まるので、人を描くとミスリードになる）。ワーカー＝ベルトコンベアの台数
+function belt(x,y,w,h){let r=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h/2}" fill="var(--line)" stroke="var(--sub)" stroke-width="1"/>`;
+ for(let cx=x+h/2;cx<x+w;cx+=h*1.6)r+=`<circle cx="${cx}" cy="${y+h/2}" r="${h/2-3}" fill="none" stroke="var(--sub)" stroke-width="1"/>`;return r}
+function part(x,y,s){return `<rect x="${x}" y="${y}" width="${s}" height="${s}" rx="3" fill="var(--accent)"/>`}
+function beltFig(title,cases,kind){const W=330,H=kind==="tickets"?90:150;let out=`<svg viewBox="0 0 ${W*2+20} ${H+50}" role="img" aria-label="${esc(title)}"><text x="0" y="14" font-size="13" font-weight="700" fill="currentColor">${esc(title)}</text>`;
+ cases.forEach(([n,label],i)=>{const ox=i*(W+20),oy=26;out+=`<rect x="${ox}" y="${oy}" width="${W}" height="${H}" rx="8" fill="none" stroke="var(--line)"/>`;
+  if(kind==="tickets"){const by=oy+52;out+=belt(ox+16,by,W-32,18);for(let k=0;k<n;k++){const px=ox+40+k*((W-80)/Math.max(n,1))+((W-80)/Math.max(n,1)-22)/2;out+=part(px,by-20,22)}}
+  else{const g=Math.min((H-20)/n,60),bh=Math.min(16,g-14),ps=Math.min(14,g-bh-4),top=oy+(H-n*g)/2;for(let k=0;k<n;k++){const by=top+k*g+(g-bh)-4;out+=belt(ox+16,by,W-32,bh)+part(ox+40+(k*53)%(W-110),by-ps,ps)}}
+  out+=`<text x="${ox+W/2}" y="${oy+H+14}" font-size="12" text-anchor="middle" fill="currentColor">${esc(label)}</text>`});
+ return out+"</svg>"}
+// ---- ヘルプ（11-08）。ヘッダの数字と、コンソールの言葉の意味
+const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
+<h3>ヘッダ</h3><dl>
+<dt>指示役</dt><dd>工場の進行役（supervisor）が動いているか。60 秒ごとに合図を出しながら、依存が片付いたチケットを優先度の順にラインへ流し、工場の PR のマージの判定・検査と judge の開始・CI 落ちや衝突の直しの手配・日報・出荷のタイミングを回す。合図が 3 分途絶えると「〇分前に停止」と赤く出る。工場を動かしている Mac のスリープや停止を疑う</dd>
+<dt>モード</dt><dd>「人が並走」（attended）は、工場が決めきれなかった判断を人に回し、人の 1 タップで流す。「全面委任」（unattended）は、決めてよい範囲の中では工場が自分で判断して流す。切り替えはいまはコマンド（factoryctl mode set）か時間帯の設定（MODE_SCHEDULE。例: 夜は全面委任）だけ</dd>
+<dt>流量</dt><dd id="flow"><div class="figs">
+<figure>${beltFig("チケット＝ベルトコンベアに同時に載せる部品の数",[[1,"チケット 1: ベルトに部品が 1 つ"],[3,"チケット 3: ベルトに部品が 3 つ"]],"tickets")}<figcaption>検査やマージを待つ PR も、ベルトに載ったまま数える。待ちが多いと、次の部品を載せない</figcaption></figure>
+<figure>${beltFig("ワーカー＝ベルトコンベアの台数",[[1,"ワーカー 1: ベルトコンベアが 1 台"],[3,"ワーカー 3: ベルトコンベアが 3 台"]],"workers")}<figcaption>台数を増やすと、別々のものを同時に作れる</figcaption></figure></div>「いま動いている数 / 上限」。上限は設定の「ラインと流量」で変えられる。下げても動いている作業は止めず、新しく始めないだけ</dd>
+<dt>　ワーカー</dt><dd>ラインで同時に動かす作業（ジョブ）の数。実装・検査・judge・デザインなど</dd>
+<dt>　チケット</dt><dd>同時に手を付けるチケットの数。作業中のものと、PR が開いたまま検査やマージを待っているものの両方を数える。満杯だとワーカーが空いていても次のチケットに手を付けない</dd>
+<dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。委員会どうしは数によらず常に 1 つずつ順に動く（並べると知見が競合・矛盾するため。検討の課題は順番待ちに積まれる）。ラインを一時停止しても止まらない</dd>
+<dt>　窓口</dt><dd>相談に答える係が同時に動く数。ラインを一時停止しても止まらず、ラインのワーカーを使わない</dd>
+<dt>今日の費用</dt><dd>今日終わった作業の消費を API の単価に換算した目安。定額の契約の実際の請求ではない。詳しくは「使用量」</dd>
+<dt>着手待ちのチケット</dt><dd>依存や上限で、まだ手を付けていないチケットの数（保留にしたものは除く）。少なくなる（既定は 2 件を切る）と赤くなり、番人が知らせる。積まないとラインが空になる</dd>
+<dt>ライン</dt><dd>スイッチがオンなら、順番待ちの作業を取り出して流している。オフ（一時停止）にすると新しく取り出さない。工場の更新の前に使う</dd>
+</dl>
+<h3>ホームの「判断待ち」と「工場の不調」</h3><dl>
+<dt>判断待ち</dt><dd>プロダクトの判断（画面の案・マージ・工場が決めきれなかった点など）。受信トレイで答える。答える人はプロダクトの持ち主（オーナー）か、件ごとの宛先</dd>
+<dt>工場の不調</dt><dd>番人（ラインを見張る仕組み）が見つけた、工場の側の止まり（作業の失敗・PR が CI や衝突で進めない・指示役の不在など）。工場の保守の担当（建設者）が直すもの。1 行を押すと、対象・次にすること・記録・やり直すボタンが出る。× で画面から消せる（止まり自体は解けない）。消したものは「消したもの」で見られ、戻せる。止まりが解けると自動で一覧から消える</dd>
+<dt>作業の失敗</dt><dd>1 つの作業（ジョブ）が失敗した。作業ごとに 1 件出る。同じチケットで何度も失敗すると同じチケットの行が並ぶ。「やり直す」で同じ作業を積み直す</dd>
+<dt>PR が進めない</dt><dd>工場の PR が衝突・CI 落ち・検査の指摘などで先に進めない</dd>
+<dt>工場の更新</dt><dd>工場自身の新しい版への更新を、決まりにより自動では進めず人に回したもの</dd>
+</dl>
+<h3>ライン（チケットの流れ）</h3><dl>
+<dt>依存待ち</dt><dd>先に片付けるチケットが残っている</dd><dt>投入待ち（上限）</dt><dd>依存は片付いたが、流量のチケットの上限で待っている</dd>
+<dt>順番待ち</dt><dd>作業が積まれ、ワーカーが空くのを待っている</dd><dt>作業中</dt><dd>ワーカーが作業している</dd>
+<dt>検査・判定・マージ待ち</dt><dd>PR ができ、CI・検査・judge・マージを待っている</dd><dt>対応が必要</dt><dd>人の判断や手当てを待っている</dd>
+</dl><div class="m" style="margin-top:12px">画面は 10 秒ごとに自動で読み直す（タブを開いている間）</div>`;
 
 // ---- 受信トレイ（2 ペイン。選ぶまでは一覧が全面、選ぶと右に詳細）
 function ibItems(ib){return ib.items.filter(i=>(ibTab==="open"?!i.answered:!!i.answered)&&(!ibKind||i.kind===ibKind)&&(!ibWho||i.who===ibWho))}
@@ -267,7 +360,7 @@ function ibDetail(ib,key){const i=ib.items.find(x=>x.key===key);
  const xs=ibItems(ib),k=xs.findIndex(x=>x.key===key),prev=k>0?xs[k-1]:null,next=k>=0&&k<xs.length-1?xs[k+1]:null;
  const nav=`<span class="pn">${prev?`<a href="${ibHref(prev.key)}" data-nav>← 前</a>`:'<span class="off">← 前</span>'}${next?`<a href="${ibHref(next.key)}" data-nav>次 →</a>`:'<span class="off">次 →</span>'}</span>`;
  const meta=[esc(ib.who[i.who]||i.who),esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref),extLink(i.url)].filter(Boolean).join(" · ");
- return `<div class="dh"><h2 class="g">${esc(i.title)}</h2>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
+ return `<div class="dh"><h2 class="g">${esc(i.title)}</h2><button data-share="${esc(i.key)}" title="Claude に渡す文（件の key・題・この画面の URL）をコピーする。Claude は工場の MCP の inbox_read にこの key を渡して中身を読む">Claude に渡す</button>${nav}${close}</div><div class="m">${meta}</div>${i.action?`<div class="ask">${esc(i.action)}</div>`:""}${detailView(i)}${ibBody(i)}`}
 function ibBody(i){const n=0;
  if(i.key.startsWith("choice:")){const cs=i.key==="choice:exit_capture"?(S.choices||[]).filter(c=>c.kind==="exit_capture"):(S.choices||[]).filter(c=>"choice:"+c.id===i.key);
   if(i.answered||!cs.length)return answerView(i,n);
@@ -275,19 +368,19 @@ function ibBody(i){const n=0;
  if(i.key.startsWith("release:")){const rid=i.key.slice(8),r=(S.releases||[]).find(x=>rid.startsWith(x.repo+"@"));
   return i.answered||!r?answerView(i,n):`${i.answer?`<div class="m">答えると: ${esc(i.answer.effect)}</div>`:""}${shipView([r])}`}
  return answerView(i,n)}
-// 画面の判断: 左に画面の一覧、中央に 1 枚を大きく（押すと拡大）、下にいま見ている画面への違和感と答え
+// 画面の判断: 画面を実際の 1/4 の大きさで並べ（押すと拡大）、下に選んでいる画面への違和感と答え
 function choiceDetail(c){const sub=c.subject||{},os=c.options||[];
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))
   return `<div class="cd"><div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}（${os.length} 案）</div><div class="m">${esc(c.context)}</div><div class="acts"><a class="btn" href="/review/${esc(sub.uxspec)}" target="_blank" rel="noopener">レビューページで比べて判断する</a></div></div>`;
  const k=Math.min(gi[c.id]||0,Math.max(os.length-1,0)),o=os[k]||{},exit=c.kind==="exit_capture",img=x=>`/api/choices/${c.id}/image/${esc(x.id)}`;
  const head=`<div class="t">${esc(KIND[c.kind]||c.kind)}: ${esc(c.question)}</div><div class="m">${[sub.pr_url?link(sub.pr_url,"PR"):"",sub.artifact_url?link(sub.artifact_url,"CI の成果物"):"",esc(sub.ticket||""),esc(c.context)].filter(Boolean).join(" · ")}</div>`;
- const thumbs=os.map((x,j)=>`<button class="th ${j===k?"on":""}" data-gi="${c.id}" data-k="${j}" data-zsrc="${x.image_key?img(x):""}" data-zalt="${esc(x.id)}. ${esc(x.label)}" title="${esc(x.label)}">${x.image_key?`<img loading="lazy" alt="" src="${img(x)}">`:'<span class="noimg">画像なし</span>'}<span>${esc(x.id)}. ${esc(x.label)}${x.id===c.recommended?"（推奨）":""}</span></button>`).join("");
- const stage=o.image_key?`<a class="zm big" href="${img(o)}" target="_blank" rel="noopener" data-zk="${k}" title="押すと拡大（別タブは ⌘/Ctrl＋クリック）"><img alt="${esc(o.id)}. ${esc(o.label)}" src="${img(o)}"></a>`:'<div class="big noimg">画像なし</div>';
+ // 画像は実際の大きさの 1/4 で並べ、何枚あるかと画面の全体が一度に見えるようにする（11-08。前は 1 枚を幅いっぱいに出し、ウインドウを広げるほど大きくなった）。押すと拡大
+ const tiles=os.map((x,j)=>`<div class="ti ${j===k?"on":""}">${x.image_key?`<a class="zm" href="${img(x)}" target="_blank" rel="noopener" data-zsrc="${img(x)}" data-zalt="${esc(x.id)}. ${esc(x.label)}" title="押すと拡大（別タブは ⌘/Ctrl＋クリック）"><img class="q" loading="lazy" alt="${esc(x.id)}. ${esc(x.label)}" src="${img(x)}"></a>`:'<span class="noimg">画像なし</span>'}<button class="th ${j===k?"on":""}" data-gi="${c.id}" data-k="${j}" title="この画面について答える">${esc(x.id)}. ${esc(x.label)}${x.id===c.recommended?"（推奨）":""}</button></div>`).join("");
  const per=`<div class="cap"><b>${esc(o.id)}. ${esc(o.label)}</b>${o.id===c.recommended?' <span class="m">（推奨）</span>':""} <span class="m">${k+1} / ${os.length} · ← → で前後の画面</span></div>${o.note?`<div class="m">${esc(o.note)}</div>`:""}
   <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<input data-fnote="${c.id}" data-o="${esc(o.id)}" placeholder="この画面の違和感を一言（Enter で送る。例: 余白が詰まって見える）" maxlength="300"><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感を送る</button></div>`;
  const tail=exit?`<div class="acts"><span class="m">全部見終えたら</span><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button></div>`
   :`<div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button class="danger" data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div>`;
- return `<div class="cd" id="choice-${c.id}">${head}<div class="gal" data-zl><div class="thumbs">${thumbs}</div><div class="stage">${stage}</div></div><div class="dock">${per}${tail}</div></div>`}
+ return `<div class="cd" id="choice-${c.id}">${head}<div class="m">画面 ${os.length} 枚。押すと拡大、名前を押すとその画面について答える</div><div class="gal" data-zl>${tiles}</div><div class="dock">${per}${tail}</div></div>`}
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-gi]");if(!b)return;gi[b.dataset.gi]=Number(b.dataset.k);force=true;render()});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-ibtab]");if(!b)return;ibTab=b.dataset.ibtab;force=true;render()});
 document.addEventListener("change",e=>{if(e.target.id==="ib-kind"||e.target.id==="ib-who"){if(e.target.id==="ib-kind")ibKind=e.target.value;else ibWho=e.target.value;force=true;render()}});
@@ -320,8 +413,8 @@ function shipPage(rs){if(!rs.length)return `<div class="m">出荷した製品は
 
 // ---- 設定
 function scaleForm(sc){if(!sc)return `<div class="m">流量の宣言が読めない</div>`;const d=sc.desired,r=sc.running,n=v=>v==null?"?":v;
- const L={workers:"ワーカー",tickets:"同時に進めるチケット",governance:"委員会",desk:"窓口"};
- return `<div class="m">${sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）"}。factoryctl line scale と同じ</div>
+ const L={workers:"ワーカー（レーンの数）",tickets:"同時に進めるチケット（レーンに載せる数）",governance:"委員会と知見の流れ（委員会どうしは常に 1 つずつ）",desk:"窓口"};
+ return `<div class="m"><a href="/help#flow" data-nav>ワーカーとチケットの違い（ベルトコンベアの図）→</a></div><div class="m">${sc.at?`${esc(sc.by||"")} が ${esc(String(sc.at).slice(0,16).replace("T"," "))} に宣言${sc.reason?"（"+esc(sc.reason)+"）":""}`:"環境変数の値（宣言なし）"}。factoryctl line scale と同じ</div>
   <table class="tb"><tr><th></th><th>いま</th><th>宣言</th></tr>${Object.keys(L).map(k=>`<tr><td>${L[k]}</td><td>${n(r[k])}</td><td><input type="number" min="0" max="50" id="sc-${k}" value="${esc(d[k])}"></td></tr>`).join("")}</table>
   <div class="acts"><input id="sc-reason" placeholder="理由（任意）" maxlength="200"><button class="go" data-scale>宣言を変える</button></div>`}
 document.addEventListener("click",e=>{if(!e.target.closest("button[data-scale]"))return;const body={reason:(document.getElementById("sc-reason")||{}).value||"操業コンソール"};
@@ -333,44 +426,50 @@ function settingsBody(sec,s){const f=s.factory;
  return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
 
 // ---- 描画
-const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"]];
+const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"],["/usage","使用量","usage"]];
 function skeleton(v,arg){
- if(v==="home")return `<div id="h-stops"></div><section class="card" id="h-todo"></section><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
+ if(v==="home")return `<section class="card" id="h-todo"></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
  if(v==="ship")return `<div id="ship"></div>`;
+ if(v==="usage")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
+ if(v==="help")return `<section class="card help">${HELP}</section>`;
  return `<div class="set"><nav class="sn">${SETTINGS.map(([k,n])=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(n)}</a>`).join("")}${LATER.map(n=>`<span class="later" title="今後">${esc(n)}（今後）</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
-let force=false;
+let force=false,usageAt=0;
+// 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
+async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
 function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#nav a[data-v]").forEach(a=>a.classList.toggle("on",a.dataset.v===v));
- document.getElementById("gear").classList.toggle("on",v==="settings");
+ document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
  const vw=document.getElementById("view");if(vw._sig!==sig){vw._sig=sig;vw.innerHTML=skeleton(v,arg);window.scrollTo(0,0)}
  if(v==="settings")document.querySelectorAll(".sn a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="/settings/"+arg));
  const pairs=(s.runner_pairs||[]).length;
  put("banner",pairs&&!(v==="settings"&&arg==="runners")?`<a class="banner" href="/settings/runners" data-nav>新しいランナーの接続の依頼が ${pairs} 件。設定のランナーで許可か拒否を選ぶ →</a>`:"");
- if(v==="home"){put("h-todo",todoView(ib));put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",stopsView(s.factory.open_stoppages))}
+ if(v==="home"){put("h-todo",todoView(ib));put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",alertsView(s.alerts))}
  else if(v==="inbox"){document.querySelector(".ibx").classList.toggle("open",!!arg);put("ib-f",ibFilters(ib));put("ib-list",ibList(ib,arg));
   if(!arg)put("ib-d","");else if(force||!busy("ib-d"))put("ib-d",ibDetail(ib,arg));
   const sel=document.querySelector(".ir.sel");if(sel&&force)sel.scrollIntoView({block:"nearest"})}
- else if(v==="line"){put("l-stops",stopsView(s.factory.open_stoppages));put("l-f",lineFilters(s.items));
+ else if(v==="line"){put("l-stops",alertsView(s.alerts));put("l-f",lineFilters(s.items));
   const xs=s.items.filter(i=>(!lnRepo||repoOf(i)===lnRepo)&&(!lnSrc||i.source===lnSrc));
   put("lanes",LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return `<section class="lane"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join(""))}
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
+ else if(v==="usage"){if(Date.now()-usageAt>60000||!document.querySelector("#usage-b .usage"))loadUsage()}
+ else if(v==="help"){}
  else if(force||!busy("set-b"))put("set-b",settingsBody(arg,s));
  force=false}
 async function load(){if(document.hidden&&!force)return;let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
  S=s;levels=s.levels;const f=s.factory,hb=f.heartbeat_age_sec,ib=s.inbox||{count:0};
  put("hdr",[
-  `<span class="stat ${hb==null||hb>180?"bad":""}">工場長 <b>${hb==null?"未起動":hb>180?dur(hb)+"前に停止":"動いている"}</b></span>`,
-  `<span class="stat">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
+  `<span class="stat ${hb==null||hb>180?"bad":""}" title="工場の進行役（supervisor）が動いているか。60 秒ごとの合図が 3 分途絶えると赤くなる。詳しくはヘルプ">指示役 <b>${hb==null?"未起動":hb>180?dur(hb)+"前に停止":"動いている"}</b></span>`,
+  `<span class="stat" title="人が並走: 決めきれない判断は人に回す。全面委任: 決めてよい範囲は工場が自分で判断する。詳しくはヘルプ">モード <b>${f.mode==="unattended"?"全面委任":"人が並走"}</b></span>`,
   scaleView(f.scale,f.line),
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
-  `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="投入待ちの段（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">段の残り <b>${f.planned}</b></span>`,
+  `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="まだ手を付けていないチケット（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">着手待ちのチケット <b>${f.planned}</b></span>`,
   lineView(f.line)].join(" "));
  const n=document.getElementById("nav-n");n.textContent=ib.count;n.classList.toggle("has",ib.count>0);
  document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";
  render()}
-document.getElementById("nav").innerHTML=NAV.map(([h,t,v])=>`<a href="${h}" data-nav data-v="${v}">${t}${v==="inbox"?' <span class="n" id="nav-n">0</span>':""}</a>`).join("")+`<a href="/usage">使用量</a>`;
+document.getElementById("nav").innerHTML=NAV.map(([h,t,v])=>`<a href="${h}" data-nav data-v="${v}">${t}${v==="inbox"?' <span class="n" id="nav-n">0</span>':""}</a>`).join("");
 load();setInterval(load,10000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
 </script></body></html>"""

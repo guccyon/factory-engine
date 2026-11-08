@@ -314,3 +314,17 @@ def test_issue_corr():
     assert drain.issue_corr("https://github.com/o/r/issues/992") == "github:o/r#992"
     assert drain.issue_corr("https://github.com/o/r/pull/13") is None
     assert drain.issue_corr("https://example.com/o/r/issues/1") is None
+
+
+def test_committee_runs_one_at_a_time(cur):
+    """知見の委員会は同時に 1 つだけ（2026-11-08 オーナー）。枠を増やしても委員会どうしは並ばず、事例の分析は横で流れる"""
+    import line
+    line.scale(cur, "t", governance=5)
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
+                "('committee:https://github.com/o/r/pull/13','o/r',13,'t','committee_review'), ('committee:weekly','o/r',14,'t','committee_weekly'), "
+                "('case:x','o/r',30,'t','case_review')")
+    got = [line.claim_governance(cur) for _ in range(3)]
+    kinds = [j["kind"] for j in got if j]
+    assert sorted(kinds) == ["case_review", "committee_review"] or sorted(kinds) == ["case_review", "committee_weekly"]
+    cur.execute("update jobs set state='succeeded' where state='running' and kind like 'committee%'")
+    assert line.claim_governance(cur)["kind"].startswith("committee")   # 前の委員会が終われば次を取り出す

@@ -4,11 +4,14 @@
 - 操業 API（JSON）が正本で、画面はその利用者の 1 つ。将来の顧客向けアプリも同じ API を使う
   GET  /api/inbox                         受信トレイ: 人が対応するものの一覧（ADR 0026 の決定 7。inbox.py）。/api/state にも inbox として入る
   GET  /api/usage?days=14                 使用量: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
-  GET  /usage                             同じ中身のページ（usage_page.py）
+  GET  /usage                             同じ中身のページ（画面の中のページ。中身は GET /usage/body の HTML の断片。usage_page.py）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
   POST /api/jobs/<id>/stop                ジョブを止める（作業中ならコンテナは dispatcher が止める）
+  POST /api/jobs/<id>/rerun               {"continue"?} 失敗したジョブを積み直す（factoryctl rerun と同じ。rerun.py）
+  GET  /api/jobs/<id>/log                 ジョブの作業の記録の最後の部分（オブジェクトストアの jobs/<id>/worker.log。鍵らしい文字列は伏せる）
+  POST /api/alerts/dismiss                {"key", "on"?} 停止のアラートを画面から消す（on=false で戻す）。停止そのものは閉じない（alerts.py）
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
   POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
@@ -44,6 +47,7 @@ from urllib.parse import parse_qs, urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+import alerts
 import choice
 import drain
 import line
@@ -51,6 +55,7 @@ import inbox
 import judgment
 import ops
 import prototype
+import rerun
 import review_page
 import runners
 import ship
@@ -86,6 +91,28 @@ def read_design(key: str) -> bytes | None:
     finally:
         obj.close()
         obj.release_conn()
+
+
+SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{10,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
+                       r"(?i:(?:token|secret|password|api_key)\s*[=:]\s*)\S{8,})")
+LOG_TAIL_LINES = 80
+
+
+def job_log_tail(job_id: int) -> str | None:
+    """ジョブの作業の記録（worker.log）の最後の部分。停止のアラートから原因を見るため（2026-11-08）。鍵らしい文字列は伏せる"""
+    if store() is None:
+        return None
+    try:
+        obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), f"jobs/{job_id}/worker.log")
+    except Exception:  # noqa: BLE001  ない・読めない
+        return None
+    try:
+        data = obj.read()
+    finally:
+        obj.close()
+        obj.release_conn()
+    lines = data[-64000:].decode("utf-8", "replace").splitlines()[-LOG_TAIL_LINES:]
+    return SECRET_RE.sub("［伏せた］", "\n".join(lines))
 
 
 def store():
@@ -340,6 +367,15 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
     if m:
         before = ops.stop_job(cur, int(m.group(1)), by, reason)
         return (200, {"stopped_from": before}) if before else (409, {"error": "job is not active"})
+    m = re.fullmatch(r"/api/jobs/(\d+)/rerun", path)
+    if m:
+        new_id, msg = rerun.rerun(cur, int(m.group(1)), continue_draft=bool(body.get("continue")), requested_by=by)
+        return (200, {"job_id": new_id, "message": msg}) if new_id else (409, {"error": msg})
+    if path == "/api/alerts/dismiss":
+        key = str(body.get("key") or "")
+        if not alerts.set_dismissed(cur, key, body.get("on", True) is not False, by):
+            return 404, {"error": "no such stoppage"}
+        return 200, {"key": key}
     return 404, {"error": "not found"}
 
 
@@ -367,18 +403,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/state":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur), "trends": trends(cur),
-                                        "engine_version": version.engine_version()})
+                                        "alerts": alerts.view(cur), "engine_version": version.engine_version()})
         if self.path == "/api/inbox":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, inbox.view(cur))
-        if urlsplit(self.path).path in ("/api/usage", usage_page.PATH):
+        if urlsplit(self.path).path in ("/api/usage", usage_page.BODY_PATH):
             u = urlsplit(self.path)
             days = parse_qs(u.query).get("days", ["14"])[0]
             with db() as conn, conn.cursor() as cur:
                 v = usage.view(cur, days=min(max(int(days) if days.isdigit() else 14, 1), 90))
-            if u.path == usage_page.PATH:
-                return self._send(200, usage_page.render(v).encode(), "text/html; charset=utf-8")
+            if u.path == usage_page.BODY_PATH:   # 使用量のページの中身（画面の中の /usage が読み込む。タブとヘッダはほかのページと同じ）
+                return self._send(200, usage_page.body(v).encode(), "text/html; charset=utf-8")
             return self._json(200, v)
+        m = re.fullmatch(r"/api/jobs/(\d+)/log", urlsplit(self.path).path)
+        if m:
+            text = job_log_tail(int(m.group(1)))
+            return self._json(200, {"text": text}) if text is not None else self._json(404, {"error": "作業の記録が見つからない"})
         if self.path in ("/", "/index.html") or APP_PATH.fullmatch(urlsplit(self.path).path):   # 画面のページ（中身は画面の中で URL に合わせて描く）
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
         url = urlsplit(self.path)

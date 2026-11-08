@@ -1142,6 +1142,12 @@ def watch_once():
             nxt = cur.fetchone()
             if nxt:
                 stoppage.close_stoppage(cur, k, remedy=f"再実行された（job {nxt['id']}）")
+                continue
+            # チケットが閉じた（PR がマージされた・人が閉じた）なら、失敗した作業を待つものはもうない（11-08。閉じたチケットの失敗が開いたまま残り、アラートが減らなかった）
+            cur.execute("select t.source_ref from jobs j join tickets t on t.id=j.ticket_id where j.id=%s and t.state='closed'", (int(k.split(":", 1)[1]),))
+            done = cur.fetchone()
+            if done:
+                stoppage.close_stoppage(cur, k, remedy=f"チケット {done['source_ref']} が閉じた")
 
         # 4) 打ち切りの時刻を過ぎても running のまま（dispatcher の不具合）
         cur.execute("select id, correlation_id, started_at from jobs where state='running' and started_at < now() - make_interval(secs => %s)",
