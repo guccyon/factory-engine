@@ -304,14 +304,13 @@ document.addEventListener("click",e=>{let b;
   return post(`/api/jobs/${b.dataset.rerun}/rerun`,{continue:!!b.dataset.cont})}
  const h=e.target.closest(".al-h[data-al]");if(h&&!e.target.closest("button,a"))alToggle(h.dataset.al)});
 document.addEventListener("keydown",e=>{const h=e.target.closest&&e.target.closest(".al-h[data-al]");if(h&&e.target===h&&(e.key==="Enter"||e.key===" ")){e.preventDefault();alToggle(h.dataset.al)}});
-// ヘルプの流量の図（11-08 オーナー）。チケット＝1 台のベルトコンベアに載せる部品と、横で手を動かす人の数。ワーカー＝ベルトコンベアの台数
+// ヘルプの流量の図（11-08 オーナー）。チケット＝1 台のベルトコンベアに同時に載せる部品の数（人は描かない。手を動かす数はワーカーで決まるので、人を描くとミスリードになる）。ワーカー＝ベルトコンベアの台数
 function belt(x,y,w,h){let r=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h/2}" fill="var(--line)" stroke="var(--sub)" stroke-width="1"/>`;
  for(let cx=x+h/2;cx<x+w;cx+=h*1.6)r+=`<circle cx="${cx}" cy="${y+h/2}" r="${h/2-3}" fill="none" stroke="var(--sub)" stroke-width="1"/>`;return r}
 function part(x,y,s){return `<rect x="${x}" y="${y}" width="${s}" height="${s}" rx="3" fill="var(--accent)"/>`}
-function person(x,y){return `<g fill="var(--ok)"><circle cx="${x}" cy="${y}" r="6"/><path d="M${x-8} ${y+22}q0-14 8-14t8 14z"/></g>`}
-function beltFig(title,cases,kind){const W=330,H=kind==="tickets"?120:170;let out=`<svg viewBox="0 0 ${W*2+20} ${H+50}" role="img" aria-label="${esc(title)}"><text x="0" y="14" font-size="13" font-weight="700" fill="currentColor">${esc(title)}</text>`;
+function beltFig(title,cases,kind){const W=330,H=kind==="tickets"?90:150;let out=`<svg viewBox="0 0 ${W*2+20} ${H+50}" role="img" aria-label="${esc(title)}"><text x="0" y="14" font-size="13" font-weight="700" fill="currentColor">${esc(title)}</text>`;
  cases.forEach(([n,label],i)=>{const ox=i*(W+20),oy=26;out+=`<rect x="${ox}" y="${oy}" width="${W}" height="${H}" rx="8" fill="none" stroke="var(--line)"/>`;
-  if(kind==="tickets"){const by=oy+44;out+=belt(ox+16,by,W-32,18);for(let k=0;k<n;k++){const px=ox+40+k*((W-80)/Math.max(n,1))+((W-80)/Math.max(n,1)-22)/2;out+=part(px,by-20,22)+person(px+11,by+34)}}
+  if(kind==="tickets"){const by=oy+52;out+=belt(ox+16,by,W-32,18);for(let k=0;k<n;k++){const px=ox+40+k*((W-80)/Math.max(n,1))+((W-80)/Math.max(n,1)-22)/2;out+=part(px,by-20,22)}}
   else{const g=Math.min((H-20)/n,60),bh=Math.min(16,g-14),ps=Math.min(14,g-bh-4),top=oy+(H-n*g)/2;for(let k=0;k<n;k++){const by=top+k*g+(g-bh)-4;out+=belt(ox+16,by,W-32,bh)+part(ox+40+(k*53)%(W-110),by-ps,ps)}}
   out+=`<text x="${ox+W/2}" y="${oy+H+14}" font-size="12" text-anchor="middle" fill="currentColor">${esc(label)}</text>`});
  return out+"</svg>"}
@@ -321,8 +320,8 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <dt>指示役</dt><dd>工場の進行役（supervisor）が動いているか。60 秒ごとに合図を出しながら、依存が片付いたチケットを優先度の順にラインへ流し、工場の PR のマージの判定・検査と judge の開始・CI 落ちや衝突の直しの手配・日報・出荷のタイミングを回す。合図が 3 分途絶えると「〇分前に停止」と赤く出る。工場を動かしている Mac のスリープや停止を疑う</dd>
 <dt>モード</dt><dd>「人が並走」（attended）は、工場が決めきれなかった判断を人に回し、人の 1 タップで流す。「全面委任」（unattended）は、決めてよい範囲の中では工場が自分で判断して流す。切り替えはいまはコマンド（factoryctl mode set）か時間帯の設定（MODE_SCHEDULE。例: 夜は全面委任）だけ</dd>
 <dt>流量</dt><dd id="flow"><div class="figs">
-<figure>${beltFig("チケット＝ベルトコンベアに同時に載せる部品の数",[[1,"チケット 1: 部品が 1 つ。1 人が手を動かす"],[3,"チケット 3: 部品が 3 つ。3 人が並んで手を動かす"]],"tickets")}<figcaption>検査やマージを待つ PR も、ベルトに載ったまま数える。待ちが多いと、次の部品を載せない</figcaption></figure>
-<figure>${beltFig("ワーカー＝ベルトコンベアの台数",[[1,"ワーカー 1: ベルトコンベアが 1 台"],[5,"ワーカー 5: ベルトコンベアが 5 台"]],"workers")}<figcaption>台数を増やすと、別々のものを同時に作れる</figcaption></figure></div>「いま動いている数 / 上限」。上限は設定の「ラインと流量」で変えられる。下げても動いている作業は止めず、新しく始めないだけ</dd>
+<figure>${beltFig("チケット＝ベルトコンベアに同時に載せる部品の数",[[1,"チケット 1: ベルトに部品が 1 つ"],[3,"チケット 3: ベルトに部品が 3 つ"]],"tickets")}<figcaption>検査やマージを待つ PR も、ベルトに載ったまま数える。待ちが多いと、次の部品を載せない</figcaption></figure>
+<figure>${beltFig("ワーカー＝ベルトコンベアの台数",[[1,"ワーカー 1: ベルトコンベアが 1 台"],[3,"ワーカー 3: ベルトコンベアが 3 台"]],"workers")}<figcaption>台数を増やすと、別々のものを同時に作れる</figcaption></figure></div>「いま動いている数 / 上限」。上限は設定の「ラインと流量」で変えられる。下げても動いている作業は止めず、新しく始めないだけ</dd>
 <dt>　ワーカー</dt><dd>ラインで同時に動かす作業（ジョブ）の数。実装・検査・judge・デザインなど</dd>
 <dt>　チケット</dt><dd>同時に手を付けるチケットの数。作業中のものと、PR が開いたまま検査やマージを待っているものの両方を数える。満杯だとワーカーが空いていても次のチケットに手を付けない</dd>
 <dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。委員会どうしは数によらず常に 1 つずつ順に動く（並べると知見が競合・矛盾するため。検討の課題は順番待ちに積まれる）。ラインを一時停止しても止まらない</dd>
