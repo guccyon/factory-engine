@@ -143,13 +143,15 @@ def test_weekly_report_opportunities_and_forecast_error(cur, monkeypatch):
     cur.execute("select payload from artifacts where type='KPIReport' order by id desc limit 1")
     kr = cur.fetchone()["payload"]
     assert set(kr) >= {"period", "metrics", "diff_from_previous", "explanations"} and "PR 1 件" in kr["explanations"][0]
-    # 受信トレイ: 事業主（po）の依頼。中身と答え方があり、答えると閉じるだけ（起票しない）
-    xs = [i for i in inbox.items(cur) if i.get("task_kind") == report_kpi.KIND]
-    assert len(xs) == 3 and xs[0]["who"] == "po" and xs[0]["detail"][0]["label"] == "問題"
-    assert [x["id"] for x in xs[0]["answer"]["options"]] == ["pick", "dismiss"]
-    res, _ = inbox.answer(cur, xs[0]["key"], "dismiss", "t", "console")
+    # 改善の提案の口（O4 と共通）: opportunity.proposed と受信トレイのプロダクトオーナーの依頼。起票はしない
+    import opportunity
+    props = opportunity.recent(cur, REPO, report_kpi.SOURCE)
+    assert len(props) == 3 and props[0]["theme"] == report_kpi.THEME and props[0]["week"] == "2026-W46"
+    xs = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert len(xs) == 3 and xs[0]["who"] == "po"
+    res, _ = inbox.answer(cur, xs[0]["key"], "seen", "t", "console")
     assert res == "answered"
-    assert len([i for i in inbox.items(cur) if i.get("task_kind") == report_kpi.KIND]) == 2
+    assert len([i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]) == 2
     # Learn: 教師信号 kpi_error が kpi:<id> で束になる
     retro = learn.retrospect(cur, now=t0 + timedelta(days=8))
     c = [c for c in retro["clusters"] if c["signature"] == "kpi:slot_fill_rate"]

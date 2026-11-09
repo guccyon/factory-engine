@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from psycopg.types.json import Jsonb
 
 import defect
+import opportunity
 import ops
 import touch
 
@@ -33,6 +34,10 @@ DEFS = {
     "worker": {"env_host": "host.docker.internal"},
     "explore": {"hours": [1, 5], "through_pause": True, "priority": "p2", "defects_per_night_max": 3, "file_severities": ["s1", "s2", "s3"],
                 "charters": ["detour", "other-user", "come-back", "reader-words", "first-time"]},
+    "synthetic": {"weekday": 6, "hours": [5, 7], "through_pause": True, "priority": "p2",
+                  "slow_p95_ms": 1500, "slow_min_calls": 2, "hard_entry_attempts": 3, "opportunities_max": 4, "friction_env": "SYNTH_FRICTION",
+                  "friction_example": {"slow": {"path": "/api/bookings", "method": "GET", "delay_ms": 2500},
+                                       "hide": {"entry": "ADMIN_WEB_PORT", "selector": "a[href='/headquarters/bookings']"}}},
 }
 
 
@@ -69,7 +74,22 @@ def build_input(cur, repo: str, env: str, stories: list[str], env_host: str) -> 
         r = cur.fetchone()
         commit = r["c"] if r else None
     return {"env": env, "env_host": env_host, "release_id": rid, "commit": commit, "stories": stories,
-            "touchable": {"accounts": t.get("accounts") or [], "note": t.get("note")}}
+            "touchable": {"accounts": t.get("accounts") or [], "note": t.get("note")}, **learned_focus(cur, repo)}
+
+
+def learned_focus(cur, repo: str, scenarios_max: int = 5) -> dict:
+    """品質の Learn（ADR 0043 の O9。dispatcher/quality_learn.py）が決めた重点と、足した回帰のシナリオ。QA のジョブの入力に足す（工程は変えない）"""
+    out = {}
+    cur.execute("select payload from events where name='qa.focus_updated' and payload->>'repo'=%s order by id desc limit 1", (repo,))
+    r = cur.fetchone()
+    if r:
+        out["focus"] = {"stories": r["payload"].get("stories") or [], "viewpoints": r["payload"].get("viewpoints") or [],
+                        "week": r["payload"].get("week")}
+    cur.execute("select payload from events where name='qa.scenario_added' and payload->>'repo'=%s order by id desc limit %s", (repo, scenarios_max))
+    sc = [{k: r["payload"].get(k) for k in ("id", "title", "reproduce", "expected", "viewpoint", "story_id")} for r in cur.fetchall()]
+    if sc:
+        out["scenarios"] = sc
+    return out
 
 
 def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | None = None, by: str = "factoryctl",
@@ -388,3 +408,138 @@ def explore_nights(cur, repo: str | None = None, limit: int = 7) -> list[dict]:
     cur.execute("select payload, occurred_at, job_id from events where name='qa.explore' and (%s::text is null or payload->>'repo'=%s) "
                 "order by id desc limit %s", (repo, repo, limit))
     return [{**r["payload"], "at": r["occurred_at"], "job_id": r["job_id"]} for r in cur.fetchall()]
+
+
+# ------------------------------------------------------------------ 合成の利用者（ADR 0043 の O4 synthetic_users_loop）
+# supervisor が週に 1 回（definitions/qa.yaml の synthetic.weekday・hours、JST）製品ごとに積み、ワーカーは中継越しにストーリーを歩いた行動ログと
+# 応答時間を返す。ここで遅い API（テーマ 2）と入口が見つけにくい流れ（テーマ 1）を決定論で拾い、改善の提案（Opportunity）にして受信トレイに出す
+def week_of(now: datetime) -> str:
+    """ISO の週の名前（JST）。例 2026-W45"""
+    y, w, _ = now.astimezone(JST).isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def friction_from(value: str | None, defs: dict | None = None) -> dict:
+    """工場の環境変数 SYNTH_FRICTION の値から仕込みを読む。example なら定義の例、JSON ならその形、空なら仕込まない"""
+    import json
+    v = (value or "").strip()
+    if not v or v in ("0", "off", "none"):
+        return {}
+    if v == "example":
+        return dict((defs or load_defs())["synthetic"]["friction_example"])
+    try:
+        got = json.loads(v)
+    except ValueError:
+        return {}
+    return {k: got[k] for k in ("slow", "hide") if isinstance(got, dict) and isinstance(got.get(k), dict)}
+
+
+def enqueue_synthetic(cur, gh, repo: str, *, by: str = "supervisor", env: str = "staging", defs: dict | None = None,
+                      friction: dict | None = None, week: str | None = None, unattended: bool = True) -> dict:
+    """合成の利用者のジョブを固定 Issue に積む（入力の mode: synthetic）。仕込みは staging のときだけ渡す（ADR 0043 の O4）"""
+    defs = defs or load_defs()
+    if friction is None:
+        friction = friction_from(os.environ.get(defs["synthetic"].get("friction_env") or "SYNTH_FRICTION"), defs)
+    fr = friction if env == "staging" else {}
+    got = enqueue(cur, gh, repo, env=env, by=by, priority=defs["synthetic"]["priority"], defs=defs,
+                  extra={"mode": "synthetic", "friction": fr, "week": week, "unattended": unattended})
+    return {**got, "friction": fr}
+
+
+def signals(sy: dict, sd: dict) -> list[dict]:
+    """歩いた結果から提案の種を決定論で拾う。{kind: slow|hard_entry, key, theme, ...}。重い順"""
+    out = []
+    for t in sy.get("timings") or []:
+        if int(t.get("n") or 0) >= int(sd["slow_min_calls"]) and int(t.get("p95") or 0) >= int(sd["slow_p95_ms"]):
+            out.append({"kind": "slow", "theme": 2, "key": f"slow:{t.get('method')}:{t.get('path')}", "path": t.get("path"),
+                        "method": t.get("method"), "entry": t.get("entry"), "p95": t.get("p95"), "p50": t.get("p50"), "n": t.get("n")})
+    by_story: dict[str, list[dict]] = {}
+    for w in sy.get("walks") or []:
+        by_story.setdefault(str(w.get("story_id")), []).append(w)
+    for sid, ws in by_story.items():
+        hard = [w for w in ws if not w.get("found_entry") or int(w.get("attempts_to_entry") or 0) >= int(sd["hard_entry_attempts"])]
+        if hard:
+            out.append({"kind": "hard_entry", "theme": 1, "key": f"hard_entry:{sid}:{hard[0].get('entry')}", "story_id": sid,
+                        "entry": hard[0].get("entry"), "walks": len(ws), "hard": len(hard), "not_found": sum(1 for w in hard if not w.get("found_entry")),
+                        "attempts": [int(w.get("attempts_to_entry") or 0) for w in hard],
+                        "notes": [str(st.get("note") or st.get("did"))[:160] for w in hard for st in (w.get("steps") or [])[:3]][:4]})
+    out.sort(key=lambda x: (0 if x["kind"] == "slow" else 1, -int(x.get("p95") or x.get("hard") or 0)))
+    return out
+
+
+def planted_hit(sig: dict, planted: dict) -> str | None:
+    """提案が仕込みに当たったか（slow はパスの頭、hide は入口が同じ）。当たった仕込みの名前"""
+    s, h = planted.get("slow") or {}, planted.get("hide") or {}
+    if sig["kind"] == "slow" and s.get("path") and str(sig.get("path") or "").startswith(str(s["path"])):
+        return "slow"
+    if sig["kind"] == "hard_entry" and h.get("entry") and sig.get("entry") == h.get("entry"):
+        return "hide"
+    return None
+
+
+def opportunity_of(sig: dict, release_id: str | None) -> dict:
+    if sig["kind"] == "slow":
+        return {"title": f"{sig['method']} {sig['path']} の応答が遅い（p95 {sig['p95']}ms）",
+                "problem": (f"合成の利用者が staging（版 {release_id or '不明'}）を歩いたとき、{sig['method']} {sig['path']} の応答が "
+                            f"{sig['n']} 回で中央値 {sig['p50']}ms・p95 {sig['p95']}ms だった。利用者はこの画面で待たされる"),
+                "expected_effect": {"metric": f"{sig['path']} の応答時間（p95）", "direction": "down", "range": "1000ms 未満（今の半分以下）"}}
+    return {"title": f"ストーリー {sig['story_id']} の入口が見つけにくい",
+            "problem": (f"合成の利用者が staging（版 {release_id or '不明'}）で、ストーリー {sig['story_id']} の入口を案内だけで探したとき、"
+                        f"{sig['walks']} 回のうち {sig['hard']} 回で迷った（見つけられなかった {sig['not_found']} 回・試行 {sig['attempts']}）。"
+                        + (" 見えたもの: " + " / ".join(sig.get("notes") or []) if sig.get("notes") else "")),
+            "expected_effect": {"metric": f"{sig['story_id']} の入口までの試行回数", "direction": "down", "range": "1〜2 回（迷わずに着く）"}}
+
+
+def synthetic_summary(job_id: int, sy: dict, proposed: list[dict], rid: str | None) -> str:
+    walks = sy.get("walks") or []
+    lines = [f"## 合成の利用者（ジョブ {job_id}・環境 {sy.get('env')}・版 {rid or '不明'}）", "",
+             f"歩いた {len(walks)} 回・exit まで {sum(1 for w in walks if w.get('reached_exit'))} 回・中継を通った要求 {sy.get('requests', 0)} 件"
+             f"（確信度 {sy.get('confidence')}）", "", _q(str(sy.get("interpretation") or "")[:600]), "", "### 応答の遅い順（API）"]
+    for t in (sy.get("timings") or [])[:5]:
+        lines.append(f"- {t.get('method')} {t.get('path')}: {t.get('n')} 回・中央値 {t.get('p50')}ms・p95 {t.get('p95')}ms")
+    if not sy.get("timings"):
+        lines.append("- （API の要求がなかった）")
+    lines += ["", "### 改善の提案（受信トレイに出した。起票はしない）"]
+    for p in proposed:
+        lines.append(f"- テーマ {p['theme']}: {p['title']}" + ("（仕込みに当たった）" if p.get("planted_hit") else ""))
+    if not proposed:
+        lines.append("- なし")
+    if sy.get("planted"):
+        lines += ["", f"わざと仕込んだ詰まり: {', '.join(sorted(sy['planted']))}（ADR 0043 の O4。工場の中継で入れた。製品のコードには入っていない）"]
+    return "\n".join(lines)
+
+
+def record_synthetic(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result: dict, defs: dict | None = None) -> dict:
+    """合成の利用者の結果を QASynthetic と qa.synthetic に残し、提案を opportunity.proposed と受信トレイに出し、固定 Issue にまとめを書く"""
+    defs = defs or load_defs()
+    sd = defs["synthetic"]
+    cur.execute("select payload->'input' as i from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
+    inp = (cur.fetchone() or {}).get("i") or {}   # 仕込みと週は積んだときの入力が正本（ワーカーの出力に頼らない）
+    planted = {k: v for k, v in (inp.get("friction") or {}).items() if k in ("slow", "hide") and v}
+    sy = {**(result.get("synthetic") or {}), "env": result.get("env"), "planted": planted}
+    rid = result.get("release_id")
+    payload = {"repo": repo, "release_id": rid, "env": result.get("env"), "week": inp.get("week"), "unattended": bool(inp.get("unattended")),
+               "walks": sy.get("walks") or [], "timings": sy.get("timings") or [], "requests": sy.get("requests"), "planted": planted,
+               "interpretation": sy.get("interpretation"), "confidence": sy.get("confidence"), "model": result.get("model")}
+    cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('QASynthetic',%s,%s,'verify',%s) returning id",
+                (corr, job_id, Jsonb(payload)))
+    sid = cur.fetchone()["id"]
+    proposed = []
+    for sig in signals(sy, sd)[: int(sd["opportunities_max"])]:
+        hit = planted_hit(sig, planted)
+        o = opportunity_of(sig, rid)
+        oid = opportunity.propose(cur, repo, "synthetic_users", sig["key"], theme=sig["theme"], evidence=[f"event:qa.synthetic:{job_id}", f"artifact:QASynthetic:{sid}"],
+                                  correlation_id=corr, job_id=job_id, extra={"planted_hit": hit, "release_id": rid, "signal": sig}, **o)
+        proposed.append({**o, "theme": sig["theme"], "planted_hit": hit, "opportunity_id": oid, "kind": sig["kind"]})
+    walks = sy.get("walks") or []
+    cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('qa.synthetic',%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
+                (corr, job_id, Jsonb({"repo": repo, "release_id": rid, "env": result.get("env"), "week": inp.get("week"),
+                                      "unattended": bool(inp.get("unattended")), "walks": len(walks),
+                                      "reached_exit": sum(1 for w in walks if w.get("reached_exit")), "requests": sy.get("requests") or 0,
+                                      "events_logged": sorted({st.get("event") for w in walks for st in w.get("steps") or [] if st.get("event")}),
+                                      "slowest": (sy.get("timings") or [None])[0], "planted": sorted(planted),
+                                      "proposed": [{k: p.get(k) for k in ("kind", "theme", "title", "planted_hit", "opportunity_id")} for p in proposed],
+                                      "synthetic_id": sid, "issue": issue, "model": result.get("model")}),
+                 f"qa.synthetic:{job_id}"))
+    comment(repo, issue, synthetic_summary(job_id, sy, proposed, rid))
+    return {"synthetic_id": sid, "proposed": proposed}

@@ -411,7 +411,7 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 合成シード: 製品の ship.yaml に `seed` があれば、その環境（rally は staging だけ）に起動を確かめたあと 1 回だけ書く（`release.seeded`）。環境のボリュームを消したら、その記録も消してから出し直す。
 
-出荷の列車: supervisor が 1 日 1 回、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出す。prod は承認ボタンを待つ。
+出荷の列車（定期便。ADR 0043 の O6）: supervisor が 1 日 1 便、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出し、その日の便（`release.train`）にまとめて残す。prod への承認は便ごとに 1 回（`factoryctl release train-approve <train_id>`。本番を立てない段階の製品だけの便は承認が要らない）。S1 の修正だけは緊急便で待たずに出す（`factoryctl release train <repo> --emergency --reason ..`）。最近の便は `factoryctl release trains`。便は Release の束として持ち、Gen1.5 で製品が複数のリポジトリに分かれたら 1 便に複数の Release を載せる。
 
 操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
 
@@ -490,10 +490,32 @@ docker compose exec dispatcher factoryctl report kpi guccyon/rally --measure   #
 
 - 測り方は製品の `.factory-config/ship.yaml` の `kpi`（測る環境・実行する部品とコマンド・値ごとの id・名前・単位・よい向き・目安の幅 `expected`・前回からの変化の閾値 `change_alert`）。コマンドの出力は `{id: 数}` の JSON。Gen1 は合成の利用者の行動ログ（O4）がまだないので、staging の DB から近似する
 - supervisor が毎週月曜 7 時（JST）を過ぎたら、`KPI_WEEKLY` の製品（既定は `RELEASE_TRAIN` と同じ。空で止める）ごとに測る依頼（`release.kpi_requested`）を書き、shipper が staging で実行して `release.kpi_measured` に残す。staging に版がなければ `report.kpi_skipped` に週 1 回。測れなくても停止には開かない
-- 測れた結果は、同じ製品・同じ環境のひとつ前の測定と比べて artifacts の `KPIReport` と events の `report.kpi_weekly` に残す。目安の幅の外・前回より悪い向きに `change_alert`（既定 20%）以上・見込みと逆に動いた値を異常とし、1 回 3 件まで artifacts の `Opportunity`（題・問題・期待する効果）にして、受信トレイに事業主（po）宛ての依頼（`kpi_opportunity`、拾う・見送る）を積む
+- 測れた結果は、同じ製品・同じ環境のひとつ前の測定と比べて artifacts の `KPIReport` と events の `report.kpi_weekly` に残す。目安の幅の外・前回より悪い向きに `change_alert`（既定 20%）以上・見込みと逆に動いた値を異常とし、1 回 3 件まで改善の提案（`Opportunity`。題・問題・期待する効果）にして、合成の利用者と同じ口（`dispatcher/opportunity.py`）から `opportunity.proposed`（source `report.kpi`）と受信トレイのプロダクトオーナーの依頼に出す
 - 見込み（O3）: プランナーは着手を決めるとき、変更が KPI を動かすと見込めれば Requirements に `kpi_forecast`（KPI の id・変化・理由）を書く（任意。製品の `ship.yaml` の `kpi.metrics` にない id は落とす）。週次の Report が、前回の測定から今回までにマージしたチケットの見込みを実測の差と突き合わせて `kpi.forecast_scored` に残し、Learn の Retrospective が教師信号 `kpi_error`（signature `kpi:<id>`）として束ねる
 - 開発状況レポート（`report.product`）の節「製品の KPI（週次）」にいちばん新しい値と前回差を出し、異常は注意の印にする
 - Gen1 の値は staging の合成シードなので、異常や誤差の中身に意味はない（回路の確認）
+
+### 合成の利用者（ADR 0043 の O4 synthetic_users_loop）
+
+実際の利用者がまだいない製品で、合成の利用者がユーザーストーリーに沿って staging を歩き、行動ログ（製品の `specs/analytics/events.yaml` の名前）と応答時間を残す。遅い API（テーマ 2）と入口が見つけにくい流れ（テーマ 1）を決定論で拾い、改善の提案（Opportunity）にして受信トレイに出す（起票はしない）。形と数値は `definitions/qa.yaml` の `synthetic`。
+
+```bash
+docker compose exec dispatcher factoryctl qa synthetic guccyon/rally --friction example [--through-pause]   # 今すぐ 1 回（仕込みつき）
+```
+
+- supervisor が週に 1 回（既定は日曜の JST 5〜7 時）、`SYNTHETIC_USERS` の製品（既定は `NIGHTLY_EXPLORE` と同じ。空で止める）ごとに QA のジョブ（入力の `mode: synthetic`）を固定 Issue に積む
+- ワーカー（`core-gates/qa.py`）は、画面の入口ごとに中継（`core-gates/synthetic_proxy.py`）を立て、エージェントには中継の URL だけを渡す。応答時間はエージェントの申告ではなく中継が 1 回ごとに測る
+- わざと仕込む詰まり（遅い API 1 本・見つけにくい入口 1 つ）は、工場の環境変数 `SYNTH_FRICTION`（`example` で `definitions/qa.yaml` の例、JSON で任意、空で仕込まない）で入れ、staging のときだけ中継が入れる。製品のコードにも環境の設定にも入れない
+- dispatcher が artifacts の `QASynthetic` と events の `qa.synthetic` を残し、提案を `opportunity.proposed`（artifacts の `Opportunity`）と受信トレイ（プロダクトオーナーの「見て、拾うなら起票」）に出し、固定 Issue にまとめを書く。roadmap の `synthetic_users_loop` は仕込みに当たった提案を数える
+
+### 品質の Learn（ADR 0043 の O9 quality_learn）
+
+supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は月曜の JST 7 時過ぎ）、製品ごとに直近 30 日の Defect（`defect.recorded`）と Incident（`incident.recorded`）を集計する（`dispatcher/quality_learn.py`。LLM は使わない）。
+
+- 発見工程の分布と出やすい場所を `quality.learned` に残す
+- QA の重点（Defect の多いストーリー・マージの後で多い観点）を `qa.focus_updated` に、回帰のシナリオ（QA で見つかった Defect の再現の手順）を `qa.scenario_added` に足す。QA のジョブを積むとき入力の `focus`・`scenarios` に足し、夜間の探索と合成の利用者のプロンプトが読む（工程は変えない）
+- 同じ観点の Defect がマージの後で線より多ければ、基準の変更案（`quality.proposal_drafted`）にし、委員会の順番が空いたら知見の変更セットの Issue にして委員会の列に入れる（`quality.proposal_filed` と `knowledge.case_filed`）。品質方針の値は変えない（人の承認）
+- 手で回すときは `factoryctl qa learn guccyon/rally`（その週にまだ回っていなければ）。`QUALITY_LEARN=0` で止める
 
 ## Learn ループ（ADR 0013）
 

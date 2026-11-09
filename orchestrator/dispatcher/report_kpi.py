@@ -7,7 +7,8 @@
 2. 測った結果が出たら、前に測った値（同じ製品・同じ環境のひとつ前の測定）と比べ、前回差分を説明する材料（期間にマージした PR、見込み）を付けて
    KPIReport に残す（report.kpi_weekly）
 3. 目安の幅から外れた・前回より悪い向きに大きく動いた・見込みと逆に動いた値を「異常」とし、1 回 OPPORTUNITIES_MAX 件まで
-   Opportunity の下書き（artifacts.yaml の Opportunity。題・問題・期待する効果）に起こして受信トレイに出す。起票はしない（人かプランナーが拾う）
+   Opportunity の下書き（artifacts.yaml の Opportunity。題・問題・期待する効果）に起こし、改善の提案の口（opportunity.py。O4 の合成の利用者と共通）から
+   opportunity.proposed と受信トレイ（プロダクトオーナーの依頼）に出す。起票はしない（人かプランナーが拾う）
 4. 前回の測定から今回までにマージしたチケットのうち、プランナーが Requirements に KPI の見込み（kpi_forecast）を書いたものを、
    実測の差と突き合わせて誤差を kpi.forecast_scored に残す。Learn の Retrospective が教師信号 kpi_error として束ねる（learn.py）
 
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 from psycopg.types.json import Jsonb
 
 import design
-import inbox
+import opportunity
 import ship
 
 SCHEDULE = {"weekday": "monday", "hour": 7}   # この曜日・時（JST）を過ぎたら、その週の分を測る
@@ -29,8 +30,8 @@ ENV = "staging"                               # Gen1 は staging（rally は本�
 CHANGE_ALERT = 0.2                            # 前回からの変化（比）がこれ以上で悪い向きなら異常（ship.yaml の change_alert が優先）
 OPPORTUNITIES_MAX = 3                         # 1 回の Report で起こす Opportunity の下書き
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-WHO = "po"                                    # 製品の仕様の判断は事業主（ADR 0044）。受信トレイの who
-KIND = "kpi_opportunity"                      # 受信トレイの依頼の種類（inbox.TASK_ANSWERS）
+SOURCE = "report.kpi"                         # 改善の提案（opportunity.proposed）の出どころ
+THEME = 1                                     # learning_taxonomy.yaml のテーマ 1（利用者の体験）。製品の KPI の異常はここに入れる
 
 
 def due(now: datetime, schedule: dict | None = None) -> bool:
@@ -127,7 +128,7 @@ def find_anomalies(row: dict) -> list[dict]:
     return out
 
 
-def opportunity(row: dict, a: dict, repo: str, week: str) -> dict:
+def draft(row: dict, a: dict, repo: str, week: str) -> dict:
     """異常 1 つを Opportunity の下書き（artifacts.yaml の Opportunity: title・problem・expected_effect{metric, direction, range}）にする"""
     unit, good_up = row.get("unit") or "", row.get("direction") != "down_is_good"
     if a["kind"] == "range" and row.get("expected"):
@@ -183,7 +184,7 @@ def report_one(cur, ev: dict, log=print) -> dict | None:
     scored = score(cur, rows, merged, ev, base)
     for r in rows:
         r["anomalies"] = find_anomalies(r)
-    opps = [opportunity(r, a, repo, week) for r in rows for a in r["anomalies"]][:OPPORTUNITIES_MAX]
+    opps = [draft(r, a, repo, week) for r in rows for a in r["anomalies"]][:OPPORTUNITIES_MAX]
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('report.kpi_weekly', %s, %s, %s) "
                 "on conflict (dedupe_key) do nothing returning id",
                 (f"kpi:{repo}:{week}", Jsonb({"repo": repo, "env": env, "week": week, "measured_id": ev["id"], "base_id": base["id"] if base else None,
@@ -201,15 +202,10 @@ def report_one(cur, ev: dict, log=print) -> dict | None:
                 (f"kpi:{repo}:{week}", Jsonb({"repo": repo, "env": env, "period": week, "measured_id": ev["id"],
                                               "metrics": rows, "diff_from_previous": {r["id"]: r["delta"] for r in rows},
                                               "explanations": explanations})))
-    for o in opps:
-        cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Opportunity', %s, 'routine', %s) returning id",
-                    (f"kpi:{repo}:{week}", Jsonb(o)))
-        aid = cur.fetchone()["id"]
-        ee = o["expected_effect"]
-        inbox.request(cur, f"{KIND}:{aid}", KIND, WHO, o["title"][:200], url="", correlation_id=f"kpi:{repo}:{week}", by="report_line",
-                      action="拾うなら窓口に相談として持ち込む（工場は起票しない）。見送るなら閉じる",
-                      detail=[{"label": "問題", "text": o["problem"]},
-                              {"label": "期待する効果", "text": f"{ee['metric']} を{'上げる' if ee['direction'] == 'up' else '下げる'}（{ee['range']}）"}])
+    for o in opps:   # 改善の提案の口（opportunity.py、O4 と共通）。同じ測定・同じ値・同じ種類の異常は 1 回だけ
+        opportunity.propose(cur, repo, SOURCE, f"{ev['id']}:{o['expected_effect']['metric']}:{o['evidence']['anomaly']}",
+                            title=o["title"], problem=o["problem"], expected_effect=o["expected_effect"], theme=THEME,
+                            evidence=[o["evidence"]], correlation_id=f"kpi:{repo}:{week}", extra={"week": week})
     log("kpi weekly", repo, week, "anomalies", sum(len(r["anomalies"]) for r in rows), "opportunities", len(opps), "scored", len(scored))
     return {"repo": repo, "week": week, "rows": rows, "opportunities": opps, "scored": scored}
 

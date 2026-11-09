@@ -53,3 +53,18 @@ metrics:
   found_in_distribution: { ja: 発見工程の分布, formula: "found_in ごとの件数" }
   hotspots: { ja: 出やすい場所, formula: "viewpoint ごとの件数の多い順（上位 5）" }
   link_rate: { ja: 紐付け率, formula: "release_id・change・caused_in・introduced_in のそれぞれが付いた Defect の割合" }
+
+# 品質の Learn（ADR 0043 の O9 quality_learn。dispatcher/quality_learn.py）。週に 1 回、上の Defect と Incident（O5）を入力に、
+# 発見工程の分布と出やすい場所を集計し（quality.learned）、QA の重点（qa.focus_updated）と回帰のシナリオ（qa.scenario_added）を自動で足す。
+# QA のジョブの入力に足すだけで工程は変えない。基準の変更（quality_policy.yaml の値）は案として知見の Issue にし、委員会（ADR 0024）にかけるだけ（値を変えるのは人）。
+# 値は運用パラメータ（2026-11-09 建設者の仮置き）。dispatcher の quality_learn.DEFS に写す（食い違いはテストで見る）
+learn:
+  weekday: 0                    # JST の曜日（0 が月曜）
+  hour: 7                       # JST。この時を過ぎたら週に 1 回
+  window_days: 30
+  focus_stories_max: 3          # 重点にするストーリー（QA で Defect の多い順）
+  focus_viewpoints_max: 2       # 重点にする観点（マージの後で見つかった多い順。なければ全体）
+  scenario_severities: [s1, s2, s3]
+  scenarios_per_week: 1         # 1 週に足す回帰のシナリオ（同じ題の Defect が多い順。再現の手順があるもの）
+  proposal_min_after_merge: 2   # 同じ観点の Defect がマージの後でこれ以上あれば、基準の変更案を出す
+  proposals_per_week: 1
