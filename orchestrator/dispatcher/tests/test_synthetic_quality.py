@@ -25,6 +25,7 @@ if URL:
     from psycopg.types.json import Jsonb
 
     import defect
+    import opportunity
     import inbox
     import supervisor
 
@@ -129,6 +130,50 @@ def test_enqueue_and_record_synthetic(cur):
     item = next(i for ph in roadmap["phases"] for i in ph["items"] if i["id"] == "synthetic_users_loop")
     cur.execute(item["measure"]["db"]["sql"])
     assert list(cur.fetchone().values())[0] >= 1
+
+
+def test_planted_proposal_is_marked_and_does_not_block_real_one(cur):
+    """仕込みに当たった提案は受信トレイで分かり、仕込みなしの回の本物の同じ提案を止めない"""
+    gh = FakeGH()
+    first = qa_line.enqueue_synthetic(cur, gh, REPO, friction=PLANTED, week="2026-W45")
+    res = {"mode": "synthetic", "env": "staging", "release_id": "r9", "model": "m", "synthetic": SY}
+    out = qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, first["issue"], first["corr"], first["job_id"], res)
+    assert [p["planted_hit"] for p in out["proposed"]] == ["slow", "hide"] and all(p["opportunity_id"] for p in out["proposed"])
+    items = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert len(items) == 2 and all("仕込みに当たった" in i["title"] for i in items)
+    # 仕込みの回をもう一度回しても、仕込みの提案は増えない
+    cur.execute("update jobs set state='succeeded' where id=%s", (first["job_id"],))
+    again = qa_line.enqueue_synthetic(cur, gh, REPO, friction=PLANTED, week="2026-W46")
+    out = qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, again["issue"], again["corr"], again["job_id"], res)
+    assert all(p["opportunity_id"] is None for p in out["proposed"])
+    # 仕込みなしの回で同じ迷いが出れば、本物の提案として出る（見出しに仕込みの印はない）
+    cur.execute("update jobs set state='succeeded' where id=%s", (again["job_id"],))
+    real = qa_line.enqueue_synthetic(cur, gh, REPO, friction={}, week="2026-W47")
+    out = qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, real["issue"], real["corr"], real["job_id"], res)
+    assert [p["planted_hit"] for p in out["proposed"]] == [None, None] and all(p["opportunity_id"] for p in out["proposed"])
+    titles = [i["title"] for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert len(titles) == 4 and sum("仕込みに当たった" in t for t in titles) == 2
+    # 本物の提案は 1 回だけ
+    cur.execute("update jobs set state='succeeded' where id=%s", (real["job_id"],))
+    real2 = qa_line.enqueue_synthetic(cur, gh, REPO, friction={}, week="2026-W48")
+    out = qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, real2["issue"], real2["corr"], real2["job_id"], res)
+    assert all(p["opportunity_id"] is None for p in out["proposed"])
+
+
+def test_real_proposal_after_legacy_planted_key(cur):
+    """分ける前に仕込みの提案が本物の key を使っていても、本物の提案は出る（:real）。仕込みの提案は増えない"""
+    key = "hard_entry:S1:ADMIN_WEB_PORT"
+    cur.execute("insert into events(name, payload, dedupe_key) values ('opportunity.proposed', %s, %s)",
+                (Jsonb({"repo": REPO, "source": "synthetic_users", "key": key, "planted_hit": "hide"}),
+                 f"opportunity.proposed:synthetic_users:{REPO}:{key}"))
+    kw = {"title": "入口が見つけにくい", "problem": "迷った", "theme": 1, "correlation_id": "c-legacy",
+          "expected_effect": {"metric": "試行回数", "direction": "down", "range": "1〜2 回"}}
+    assert opportunity.propose(cur, REPO, "synthetic_users", key, extra={"planted_hit": "hide"}, **kw) is None
+    oid = opportunity.propose(cur, REPO, "synthetic_users", key, extra={"planted_hit": None}, **kw)
+    assert oid
+    cur.execute("select dedupe_key from events where name='opportunity.proposed' and (payload->>'opportunity_id')::int=%s", (oid,))
+    assert cur.fetchone()["dedupe_key"].endswith(":real")
+    assert opportunity.propose(cur, REPO, "synthetic_users", key, extra={"planted_hit": None}, **kw) is None
 
 
 def test_supervisor_synthetic_users_weekly(cur, monkeypatch):

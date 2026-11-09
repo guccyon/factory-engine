@@ -613,7 +613,7 @@ events:
   opportunity.proposed:
     source: control_plane
     required: [repo, source, key, theme, title, problem, expected_effect, opportunity_id]
-    note: "ADR 0043 の O4（O2 の Report ラインも同じ口の想定）。改善の提案（artifacts の Opportunity）を残し、受信トレイにプロダクトオーナーの依頼（kind opportunity）を 1 件積んだ。起票はしない（人かプランナーが拾う）。theme は definitions/learning_taxonomy.yaml の themes（1 利用者の体験・2 信頼性と性能）。合成の利用者から出したものは planted_hit（仕込みのどれに当たったか。roadmap の synthetic_users_loop が数える）と signal を持つ。dedupe は opportunity.proposed:<source>:<repo>:<key>"
+    note: "ADR 0043 の O4（O2 の Report ラインも同じ口の想定）。改善の提案（artifacts の Opportunity）を残し、受信トレイにプロダクトオーナーの依頼（kind opportunity）を 1 件積んだ。起票はしない（人かプランナーが拾う）。theme は definitions/learning_taxonomy.yaml の themes（1 利用者の体験・2 信頼性と性能）。合成の利用者から出したものは planted_hit（仕込みのどれに当たったか。roadmap の synthetic_users_loop が数える）と signal を持つ。dedupe は opportunity.proposed:<source>:<repo>:<key>。仕込みに当たったものは opportunity.proposed:<source>:<repo>:planted:<key> で別に数え、受信トレイの見出しにも「仕込みに当たった」と出す（仕込みの回の提案が、仕込みなしの回の本物の同じ提案を止めないように。分ける前に本物の key を使った仕込みの提案があれば、本物は <key>:real で出す）"
   quality.learned:
     source: control_plane
     required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
