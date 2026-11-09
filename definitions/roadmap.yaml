@@ -145,7 +145,7 @@ phases:
     ja: Operate
     weight_weeks: 6
     items:
-      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }   # ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える。最小形（計画・工場長の立場、問い返し 1 回、根拠の id の確かめ）は dispatcher/desk_answer.py。済の条件は窓口の MCP から実際の問いを 1 本流して desk.answered が残ること
+      - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { db: { target: 1, sql: "select count(*) from events where name = 'desk.answered' and payload->>'role' = 'answer'" } } }   # 2026-11-09: 済の条件（ADR 0043 の O1）を記録で数える。11-09 に窓口の MCP から実際の問いを 1 本流し、desk.answered が残った（相談 6・ジョブ 6942、根拠 7 件）。ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える。最小形（計画・工場長の立場、問い返し 1 回、根拠の id の確かめ）は dispatcher/desk_answer.py。済の条件は窓口の MCP から実際の問いを 1 本流して desk.answered が残ること
       - id: report_line
         ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）"
         measure: { db: { target: 1, sql: "select count(*) from events where name = 'report.kpi_weekly' and (payload->>'opportunities')::int > 0" } }   # ADR 0043 の O2。済の条件は週次の集計が 1 回出て、異常 1 件が Opportunity の下書きになったこと。supervisor が毎週月曜 7 時（JST）に staging で製品の ship.yaml の kpi を測り、前回と比べる（orchestrator/dispatcher/report_kpi.py）。今すぐは factoryctl report kpi --measure
