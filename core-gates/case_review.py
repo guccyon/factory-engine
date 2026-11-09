@@ -21,9 +21,12 @@ from pathlib import Path
 import yaml
 
 import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+import knowledge_check  # 業務・成果物・状況の軸の語彙（ADR 0040 の決定 8。知見は狭く生まれる）
 
 HERE = Path(__file__).resolve().parent
 TAXONOMY = Path(os.environ.get("LEARNING_TAXONOMY") or HERE.parent / "definitions" / "learning_taxonomy.yaml")
+WORK_DEFS = HERE.parent / "definitions" / "work.yaml"
+SITUATION_AXES = ("purpose", "product_stage", "request_form", "code_origin")   # 事例の状況の軸（knowledge.yaml の axes。分からなければ空）
 
 
 def schema(tax: dict) -> dict:
@@ -48,11 +51,26 @@ def schema(tax: dict) -> dict:
                 "statement": {"type": "string"},
                 "target": {"type": "string", "enum": targets},
                 "proposal": {"type": "string"},
-                "recurring": {"type": "boolean"}},
-                "required": ["theme", "statement", "target", "proposal", "recurring"]}},
+                "recurring": {"type": "boolean"},
+                # 効く範囲（ADR 0040 の決定 8）: 業務か成果物のどちらかは必ず。状況の軸はこの事例の値を全部（狭く生まれ、再現で広がる）
+                "work": {"type": "array", "maxItems": 3, "items": {"type": "string", "enum": list(knowledge_check.WORK_NODES)}},
+                "artifacts": {"type": "array", "maxItems": 3, "items": {"type": "string", "enum": list(knowledge_check.ARTIFACT_TYPES)}},
+                "situation": {"type": "object", "properties": {
+                    a: {"type": "string", "enum": [""] + list(knowledge_check.CLOSED_AXES[a])} for a in SITUATION_AXES},
+                    "required": list(SITUATION_AXES)}},
+                "required": ["theme", "statement", "target", "proposal", "recurring", "work", "artifacts", "situation"]}},
         },
         "required": ["summary", "viewpoints", "root_causes", "learnings"],
     }
+
+
+def work_tree() -> str:
+    """業務のツリー（definitions/work.yaml）を 1 行 1 ノードで。分析役が学びの効く業務を選ぶ材料"""
+    try:
+        nodes = (yaml.safe_load(WORK_DEFS.read_text(encoding="utf-8")) or {}).get("nodes") or {}
+    except Exception:  # noqa: BLE001
+        nodes = {}
+    return "\n".join(f"{'  ' * nid.count('.')}- {nid}: {n.get('ja', '')}" for nid, n in nodes.items()) or "（読めなかった）"
 
 
 def prompt(tax: dict, inc: dict) -> str:
@@ -90,6 +108,14 @@ def prompt(tax: dict, inc: dict) -> str:
 - 記録で確かめられないことは推測と明記し、confidence を low にする
 - root_causes は観点をまたいだ真因を最大 3 つ
 - learnings は最大 5 つ。statement は学び（一般化した 1 文）、proposal は作用先に何をするかの具体案、recurring は同じ真因が繰り返しそうか
+- learnings の効く範囲（知見は狭く生まれ、別の状況で再現したら委員会が広げる）:
+  - work: 学びが効く業務のノード（下のツリーから。この事例で起きた業務のうち、いちばん狭いもの。親に付けるのは複数の子で起きたと記録で言えるときだけ）
+  - artifacts: 学びが効く成果物の型（例 PR.body は PR 本文、PR.code はコードとテスト）。work か artifacts のどちらかは必ず書く
+  - situation: この事例の状況の軸の値を全部書く。purpose（作業の目的）・product_stage（製品の段階）・request_form（ticket か one_off）・code_origin（factory か adopted）。
+    記録で分からない軸は空文字にする（推測で埋めない）
+
+業務のツリー:
+{work_tree()}
 - 日本語の平易な文で書く。識別子はそのまま書く
 """
 

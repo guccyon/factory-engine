@@ -123,3 +123,16 @@ def test_dispatcher_copy_of_work_nodes_matches():
     src = (ENGINE / "orchestrator" / "dispatcher" / "requester_prefs.py").read_text(encoding="utf-8")
     body = re.search(r"^WORK_NODES = \(([^)]*)\)", src, re.M).group(1)
     assert sorted(re.findall(r'"([a-z_.]+)"', body)) == sorted(NODES)
+
+
+def test_case_review_asks_for_scope_in_vocabulary():
+    """事例型の分析役は、学びに業務・成果物・状況の軸を語彙の中で書く（ADR 0040 の決定 8）"""
+    import case_review
+    tax = load("learning_taxonomy.yaml")
+    item = case_review.schema(tax)["properties"]["learnings"]["items"]
+    assert {"work", "artifacts", "situation"} <= set(item["required"])
+    assert item["properties"]["work"]["items"]["enum"] == kc.WORK_NODES
+    sit = item["properties"]["situation"]["properties"]
+    assert set(sit) == set(case_review.SITUATION_AXES) and sit["request_form"]["enum"] == ["", "ticket", "one_off"]
+    p = case_review.prompt(tax, {"kind": "sendback"})
+    assert "dev.design.screen" in p and "situation" in p

@@ -293,3 +293,15 @@ def test_supervisor_skips_when_same_signature_is_open(cur, monkeypatch):
     assert not [c for c in calls if c[0] == "POST"]
     cur.execute("select payload from events where name='process.proposal_filed'")
     assert cur.fetchone()["payload"]["duplicate_of"] == "https://github.com/e/f/issues/9"
+
+
+def test_knowledge_issue_carries_narrow_scope():
+    """ADR 0040 の決定 8: 分析役が書いた業務・成果物・状況の軸を、知見の scope の下書きとして Issue に載せる（狭く生まれる）"""
+    x = {**L(4), "work": ["dev.describe"], "artifacts": ["PR.body", "bad value!"],
+         "situation": {"purpose": "bugfix", "product_stage": "", "request_form": "ticket", "code_origin": "factory", "other": "x"}}
+    assert case.scope_of(x) == {"work": ["dev.describe"], "artifacts": ["PR.body"], "purpose": ["bugfix"], "request_form": ["ticket"],
+                                "code_origin": ["factory"]}
+    a = {"incident": "sendback:x", "kind": "sendback", "event_id": 9, "summary": "s", "viewpoints": [], "root_causes": [], "learnings": [x, L(4)]}
+    _, body = case.knowledge_issue(a, {4: "言葉と伝達"})
+    assert "`{work: [dev.describe], artifacts: [PR.body], purpose: [bugfix], request_form: [ticket], code_origin: [factory]}`" in body
+    assert "分析役が書かなかった" in body and "`scope` は学びの「効く範囲」をそのまま写す" in body
