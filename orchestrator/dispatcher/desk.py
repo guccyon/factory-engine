@@ -380,7 +380,7 @@ def closing_record(cur, c: dict) -> dict:
             "cap_hit": any(e["name"] == "desk.cap_hit" for e in evs)}
 
 
-QUIET_KINDS = ("ack", "progress")   # 工場の返事のうち、マイルストーンを終えないもの（受付の返事・途中の様子）
+QUIET_KINDS = ("ack", "progress", "preference")   # 工場の返事のうち、マイルストーンを終えないもの（受付の返事・途中の様子・好みを覚えた知らせ）
 
 
 def route_target(path: str | None) -> int:

@@ -116,3 +116,10 @@ def test_dispatcher_work_lists_match_work_yaml():
         src = (ENGINE / "orchestrator" / "dispatcher" / name).read_text(encoding="utf-8")
         listed = re.search(r'^[A-Z_]+_WORK = \[([^\]]*)\]', src, re.M).group(1)
         assert re.findall(r'"([a-z_.]+)"', listed) == WORK["from_agent_steps"][role], name
+
+
+def test_dispatcher_copy_of_work_nodes_matches():
+    """依頼者の好みの業務を検査する dispatcher の写し（definitions/ がないコンテナで使う）"""
+    src = (ENGINE / "orchestrator" / "dispatcher" / "requester_prefs.py").read_text(encoding="utf-8")
+    body = re.search(r"^WORK_NODES = \(([^)]*)\)", src, re.M).group(1)
+    assert sorted(re.findall(r'"([a-z_.]+)"', body)) == sorted(NODES)

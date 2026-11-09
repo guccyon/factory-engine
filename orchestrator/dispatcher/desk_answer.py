@@ -21,7 +21,7 @@ import desk
 import line
 import ops
 import requester_prefs
-from desk_line import MAX_USD, _add_cost, _event, messages, question_text
+from desk_line import MAX_USD, _add_cost, _event, messages, question_text, remember_stated
 
 KIND = "desk_answer"
 MAX_ROUNDS = 1           # 問い返しは 1 回まで（ADR 0043 案の O1）。使い切ったら、分かる範囲で答えて分からないことを書く
@@ -202,6 +202,7 @@ def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> 
                              "運用主が再実行するか、言い足しをもらえればもう一度動かします。", kind="error", state="waiting_requester",
                              payload={"job_id": job["id"]})
         return
+    remember_stated(cur, cid, job, res)
     if res.get("outcome") == "question":
         q = res.get("question") or {}
         desk.factory_message(cur, cid, "answer", question_text(q, res.get("round") or 1, res.get("max_rounds") or MAX_ROUNDS),
