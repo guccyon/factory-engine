@@ -8,7 +8,9 @@ Gen1 は staging を QA の環境と兼ねる（使い捨ての環境は P5b の
   factoryctl env restart <owner/repo> [--advance-hours N | --reset-clock] [--env staging]   # 時間をまたぐシナリオ（ADR 0028 の scenario_time）
 
 up の版の選び方: --release があればその版。なければ、まだどの Release にも入っていないマージ済みの PR があれば次の版の Release を切り、
-なければいま staging に出ている版のまま（出し直さない）。--fresh は出したあとに DB を空にして合成シードから入れ直す。
+なければいま staging に出ている版のまま。--fresh は出したあとに DB を空にして合成シードから入れ直す。
+選んだ版がいま staging に出ている版と同じで --fresh もないときは、作り直さずに部品を再起動して（DB と進めた時計は残す）、
+待ち受けと入口をいまの工場の設定（SHIP_TOUCH_HOST・SHIP_TOUCH_BIND）にそろえる（#305）。
 """
 from __future__ import annotations
 
@@ -130,6 +132,14 @@ def up(cur, repo: str, release_id: str | None = None, fresh: bool = False, by: s
         log(m)
         if not ok:
             return 1
+    if not needs_ship and not fresh and latest(cur, repo):
+        # 同じ版。待ち受けと入口は出荷のときに決まるので、設定を変えたあとはそろえ直す（入口の記録がない製品は ship.yaml に touch がない）
+        ok, m, _ = restart(cur, repo, by=by, via="factoryctl env up", timeout=timeout, do_wait=do_wait, log=log)
+        log(m)
+        if not ok:
+            return 1
+        if not do_wait:
+            return 0
     if fresh:
         ok, m = ship.request_reseed(cur, repo, "staging", by, "factoryctl env up")
         log(m)

@@ -157,7 +157,8 @@ def test_reseed(cur, docker):
     cmds = [c["args"] for c in docker if "args" in c]
     assert cmds[0][-3:] == ["psql", "-c", "drop database"]                    # 空にする
     assert "--force-recreate" in cmds[1] and cmds[1][-1] == "backend"         # アプリを作り直す
-    assert cmds[2][-3:] == ["seed", "--seed", "42"]                           # シードから入れ直す
+    assert cmds[2][-3:] == ["up", "-d", "--wait"]                             # 残りの部品をいまの変数にそろえる（#305）
+    assert cmds[3][-3:] == ["seed", "--seed", "42"]                           # シードから入れ直す
     cur.execute("select name from events where correlation_id=%s order by id desc limit 3", (f"release:{rid}",))
     assert [r["name"] for r in cur.fetchall()] == ["release.touchable", "release.reseeded", "release.seeded"]
     assert ship.pending(cur) == []
@@ -240,6 +241,7 @@ def test_restart_advances_the_clock_and_keeps_the_db(cur, docker):
     up = cmds[0]
     assert "--force-recreate" in up["args"] and "--no-deps" in up["args"] and up["args"][-1] == "backend"
     assert up["env"]["CLOCK_OFFSET_SECONDS"] == "86400"
+    assert cmds[1]["args"][-3:] == ["up", "-d", "--wait"] and cmds[1]["env"]["CLOCK_OFFSET_SECONDS"] == "86400"   # 残りもそろえる（時計は同じ値）
     assert not any("drop database" in c["args"] for c in cmds)                            # DB は残す
     assert ship.clock_offset(cur, REPO, "staging") == 86400
     cur.execute("select name, payload from events where correlation_id=%s order by id desc limit 2", (f"release:{rid}",))
@@ -290,3 +292,70 @@ def test_touch_restart_waits_and_reports_offset(cur, docker, monkeypatch):
     ok, msg, offset = touch.restart(cur, REPO, advance_hours=24, log=lambda m: None)
     assert ok and offset == 86400 and "24 時間進んでいる" in msg
     assert touch.restart(cur, REPO, "prod", log=lambda m: None)[0] is False
+
+
+def _shipper_waits(monkeypatch):
+    """up の待ちの代わりに shipper の 1 周を回す"""
+    real_wait = touch.wait
+
+    def fake_wait(c, request_id, timeout, log=print, **k):
+        run_pending(c)
+        return real_wait(c, request_id, 1, poll=0, log=log)
+    monkeypatch.setattr(touch, "wait", fake_wait)
+
+
+def test_up_same_version_aligns_bind_and_entries(cur, docker, monkeypatch):
+    """#305: 待ち受けと入口の名前を変えたあと、同じ版の env up で画面の部品を作り直し、入口を新しい名前で書き直す"""
+    _shipper_waits(monkeypatch)
+    monkeypatch.setattr(ship, "TOUCH_HOST", "")
+    monkeypatch.setattr(ship, "TOUCH_BIND", "")
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=3600)
+    run_pending(cur)
+    assert touch.latest(cur, REPO)["reachable_from_phone"] is False
+    monkeypatch.setattr(ship, "TOUCH_HOST", "factory-host.lan")                          # shipper の設定を変えた
+    monkeypatch.setattr(ship, "TOUCH_BIND", "0.0.0.0")
+    docker.clear()
+    out = []
+    assert touch.up(cur, REPO, release_id=rid, log=out.append) == 0
+    cmds = [c for c in docker if "args" in c]
+    assert not any("drop database" in c["args"] or "seed" in c["args"] for c in cmds)    # DB は残す
+    aligned = [c for c in cmds if c["args"][-3:] == ["up", "-d", "--wait"]]
+    assert aligned and aligned[0]["env"]["WEB_BIND_HOST"] == "0.0.0.0"                   # 画面の部品は新しい待ち受けで作り直る
+    t = touch.latest(cur, REPO)
+    assert t["reachable_from_phone"] is True and t["bind"] == "0.0.0.0"
+    assert t["entries"][0]["url"] == "http://factory-host.lan:13100/"
+    assert ship.clock_offset(cur, REPO, "staging") == 3600                               # 進めた時計も残す
+    assert "http://factory-host.lan:13100/" in "\n".join(out)
+    assert touch.up(cur, REPO, log=out.append) == 0                                      # --release なしでも同じ
+    assert ship.pending(cur) == []
+
+
+def test_fresh_aligns_bind_too(cur, docker, monkeypatch):
+    """#305: --fresh（入れ直し）でも画面の部品を新しい待ち受けにそろえる"""
+    _shipper_waits(monkeypatch)
+    monkeypatch.setattr(ship, "TOUCH_BIND", "")
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    monkeypatch.setattr(ship, "TOUCH_BIND", "0.0.0.0")
+    docker.clear()
+    assert touch.up(cur, REPO, release_id=rid, fresh=True, log=lambda m: None) == 0
+    cmds = [c for c in docker if "args" in c]
+    assert any(c["args"][-3:] == ["up", "-d", "--wait"] and c["env"].get("WEB_BIND_HOST") == "0.0.0.0" for c in cmds)
+    cur.execute("select count(*) as n from events where name='release.restart_requested'")
+    assert cur.fetchone()["n"] == 0                                                      # 入れ直すときは再起動を別に積まない
+
+
+def test_up_same_version_without_touch_does_not_restart(cur, docker, monkeypatch):
+    """ship.yaml に touch がない製品は、同じ版の env up で再起動を積まない（shipper が断って停止に開くのを避ける）"""
+    cfg = {k: v for k, v in CFG.items() if k != "touch"}
+    monkeypatch.setattr(ship, "ship_config", lambda path: cfg)
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    assert touch.up(cur, REPO, release_id=rid, log=lambda m: None) == 0
+    cur.execute("select count(*) as n from events where name='release.restart_requested'")
+    assert cur.fetchone()["n"] == 0
