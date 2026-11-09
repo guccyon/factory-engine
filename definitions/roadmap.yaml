@@ -155,7 +155,7 @@ phases:
       - id: synthetic_users_loop
         ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る"
         measure: { db: { target: 1, sql: "select count(*) from events where name = 'opportunity.proposed' and payload->>'source' = 'synthetic_users' and payload->>'planted_hit' is not null" } }   # ADR 0023 の決めどころ 3・ADR 0043 の O4。済の条件は仕込みの 2 つ（遅い API・見つけにくい入口）のうち 1 つ以上が提案になったこと。仕込みは工場の SYNTH_FRICTION（staging だけ、ワーカーの中継で入れる）。factoryctl qa synthetic
-      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028・0043 の O5。回路は dispatcher/incident.py（Incident・差し止め line.held_by_qa・エラーバジェット）と factoryctl incident drill。済は演習で S1 の差し止めと人の解除が events に残ってから
+      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: done } }   # ADR 0028・0043 の O5。回路は dispatcher/incident.py（Incident・差し止め line.held_by_qa・エラーバジェット）と factoryctl incident drill。2026-11-09 の演習（s1_data_leak）で QA 役が S1 を記録して差し止め（line.held_by_qa）、7 分後に人が操業コンソールから解除（line.hold_released）した
       - id: release_train
         ja: "定期便（人の承認は便ごと 1 回）で Release が出て、S1 だけ緊急便"
         measure: { db: { target: 3, sql: "select count(*) from events where name = 'release.train'" } }   # 2026-11-09 定期便（train.py）。supervisor の 1 日 1 便と、factoryctl release train --emergency の緊急便を数える。Gen1.5 で複数リポジトリの便に作り直す前提の回路の確認
