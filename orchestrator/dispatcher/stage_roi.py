@@ -28,9 +28,19 @@ from pathlib import Path
 import yaml
 
 WINDOW_DAYS = int(os.environ.get("ROI_WINDOW_DAYS", "14"))
-# agents.yaml の置き場所の候補（作業ツリー・supervisor の /definitions）。dispatcher のイメージには definitions/ がないので、読めなければ TIER_MODEL の写しを使う
-AGENTS_CANDIDATES = [Path(os.environ["ROADMAP"]).parent / "agents.yaml"] if os.environ.get("ROADMAP") else []
-AGENTS_CANDIDATES += [Path(__file__).resolve().parents[2] / "definitions" / "agents.yaml", Path("/definitions/agents.yaml")]
+# dispatcher のイメージには definitions/ がないので、読めなければ TIER_MODEL の写しを使う
+
+
+def agents_candidates(here: Path) -> list[Path]:
+    """agents.yaml の置き場所の候補。作業ツリーでは orchestrator/dispatcher/ の 2 つ上がリポジトリの根。
+    コンテナでは /app/stage_roi.py で親が足りないので、あるときだけ足す（2026-11-09 読み込みで IndexError になり朝の報告と建設日報が止まった）"""
+    out = [Path(os.environ["ROADMAP"]).parent / "agents.yaml"] if os.environ.get("ROADMAP") else []
+    if len(here.parents) > 2:
+        out.append(here.parents[2] / "definitions" / "agents.yaml")
+    return out + [Path("/definitions/agents.yaml")]
+
+
+AGENTS_CANDIDATES = agents_candidates(Path(__file__).resolve())
 TIER_MODEL = {"tier-large": "Opus", "tier-judge": "Opus", "tier-small": "Sonnet", "tier-light": "Haiku"}   # agents.yaml の tiers の写し（テストで見る）
 MIN_N = 5   # 比べる側ごとにこれより少なければ「参考」
 
