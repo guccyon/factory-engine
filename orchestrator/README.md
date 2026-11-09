@@ -421,9 +421,9 @@ Release 候補ごとに、人がスマートフォンと PC で触れる環境�
 手を動かすのは shipper で、`factoryctl env up` は依頼を順に書いて結果を待ち、入口（URL・QR・ログインの手がかり）を出すだけ。
 
 ```bash
-docker compose exec dispatcher factoryctl env up guccyon/rally            # 未 Release の PR があれば次の版を切って staging へ。なければいまの版の入口を出す
+docker compose exec dispatcher factoryctl env up guccyon/rally            # 未 Release の PR があれば次の版を切って staging へ。なければいまの版を再起動して、待ち受けと入口をいまの設定にそろえる
 docker compose exec dispatcher factoryctl env up guccyon/rally --fresh    # 出したあとに検証の DB を空にして合成シードから入れ直す
-docker compose exec dispatcher factoryctl env up guccyon/rally --release guccyon/rally@0.9.0   # 版を選ぶ（Rollback ではなく、その版を staging に出し直す）
+docker compose exec dispatcher factoryctl env up guccyon/rally --release guccyon/rally@0.9.0   # 版を選ぶ（Rollback ではなく、その版を staging に出し直す。いま出ている版なら再起動してそろえるだけ）
 docker compose exec dispatcher factoryctl env show guccyon/rally          # いまの版の入口
 docker compose exec dispatcher factoryctl env restart guccyon/rally --advance-hours 24   # 再起動してサーバーの時計を 24 時間進める（DB は残す）
 docker compose exec dispatcher factoryctl env restart guccyon/rally --reset-clock        # 進めた時計を 0 に戻して再起動
@@ -439,6 +439,8 @@ docker compose exec dispatcher factoryctl env restart guccyon/rally --reset-cloc
   ```
 
   どちらも空なら 127.0.0.1 のままで、入口はこの機械からだけ開ける（`env show` と操業コンソールにそう出る）
+
+  値を変えたあとは `env up` をもう一度実行する。いま出ている版と同じなら、DB と進めた時計を残したまま部品を再起動し、画面の部品（`touch.bind_env` を使う部品）を新しい待ち受けで作り直してから入口を書き直す。入れ直し（`--fresh`）と `env restart` も、決まった部品を作り直したあとに残りの部品を `docker compose up -d` でいまの変数にそろえる（変数が変わった部品だけが作り直される）
 - `--fresh` は検証の環境だけ（ship.yaml の `touch.environments` と `seed.environments` の両方に入っている環境）。本番の DB は入れ直さない
 - iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
 - 時間をまたぐシナリオ（ADR 0028 の `scenario_time`）: `env restart` は ship.yaml の `touch.restart` の部品（なければ `verify` の部品）を作り直して再起動し、`touch.clock_env` の変数にサーバーの時計を進める秒数を渡す（rally は backend の `CLOCK_OFFSET_SECONDS`）。DB は残す。進めた量は前の再起動に足していき、1 回 7 日・合計 62 日まで。次に版を出す・戻す・入れ直すと 0 に戻る。本番は受け付けない。依頼は events の `release.restart_requested`、結果は `release.restarted`（`clock_offset_seconds`）

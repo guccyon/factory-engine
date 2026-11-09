@@ -401,8 +401,9 @@ def reseed(cur, cfg: dict, path: str, repo: str, env: str, rel: dict, common: di
     t0 = time.monotonic()
     sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", t["reset"]["service"], *t["reset"]["command"]], timeout=300)
     compose = ["docker", "compose", "-f", os.path.join(path, cfg["compose"])]
-    sh(compose + ["up", "-d", "--wait", "--force-recreate", "--no-deps", cfg["verify"]["service"]],
-       env=compose_env(cfg, repo, env, rel), timeout=600)
+    e = compose_env(cfg, repo, env, rel)
+    sh(compose + ["up", "-d", "--wait", "--force-recreate", "--no-deps", cfg["verify"]["service"]], env=e, timeout=600)
+    align(compose, e)
     verify(cfg, repo, env, rel)
     seed(cur, cfg, repo, env, rel, common)
     return round(time.monotonic() - t0, 1)
@@ -423,8 +424,16 @@ def restart(cfg: dict, path: str, repo: str, env: str, rel: dict, offset: int) -
     t0 = time.monotonic()
     compose = ["docker", "compose", "-f", os.path.join(path, cfg["compose"])]
     sh(compose + ["up", "-d", "--wait", "--force-recreate", "--no-deps", *services], env=e, timeout=600)
+    align(compose, e)
     verify(cfg, repo, env, rel)
     return round(time.monotonic() - t0, 1), services
+
+
+def align(compose: list[str], e: dict):
+    """残りの部品を、いまの compose の変数にそろえる（#305）。docker compose up は、変数が変わって設定が前と違う部品だけを作り直し、
+    同じ部品はそのまま残す。入れ直し・再起動は決まった部品しか作り直さないので、これがないと待ち受け（touch.bind_env、
+    工場の SHIP_TOUCH_BIND）を変えたあとも画面の部品が前の待ち受けのまま残り、入口の記録（新しい SHIP_TOUCH_HOST）と食い違う"""
+    sh(compose + ["up", "-d", "--wait"], env=e, timeout=600)
 
 
 def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
@@ -451,7 +460,8 @@ def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
         except Exception as e:  # noqa: BLE001
             note = f"ログインの手がかりを読めなかった: {str(e)[-300:]}"
     record(cur, "release.touchable", rel["release_id"], {
-        "repo": repo, "env": env, "host": host, "reachable_from_phone": bool(TOUCH_BIND and TOUCH_BIND != "127.0.0.1" and host != "127.0.0.1"),
+        "repo": repo, "env": env, "host": host, "bind": TOUCH_BIND if t.get("bind_env") and TOUCH_BIND and HOST_RE.match(TOUCH_BIND) else None,
+        "reachable_from_phone": bool(TOUCH_BIND and TOUCH_BIND != "127.0.0.1" and host != "127.0.0.1"),
         "entries": entries, "accounts": accounts, "note": note, "request_id": common.get("request_id")})
 
 
