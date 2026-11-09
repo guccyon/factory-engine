@@ -37,7 +37,7 @@ import time
 import urllib.parse
 import uuid
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 HOME = os.path.expanduser("~")
 
 
@@ -64,6 +64,10 @@ def config():
         "flutter": env("MAC_RUNNER_FLUTTER", "flutter"),
         "idb": env("MAC_RUNNER_IDB", "idb"),
         "build_timeout": int(env("MAC_RUNNER_BUILD_TIMEOUT_SEC", "1800")),
+        # TestFlight への配布（P5b の preview_distribution、ADR 0043 の O8）。Apple のチーム ID を人が Mac で入れたときだけ開く。
+        # 署名と提出は Xcode にサインインした持ち主のキーチェーンで行い、鍵はランナーも工場も持たない
+        "distribute_team": env("MAC_RUNNER_DISTRIBUTE_TEAM", ""),
+        "attend_timeout": int(env("MAC_RUNNER_ATTEND_TIMEOUT_SEC", "300")),
     }
 
 
@@ -84,6 +88,7 @@ UDID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}
 BUNDLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,154}$")
 REF = re.compile(r"^(?!-)[A-Za-z0-9._/\-]{1,200}$")
 BUILD_ID = re.compile(r"^b-[0-9a-f]{12}$")
+TEAM_ID = re.compile(r"^[A-Z0-9]{10}$")
 DEFINE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 URL = re.compile(r"^[a-z][a-z0-9+.\-]{1,31}://[^\s]{1,2000}$")
 IDB_RETRIES, IDB_RETRY_SEC = 4, 5
@@ -180,14 +185,15 @@ class Builds:
         self.lock = threading.Lock()       # ビルドは 1 本ずつ（Xcode と Flutter のキャッシュを取り合わない）
         self.items = {}
 
-    def start(self, app_key, ref, defines):
+    def start(self, app_key, ref, defines, kind="simulator"):
         app = self.cfg["apps"].get(app_key)
         if not app:
             raise ToolError(f"{app_key} はビルドを許していない（許しているもの: {', '.join(self.cfg['apps']) or 'なし'}）")
         bid = "b-" + uuid.uuid4().hex[:12]
-        self.items[bid] = {"build_id": bid, "app": app_key, "ref": ref, "state": "queued", "started_at": now(),
+        self.items[bid] = {"build_id": bid, "app": app_key, "ref": ref, "kind": kind, "state": "queued", "started_at": now(),
                            "bundle_id": app["bundle_id"]}
-        threading.Thread(target=self._run, args=(bid, app, ref, defines), daemon=True).start()
+        work = self._distribute if kind == "testflight" else self._build
+        threading.Thread(target=self._run, args=(bid, app, ref, defines, work), daemon=True).start()
         return self.items[bid]
 
     def status(self, bid):
@@ -196,13 +202,14 @@ class Builds:
             raise ToolError(f"{bid} というビルドはない（ランナーを上げ直すと消える）")
         return b
 
-    def _run(self, bid, app, ref, defines):
+    def _run(self, bid, app, ref, defines, work=None):
         b = self.items[bid]
+        work = work or self._build
         with self.lock:
             b["state"] = "building"
             try:
-                b.update(self._build(bid, app, ref, defines))
-                b["state"] = "built"
+                b.update(work(bid, app, ref, defines))
+                b["state"] = "uploaded" if b.get("kind") == "testflight" else "built"
             except ToolError as e:
                 b["state"] = "failed"
                 b["error"] = str(e)[-2000:]
@@ -211,7 +218,8 @@ class Builds:
                 b["error"] = f"{type(e).__name__}: {e}"
             b["finished_at"] = now()
 
-    def _build(self, bid, app, ref, defines):
+    def _checkout(self, app, ref):
+        """許したリポジトリを取り、ref が既定ブランチに入った（マージ済みの）コミットかを確かめる。(repo_dir, sha) を返す。"""
         repo_dir = os.path.join(self.cfg["root"], "repos", app["repo"].replace("/", "__"))
         if not os.path.isdir(os.path.join(repo_dir, ".git")):
             os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
@@ -223,17 +231,25 @@ class Builds:
             run(["git", "-C", repo_dir, "merge-base", "--is-ancestor", sha, default])
         except ToolError:
             raise ToolError(f"{ref}（{sha[:12]}）は {default} に入っていない。ビルドするのはマージ済みのコミットだけ")
+        return repo_dir, sha
+
+    def _workspace(self, bid, app, repo_dir, sha):
+        """ビルドの作業場を作り、製品に ios/ がまだなければこの作業場の中だけで作る（製品のリポジトリには書かない）。app_dir を返す。"""
         work = os.path.join(self.cfg["root"], "builds", bid)
         run(["git", "-C", repo_dir, "worktree", "add", "--detach", work, sha], timeout=300)
         app_dir = os.path.join(work, app["path"])
         flutter = self.cfg["flutter"]
-        # 製品に ios/ がまだなければ、この作業場の中だけで作る（製品のリポジトリには書かない。配布の署名の設定は P5b の preview_distribution）
         if not os.path.isdir(os.path.join(app_dir, "ios")):
             org, _, name = app["bundle_id"].rpartition(".")
             run([flutter, "create", "--platforms=ios", "--org", org, "--project-name", project_name(app_dir) or name, "."],
                 cwd=app_dir, timeout=600)
         run([flutter, "pub", "get"], cwd=app_dir, timeout=600)
-        argv = [flutter, "build", "ios", "--simulator", "--debug", "--no-codesign"]
+        return app_dir
+
+    def _build(self, bid, app, ref, defines):
+        repo_dir, sha = self._checkout(app, ref)
+        app_dir = self._workspace(bid, app, repo_dir, sha)
+        argv = [self.cfg["flutter"], "build", "ios", "--simulator", "--debug", "--no-codesign"]
         argv += [f"--dart-define={k}={v}" for k, v in sorted(defines.items())]
         log = run(argv, cwd=app_dir, timeout=self.cfg["build_timeout"])
         app_path = os.path.join(app_dir, "build", "ios", "iphonesimulator", "Runner.app")
@@ -243,6 +259,56 @@ class Builds:
         self._prune(repo_dir, keep=bid)
         return {"sha": sha, "app_path": app_path, "bundle_id": bundle, "log_tail": log.decode("utf-8", "replace")[-1500:]}
 
+    def _distribute(self, bid, app, ref, defines):
+        """署名つきでビルドし、TestFlight（App Store Connect）に上げる（P5b の preview_distribution、ADR 0043 の O8）。
+
+        - 人が Mac の前にいる合図でだけ通る: Mac の画面に確かめの窓を出し、人が「TestFlight に上げる」を押したときだけ続ける。
+          押されない（画面がロックされている・席にいない）まま時間が来たら、何もせずに失敗を返す
+        - 署名と提出は Xcode にサインインした持ち主の Apple ID とキーチェーンで行う（-allowProvisioningUpdates）。
+          ランナーは鍵・証明書・パスワードを読まず、工場にも返さない
+        - 作るのはマージ済みのコミットだけ（シミュレーター向けと同じ）
+        """
+        team = self.cfg["distribute_team"]
+        if not TEAM_ID.match(team):
+            raise ToolError("TestFlight への配布は開いていない（Mac で MAC_RUNNER_DISTRIBUTE_TEAM にチーム ID を入れて install し直す）")
+        repo_dir, sha = self._checkout(app, ref)
+        build_number = time.strftime("%Y%m%d.%H%M", time.localtime())   # 上げるたびに増える番号（App Store Connect は同じ版の中で重複を断る）
+        b = self.items[bid]
+        b.update({"sha": sha, "build_number": build_number, "state": "waiting_for_human"})
+        attend(f"工場が {app['repo']} の {app['path']} を TestFlight に上げようとしています。\n\n"
+               f"コミット {sha[:12]}（マージ済み）、ビルド番号 {build_number}\n"
+               f"アプリ {app['bundle_id']}、チーム {team}\n\n"
+               "この Mac の Xcode のサインインで署名して App Store Connect に送ります。よければ「TestFlight に上げる」を押してください。",
+               self.cfg["attend_timeout"])
+        b["state"] = "building"
+        b["approved_at"] = now()
+        app_dir = self._workspace(bid, app, repo_dir, sha)
+        ios = os.path.join(app_dir, "ios")
+        # 輸出の申告（標準の HTTPS だけ使う）。作業場の Info.plist にまだなければ足す（製品のリポジトリには書かない）
+        plist = os.path.join(ios, "Runner", "Info.plist")
+        try:
+            run(["/usr/libexec/PlistBuddy", "-c", "Print :ITSAppUsesNonExemptEncryption", plist])
+        except ToolError:
+            run(["/usr/libexec/PlistBuddy", "-c", "Add :ITSAppUsesNonExemptEncryption bool false", plist])
+        flutter = self.cfg["flutter"]
+        argv = [flutter, "build", "ios", "--config-only", "--release", f"--build-number={build_number}"]
+        argv += [f"--dart-define={k}={v}" for k, v in sorted(defines.items())]
+        run(argv, cwd=app_dir, timeout=self.cfg["build_timeout"])
+        archive = os.path.join(app_dir, "build", "Runner.xcarchive")
+        run(["xcodebuild", "-workspace", os.path.join(ios, "Runner.xcworkspace"), "-scheme", "Runner", "-configuration", "Release",
+             "-destination", "generic/platform=iOS", "-archivePath", archive, "-allowProvisioningUpdates",
+             "archive", f"DEVELOPMENT_TEAM={team}", "CODE_SIGN_STYLE=Automatic"],
+            cwd=app_dir, timeout=self.cfg["build_timeout"])
+        options = os.path.join(app_dir, "build", "ExportOptions.plist")
+        with open(options, "w", encoding="utf-8") as f:
+            f.write(export_options(team))
+        log = run(["xcodebuild", "-exportArchive", "-archivePath", archive, "-exportOptionsPlist", options,
+                   "-exportPath", os.path.join(app_dir, "build", "export"), "-allowProvisioningUpdates"],
+                  cwd=app_dir, timeout=self.cfg["build_timeout"])
+        self._prune(repo_dir, keep=bid)
+        return {"sha": sha, "build_number": build_number, "team": team,
+                "next": "App Store Connect の処理が終わると（数分〜30 分）、TestFlight の内部テスターに届く",
+                "log_tail": log.decode("utf-8", "replace")[-1500:]}
 
     def _prune(self, repo_dir, keep, n=3):
         """古いビルドの作業場を消す（新しい順に n 本残す）。消せなくてもビルドは失敗にしない。"""
@@ -286,6 +352,45 @@ def read_bundle_id(app_path):
         return None
 
 
+def export_options(team):
+    """xcodebuild -exportArchive の設定。destination=upload で App Store Connect に送る（Xcode 15.3 からの method 名）。"""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>method</key><string>app-store-connect</string>
+  <key>destination</key><string>upload</string>
+  <key>teamID</key><string>{team}</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>uploadSymbols</key><true/>
+  <key>manageAppVersionAndBuildNumber</key><false/>
+</dict></plist>
+"""
+
+
+ATTEND_BUTTON = "TestFlight に上げる"
+ATTEND_SCRIPT = ['on run argv',
+                 'display dialog (item 1 of argv) with title "工場の Mac ランナー" buttons {"やめる", "%s"} '
+                 'default button "やめる" cancel button "やめる" giving up after ((item 2 of argv) as integer) with icon caution' % ATTEND_BUTTON,
+                 'end run']
+
+
+def attend(message, timeout):
+    """人が Mac の前にいる合図（ADR 0043 の O8）。Mac の画面に確かめの窓を出し、人が押したときだけ戻る。
+    やめた・時間切れ（席にいない・画面のロック）・窓が出せない（ログインしていない）は ToolError。文言は argv で渡し、スクリプトに埋めない"""
+    argv = ["osascript"]
+    for line in ATTEND_SCRIPT:
+        argv += ["-e", line]
+    argv += [message, str(int(timeout))]
+    try:
+        out = run(argv, timeout=timeout + 30).decode("utf-8", "replace")
+    except ToolError as e:
+        if "-128" in str(e):
+            raise ToolError("Mac の前の人がやめた（何もしていない）")
+        raise ToolError(f"Mac の画面に確かめの窓を出せなかった（何もしていない）: {e}")
+    if f"button returned:{ATTEND_BUTTON}" not in out or "gave up:true" in out:
+        raise ToolError(f"{timeout} 秒のあいだ Mac の前で押されなかった（人がいないとみなして何もしていない）")
+
+
 def now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -308,7 +413,13 @@ TOOLS = [
           "ref": {"type": "string", "description": "コミットかブランチ（既定 main）"},
           "dart_defines": {"type": "object", "description": "--dart-define に渡す値（例 {\"RALLY_API_URL\": \"http://127.0.0.1:8080\"}）", "additionalProperties": {"type": "string"}}},
          ["app"]),
-    tool("build_status", "ビルドの状態（queued / building / built / failed）と、終わっていれば bundle id とコミット", {"build_id": {"type": "string"}}, ["build_id"]),
+    tool("build_status", "ビルドの状態（queued / waiting_for_human / building / built / uploaded / failed）と、終わっていれば bundle id とコミット", {"build_id": {"type": "string"}}, ["build_id"]),
+    tool("preview_distribute", "許されたアプリを、マージ済みのコミットから署名つきでビルドして TestFlight に上げ始める。Mac の画面で人が押したときだけ進む（人がいなければ失敗）。"
+         "Mac でチーム ID を入れていなければ使えない。build_id を返すので build_status で uploaded か failed を待つ",
+         {"app": {"type": "string", "description": "<owner/repo>:<パス>（例 guccyon/rally:apps/student-app）"},
+          "ref": {"type": "string", "description": "コミットかブランチ（既定 main）"},
+          "dart_defines": {"type": "object", "description": "--dart-define に渡す値（例 {\"RALLY_API_URL\": \"https://…\"}）", "additionalProperties": {"type": "string"}}},
+         ["app"]),
     tool("app_install", "ビルドしたアプリを起動中のシミュレーターに入れる", {"udid": S_UDID, "build_id": {"type": "string"}}, ["udid", "build_id"]),
     tool("app_launch", "アプリを起動する（起動中なら前面に出す）", {"udid": S_UDID, "bundle_id": {"type": "string"}}, ["udid", "bundle_id"]),
     tool("app_terminate", "アプリを止める", {"udid": S_UDID, "bundle_id": {"type": "string"}}, ["udid", "bundle_id"]),
@@ -328,7 +439,8 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 # 範囲の宣言（SCOPE.md と同じ中身の要約）。登録済みのランナーの一覧に出す
 SCOPE_SUMMARY = ("できる: iOS シミュレーターの起動・停止・初期化、許したアプリのマージ済みのコミットからの署名なしビルドと入れる・起動・停止、"
                  "画面の撮影・読み取り・操作、許した URL を開く、プッシュ通知、アプリのログ。"
-                 "しない: 署名・鍵・配布、実機、シミュレーターの外の Mac のファイルとアプリ、任意のコマンド。"
+                 "人が Mac の画面で押したときだけ、Mac の Xcode のサインインで署名して TestFlight に上げる（Mac でチーム ID を入れたときだけ）。"
+                 "しない: 鍵を読む・工場に渡すこと、ストアへの公開、実機、シミュレーターの外の Mac のファイルとアプリ、任意のコマンド。"
                  "外と話すのは、工場への連絡と、製品のリポジトリ（GitHub）と依存のパッケージの取得だけ")
 
 
@@ -397,17 +509,12 @@ class Runner:
         return text({"udid": udid, "erased": True})
 
     def t_app_build(self, a):
-        app = need(a, "app")
-        ref = a.get("ref", "main")
-        if not isinstance(ref, str) or not REF.match(ref) or ".." in ref:
-            raise ToolError("ref の形が違う")
-        defines = a.get("dart_defines") or {}
-        if not isinstance(defines, dict) or len(defines) > 20:
-            raise ToolError("dart_defines はオブジェクト（20 個まで）")
-        for k, v in defines.items():
-            if not DEFINE_KEY.match(k) or not isinstance(v, str) or len(v) > 500 or "\n" in v:
-                raise ToolError(f"dart_defines の {k} の形が違う")
-        return text(public_build(self.builds.start(app, ref, defines)))
+        return text(public_build(self.builds.start(*build_args(a))))
+
+    def t_preview_distribute(self, a):
+        if not TEAM_ID.match(self.cfg["distribute_team"]):
+            raise ToolError("TestFlight への配布は開いていない（Mac で MAC_RUNNER_DISTRIBUTE_TEAM にチーム ID を入れて install し直す）")
+        return text(public_build(self.builds.start(*build_args(a), kind="testflight")))
 
     def t_build_status(self, a):
         return text(public_build(self.builds.status(need(a, "build_id", BUILD_ID))))
@@ -525,6 +632,21 @@ class Runner:
         else:
             self.idb("ui", "key", "--udid", udid, KEYS[key])
         return text({"key": key})
+
+
+def build_args(a):
+    """app_build と preview_distribute に共通の引数を確かめる。(app, ref, defines) を返す。"""
+    app = need(a, "app")
+    ref = a.get("ref", "main")
+    if not isinstance(ref, str) or not REF.match(ref) or ".." in ref:
+        raise ToolError("ref の形が違う")
+    defines = a.get("dart_defines") or {}
+    if not isinstance(defines, dict) or len(defines) > 20:
+        raise ToolError("dart_defines はオブジェクト（20 個まで）")
+    for k, v in defines.items():
+        if not DEFINE_KEY.match(k) or not isinstance(v, str) or len(v) > 500 or "\n" in v:
+            raise ToolError(f"dart_defines の {k} の形が違う")
+    return app, ref, defines
 
 
 def public_build(b):
