@@ -195,14 +195,18 @@ def summary(job_id: int, result: dict, recorded: list[dict], filed: dict[tuple, 
 STORY_RE = re.compile(r"ユーザーストーリー `([A-Za-z0-9_-]+)` を止めた")
 EXPLORE_MARK = "夜間の探索で見つけた Defect"
 STEP_RE = re.compile(r"歩: (\S+)")
+SEV_RE = re.compile(r"重要度: (s[1-4])")
 
 
-def defect_key(story_id: str, step, title: str = "") -> str:
+def defect_key(story_id: str, step, title: str = "", severity: str | None = None) -> str:
     """同じ不具合とみなす目印。ストーリーと歩（同じ歩で止まったものは、言い方が違っても同じ不具合として 1 本にまとめる）。
-    歩がなければ題（起票した Issue の題の「QA: 」の後ろ）で"""
+    歩がなければ題（起票した Issue の題の「QA: 」の後ろ）で。
+    ラインを止める重要度（S1）は、同じ歩のほかの Defect にまとめない（まとめると S1 が既存の軽い Issue に吸われ、差し止めが起きない）"""
     if step in (None, "", "-"):
-        return f"{story_id}#title:{str(title)[:90]}"
-    return f"{story_id}#{step}"
+        key = f"{story_id}#title:{str(title)[:90]}"
+    else:
+        key = f"{story_id}#{step}"
+    return f"{key}#{severity}" if severity in incident.HOLD_SEVERITIES else key
 
 
 def open_defects(gh, repo: str, label: str) -> dict[str, str]:
@@ -210,10 +214,11 @@ def open_defects(gh, repo: str, label: str) -> dict[str, str]:
     out = {}
     for it in gh("GET", f"repos/{repo}/issues?state=open&labels={label}&per_page=100") or []:
         body = it.get("body") or ""
-        m, st = STORY_RE.search(body), STEP_RE.search(body)
+        m, st, sv = STORY_RE.search(body), STEP_RE.search(body), SEV_RE.search(body)
         title = (it.get("title") or "").removeprefix("QA: ")
         if m:
-            out.setdefault(defect_key(m.group(1), st.group(1) if st else None, title), it.get("html_url") or f"#{it.get('number')}")
+            out.setdefault(defect_key(m.group(1), st.group(1) if st else None, title, sv.group(1) if sv else None),
+                           it.get("html_url") or f"#{it.get('number')}")
         elif EXPLORE_MARK in body:   # 夜間の探索で起票したもの: 題で見る
             out.setdefault(explore_key(title), it.get("html_url") or f"#{it.get('number')}")
     return out
@@ -222,7 +227,7 @@ def open_defects(gh, repo: str, label: str) -> dict[str, str]:
 def to_incident(cur, gh, comment, repo: str, d: dict, url: str, v: dict, corr: str, job_id: int):
     """起票した（または開いている同じ）Defect を、その重要度の Incident にする（ADR 0043 の O5。S1 ならラインを差し止める）"""
     if d.get("severity") in incident.SEVERITIES and not d.get("known_gap"):
-        incident.from_qa(cur, gh, comment, repo, key=url, severity=d["severity"], title=str(d.get("title") or ""), issue_url=url,
+        incident.from_qa(cur, gh, comment, repo, key=f"{url}#{d['severity']}", severity=d["severity"], title=str(d.get("title") or ""), issue_url=url,
                          env=v.get("env"), release_id=v.get("release_id"), qa_corr=corr, job_id=job_id,
                          log=lambda *a: print("[qa_line]", *a, flush=True))
 
@@ -249,7 +254,7 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
         if v["decision"] != "hold":
             continue
         for i, d in enumerate(v.get("defects") or []):
-            key = defect_key(v["story_id"], d.get("step"), d.get("title") or "")
+            key = defect_key(v["story_id"], d.get("step"), d.get("title") or "", d.get("severity"))
             if d.get("known_gap") and not defs["act"].get("known_gap_issue"):
                 remember(v, d, key, "known_gap", None)
                 continue
