@@ -50,6 +50,10 @@ Claude Desktop（`claude_desktop_config.json`）:
 - 取り返しのつかない作用の件（`irreversible`。本番に出すなど）は、本人の明示の承認として `confirm: true` がないと受けない
 - 通知（Slack・GitHub）の各行の末尾に件の key が付く。Claude に「受信トレイの `judgment:12` を読んで」と言えばよい
 
+## 道具を直したら
+
+操業コンソールのヘルプ（/help/api）は道具の定義の写し `orchestrator/dispatcher/desk_mcp_tools.py` から表を作る（コンソールのイメージにこのファイルは入らないため）。道具を足す・直したら `python3 orchestrator/dispatcher/reference.py --sync-mcp` で写しを作り直す。ずれると `dispatcher/tests/test_reference.py` が落ちる。
+
 ## テスト
 
 ```bash

@@ -1,13 +1,14 @@
 """操業コンソールの画面（1 枚の HTML。console.py が配る）。
 
 ページは URL で分ける（2026-11-07 オーナー）: / ホーム（ダッシュボード）、/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）、
-/line（ライン）、/ship（出荷）、/usage（使用量。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）、
+/line（ライン）、/ship（出荷）、/usage（使用量。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）と
+/help/api・/help/cli（API と MCP・factoryctl のリファレンス。中身は GET /api/reference。コードの説明から作る。reference.py）、
 /settings/<項目>（右上の歯車。ランナー・ラインと流量・Mac・工場の版）。
 サーバーはどのページにも同じ HTML を返し、画面の中で URL に合うページを描く。データは /api/state の 1 本（10 秒ごと）
 """
 import re
 
-APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|usage|help|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|usage|help(/(api|cli))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
 
 PAGE = r"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -107,11 +108,21 @@ header{position:sticky;top:0;z-index:5;padding:10px 16px}.brand{font-weight:700;
 #flow{scroll-margin-top:150px}.figs{display:grid;gap:12px;margin:4px 0 10px}.figs figure{margin:0}.figs svg{display:block;width:100%;max-width:700px;height:auto}.figs figcaption{font-size:12px;color:var(--sub);margin-top:2px}#help-i{display:inline-flex;padding:6px;border-radius:8px;color:var(--sub)}#help-i svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}#help-i:hover,#help-i.on{color:var(--accent);background:var(--bg)}
 .help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0}.help dt{font-weight:600}.help dd{margin:0}.help h3{font-size:13px;margin:14px 0 6px;color:var(--sub)}
 @media(max-width:640px){.help dl{grid-template-columns:1fr}.help dd{margin-bottom:6px}}
+.htabs{display:flex;gap:4px;margin-top:12px;overflow-x:auto}.htabs a{padding:6px 12px;border-radius:6px;color:var(--ink);text-decoration:none;white-space:nowrap;border:1px solid var(--line);background:var(--card)}.htabs a.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.ref-q{display:flex;gap:8px;align-items:center;margin:0 0 6px}.ref-q input{flex:1;max-width:420px;font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+.ref .toc{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;margin:0 0 4px}.ref .toc a{color:var(--accent)}
+.ref h3{font-size:14px;margin:18px 0 4px;scroll-margin-top:150px}.ref h4{font-size:13px;margin:14px 0 4px;color:var(--sub);font-weight:600}.ref p,.ref ul{margin:4px 0;color:var(--sub);font-size:13px}.ref ul{padding-left:18px}
+.ref-r{display:grid;grid-template-columns:minmax(0,26em) minmax(0,1fr);gap:2px 14px;padding:6px 0;border-top:1px solid var(--line)}.ref-r code,.ref pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
+.ref-r .d{font-size:13px}.ref-m{display:inline-block;min-width:3.4em;font-size:11px;font-weight:600;color:var(--ok)}.ref-m.POST{color:var(--warn)}
+.ref-t{padding:8px 0;border-top:1px solid var(--line)}.ref-t .d{font-size:13px;margin:2px 0}.ref-t dl{grid-template-columns:max-content minmax(0,1fr);font-size:12px;margin-top:4px}.ref-t dt{font-weight:400}.ref-t dt code{font-weight:600}
+.ref pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;white-space:pre-wrap;margin:6px 0}
+.ref .hide{display:none}
+@media(max-width:640px){.ref-r{grid-template-columns:1fr}}
 a:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media(max-width:640px){header{padding:8px 12px}#hdr{order:3;flex:0 0 100%;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}#help-i{margin-left:auto}#view{padding:0 12px 24px}
  .rows li a{flex-wrap:wrap}.rows li a .m{flex-basis:100%}.ib-r{padding:12px}.dh{flex-wrap:wrap}.dh h2{flex-basis:100%}}
 </style></head><body>
-<header><a class="brand" href="/" data-nav>工場の操業コンソール</a><span id="hdr"></span><a id="help-i" href="/help" data-nav title="ヘルプ（ヘッダの数字と言葉の意味）" aria-label="ヘルプ"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5"/><circle cx="12" cy="17.5" r=".6"/></svg></a><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></header>
+<header><a class="brand" href="/" data-nav>工場の操業コンソール</a><span id="hdr"></span><a id="help-i" href="/help" data-nav title="ヘルプ（画面の言葉・API と MCP・コマンド）" aria-label="ヘルプ"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5"/><circle cx="12" cy="17.5" r=".6"/></svg></a><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></header>
 <nav id="nav" aria-label="ページ"></nav>
 <div id="banner"></div>
 <div id="view"></div><div id="msg"></div>
@@ -238,7 +249,8 @@ const enc=k=>encodeURIComponent(k);
 const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
- if(p==="/line"||p==="/ship"||p==="/usage"||p==="/help")return[p.slice(1),""];
+ if(p==="/line"||p==="/ship"||p==="/usage")return[p.slice(1),""];
+ if((m=p.match(/^\/help(?:\/(api|cli))?$/)))return["help",m[1]||""];
  if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
  return["home",""]}
 // 前の構成のリンク（通知や古いタブの /#choice-1・/#choices・/#ship）を新しいページに読み替える
@@ -348,6 +360,28 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <dt>順番待ち</dt><dd>作業が積まれ、ワーカーが空くのを待っている</dd><dt>作業中</dt><dd>ワーカーが作業している</dd>
 <dt>検査・判定・マージ待ち</dt><dd>PR ができ、CI・検査・judge・マージを待っている</dd><dt>対応が必要</dt><dd>人の判断や手当てを待っている</dd>
 </dl><div class="m" style="margin-top:12px">画面は 10 秒ごとに自動で読み直す（タブを開いている間）</div>`;
+
+// ---- ヘルプのリファレンス（/help/api・/help/cli）。中身は GET /api/reference（コードの説明から作る。reference.py）
+const HTABS=[["","画面の言葉"],["api","API と MCP"],["cli","コマンド（factoryctl）"]];
+let REF=null,refQ="";
+async function loadRef(){try{REF=await (await fetch("/api/reference")).json()}catch(e){put("ref-b",'<div class="m">リファレンスを読み込めませんでした</div>');return}refPut()}
+const rrow=(h,d)=>`<div class="ref-r"><div>${h}</div><div class="d">${esc(d)}</div></div>`;
+const plist=xs=>xs.length?`<ul>${xs.map(x=>`<li>${esc(x.replace(/^- /,""))}</li>`).join("")}</ul>`:"";
+function apiSec(a){return `<section data-g><h3 id="ref-${a.id}">${esc(a.title)}</h3>${plist(a.intro)}${a.rows.map(r=>rrow(`<span class="ref-m ${r.method}">${r.method}</span><code>${esc(r.path)}</code>`,r.desc)).join("")}${plist(a.notes)}</section>`}
+function mcpType(p){return p.enum?p.enum.join(" | "):p.type==="array"?(p.items&&p.items.type||"")+"[]":p.type||""}
+function mcpSec(m){return `<section data-g><h3 id="ref-mcp">窓口の MCP の道具（${esc(m.server.name)} ${esc(m.server.version)}）</h3><pre>${esc(m.setup)}</pre>${m.tools.map(t=>{const ps=Object.entries((t.inputSchema||{}).properties||{}),rq=(t.inputSchema||{}).required||[];
+ return `<div class="ref-t"><code><b>${esc(t.name)}</b></code><div class="d">${esc(t.description)}</div>${ps.length?`<dl>${ps.map(([k,p])=>`<dt><code>${esc(k)}</code>${rq.includes(k)?" 必須":""}</dt><dd><code>${esc(mcpType(p))}</code> ${esc(p.description||"")}</dd>`).join("")}</dl>`:""}</div>`}).join("")}</section>`}
+function refBody(sub){const r=REF;
+ if(sub==="api")return `<div class="toc">${r.api.map(a=>`<a href="#ref-${a.id}">${esc(a.title.split(/[（。]/)[0])}</a>`).join("")}<a href="#ref-mcp">窓口の MCP の道具</a></div>`+r.api.map(apiSec).join("")+mcpSec(r.mcp);
+ const c=r.cli;return `<p>工場を動かしているマシンのターミナルで <code>${esc(c.run)} …</code> の形で打つ（compose のディレクトリなら <code>docker compose exec dispatcher factoryctl …</code> でも同じ）。下の表は factoryctl の使い方の説明（引数なしで打つと出るもの）から作っている</p>
+  <div class="toc">${c.groups.map((g,i)=>`<a href="#ref-c${i}">${esc(g.title.split(/[（。:]/)[0])}</a>`).join("")}</div>`+
+  c.groups.map((g,i)=>`<section data-g><h3 id="ref-c${i}">${esc(g.title.replace(/[:：]$/,""))}</h3>${g.rows.map(x=>rrow(`<code>${esc(x.cmd)}</code>`,x.desc)).join("")}${plist(g.notes)}</section>`).join("")}
+function refFilter(){const q=refQ.trim().toLowerCase(),b=document.getElementById("ref-b");if(!b)return;let n=0;
+ b.querySelectorAll("section[data-g]").forEach(g=>{let k=0;g.querySelectorAll(".ref-r,.ref-t").forEach(r=>{const hit=!q||r.textContent.toLowerCase().includes(q)||g.querySelector("h3").textContent.toLowerCase().includes(q);r.classList.toggle("hide",!hit);if(hit)k++});g.classList.toggle("hide",!!q&&!k);n+=k});
+ put("ref-n",q?`${n} 件`:"")}
+function refPut(){const [v,sub]=route();if(v!=="help"||!sub||!REF)return;put("ref-b",refBody(sub));refFilter();
+ const el=location.hash&&document.getElementById(location.hash.slice(1));if(el)el.scrollIntoView({block:"start"})}   // 中身は後から来るので、/help/api#ref-mcp のような目印へはここで飛ぶ
+document.addEventListener("input",e=>{if(e.target.id!=="ref-qi")return;refQ=e.target.value;refFilter()});
 
 // ---- 受信トレイ（2 ペイン。選ぶまでは一覧が全面、選ぶと右に詳細）
 function ibItems(ib){return ib.items.filter(i=>(ibTab==="open"?!i.answered:!!i.answered)&&(!ibKind||i.kind===ibKind)&&(!ibWho||i.who===ibWho))}
@@ -459,12 +493,12 @@ function skeleton(v,arg){
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="usage")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
- if(v==="help")return `<section class="card help">${HELP}</section>`;
+ if(v==="help")return `<nav class="htabs">${HTABS.map(([k,n])=>`<a href="/help${k?"/"+k:""}" data-nav class="${k===arg?"on":""}">${n}</a>`).join("")}</nav>`+(arg?`<section class="card help ref"><div class="ref-q"><input id="ref-qi" type="search" placeholder="絞り込み（例 inbox、drain、予算）" value="${esc(refQ)}"><span class="m" id="ref-n"></span></div><div id="ref-b"><div class="m">読み込み中…</div></div></section>`:`<section class="card help">${HELP}</section>`);
  return `<div class="set"><nav class="sn">${SETTINGS.map(([k,n])=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(n)}</a>`).join("")}${LATER.map(n=>`<span class="later" title="今後">${esc(n)}（今後）</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
 let force=false,usageAt=0;
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
 async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
-function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
+function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#nav a[data-v]").forEach(a=>a.classList.toggle("on",a.dataset.v===v));
  document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
@@ -481,7 +515,7 @@ function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="setting
   put("lanes",LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return `<section class="lane"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join(""))}
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="usage"){if(Date.now()-usageAt>60000||!document.querySelector("#usage-b .usage"))loadUsage()}
- else if(v==="help"){}
+ else if(v==="help"){if(arg&&!document.querySelector("#ref-b section")){if(REF)refPut();else loadRef()}}
  else if(force||!busy("set-b"))put("set-b",settingsBody(arg,s));
  force=false}
 async function load(){if(document.hidden&&!force)return;let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}
