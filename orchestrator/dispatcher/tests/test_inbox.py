@@ -198,3 +198,20 @@ def test_held_product_is_not_waiting_for_prod(cur, monkeypatch):
     assert [i["key"] for i in inbox._releases(cur)] == [f"release:{rid}"]
     ship.observe_stage(cur, "o/app", "development")
     assert inbox._releases(cur) == []
+
+
+def test_sendback_sent_to_fix_moves_to_answered(cur):
+    # 2026-11-09 rally #1228・#1251: 差し戻しの直しの Issue に factory:planned を付けて直しに回したのに、「未回答」に残っていた
+    from psycopg.types.json import Jsonb
+    pr = "https://github.com/o/r/pull/1228"
+    stoppage.open_stoppage(cur, f"sendback:{pr}", "human", "差し戻しを流さなかった（daily_limit）。指摘 1 件が残っている",
+                           waiting_for="人の判断（直すか、受け入れるか）", correlation_id="github:o/r#1149", quiet=True)
+    cur.execute("insert into events(name, payload) values ('sendback.filed', %s)",
+                (Jsonb({"origin_pr": pr, "fix_issue": "https://github.com/o/r/issues/1234", "fix_corr": "github:o/r#1234"}),))
+    key = f"stoppage:sendback:{pr}"
+    assert [i["key"] for i in inbox.items(cur)] == [key]          # 直しの Issue がまだ fix-proposed（台帳にない）: 未回答
+    cur.execute("insert into tickets(source, source_ref, repo, title, state) values ('github','o/r#1234','o/r','差し戻し: x','planned')")
+    assert inbox.items(cur) == []                                  # 直しに回した: 人の出番ではない
+    [it] = inbox.items(cur, include_answered=True)
+    assert it["key"] == key and it["answered"]["label"] == "直しに回した（#1234）" and "fixing" not in it
+    assert inbox.view(cur)["count"] == 0

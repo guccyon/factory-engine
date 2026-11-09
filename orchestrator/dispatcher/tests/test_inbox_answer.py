@@ -152,7 +152,7 @@ def test_write_back_to_where_it_was_notified(cur):
     r = notify_inbox.tick(cur, T + timedelta(minutes=1), ["log"], lambda ch, b: True, poster=lambda name, text: posted.append((name, text)) or True)
     assert r["written_back"] == 1 and r["cleared"] == 1
     [(name, text)] = posted
-    assert name == "log" and "更新 s1 を前の版に戻した" in text and "console:t が操業コンソールで『見た（閉じる）』と回答済み" in text
+    assert name == "log" and "更新 s1 を前の版に戻した" in text and "console:t が操業コンソールで『見た（閉じる）』と回答済" in text
     r = notify_inbox.tick(cur, T + timedelta(minutes=2), ["log"], lambda ch, b: True, poster=lambda name, text: posted.append(1) or True)
     assert r["written_back"] == 0 and len(posted) == 1                      # 1 つの答え・1 宛先に 1 回
 

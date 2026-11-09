@@ -141,7 +141,7 @@ def _send(channel, batch: list[tuple[dict, str]]) -> bool:
 
 def render_answered(answers: list[dict], channel: str) -> str:
     slack = channel in ("slack", "slack_webhook", "slack_app")
-    head = f"受信トレイ: 答え済み {len(answers)} 件"
+    head = f"受信トレイ: 回答済 {len(answers)} 件"
     lines = [f"*{head}*" if slack else f"**{head}**"]
     lines += [f"- {a.get('title') or a['key']} — {inbox.answered_text(a)}。この件は閉じました" for a in answers]
     return "\n".join(lines)

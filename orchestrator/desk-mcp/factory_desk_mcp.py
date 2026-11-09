@@ -93,7 +93,7 @@ TOOLS = [
      "description": "受信トレイ（工場が人の判断を待っているもの）のうち、このトークンで答えてよい件の一覧。待ちの長い順。"
                     "各件の key を inbox_read・inbox_answer に渡す。answerable が false の件はここでは答えられない（url の先で答える）",
      "inputSchema": {"type": "object", "properties": {
-         "include_answered": {"type": "boolean", "default": False, "description": "答え済みで反映を待っている件も入れる"}}}},
+         "include_answered": {"type": "boolean", "default": False, "description": "回答済で反映を待っている件も入れる"}}}},
     {"name": "inbox_read",
      "description": "受信トレイの 1 件を読む。detail に問い・今の案・他の案・judge の見立て・影響・推す案、answer に選択肢（options と extra の id）・"
                     "推奨・答えたときの作用（effect）・取り返しがつかないか（irreversible）が入る。判断の材料が足りなければ、url の PR の差分や"
