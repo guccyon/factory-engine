@@ -1,0 +1,193 @@
+# オンボーディングの準備度（ADR 0045 の決定 8 と追記「操業コンソールに出すもの」）
+# 既存の製品を引き受けるとき、仕事ごとに「今の状態でどこまでの品質が出せそうか」をパスワードの強さの表示のように出す。
+# ここに置くのは、どの製品にも効く定義（何を測るか・粒度の 4 段・仕事ごとの最低と目標・必須か・段の条件）だけ。
+# その製品の今の粒度と根拠は工場の置き場に置き、ここには書かない（公開のリポジトリなので先方の情報も書かない）。
+#
+# 読み方（dispatcher/readiness.py の judge）:
+#   仕事ごとに、その仕事に要る項目（req にその仕事がある項目）だけを見る
+#   - 必須（must）の項目が最低（min）に届いていなければ「始められない」（blocked）。始めない（D7）
+#   - 届いていれば、重み（weight）つきで「目標（goal）にどれだけ近いか」の割合を出し、
+#     bands の線で「品質が出にくい」「始められる」「十分」に分ける。始めるかは事業主が決める（D7）
+#   - 目標に届かない項目は警告にし、お願い（ask）を持つ項目はそれを事業主へのお願いに並べる（受信トレイの「準備のお願い」）
+# 粒度は 0〜3 の 4 段。levels の並びが粒度の値。
+# Gen1.5 は予行演習で、Gen2.0 で作り直す（決定 1）。値は運用で調整する。
+
+schema_version: "0.1"
+status: draft
+
+# 仕事の単位は工場のレーンに合わせる（D6）
+targets:
+  dev:   {ja: 開発を始める,     lane: "Dev のビルド"}
+  ship:  {ja: 本番に出す,       lane: "Ops の出荷（本番）"}
+  store: {ja: ストアに出す,     lane: "Ops の出荷（ストア）"}
+  ops:   {ja: 運用を引き受ける, lane: "Ops の障害対応と監視"}
+
+# 割合（0〜1）の線。blocked は必須の欠けで決まり、割合では決めない
+bands:
+  - {id: weak,   ja: 品質が出にくい, below: 0.7}
+  - {id: ready,  ja: 始められる,     below: 0.92}
+  - {id: enough, ja: 十分}
+blocked_ja: 始められない
+
+groups:
+  provided: 事業主から提供してもらうもの
+  built: 工場がオンボーディングで作るもの
+
+# req: 仕事ごとに {min: 必須のときの最低, goal: 目標, must: 必須か, weight: 重み}
+items:
+  - id: p-repo
+    group: provided
+    ja: リポジトリ
+    levels: [無い, 読み取り, 担当リポに PR を出せる, ＋レビューの決まりが分かる]
+    req: {dev: {min: 2, goal: 3, must: true, weight: 3}}
+    warn: 工場が先方のリポに変更を出せない
+    ask: 担当するリポに、工場のアカウントが PR を出せる権限をください
+  - id: p-backlog
+    group: provided
+    ja: バックログ管理システム
+    levels: [無い, 書き出しだけ, 読める, 読み書きでき、担当の印が使える]
+    req: {dev: {min: 2, goal: 3, must: true, weight: 2}}
+    warn: 何をなぜ作るかの入力が無く、仕事を受けられない
+    ask: バックログ管理システムに、工場のアカウントを読み書きできる形で入れてください
+  - id: p-notify
+    group: provided
+    ja: 通知の宛先と承認者
+    levels: [無い, 宛先だけ, 宛先と承認者, ＋判断の受け手（事業主・開発の窓口）]
+    req:
+      dev:  {min: 2, goal: 3, must: true, weight: 1}
+      ship: {min: 3, goal: 3, must: true, weight: 2}
+    warn: 判断を誰に回すかが決まらず、止まったまま気づかれない
+    ask: 通知の宛先と、承認する人を決めてください
+  - id: p-design
+    group: provided
+    ja: デザインの資料（Figma など）
+    levels: [無い, 画像の書き出し, OAuth で読める, ＋デザインシステムの定義]
+    req: {dev: {min: 0, goal: 2, must: false, weight: 2}}
+    warn: 画面の変更が既存の見た目からの推測になり、見た目がずれやすい
+    ask: Figma などのデザインの資料を、OAuth のコネクタで読み取りだけ許可してください
+  - id: p-docs
+    group: provided
+    ja: 既存の文書（Confluence など）
+    levels: [無い, 一部の書き出し, 主な場所を OAuth で読める, ＋障害の記録]
+    req:
+      dev: {min: 0, goal: 2, must: false, weight: 1}
+      ops: {min: 2, goal: 3, must: false, weight: 2}
+    warn: 過去の判断や経緯を知らずに作り、同じ失敗を繰り返すおそれ
+    ask: 仕様や障害の記録がある場所を、OAuth のコネクタで読み取りだけ許可してください
+  - id: p-prod
+    group: provided
+    ja: 本番の出荷の仕組み
+    levels: [無い, 構成図だけ, 差分の確認（plan）まで, 承認つきで先方の出荷を起動できる]
+    req: {ship: {min: 3, goal: 3, must: true, weight: 3}}
+    warn: 本番に出せない
+    ask: 本番の出荷の仕組みを、承認つきで工場から起動できる形にしてください
+  - id: p-store
+    group: provided
+    ja: ストア配信
+    levels: [無い, アカウントの情報, 先方の CI でビルドを上げられる, ＋テスト配布の宛先]
+    req: {store: {min: 2, goal: 3, must: true, weight: 3}}
+    warn: ストアに出せない（署名の鍵は工場に預けない）
+    ask: 先方の CI からストアにビルドを上げる経路と、テスト配布の宛先をください
+  - id: p-monitor
+    group: provided
+    ja: 監視とログ
+    levels: [無い, 画面の画像, 読める, ＋アラートの受け口]
+    req:
+      ship: {min: 0, goal: 2, must: false, weight: 1}
+      ops:  {min: 2, goal: 3, must: true, weight: 3}
+    warn: 出した後の異常に気づけない
+    ask: 監視とログを読み取りで見られるようにし、アラートの受け口を決めてください
+  - id: o-env
+    group: built
+    ja: 動く環境
+    levels: [無い, ビルドだけ, 版の組で環境が立つ, ＋シードで主な画面を撮れた]
+    req:
+      dev:  {min: 2, goal: 3, must: true, weight: 3}
+      ship: {min: 3, goal: 3, must: true, weight: 2}
+    warn: 作ったものを動かして確かめられない
+  - id: o-tests
+    group: built
+    ja: 既存のテスト
+    levels: [動かない, 一部動く, 赤を無効化して全部緑, 無効化なしで緑]
+    req:
+      dev:  {min: 1, goal: 2, must: true, weight: 3}
+      ship: {min: 2, goal: 3, must: false, weight: 2}
+    warn: 変更が既存を壊しても気づけない
+    # 工場が作る項目でも、先方に頼むと進むものはお願いを持つ
+    ask: 工場の環境で動かないテストについて、要る鍵やデータ、検証用の環境をください
+  - id: o-screens
+    group: built
+    ja: 画面と流れの一覧
+    levels: [無い, 一覧だけ, 画像と流れつき, ＋事業主の確認済]
+    req: {dev: {min: 0, goal: 3, must: false, weight: 3}}
+    warn: UI の変更で既存の流れを壊すおそれ
+    ask: 画面と流れの一覧を見て、読み違いがないか確かめてください
+  - id: o-api
+    group: built
+    ja: API の契約
+    levels: [無い, 一覧だけ, 契約を起こした, ＋実物と照合済]
+    req: {dev: {min: 0, goal: 3, must: false, weight: 3}}
+    warn: API の変更でクライアントを壊すおそれ
+  - id: o-stack
+    group: built
+    ja: 技術スタックと外部サービスの地図
+    levels: [無い, 言語と主な依存, ＋外部サービスの一覧, ＋検証用の環境の有無]
+    req:
+      dev:  {min: 0, goal: 2, must: false, weight: 1}
+      ship: {min: 0, goal: 3, must: false, weight: 2}
+      ops:  {min: 0, goal: 3, must: false, weight: 2}
+    warn: 外部サービスの扱いを誤り、テストや出荷で詰まるおそれ
+    ask: 外部サービスの一覧に抜けがないか確かめ、検証用の環境の有無を教えてください
+  - id: o-rules
+    group: built
+    ja: コードのルール
+    levels: [無い, 読み取った慣習, 書き起こした, ＋社内の開発者が確認済]
+    req: {dev: {min: 0, goal: 3, must: false, weight: 2}}
+    warn: PR が先方の慣習から外れ、レビューの手戻りが増える
+    ask: 書き起こしたコードのルールを、社内の開発者に見てもらってください
+  - id: o-glossary
+    group: built
+    ja: 用語とストーリー
+    levels: [無い, 候補, 下書き, ＋事業主の確認済]
+    req: {dev: {min: 0, goal: 2, must: false, weight: 1}}
+    warn: 言葉の取り違えで、頼んだものと違うものを作るおそれ
+
+# オンボーディングの段（決定 3 の S0〜S6）。条件は判定の記録に「満たしたか」で入る
+# 稼働 ready の線は L3 と L4 の間。L1〜L3 の条件と「開発を始める」の必須を機械で確かめたうえで、事業主が承認して越える（D4）
+ready_line_after: 3
+ladder:
+  - level: 1
+    ja: 読める
+    stages: [S0, S1]
+    conditions:
+      - {id: repos-readable,  ja: 全リポを読み取りで取れる}
+      - {id: takeover-written, ja: 工場の引き受けが書かれた}
+      - {id: inventory-filled, ja: 棚卸し表と技術スタックの地図が埋まった}
+  - level: 2
+    ja: 分かる
+    stages: [S2, S3]
+    conditions:
+      - {id: analysis-matched,  ja: 契約・画面・依存が起こされ、照合率が出た}
+      - {id: drafts-exist,      ja: 用語・境界・ストーリーの下書きがある}
+      - {id: reading-confirmed, ja: 事業主が読みを確かめた}
+  - level: 3
+    ja: 動かせる
+    stages: [S4]
+    conditions:
+      - {id: env-up,          ja: 工場の中で全リポがビルドでき、版の組で環境が立つ}
+      - {id: tests-sorted,    ja: 既存のテストが分類され、無効化の案ができた}
+      - {id: screens-captured, ja: 主な画面のキャプチャを数点撮れた}
+  - level: 4
+    ja: 変えられる
+    stages: [S5]
+    conditions:
+      - {id: coexist-set,     ja: 共存の設定が効いている}
+      - {id: small-merged,    ja: 小さい変更が人のレビューでマージされた}
+      - {id: bundle-merged,   ja: リポをまたぐ変更の束が 1 本通った}
+  - level: 5
+    ja: 任せられる
+    stages: [S6]
+    conditions:
+      - {id: scope-widened,   ja: 任せる範囲を指標で広げた}
+      - {id: scope-approved,  ja: 事業主が範囲を承認した}
+      - {id: jobs-enabled,    ja: 本番に出す・ストア・運用の必須がそろった分から有効にした}
