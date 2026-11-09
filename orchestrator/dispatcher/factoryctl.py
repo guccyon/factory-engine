@@ -47,6 +47,11 @@
   factoryctl release approve <release_id> [--by ..]         # 承認ボタンと同じ。staging で確かめた版を prod に出す
   factoryctl release rollback <repo> [--env prod] [--by ..] # その環境を 1 つ前の版に戻す（DB は戻さない）
   factoryctl release status <repo>                          # 環境ごとのいまの版と前の版、出荷の記録
+
+定期便（ADR 0043 の O6）。1 日 1 便は supervisor が出す。承認は便ごとに 1 回。S1 の修正だけ緊急便で待たずに出す:
+  factoryctl release trains [--limit 10]                    # 最近の便（定期・緊急）と載った Release、承認待ち
+  factoryctl release train <repo> --emergency --reason ".." [--by ..]   # 緊急便。まだ Release に入っていないマージ済みの PR を今すぐ出す
+  factoryctl release train-approve <train_id> [--by ..]     # 便に載った Release をまとめて prod へ承認する（本番を立てない段階の製品は飛ばす）
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
 触れる環境（ADR 0028 の touchable_env。Gen1 は staging と兼ねる）。Release 候補を 1 コマンドで立て、シードを入れ、URL と QR を出す:
@@ -139,6 +144,7 @@ import workflow_shadow
 import ship
 import stoppage
 import touch
+import train
 import swap
 
 
@@ -417,6 +423,21 @@ def release_create(cur, argv):
     if rid is None:
         print(f"{repo}@{version} already exists"); return 1
     print(f"created {rid} with {len(prs)} PRs")
+    return 0
+
+
+def release_trains(cur, limit: int) -> int:
+    rows = train.recent(cur, limit)
+    if not rows:
+        print("まだ便がない")
+    for t in rows:
+        a = t.get("approval") or {}
+        mark = ("承認は要らない（本番を立てない段階）" if not a.get("required") else
+                f"承認済み（{t['approved'].get('by')}）" if t.get("approved") else "承認待ち " + "・".join(a.get("pending") or []))
+        print(f"{t['at']:%m-%d %H:%M} {t['train_id']}  {'緊急' if t['kind'] == 'emergency' else '定期'}  {mark}" +
+              (f"  理由: {t['reason']}" if t.get("reason") else ""))
+        for r in t.get("releases") or []:
+            print(f"    {r['release_id']}（PR {r['prs']} 件）")
     return 0
 
 
@@ -1039,6 +1060,19 @@ def main(argv):
             ok, msg = ship.request_approve(cur, argv[3], by, "factoryctl")
         else:
             ok, msg = ship.request_rollback(cur, argv[3], opt(argv, "--env", "prod"), by, "factoryctl")
+        print(msg)
+        return 0 if ok else 1
+    elif cmd == "release" and len(argv) > 2 and argv[2] == "trains":
+        return release_trains(cur, int(opt(argv, "--limit", "10")))
+    elif cmd == "release" and len(argv) > 3 and argv[2] == "train":
+        if "--emergency" not in argv:
+            print("定期便は supervisor が出す。手で出すのは緊急便だけ（--emergency --reason ..）")
+            return 2
+        ok, msg = train.emergency(cur, argv[3], opt(argv, "--by", "builder"), opt(argv, "--reason", ""))
+        print(msg)
+        return 0 if ok else 1
+    elif cmd == "release" and len(argv) > 3 and argv[2] == "train-approve":
+        ok, msg = train.approve(cur, argv[3], opt(argv, "--by", "builder"), "factoryctl")
         print(msg)
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":

@@ -152,7 +152,7 @@ phases:
       - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028
       - id: release_train
         ja: "定期便（人の承認は便ごと 1 回）で Release が出て、S1 だけ緊急便"
-        measure: { db: { target: 3, sql: "select count(*) from events where name = 'release.train'" } }
+        measure: { db: { target: 3, sql: "select count(*) from events where name = 'release.train'" } }   # 2026-11-09 定期便（train.py）。supervisor の 1 日 1 便と、factoryctl release train --emergency の緊急便を数える。Gen1.5 で複数リポジトリの便に作り直す前提の回路の確認
       - { id: ephemeral_env, ja: "PR ごとの使い捨て環境が立って壊れる", measure: { manual: todo } }
       - { id: preview_distribution, ja: "日中に人が並走し、TestFlight に 1 本配った（署名は人の Mac）", measure: { manual: todo } }
       - { id: quality_learn, ja: "品質の Learn（Defect と Incident を入力に、重点とシナリオの追加が自動で、基準の変更案が委員会に出た）が 1 周回った", measure: { manual: todo } }
