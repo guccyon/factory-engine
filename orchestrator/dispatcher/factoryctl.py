@@ -23,6 +23,9 @@
   factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
   factoryctl drain allow --priority p0 [--reason ..]    # 一時停止のまま、優先度がその段以上のチケットのジョブ（着手判定・実装を含む）も流す。再開で消える
   factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
+  factoryctl distribute [--channel firebase_android] [--app <owner/repo>:<パス>] [--ref main] [--notes ..] [--define K=V].. [--timeout 秒]
+      # モバイルアプリを審査前の配布先に 1 本配る（ADR 0047）。Mac の画面で人が「配布する」を押すまで待つ。配れなければ終了コード 1
+  factoryctl distribute list                       # 直近の配布の依頼と結果
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
 
@@ -150,6 +153,7 @@ from psycopg.types.json import Jsonb
 import choice
 import desk
 import design_line
+import distribution
 import drain
 import ephemeral
 import incident
@@ -1318,6 +1322,20 @@ def main(argv):
         ok, msg = (ephemeral.touch(cur, repo, pr, by, "human", opt(argv, "--note", "")) if argv[2] == "pr-touch"
                    else ephemeral.request_down(cur, repo, pr, by, "factoryctl"))
         print(msg)
+        return 0 if ok else 1
+    elif cmd == "distribute" and len(argv) > 2 and argv[2] == "list":
+        for r in distribution.recent(cur):
+            res = r["res"] or {}
+            what = ("配った " + str(res.get("build_number")) if r["result"] == "ship.preview_distributed"
+                    else f"失敗（{res.get('stage')}）{str(res.get('error') or '')[:80]}" if r["result"] else "結果なし")
+            print(f"{r['id']:>6} {r['occurred_at']:%m-%d %H:%M} {r['req'].get('channel')} {r['req'].get('app')}@{r['req'].get('ref')} {what}")
+    elif cmd == "distribute":
+        defines = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--define" and i + 1 < len(argv) and "=" in argv[i + 1])
+        ok, p = distribution.distribute(cur, app=opt(argv, "--app", distribution.DEFAULT_APP), channel=opt(argv, "--channel", "firebase_android"),
+                                        ref=opt(argv, "--ref", "main"), notes=opt(argv, "--notes", ""), defines=defines,
+                                        by=opt(argv, "--by", "builder"), timeout=float(opt(argv, "--timeout", "3600")),
+                                        log=lambda m: print(m, flush=True))
+        print(("配った: " if ok else "配れなかった: ") + json.dumps(p, ensure_ascii=False, default=str))
         return 0 if ok else 1
     elif cmd == "env" and len(argv) > 2 and argv[2] == "pr-show":
         return env_pr_show(cur, argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None)
