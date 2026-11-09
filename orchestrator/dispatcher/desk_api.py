@@ -25,6 +25,10 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
   POST /api/desk/inbox/<key>/answer                    {"option", "note"?, "raw"?, "on"?, "confirm"?} 答える。inbox.answer（唯一の口、先勝ち）を入口 mcp で通す。
                                                        取り返しのつかない作用の件（本番に出す）は本人の明示の承認として confirm: true が要る。
                                                        答え済みは 409（誰が何と答えたか）、選択肢の外・一言が足りないは 400
+  GET  /api/desk/preferences?product=<owner/repo>       自分の好みの一覧（ADR 0040 の決定 6。仮説も含む。運用主は requester=<名前> で人を選ぶ）
+  POST /api/desk/preferences                           {"product", "statement", "work"?: [業務のノード]} 好みを足す（依頼者が自分で言ったので確認済み）
+  POST /api/desk/preferences/<P-NNNN>                  {"statement"?, "work"?} 直す（工場の推し量りを依頼者が直したら確認済みになる）
+  POST /api/desk/preferences/<P-NNNN>/delete           消す（行ごと消す。events には id だけ残る）
   （参照の # は URL では %23、key の / は %2F にする）
 
 守り:
@@ -45,6 +49,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 import desk
+import requester_prefs
 
 ENV = os.environ
 PORT = int(ENV.get("DESK_PORT", "8792"))
@@ -120,6 +125,15 @@ def route(method: str, path: str, query: dict, body: dict, token: str | None, co
                 return 200, desk.inbox_answer(cur, who, rest[1], body.get("option"), note=str(body.get("note") or "")[:500],
                                               raw=str(body.get("raw") or ""), on=body.get("on"),
                                               confirm=body.get("confirm") is True)
+        if rest[:1] == ["preferences"]:
+            if method == "GET" and len(rest) == 1:
+                return 200, {"preferences": requester_prefs.list_for(cur, who, query.get("product") or None, query.get("requester") or None)}
+            if method == "POST" and len(rest) == 1:
+                return 201, {"preference": requester_prefs.add(cur, who, body.get("product"), body.get("statement"), body.get("work"))}
+            if method == "POST" and len(rest) == 2:
+                return 200, {"preference": requester_prefs.update(cur, who, rest[1], body.get("statement"), body.get("work"))}
+            if method == "POST" and len(rest) == 3 and rest[2] == "delete":
+                return 200, requester_prefs.delete(cur, who, rest[1])
         if rest[:1] == ["tickets"] and len(rest) >= 2:
             key = rest[1]
             if method == "GET" and len(rest) == 2:
@@ -169,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
         try:
             status, obj = route(method, u.path, query, body, token)
-        except desk.DeskError as e:
+        except (desk.DeskError, requester_prefs.PrefError) as e:
             status, obj = e.status, {"error": str(e)}
         except Exception as e:  # noqa: BLE001  落とさずに返し、ログに残す
             sys.stderr.write(f"[desk] {method} {u.path} failed: {e!r}\n")

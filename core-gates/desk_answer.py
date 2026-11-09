@@ -30,10 +30,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import knowledge_context  # noqa: E402  知見の選び手（ADR 0040 の決定 7 の 5）
+import desk_consult  # noqa: E402  依頼者の好みの書き方を相談役とそろえる（ADR 0040 の決定 6）
 
 HERE = Path(__file__).resolve().parent
 ENGINE = HERE.parent
-PROMPT_VERSION = "2"   # 2: 知見 knowledge.md と依頼者の好み requester.md を足した（ADR 0040 の決定 6・7 の 5）。問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "3"   # 3: 依頼者が自分で言った好み stated_preferences を出す。2: 知見 knowledge.md と依頼者の好み requester.md を足した（ADR 0040 の決定 6・7 の 5）。問いの文を変えたら上げる（判断の入力の版として残す）
 MAX_TURNS = 16
 MAX_OPTIONS = 4
 MAX_EVIDENCE = 12
@@ -55,8 +56,9 @@ def schema(stances: dict) -> dict:
                                                                           "required": ["ref", "what"]}},
         "unknowns": {"type": "array", "maxItems": 10, "items": s},
         "switch_to_request": {"type": "boolean"},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
-        "required": ["done", "question", "stance", "answer", "evidence", "unknowns", "switch_to_request", "confidence"]}
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "stated_preferences": desk_consult.stated_schema()},
+        "required": ["done", "question", "stance", "answer", "evidence", "unknowns", "switch_to_request", "confidence", "stated_preferences"]}
 
 
 def record_ids(records: dict) -> set[str]:
@@ -159,7 +161,6 @@ def stage(root: Path, inp: dict, repo_dir: Path | None, issues: list[dict]) -> d
     if (ENGINE / "docs" / "adr").is_dir():
         shutil.copytree(ENGINE / "docs" / "adr", fac / "adr", ignore=shutil.ignore_patterns(*SKIP))
     # 依頼者の好み（ADR 0040 の決定 6）と、窓口の業務（desk.converse）で選んだ知見（決定 7 の 5）。依頼の形はまだ決まっていないので渡さない
-    import desk_consult
     prefs = desk_consult.requester_md(inp)
     if prefs:
         (root / "requester.md").write_text(prefs, encoding="utf-8")
@@ -204,7 +205,8 @@ def prompt(inp: dict) -> str:
 5. unknowns に、材料からは分からないことを書く。推測で埋めない。分からないことがなければ空の並び
 6. 問いが「では先にやって」「これを変えて」のような依頼になっていたら switch_to_request=true（答えられる範囲は答える）
 - confidence は 0〜1。問い返すときも stance・answer・evidence は今の見立てで埋めてよい（使わない）
-"""
+
+""" + desk_consult.STATED_PROMPT
 
 
 def answer(inp: dict, repo_dir: Path | None, issues: list[dict]) -> dict:
@@ -221,7 +223,8 @@ def answer(inp: dict, repo_dir: Path | None, issues: list[dict]) -> dict:
         out = res.output if isinstance(res.output, dict) else {}
         dec = decide(out, inp, root) if out else {"outcome": "failed", "errors": ["回答役の答えが読めなかった"]}
     return {**dec, "confidence": out.get("confidence"), "versions": {"prompt": PROMPT_VERSION},
-            "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns, **knowledge_context.result_fields(ksel)}
+            "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns, **knowledge_context.result_fields(ksel),
+            "stated_preferences": desk_consult.stated(out)}
 
 
 def main(argv: list[str] | None = None) -> int:

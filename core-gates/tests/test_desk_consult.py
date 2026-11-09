@@ -171,3 +171,14 @@ def test_requester_md_is_separate_and_prefers_request():
     assert dc2.requester_md({}) == ""
     md = dc2.requester_md({"requester": "alice", "requester_preferences": [{"id": "P-0003", "statement": "表より箇条書き", "work": [], "verified_at": "2026-11-08"}]})
     assert md.startswith("# この依頼者（alice）の好み") and "P-0003" in md and "依頼の文面を優先" in md
+
+
+def test_stated_preferences_are_shaped_and_in_the_schema():
+    """ADR 0040 の決定 6: 依頼者が自分で言った好み。引用と好みのないものは落とす（発言との突き合わせは dispatcher）"""
+    import desk_consult
+    out = {"stated_preferences": [{"quote": "箇条書きで", "statement": "返事は箇条書き", "work": ["desk.converse", 3]},
+                                  {"quote": "", "statement": "x", "work": []}, "x"]}
+    assert desk_consult.stated(out) == [{"quote": "箇条書きで", "statement": "返事は箇条書き", "work": ["desk.converse"]}]
+    sch = desk_consult.stated_schema()
+    assert "desk.converse" in sch["items"]["properties"]["work"]["items"]["enum"]
+    assert "STATED" not in desk_consult.STATED_PROMPT and "quote" in desk_consult.STATED_PROMPT

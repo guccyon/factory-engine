@@ -190,6 +190,19 @@ def estimate(cur, n_tasks: int, level: str) -> dict:
             "cost_per_task_usd": per_task, "cost_usd": round(per_task * n_tasks, 2) if per_task else None}
 
 
+def remember_stated(cur, cid: int, job: dict, res: dict) -> list[str]:
+    """相談役・回答役が拾った「依頼者が自分で言った好み」を残し、会話で知らせる（ADR 0040 の決定 6）。
+    引用が依頼者の発言にそのままあるものだけ。知らせは本題の返事の前に書く（本題が最後の発言になるように）"""
+    if not res.get("stated_preferences"):
+        return []
+    cur.execute("select product, opened_by from desk_conversations where id=%s", (cid,))
+    c = cur.fetchone() or {}
+    ids = requester_prefs.record_stated(cur, c.get("product"), c.get("opened_by"), res["stated_preferences"], messages(cur, cid))
+    if ids:
+        desk.factory_message(cur, cid, "factory", requester_prefs.stated_note(ids), kind="preference", payload={"job_id": job["id"], "ids": ids})
+    return ids
+
+
 def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> None:
     """相談役のジョブの結果を会話に書く。問いは waiting_requester、下書きは drafted、失敗は知らせて依頼者の言い足しを待つ"""
     cid = -int(job["issue_number"])
@@ -203,6 +216,7 @@ def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> 
                              "運用主が再実行するか、言い足しをもらえればもう一度動かします。", kind="error", state="waiting_requester",
                              payload={"job_id": job["id"]})
         return
+    remember_stated(cur, cid, job, res)
     if res.get("outcome") == "question":
         q = res.get("question") or {}
         desk.factory_message(cur, cid, "planner", question_text(q, res.get("round") or 1, res.get("max_rounds") or MAX_ROUNDS),
