@@ -3,6 +3,7 @@
 - artifacts の Opportunity（title・problem・expected_effect は必須。expected_effect は指標・方向・幅）と events の opportunity.proposed に残す
 - 受信トレイに「見て、拾うなら起票する」の依頼（task の kind opportunity、プロダクトオーナーの出番）を 1 件積む。起票はしない（人かプランナーが拾う）
 - 同じ出どころ（source）・同じ目印（key）の提案は 1 回だけ。LLM は使わない
+- 動作確認でわざと入れた詰まりに当たった提案（extra の planted_hit）は、受信トレイの題と案内でそれと分かるようにする
 """
 from __future__ import annotations
 
@@ -32,8 +33,10 @@ def propose(cur, repo: str, source: str, key: str, *, title: str, problem: str, 
     oid = cur.fetchone()["id"]
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('opportunity.proposed',%s,%s,%s,%s)",
                 (correlation_id, job_id, Jsonb({**payload, "opportunity_id": oid}), dk))
-    inbox.request(cur, f"opportunity:{oid}", "opportunity", "po", f"改善の提案: {payload['title']}",
-                  action="提案を読み、拾うなら製品の Issue に起票する（工場は起票しない）。拾わないなら見たとして閉じる",
+    planted = bool(payload.get("planted_hit"))
+    inbox.request(cur, f"opportunity:{oid}", "opportunity", "po", f"改善の提案{'（動作確認の仕込みに当たった）' if planted else ''}: {payload['title']}",
+                  action=("動作確認のためにわざと入れた詰まりに当たった提案で、製品の問題の根拠にはならない。確かめたら見たとして閉じる" if planted else
+                          "提案を読み、拾うなら製品の Issue に起票する（工場は起票しない）。拾わないなら見たとして閉じる"),
                   correlation_id=correlation_id, by=source)
     return oid
 

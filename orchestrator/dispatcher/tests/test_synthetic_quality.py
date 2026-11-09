@@ -131,6 +131,25 @@ def test_enqueue_and_record_synthetic(cur):
     assert list(cur.fetchone().values())[0] >= 1
 
 
+def test_planted_proposal_is_labelled_and_leaves_the_real_key_free(cur):
+    gh = FakeGH()
+    res = {"mode": "synthetic", "env": "staging", "release_id": "r9", "model": "m", "synthetic": SY}
+    first = qa_line.enqueue_synthetic(cur, gh, REPO, friction=PLANTED, week="2026-W45")
+    planted = qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, first["issue"], first["corr"], first["job_id"], res)
+    items = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert len(items) == 2 and all("仕込み" in i["title"] and "わざと" in i["action"] for i in items)
+    for i in items:
+        assert inbox.resolve(cur, i["key"].split(":", 1)[1], "t")
+    # 仕込みなしの回で同じ詰まりが出たら、本物の提案として出る
+    cur.execute("update jobs set state='succeeded' where id=%s", (first["job_id"],))
+    second = qa_line.enqueue_synthetic(cur, gh, REPO, friction={}, week="2026-W46")
+    real = qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, second["issue"], second["corr"], second["job_id"], res)
+    assert all(p["opportunity_id"] is not None and p["planted_hit"] is None for p in real["proposed"])
+    assert {p["opportunity_id"] for p in real["proposed"]}.isdisjoint(p["opportunity_id"] for p in planted["proposed"])
+    items = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert len(items) == 2 and not any("仕込み" in i["title"] for i in items)
+
+
 def test_supervisor_synthetic_users_weekly(cur, monkeypatch):
     gh = FakeGH()
     monkeypatch.setattr(supervisor, "gh", gh)

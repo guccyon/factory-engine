@@ -546,7 +546,8 @@ def record_synthetic(cur, gh, comment, repo: str, issue: int, corr: str, job_id:
     for sig in signals(sy, sd)[: int(sd["opportunities_max"])]:
         hit = planted_hit(sig, planted)
         o = opportunity_of(sig, rid)
-        oid = opportunity.propose(cur, repo, "synthetic_users", sig["key"], theme=sig["theme"], evidence=[f"event:qa.synthetic:{job_id}", f"artifact:QASynthetic:{sid}"],
+        key = f"planted:{sig['key']}" if hit else sig["key"]   # 仕込みの回の提案が、本物の同じ目印を塞がないように分ける
+        oid = opportunity.propose(cur, repo, "synthetic_users", key, theme=sig["theme"], evidence=[f"event:qa.synthetic:{job_id}", f"artifact:QASynthetic:{sid}"],
                                   correlation_id=corr, job_id=job_id, extra={"planted_hit": hit, "release_id": rid, "signal": sig}, **o)
         proposed.append({**o, "theme": sig["theme"], "planted_hit": hit, "opportunity_id": oid, "kind": sig["kind"]})
     walks = sy.get("walks") or []
