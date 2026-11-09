@@ -626,7 +626,7 @@ def run_job(job: dict, reattaching: bool = False):
                     try:
                         cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                         enq = (cur.fetchone() or {}).get("payload") or {}
-                        committee.weekly_record(cur, repo, issue, corr, job_id, result, enq.get("week") or "", gh, comment, int(enq.get("max_issues") or 4))
+                        committee.weekly_record(cur, repo, issue, corr, job_id, result, enq.get("week") or design.week_of(), gh, comment, int(enq.get("max_issues") or 4))
                     except Exception as e:  # noqa: BLE001  まとめは events に残る。ラインは止めない
                         log("committee weekly publish failed", repo, repr(e))
             elif kind == "committee_review":

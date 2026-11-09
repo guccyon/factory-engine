@@ -147,6 +147,16 @@ def join_open(cur, repo: str, title: str, body: str, corr: str, job_id, key: str
     return True
 
 
+def filed_before(cur, repo: str, e: dict) -> bool:
+    """同じ知見 × 同じ解決策の種類の担保を、前にも起票したか（開いていれば join_open が拾うので、ここに来るのは閉じた後）。
+    2026-11-08〜09 rally: 担保の PR は知見の enforcement を書き足すので委員会にかかり、委員会がまた同じ担保を決めて次の Issue を起票した。
+    PR がマージされて元の Issue が閉じると、同じ題の担保が繰り返し起票された（K-0004 の ci_check だけで 8 本）。一度作った担保は二度起票しない。
+    作り直しが要るときは、週 1 の定例の見直しか人が起票する"""
+    cur.execute("select 1 from events where name='committee.enforce_filed' and payload->>'knowledge'=%s and payload->>'solution_kind'=%s "
+                "and payload->>'issue' like %s limit 1", (e.get("knowledge"), e.get("solution_kind"), f"%/{repo}/issues/%"))
+    return cur.fetchone() is not None
+
+
 def enforce_issue(e: dict, result: dict) -> tuple[str, str]:
     title = f"{ENFORCE_PREFIX}{e.get('knowledge')} を {e.get('solution_kind')} で決定論にする"
     body = f"""知見の委員会（ADR 0024）が、知見 `{e.get('knowledge')}` を決定論で担保すると決めました（議決 `{result.get('decision')}`、{result.get('pr_url')}）。
@@ -195,6 +205,10 @@ def record(cur, repo: str, pr_number: int, corr: str, job_id: int, result: dict,
                 continue
             title, body = enforce_issue(e, result)
             if join_open(cur, repo, title, body, corr, job_id, key, gh, comment):
+                continue
+            if filed_before(cur, repo, e):
+                cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.enforce_skipped',%s,%s,%s,%s) "
+                            "on conflict (dedupe_key) do nothing", (corr, job_id, Jsonb({"repo": repo, "title": title, "pr_url": result.get("pr_url")}), key))
                 continue
             issue = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": ["factory:planned", "factory:learn"]})
             cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('committee.enforce_filed',%s,%s,%s,%s)",
