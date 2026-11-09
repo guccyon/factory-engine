@@ -33,10 +33,11 @@ types:
     stage: triage
     required: [title, problem, expected_effect]      # expected_effect は必須（指標・方向・幅）
     expected_effect_fields: [metric, direction, range]
+    note: "Gen1 の発生源は週次の KPI の Report（ADR 0043 の O2）。異常 1 つを下書きにして受信トレイ（kind kpi_opportunity）に出す。工場は起票しない（人かプランナーが窓口から拾う）。correlation_id は kpi:<repo>:<週>"
   Requirements:
     stage: define
     required: [acceptance_criteria, non_goals, success_definition]
-    optional: [stories]
+    optional: [stories, kpi_forecast]
     note: "P4 の typed_upstream。プランナーが着手できると決めたときに出し、dispatcher が artifacts（produced_by plan）に残して Issue の本文の節に書く。stories は このタスクが増やす（add）・変える（change）・守る（keep）ユーザーストーリーの宣言（id は製品の specs/stories/。形は definitions/planner.yaml の upstream）"
   Ticket:
     stage: design
@@ -58,6 +59,7 @@ types:
   KPIReport:
     stage: [operate, routine]
     required: [period, metrics, diff_from_previous, explanations]   # 前回差分の説明責任
+    note: "ADR 0043 の O2。週次の Report（report_kpi.py）が測れた結果 1 つにつき 1 つ残す。period は JST の ISO 週。explanations は前回の測定からマージした PR の数と、見込みと実測の組。correlation_id は kpi:<repo>:<週>"
   Retrospective:
     stage: learn
     required: [day, window_days, signals, clusters]

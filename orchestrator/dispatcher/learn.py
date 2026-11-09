@@ -1,6 +1,6 @@
 """Learn ループの Retrospective（ADR 0013 の 1・2）。
 
-教師信号を制御プレーンの記録（artifacts の Judgment、events の judgment.graded・taste.flagged・sendback.*）から集め、signature で束ねる。
+教師信号を制御プレーンの記録（artifacts の Judgment、events の judgment.graded・taste.flagged・kpi.forecast_scored・sendback.*）から集め、signature で束ねる。
 決定的（LLM を使わない）。同じ記録と同じ期間には同じ束を返す。Lesson を書く learn ジョブはこの束を入力にする（別の PR）。
 数え方は definitions/learning.yaml（teacher_signals・retrospective・knowledge_stages）に合わせる。
 """
@@ -55,6 +55,17 @@ def collect_signals(cur, frm: datetime, to: datetime) -> list[dict]:
         out.append({"kind": "taste_flag", "signature": p.get("signature") or "taste:?", "pr_url": sub.get("pr_url"), "ticket": r["correlation_id"],
                     "at": r["occurred_at"], "artifact_id": p.get("artifact_id"),
                     "defect": {"evidence": p.get("note"), "location": where or None, "remediation_hint": None}})
+    # KPI の予測誤差（kpi_error、ADR 0043 の O3）。プランナーの見込みと週次の実測の差。KPI ごとに束ねる（テーマ 1 の教師信号の 1 種）。
+    # 修正 PR がないのでルール化の Issue には回らず、Retrospective の束に出る
+    cur.execute("""select occurred_at, correlation_id, payload from events where name='kpi.forecast_scored' and occurred_at >= %s and occurred_at < %s
+                    order by id""", (frm, to))
+    for r in cur.fetchall():
+        p = r["payload"]
+        u = p.get("unit") or ""
+        out.append({"kind": "kpi_error", "signature": f"kpi:{p.get('kpi') or '?'}", "pr_url": p.get("pr_url"), "ticket": r["correlation_id"],
+                    "at": r["occurred_at"], "artifact_id": None,
+                    "defect": {"evidence": f"見込み {p.get('forecast')}{u}、実測 {p.get('actual')}{u}、誤差 {p.get('error')}{u}（{p.get('week')}）",
+                               "location": p.get("kpi"), "remediation_hint": p.get("why") or None}})
     return [s for s in out if not s["signature"].startswith(OVERLAY_PREFIX)]
 
 

@@ -81,16 +81,33 @@ def contract_files(repo_dir: Path | None) -> list[str]:
     return out[:80]
 
 
+KPI_ID = re.compile(r"^[a-z][a-z0-9_]{0,60}$")
+
+
+def kpi_ids(repo_dir: Path | None) -> list[str]:
+    """製品の KPI の id（.factory-config/ship.yaml の kpi.metrics。週次の Report が測るもの。ADR 0043 の O2）"""
+    p = repo_dir / ".factory-config" / "ship.yaml" if repo_dir else None
+    if not p or not p.is_file():
+        return []
+    try:
+        doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return []
+    ms = (doc.get("kpi") or {}).get("metrics") if isinstance(doc, dict) and isinstance(doc.get("kpi"), dict) else None
+    return [str(m["id"]) for m in ms or [] if isinstance(m, dict) and KPI_ID.match(str(m.get("id") or ""))][:12]
+
+
 def facts(repo_dir: Path | None) -> dict:
     """製品のリポジトリから決定論で読める事実（デザインシステムの有無、知見の置き場の有無、ユーザーストーリーの id、ADR の番号、契約のファイル）"""
     if not repo_dir:
-        return {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": [], "adr_ids": [], "contract_files": []}
+        return {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": [], "adr_ids": [], "contract_files": [],
+                "kpi_ids": []}
     d = repo_dir / "specs" / "design"
     files = sorted(str(p.relative_to(repo_dir)) for p in d.rglob("*") if p.is_file()) if d.is_dir() else []
     has_tokens = any("token" in Path(f).name for f in files)
     return {"has_design_system": has_tokens, "design_files": files[:50],
             "has_knowledge": (repo_dir / ".factory-config" / "knowledge").is_dir(), "story_ids": story_ids(repo_dir),
-            "adr_ids": adr_ids(repo_dir), "contract_files": contract_files(repo_dir)}
+            "adr_ids": adr_ids(repo_dir), "contract_files": contract_files(repo_dir), "kpi_ids": kpi_ids(repo_dir)}
 
 
 def desk_defs() -> dict:
@@ -135,7 +152,10 @@ def schema(defs: dict) -> dict:
         "requirements": {"type": "object", "properties": {
             "acceptance_criteria": {"type": "array", "maxItems": u["requirements"]["max_acceptance"], "items": {"type": "string"}},
             "non_goals": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
-            "success_definition": {"type": "string"}},
+            "success_definition": {"type": "string"},
+            "kpi_forecast": {"type": "object", "properties": {
+                "kpi": {"type": "string"}, "change": {"type": "number"}, "why": {"type": "string"}},
+                "required": ["kpi", "change", "why"]}},
             "required": list(u["requirements"]["required"])},
         "stories": {"type": "array", "maxItems": u["max_stories"], "items": {"type": "object", "properties": {
             "action": {"type": "string", "enum": list(u["story_actions"])},
@@ -266,6 +286,16 @@ def texts(v) -> list[str]:
     return [x.strip() for x in v if isinstance(x, str) and x.strip()] if isinstance(v, list) else []
 
 
+def kpi_forecast(v, f: dict) -> dict | None:
+    """KPI の見込み（任意。ADR 0043 の O3）。製品の KPI の id（facts の kpi_ids）にないもの・変化が数でないものは落とす"""
+    if not isinstance(v, dict) or v.get("kpi") not in (f.get("kpi_ids") or []):
+        return None
+    ch = v.get("change")
+    if not isinstance(ch, (int, float)) or isinstance(ch, bool):
+        return None
+    return {"kpi": v["kpi"], "change": ch, "why": str(v.get("why") or "").strip()[:300]}
+
+
 def upstream(out: dict, f: dict, decision: str, scale: str, defs: dict) -> tuple[dict | None, list[dict], list[str]]:
     """型つきの上流の成果物（typed_upstream）を整える。返り値は (要件, ストーリーの宣言, 印)。着手できる判定（ready・split）だけで出す
     - 要件: 受け入れ条件が 1 つもなければ出さない（印 no_requirements）
@@ -280,6 +310,11 @@ def upstream(out: dict, f: dict, decision: str, scale: str, defs: dict) -> tuple
     if ac:
         req = {"acceptance_criteria": ac, "non_goals": texts(r.get("non_goals")),
                "success_definition": (r.get("success_definition") or "").strip() if isinstance(r.get("success_definition"), str) else ""}
+        kf = kpi_forecast(r.get("kpi_forecast"), f)
+        if kf:
+            req["kpi_forecast"] = kf
+        elif r.get("kpi_forecast"):
+            marks.append("unknown_kpi")
     else:
         marks.append("no_requirements")
     known, seen, stories = set(f.get("story_ids") or []), set(), []
@@ -414,6 +449,7 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
     ua, uc = u["adr"], u["contracts"]
     aids = "、".join(f.get("adr_ids") or []) or "（まだない）"
     cfiles = "、".join(f.get("contract_files") or []) or "（まだない）"
+    kpis = "、".join(f.get("kpi_ids") or []) or "まだない。そのときは書かない"
     ckinds = "、".join(f"{k}（{v}）" for k, v in uc["kinds"].items())
     compat = "、".join(f"{k}（{v}）" for k, v in uc["compat"].items())
     import workflow
@@ -468,6 +504,8 @@ def prompt(defs: dict, f: dict, round_: int, inp: dict | None = None) -> str:
   画面が決まってから切るので tasks は空でよい。基準に当たらなければ tasks は空にする
 - requirements: 着手できるときの要件。acceptance_criteria（受け入れ条件。利用者や API の利用者から見て確かめられる文で、{u['requirements']['max_acceptance']} 個まで）、
   non_goals（このチケットでやらないこと）、success_definition（できあがったと言える状態を 1 文で）。チケットに書いてあることを整えるだけで、中身を足さない。
+  kpi_forecast は任意: この変更が製品の KPI（{kpis}）のどれかを動かすと見込めるときだけ、kpi（id）・change（出荷の後の週次の値の変化。KPI の単位で、増えるなら正）・
+  why（そう見込む理由を 1 文で）を書き、success_definition の末尾にも「KPI <id> が <変化> 動く見込み」と 1 行添える。見込めなければ書かない。週次の Report が実測と突き合わせる
   着手できないときは空でよい
 - stories: このタスクが触るユーザーストーリー（{u['max_stories']} 本まで）。action は {actions}。
   change・keep は specs/stories/ にある id をそのまま書く。add は新しい id（英小文字と -）と、title（「<誰が>が<何>できる」）・actor（actors.yaml の id）も書く。

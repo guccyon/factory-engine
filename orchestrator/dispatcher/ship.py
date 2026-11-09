@@ -10,8 +10,11 @@
   release.reseed_requested    {env, by, via}          触れる環境の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env。release_id はいまその環境の版）
   release.restart_requested   {repo, env, advance_seconds, reset_clock, by, via}
                                                       触れる環境の部品を再起動し、サーバーの時計を進める（ADR 0028 の scenario_time。DB は残す）
+  release.kpi_requested       {repo, env, week, by, via}
+                                                      その環境で製品の KPI を測る（ADR 0043 の O2 の週次の Report。ship.yaml の kpi のコマンドを読むだけで、環境を変えない）
 結果（同じ release の correlation_id で）:
-  release.built / release.deployed / release.rolled_back / release.reseeded / release.restarted / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
+  release.built / release.deployed / release.rolled_back / release.reseeded / release.restarted / release.kpi_measured / release.ship_failed
+  （payload に request_id。処理済みの印も兼ねる。KPI を測れなかったときは release.kpi_measured の ok: false で、停止には開かない）
   release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ。入れ直しのたびにも）
   release.touchable（触れる環境の入口。ship.yaml の touch の環境に出す・戻す・入れ直すたびに。URL・QR を付ける入口・ログインの手がかり）
 
@@ -35,8 +38,14 @@ import stoppage
 
 WORK = os.environ.get("SHIP_WORKDIR", "/ship")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,40}$")
-REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested", "release.restart_requested")
-RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.restarted", "release.ship_failed")
+REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested", "release.restart_requested",
+            "release.kpi_requested")
+RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.restarted", "release.kpi_measured",
+           "release.ship_failed")
+# 製品の KPI（ADR 0043 の O2）。ship.yaml の kpi.metrics の id の形と数の上限。コマンドの出力は {id: 数} の JSON
+KPI_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,60}$")
+KPI_MAX = 12
+WEEK_RE = re.compile(r"^\d{4}-W\d{2}$")
 # 時計を進める上限（ADR 0028 の scenario_time）。1 回に進める量と、進めた量の合計。翌日・暦月の境をまたぐのに足りる幅に限る
 ADVANCE_MAX_SECONDS = 7 * 24 * 3600
 OFFSET_MAX_SECONDS = 62 * 24 * 3600
@@ -236,6 +245,18 @@ def request_restart(cur, repo: str, env: str, by: str, via: str, advance_seconds
     return True, f"{env}（{rid}）を{what}再起動する依頼をした"
 
 
+def request_kpi(cur, repo: str, env: str, week: str, by: str, via: str) -> tuple[bool, str]:
+    """その環境で製品の KPI を測る依頼（ADR 0043 の O2）。いまその環境に出ている版の ship.yaml の kpi を shipper が読む。
+    week は集計の週（JST の ISO 週、例 2026-W46）。測るだけで環境を変えない"""
+    if not WEEK_RE.match(week or ""):
+        return False, "週は 2026-W46 の形"
+    rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
+    if not rid:
+        return False, f"{env} にまだ版が出ていない"
+    record(cur, "release.kpi_requested", rid, {"repo": repo, "env": env, "week": week, "by": by, "via": via})
+    return True, f"{env}（{rid}）で {week} の KPI を測る依頼をした"
+
+
 def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, str]:
     if env == "prod" and prod_held(cur, repo):
         return False, held_msg(cur, repo)   # 戻すのも本番を起動するので受け付けない
@@ -328,6 +349,42 @@ def touch_config(cfg: dict, env: str) -> dict | None:
     """ship.yaml の touch（触れる環境）。その環境が入っていなければ None"""
     t = cfg.get("touch") or {}
     return t if env in (t.get("environments") or []) else None
+
+
+def kpi_config(cfg: dict, env: str) -> dict | None:
+    """ship.yaml の kpi（製品の KPI の測り方。ADR 0043 の O2）。その環境が入っていなければ None"""
+    k = cfg.get("kpi") or {}
+    return k if env in (k.get("environments") or []) and k.get("service") and k.get("command") else None
+
+
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def kpi_metrics(k: dict, values: dict) -> list[dict]:
+    """ship.yaml の kpi.metrics の並びに、コマンドが返した値を当てる。形の誤った項目は落とし、値が数でなければ None（不明）"""
+    out = []
+    for m in (k.get("metrics") or [])[:KPI_MAX]:
+        mid = str((m or {}).get("id") or "")
+        if not KPI_ID_RE.match(mid):
+            continue
+        exp = m.get("expected")
+        exp = [_num(exp[0]), _num(exp[1])] if isinstance(exp, list) and len(exp) == 2 else None
+        out.append({"id": mid, "ja": str(m.get("ja") or mid)[:80], "unit": str(m.get("unit") or "")[:20],
+                    "direction": m.get("direction") if m.get("direction") in ("up_is_good", "down_is_good") else "up_is_good",
+                    "expected": exp, "change_alert": _num(m.get("change_alert")), "value": _num((values or {}).get(mid))})
+    return out
+
+
+def measure_kpi(cfg: dict, repo: str, env: str) -> list[dict]:
+    k = kpi_config(cfg, env)
+    if not k:
+        raise RuntimeError(f"ship.yaml の kpi に {env} の測り方がない")
+    out = sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", k["service"], *k["command"]], timeout=120)
+    values = json.loads(out.strip() or "{}")
+    if not isinstance(values, dict):
+        raise RuntimeError("kpi のコマンドの出力が {id: 数} の JSON ではない")
+    return kpi_metrics(k, values)
 
 
 def compose_env(cfg: dict, repo: str, env: str, rel: dict) -> dict:
@@ -528,6 +585,15 @@ def handle(cur, ev: dict):
                                                    "advance_seconds": int(p.get("advance_seconds") or 0), "clock_offset_seconds": offset,
                                                    "by": p.get("by"), "via": p.get("via")})
             touch_points(cur, cfg, repo, env, rel, common)
+        elif name == "release.kpi_requested":
+            env = p["env"]
+            try:
+                path, _ = source(repo, rel["app_version"])
+                metrics, err = measure_kpi(ship_config(path), repo, env), None
+            except Exception as e:  # noqa: BLE001  測れなかったことを残すだけ（報告の欠けで出荷を止めない）
+                metrics, err = [], str(e)[-800:]
+            record(cur, "release.kpi_measured", rid, {**common, "env": env, "week": p.get("week"), "ok": err is None, "metrics": metrics,
+                                                      "error": err, "by": p.get("by"), "via": p.get("via")})
     except Exception as e:  # noqa: BLE001  失敗は記録して停止に開き、次の依頼へ
         record(cur, "release.ship_failed", rid, {**common, "request": name, "error": str(e)[-1500:]})
         stoppage.open_stoppage(cur, f"ship:{ev['id']}", "factory-bug", f"出荷の失敗: {name} {rid}",

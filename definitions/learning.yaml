@@ -79,8 +79,13 @@ teacher_signals:
     signature: "taste:<言語化の候補>"
     eval_from: { positive: "違和感を付けた PR の差分（印を付けた画面）", negative: "同じ観点で違和感のなかった差分（choice.seen の unflagged）" }
     note: "learn.collect_signals が読む（2026-11-05）。材料は印の一言と画面（アプリ・画面名・id）。修正 PR がないのでルール化の Issue にはまだ回らず、Retrospective の束に出る"
-  # 憲章の残りの信号（KPI 予測誤差、ストア却下、データ要求への訂正、本番障害）は発生源ができたら足す（P5）
-  later: [kpi_error, store_rejection, data_request_correction, incident]
+  kpi_error:
+    ja: "KPI の見込みと実測が食い違った（ADR 0043 の O3。テーマ 1）"
+    source: "events kpi.forecast_scored（週次の Report が、プランナーの Requirements の kpi_forecast と実測の差を突き合わせた）"
+    signature: "kpi:<KPI の id>"
+    note: "learn.collect_signals が読む（2026-11-09）。Gen1 は staging の合成シードの値なので誤差の中身に意味はなく、回路の確認に限る。修正 PR がないのでルール化の Issue には回らず、Retrospective の束に出る"
+  # 憲章の残りの信号（ストア却下、データ要求への訂正、本番障害）は発生源ができたら足す（P5）
+  later: [store_rejection, data_request_correction, incident]
 
 # ---------------------------------------------------------------------
 # Retrospective: 期間の教師信号を signature で束ねたもの（決定的。LLM を使わない）

@@ -68,6 +68,12 @@ DESK_ANSWERS = {
                                {"id": "return", "label": "断りを差し戻す", "note_required": True}],
                      "effect": "納得なら依頼を断りとして完了にする。別案なら代わりの案を別の依頼として開き、元の依頼と結ぶ。差し戻すと理由を添えて振り分けからやり直す"},
 }   # desk_line の CONFIRM_OPTIONS・RECEIPT_OPTIONS・DECLINE_OPTIONS と同じ（食い違いはテストで見る）
+# 選んで閉じるだけの依頼。選んだ id は inbox.resolved の outcome に残る（作用は持たない）
+TASK_ANSWERS = {
+    # 週次の KPI の異常から起こした Opportunity の下書き（ADR 0043 の O2）。工場は起票しない。拾うなら人かプランナーが窓口から相談にする
+    "kpi_opportunity": {"options": [{"id": "pick", "label": "拾う（窓口に相談として持ち込む）"}, {"id": "dismiss", "label": "見送る"}],
+                        "effect": "どちらを選んでも件を閉じるだけで、工場は起票しない。拾うなら窓口に相談として持ち込む"},
+}
 
 
 def _clip(v, n=MAX_LEN) -> str:
@@ -84,8 +90,9 @@ def _age(t, now: datetime) -> int | None:
 
 # ------------------------------------------------------------------ 他の工程から積む・消す
 def request(cur, key: str, kind: str, who: str, title: str, *, url: str = "", action: str = "", correlation_id: str | None = None,
-            by: str = "factory") -> bool:
-    """受信トレイに依頼を積む。同じ key がすでに開いていれば何もしない（False）。kind は呼ぶ側の種類（review_page・ready_question など）"""
+            by: str = "factory", detail: list[dict] | None = None) -> bool:
+    """受信トレイに依頼を積む。同じ key がすでに開いていれば何もしない（False）。kind は呼ぶ側の種類（review_page・ready_question など）。
+    detail は件の中身（label と text の並び。任意）"""
     if not KEY.match(key or ""):
         raise ValueError("key は英数字と _.:/#@- の 200 文字以内")
     if who not in WHO:
@@ -96,7 +103,9 @@ def request(cur, key: str, kind: str, who: str, title: str, *, url: str = "", ac
         return False
     cur.execute("insert into events(name, correlation_id, payload) values ('inbox.requested', %s, %s)",
                 (correlation_id, Jsonb({"key": key, "kind": _clip(kind, 40), "who": who, "title": _clip(title), "url": _clip(url, 500),
-                                        "action": _clip(action), "by": _clip(by, 80)})))
+                                        "action": _clip(action), "by": _clip(by, 80),
+                                        "detail": [{"label": _clip(d.get("label"), 40), "text": _clip(d.get("text"), 800)}
+                                                   for d in (detail or [])[:6] if isinstance(d, dict) and d.get("text")]})))
     return True
 
 
@@ -302,6 +311,8 @@ def _tasks(cur) -> list[dict]:
         i = {"key": f"task:{p['key']}", "kind": "task", "task_kind": p.get("kind"), "who": p.get("who") or "owner",
              "title": p.get("title") or "", "action": p.get("action") or "", "url": p.get("url") or "",
              "since": r["occurred_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1], "answer": None, "also": []}
+        if p.get("detail"):
+            i["detail"] = p["detail"]
         if p.get("kind") == "review_page":   # レビューページの依頼は、同じ UXSpec の人の選択に答える（レビューページのボタンと同じ）
             m = re.fullmatch(r"(design_review|design_look):(\d+)", p["key"])
             c = _review_choice(cur, m.group(1), m.group(2)) if m else None
@@ -311,6 +322,10 @@ def _tasks(cur) -> list[dict]:
             d = DESK_ANSWERS[p["kind"]]
             i["answer"] = {"type": "choose", "options": d["options"], "extra": d.get("extra", []), "effect": d["effect"],
                            "allowed": ["requester"], "target": ("desk", p["key"])}
+        elif p.get("kind") in TASK_ANSWERS:
+            d = TASK_ANSWERS[p["kind"]]
+            i["answer"] = {"type": "choose", "options": d["options"], "extra": [], "effect": d["effect"],
+                           "allowed": [i["who"]], "target": ("task", p["key"])}
         elif p.get("kind") in TASK_ACK:
             i["answer"] = {"type": "ack", "options": [{"id": "seen", "label": "見た（閉じる）"}], "extra": [], "effect": TASK_ACK[p["kind"]],
                            "allowed": [i["who"]], "target": ("task", p["key"])}

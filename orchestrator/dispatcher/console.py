@@ -278,7 +278,7 @@ def releases(cur) -> list[dict]:
                     "and (r.payload->>'request_id')::bigint = e.id) order by id", (list(ship.REQUESTS), f"{repo}@%", list(ship.RESULTS)))
         pending = [{"request": r["name"].split(".", 1)[1], "release_id": r["rid"], "env": r["env"]} for r in cur.fetchall()]
         cur.execute("select id, occurred_at, name, payload from events where name = any(%s) and payload->>'repo'=%s order by id desc limit 1",
-                    (list(ship.RESULTS), repo))
+                    ([n for n in ship.RESULTS if n != "release.kpi_measured"], repo))   # KPI を測った結果は出荷の最後の結果に数えない
         last = cur.fetchone()
         t = touch.latest(cur, repo)
         if t:   # 触れる環境の入口（URL・QR・ログインの手がかり）。QR は工場の中で作る（外部のサービスに依存しない）

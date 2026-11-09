@@ -146,8 +146,12 @@ phases:
     weight_weeks: 6
     items:
       - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }   # ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える。最小形（計画・工場長の立場、問い返し 1 回、根拠の id の確かめ）は dispatcher/desk_answer.py。済の条件は窓口の MCP から実際の問いを 1 本流して desk.answered が残ること
-      - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
-      - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
+      - id: report_line
+        ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）"
+        measure: { db: { target: 1, sql: "select count(*) from events where name = 'report.kpi_weekly' and (payload->>'opportunities')::int > 0" } }   # ADR 0043 の O2。済の条件は週次の集計が 1 回出て、異常 1 件が Opportunity の下書きになったこと。supervisor が毎週月曜 7 時（JST）に staging で製品の ship.yaml の kpi を測り、前回と比べる（orchestrator/dispatcher/report_kpi.py）。今すぐは factoryctl report kpi --measure
+      - id: kpi_error_signal
+        ja: "KPI 予測誤差が教師信号として流れる"
+        measure: { db: { target: 1, sql: "select count(*) from events s where s.name = 'kpi.forecast_scored' and exists (select 1 from artifacts a where a.type = 'Retrospective' and a.created_at > s.occurred_at and a.payload->'clusters' @> jsonb_build_array(jsonb_build_object('signature', 'kpi:' || (s.payload->>'kpi'))))" } }   # ADR 0043 の O3。プランナーが Requirements に書いた KPI の見込み（kpi_forecast）の誤差が kpi.forecast_scored に残り、その後の learn.retrospected の束（signature kpi:<id>）に入った数
       - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）
       - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028
       - id: release_train

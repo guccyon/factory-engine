@@ -24,7 +24,9 @@ SECTIONS = {
     "doing": ("進めているもの", ("provider", "business_owner")),
     "next": ("次に流すもの", ("provider", "business_owner")),
     "releases": ("版", ("provider", "business_owner")),
+    "kpi": ("製品の KPI（週次）", ("provider", "business_owner")),
 }
+ANOMALY_JA = {"range": "目安の外", "prev": "前回より悪化", "forecast": "見込みと食い違い"}   # report_kpi.find_anomalies の kind
 LIST_MAX = 8   # 一覧はここまで。残りは件数だけ
 PACE_DAYS = 7  # 消化のペースを測る期間（日）
 THRESHOLDS = {
@@ -102,7 +104,23 @@ def releases(cur, repo: str, start: datetime, end: datetime):
     return [entry(f"版 {r['payload'].get('app_version')}", f"PR {len(r['payload'].get('prs') or [])} 件") for r in rows] or [note("なし")]
 
 
-BUILDERS = {"roadmap": roadmap, "pace": pace, "done": done, "doing": doing, "next": next_, "releases": releases}
+def kpi(cur, repo: str, start: datetime, end: datetime):
+    """いちばん新しい週次の KPI（ADR 0043 の O2。report_kpi.py が週に 1 回 staging で測る）。異常の印は見立て（assess）が付ける"""
+    import report_kpi
+    rep = report_kpi.latest(cur, repo, end)
+    if not rep:
+        return [note("まだ測っていない（毎週月曜の朝に staging で測る）")]
+    items = [note(f"{rep['week']}（{rep['env']}）の値。異常 {rep['anomalies']} 件を Opportunity の下書きとして受信トレイに出した"
+                  if rep.get("opportunities") else f"{rep['week']}（{rep['env']}）の値")]
+    for m in rep.get("metrics") or []:
+        it = metric(m["ja"], round(m["value"], 4) if isinstance(m.get("value"), (int, float)) else None, m.get("unit") or "",
+                    round(m["delta"], 4) if isinstance(m.get("delta"), (int, float)) else None)
+        it.state = "・".join(ANOMALY_JA.get(a, a) for a in m.get("anomalies") or [])   # 異常の種類。assess が印にする
+        items.append(it)
+    return items
+
+
+BUILDERS = {"roadmap": roadmap, "pace": pace, "done": done, "doing": doing, "next": next_, "releases": releases, "kpi": kpi}
 CHARTS = [("roadmap", "進み具合（済んだチケットの割合）", "ロードマップの進み具合（%）"), ("done", "済んだチケット", "済んだチケット（件）"),
           ("pace", "残り（進めている＋投入待ち）", "残りのチケット（件）"), ("done", "マージした PR", "マージした PR（件）")]
 
@@ -160,6 +178,13 @@ def assess(rep: Report) -> Report:
             i.level = "warn"
         found.append({"level": "warn", "text": "次に流すものがすべて、ほかのチケットの完了待ち",
                       "action": "依存の先のチケットを先に流すよう優先度を上げる（factoryctl priority）。依存が誤りなら外す"})
+
+    odd = [i for s in rep.sections if s.id == "kpi" for i in s.items if i.kind == "metric" and i.state]
+    for i in odd:
+        i.level = "warn"
+    if odd:
+        found.append({"level": "warn", "text": f"週次の KPI で {len(odd)} つの値が異常（{'、'.join(i.label for i in odd[:3])}）",
+                      "action": "受信トレイの Opportunity の下書きを見て、拾うなら窓口に相談として持ち込む。見送るなら閉じる"})
 
     order = {"bad": 0, "warn": 1}
     found.sort(key=lambda f: order.get(f["level"], 2))

@@ -479,6 +479,22 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally                 
 - dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。同じ題の開いた Defect があれば起票せずにその Issue に書く）。固定 Issue にまとめを書く
 - 朝 5 時の日報（`health/daily/status_report.py`）とページに「夜間の探索（昨夜）」として、Defect（s1・s2 は太字）と印、回らなかった理由を出す。印は人が採点して Golden Set に入れる材料
 
+### 週次の KPI の Report ライン（P5b の report_line・kpi_error_signal、ADR 0043 の O2・O3）
+
+製品の KPI を週に 1 回 staging で測り、前回と比べて、外れた値を Opportunity の下書きとして受信トレイに出す。工場は起票しない（人かプランナーが窓口から拾う）。決定的でトークンを使わない。組み立ては `dispatcher/report_kpi.py`。
+
+```bash
+docker compose exec dispatcher factoryctl report kpi guccyon/rally             # いちばん新しい週次の KPI
+docker compose exec dispatcher factoryctl report kpi guccyon/rally --measure   # 今すぐ staging で測り、Report・下書き・見込みの採点まで回す
+```
+
+- 測り方は製品の `.factory-config/ship.yaml` の `kpi`（測る環境・実行する部品とコマンド・値ごとの id・名前・単位・よい向き・目安の幅 `expected`・前回からの変化の閾値 `change_alert`）。コマンドの出力は `{id: 数}` の JSON。Gen1 は合成の利用者の行動ログ（O4）がまだないので、staging の DB から近似する
+- supervisor が毎週月曜 7 時（JST）を過ぎたら、`KPI_WEEKLY` の製品（既定は `RELEASE_TRAIN` と同じ。空で止める）ごとに測る依頼（`release.kpi_requested`）を書き、shipper が staging で実行して `release.kpi_measured` に残す。staging に版がなければ `report.kpi_skipped` に週 1 回。測れなくても停止には開かない
+- 測れた結果は、同じ製品・同じ環境のひとつ前の測定と比べて artifacts の `KPIReport` と events の `report.kpi_weekly` に残す。目安の幅の外・前回より悪い向きに `change_alert`（既定 20%）以上・見込みと逆に動いた値を異常とし、1 回 3 件まで artifacts の `Opportunity`（題・問題・期待する効果）にして、受信トレイに事業主（po）宛ての依頼（`kpi_opportunity`、拾う・見送る）を積む
+- 見込み（O3）: プランナーは着手を決めるとき、変更が KPI を動かすと見込めれば Requirements に `kpi_forecast`（KPI の id・変化・理由）を書く（任意。製品の `ship.yaml` の `kpi.metrics` にない id は落とす）。週次の Report が、前回の測定から今回までにマージしたチケットの見込みを実測の差と突き合わせて `kpi.forecast_scored` に残し、Learn の Retrospective が教師信号 `kpi_error`（signature `kpi:<id>`）として束ねる
+- 開発状況レポート（`report.product`）の節「製品の KPI（週次）」にいちばん新しい値と前回差を出し、異常は注意の印にする
+- Gen1 の値は staging の合成シードなので、異常や誤差の中身に意味はない（回路の確認）
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
