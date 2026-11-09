@@ -36,6 +36,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import ghapi
+import ghapp
 from globmatch import glob_re
 import psycopg
 import yaml
@@ -65,7 +66,7 @@ import workflow_shadow
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
-GH_TOKEN = ENV.get("SUPERVISOR_GH_TOKEN") or ENV["GH_TOKEN"]
+GH_TOKEN = ENV.get("SUPERVISOR_GH_TOKEN") or None   # 空なら App か GH_TOKEN（ghapp。ADR 0041）
 INTERVAL = int(ENV.get("SUPERVISOR_INTERVAL_SEC", "60"))
 SERIALIZE = ENV.get("SUPERVISOR_SERIALIZE", "1") == "1"   # よく衝突するファイルに触るタスクを並べて流す（ADR 0027 の 2）。0 で止める
 MAX_INFLIGHT = int(ENV.get("SUPERVISOR_MAX_INFLIGHT", "1"))   # 工場で同時に流す Ticket（ジョブ＋開いている工場の PR）。衝突を避けて 1 から
@@ -723,7 +724,7 @@ def daily_report_step(cur):
     if cur.fetchone():
         return
     r = subprocess.run([sys.executable, DAILY_REPORT, "--publish"], capture_output=True, text=True, timeout=300,
-                       env={**ENV, "GH_TOKEN": GH_TOKEN})
+                       env={**ENV, "GH_TOKEN": GH_TOKEN or ghapp.token()})
     log("daily report", r.returncode, (r.stdout or r.stderr).strip()[-300:])
 
 

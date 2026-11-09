@@ -65,7 +65,10 @@ services:
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}
       MODEL_TIER: ${MODEL_TIER:-tier-large}
       # ワーカーに渡す秘密情報（.env）
-      GH_TOKEN: ${GH_TOKEN:?GitHub token for the worker (.env)}
+      GH_TOKEN: ${GH_TOKEN:-}   # PAT（App が無いときの身元）。App か PAT のどちらかが要る（ghapp.check）
+      GH_APP_ID: ${GH_APP_ID:-}                            # GitHub App（ADR 0041）。入っていれば GH_TOKEN より優先し、ジョブごとに絞ったトークンを発行する
+      GH_APP_PRIVATE_KEY_B64: ${GH_APP_PRIVATE_KEY_B64:-}  # App の秘密鍵（PEM を base64 で 1 行に）
+      GH_APP_INSTALLATION_ID: ${GH_APP_INSTALLATION_ID:-}  # 任意。空なら製品の owner から引く
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?claude setup-token の値 (.env)}
       WORKER_IMAGE: factory-worker:p0
       WORKER_IMAGES: ${WORKER_IMAGES:-}      # リポジトリごとの上書き（例: guccyon/rally=factory-worker:rust）
@@ -143,7 +146,10 @@ services:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
       FACTORY_REPOS: ${FACTORY_REPOS:-guccyon/rally}
       TRIGGER_LABEL: ${TRIGGER_LABEL:-factory:implement}
-      GH_TOKEN: ${GH_TOKEN:?GitHub token (.env)}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GH_APP_ID: ${GH_APP_ID:-}                            # GitHub App（ADR 0041）。入っていれば GH_TOKEN より優先し、ジョブごとに絞ったトークンを発行する
+      GH_APP_PRIVATE_KEY_B64: ${GH_APP_PRIVATE_KEY_B64:-}  # App の秘密鍵（PEM を base64 で 1 行に）
+      GH_APP_INSTALLATION_ID: ${GH_APP_INSTALLATION_ID:-}  # 任意。空なら製品の owner から引く
       SUPERVISOR_GH_TOKEN: ${SUPERVISOR_GH_TOKEN:-}   # マージ権限を分けるときの別トークン。空ならワーカーと同じ
       SUPERVISOR_INTERVAL_SEC: ${SUPERVISOR_INTERVAL_SEC:-60}
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
@@ -257,7 +263,10 @@ services:
       postgres: { condition: service_healthy }
     environment:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
-      GH_TOKEN: ${GH_TOKEN:?GitHub token (.env)}          # 製品のソースを取る（読むだけ）
+      GH_TOKEN: ${GH_TOKEN:-}          # 製品のソースを取る（読むだけ）
+      GH_APP_ID: ${GH_APP_ID:-}                            # GitHub App（ADR 0041）。入っていれば GH_TOKEN より優先し、ジョブごとに絞ったトークンを発行する
+      GH_APP_PRIVATE_KEY_B64: ${GH_APP_PRIVATE_KEY_B64:-}  # App の秘密鍵（PEM を base64 で 1 行に）
+      GH_APP_INSTALLATION_ID: ${GH_APP_INSTALLATION_ID:-}  # 任意。空なら製品の owner から引く
       SHIP_POLL_SEC: ${SHIP_POLL_SEC:-2}                   # Rollback の秒数に効くので短く
       SHIP_WORKDIR: /ship
       # 触れる環境（ADR 0028 の touchable_env）。端末ごとの値なのでここには書かず .env で渡す（README の「触れる環境」）。

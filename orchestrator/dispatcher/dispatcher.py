@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ghapi
+import ghapp
 import psycopg
 from minio import Minio
 from psycopg.rows import dict_row
@@ -84,7 +85,7 @@ WORKER_IMAGE = ENV.get("WORKER_IMAGE", "factory-worker:p0")
 WORKER_IMAGES = dict(kv.split("=", 1) for kv in ENV.get("WORKER_IMAGES", "").split(",") if "=" in kv)
 UI_DESIGN_IMAGE = ENV.get("UI_DESIGN_IMAGE", "factory-worker:design")   # デザイナー役（Chromium と同梱の書体つき。worker/Dockerfile.design）
 MODEL_TIER = ENV.get("MODEL_TIER", "tier-large")
-GH_TOKEN = ENV["GH_TOKEN"]
+ghapp.check()   # GitHub の身元（App か PAT。ADR 0041）
 BUCKET = ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts")
 # ワーカーに渡すジョブ用 DB（制御プレーンと同じ Postgres サーバーに job_<id> を作る。ワーカーは自前で Postgres を立てずに済む）
 JOB_DB_ENABLED = ENV.get("JOB_DB_ENABLED", "1") == "1"
@@ -135,7 +136,7 @@ def db():
 
 # ------------------------------------------------------------------ GitHub（REST、標準ライブラリのみ）
 def gh(method: str, path: str, body: dict | None = None):
-    return ghapi.request(method, path, body, user_agent="factory-dispatcher", token=GH_TOKEN)   # GET は ETag で条件付き（上限に数えない 304）
+    return ghapi.request(method, path, body, user_agent="factory-dispatcher")   # GET は ETag で条件付き（上限に数えない 304）
 
 
 def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
@@ -347,7 +348,7 @@ def capture_tick():
     _capture_checked_at = time.time()
     try:
         with db() as conn, conn.cursor() as cur:
-            exit_capture.step(cur, gh, lambda repo, aid: exit_capture.download_artifact(repo, aid, GH_TOKEN), store_put, REPOS, log=log)
+            exit_capture.step(cur, gh, lambda repo, aid: exit_capture.download_artifact(repo, aid, ghapp.token(repo)), store_put, REPOS, log=log)
     except Exception as e:  # noqa: BLE001
         log("exit capture failed", repr(e))
 
@@ -444,7 +445,8 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
-                   "-e", f"GH_TOKEN={GH_TOKEN}", "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
+                   "-e", f"GH_TOKEN={ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）
+                    "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
                    *(["-e", f"CONTINUE_BRANCH={cont['branch']}", "-e", f"CONTINUE_PR={cont['pr_number']}", "-e", f"CONTINUE_REASON={cont['reason']}"] if cont else []),
                    *(["--entrypoint", "/usr/local/bin/clarify.sh"] if kind == "clarify" else []),
                    *(["--entrypoint", "/usr/local/bin/inspect.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "inspect" else []),

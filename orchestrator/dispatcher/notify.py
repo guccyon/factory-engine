@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 import yaml
 from psycopg.types.json import Jsonb
 
+import ghapp
+
 ENV = os.environ
 CONFIG_PATH = ".factory-config/notifications.yaml"
 POLL_SEC = int(ENV.get("NOTIFY_CONFIG_POLL_SEC", "300"))   # 製品のリポジトリの設定を読みに行く間隔。304 は GitHub の上限に数えられない
@@ -297,8 +299,8 @@ def post(dest: Destination, text: str, attachment: Attachment | None = None) -> 
         return True
     if dest.via == "github-issue":
         import stoppage   # 状況 Issue の探し方・GitHub の呼び方は stoppage に 1 か所
-        if not (stoppage.STATUS_REPO and ENV.get("GH_TOKEN")) or ENV.get("WORKER_DRY_RUN"):
-            _log(dest.name, "github-issue skipped (no STATUS_REPO/GH_TOKEN or dry run)")
+        if not (stoppage.STATUS_REPO and ghapp.available()) or ENV.get("WORKER_DRY_RUN"):
+            _log(dest.name, "github-issue skipped (no STATUS_REPO/GitHub identity or dry run)")
             return False
         stoppage._gh("POST", f"repos/{stoppage.STATUS_REPO}/issues/{stoppage._status_issue()}/comments", {"body": text})
         return True

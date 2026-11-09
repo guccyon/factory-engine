@@ -1,5 +1,6 @@
 # PR ごとの診断（依存・静的解析・秘密情報）。factory-engine の templates/ci/diagnose.yml を写したもの（ADR 0028 の ci_diagnose）。
-# 写すときに変えてよいのは ENGINE_REF の行だけ（Engine の固定した版。factory-engine 自身は self で自分の木の版を使う）。
+# 写すときは何も変えない。Engine の版は製品の .factory-config/engine.lock から読む（ADR 0041 の決定 4。版上げでワークフローを触らない）。
+# engine.lock が無いリポジトリ（factory-engine 自身）は self で自分の木の版を使う。
 # action は commit の SHA で固定する（タグは付け替えられるため。semgrep の github-actions-mutable-action-tag）。
 # shadow: 結果は Job Summary と成果物 diagnose に出すだけで、PR は落とさない。必須チェックにもしない。
 # - 静的解析: semgrep（p/default）を --baseline-commit で base との差分だけにする
@@ -19,7 +20,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ENGINE_REF: self
   OSV_SCANNER_VERSION: v2.2.2
   OSV_SCANNER_SHA256: c799274b682e0437c802d4714a136ad09b39c65547c460049ba5358d28afa576
   GITLEAKS_VERSION: 8.28.0
@@ -38,6 +38,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+      - name: Engine の版を読む（.factory-config/engine.lock。factory-engine の main にある版だけ受ける）
+        run: |
+          lock=.factory-config/engine.lock
+          if [ ! -f "$lock" ]; then echo "ENGINE_REF=self" >> "$GITHUB_ENV"; exit 0; fi
+          ref=$(grep -Ev '^[[:space:]]*(#|$)' "$lock" | head -1 | tr -d '[:space:]')
+          if ! printf '%s' "$ref" | grep -qE '^[0-9a-f]{40}$'; then echo "::error::$lock には 40 桁の commit SHA を 1 行で書く"; exit 1; fi
+          git init -q "$RUNNER_TEMP/engine"
+          git -C "$RUNNER_TEMP/engine" fetch -q --filter=blob:none https://github.com/guccyon/factory-engine.git main
+          if ! git -C "$RUNNER_TEMP/engine" merge-base --is-ancestor "$ref" FETCH_HEAD 2>/dev/null; then echo "::error::$lock の版 $ref は factory-engine の main にない"; exit 1; fi
+          echo "ENGINE_REF=$ref" >> "$GITHUB_ENV"
       - name: まとめ役を取る
         run: |
           if [ "$ENGINE_REF" = "self" ]; then

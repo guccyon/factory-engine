@@ -13,7 +13,8 @@ import urllib.error
 import urllib.request
 from collections import OrderedDict
 
-GH_TOKEN = os.environ.get("GH_TOKEN", "")
+import ghapp
+
 CACHE_MAX = int(os.environ.get("GH_ETAG_CACHE_MAX", "2000"))
 
 _cache: OrderedDict[str, tuple[str, bytes]] = OrderedDict()   # path → (ETag, 本文)。プロセスの中だけ（再起動で空になるだけ）
@@ -32,7 +33,7 @@ def _remember(path: str, etag: str | None, data: bytes):
 
 
 def request(method: str, path: str, body: dict | None = None, *, user_agent: str = "factory", token: str | None = None):
-    headers = {"Authorization": f"Bearer {token if token is not None else GH_TOKEN}", "Accept": "application/vnd.github+json",
+    headers = {"Authorization": f"Bearer {token if token is not None else ghapp.token()}", "Accept": "application/vnd.github+json",
                "Content-Type": "application/json", "User-Agent": user_agent}
     cached = None
     if method == "GET":

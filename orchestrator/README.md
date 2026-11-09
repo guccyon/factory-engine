@@ -16,7 +16,7 @@ worker（浅いクローン → claude -p → push → gh pr create）──ロ�
 
 ```bash
 cd orchestrator
-cp .env.example .env          # CLAUDE_CODE_OAUTH_TOKEN と GH_TOKEN を入れる（builder が自分で発行）
+cp .env.example .env          # CLAUDE_CODE_OAUTH_TOKEN と GitHub の身元（App か GH_TOKEN）を入れる（builder が自分で発行）
 docker compose build
 docker compose up -d
 docker compose logs -f dispatcher
@@ -24,6 +24,20 @@ docker compose logs -f dispatcher
 
 - 対象リポジトリに工場のラベルを作っておく: `scripts/labels.sh guccyon/rally`
 - Issue に `factory:implement` を付けると 30 秒以内にジョブになる。進み具合は Issue のラベルとコメントに出る
+
+## GitHub の身元（ADR 0041）
+
+工場は GitHub App として GitHub に書く（PAT は App が無いときの代わり）。dispatcher がジョブを起動するたびに、そのジョブのリポジトリと役の段の権限だけに絞ったトークン（1 時間で切れる）を発行してワーカーに渡す。常駐のプロセスはインストールの全権限のトークンを、期限の 10 分前に作り直して使う（`dispatcher/ghapp.py`）。App が無ければ今までどおり `GH_TOKEN` を全部に使う。
+
+App の作り方（builder が 1 回）:
+
+1. GitHub の Settings → Developer settings → GitHub Apps → New GitHub App。Webhook は切る（Active を外す）。「Only on this account」
+2. Repository permissions: Contents・Pull requests・Issues・Workflows を Read and write、Actions・Checks・Commit statuses を Read-only（Metadata は自動）。Workflows は特権のライン（`ghapp.GRANTS["privileged"]`）のジョブにだけ渡し、ほかのジョブのトークンには入れない
+3. 作ったら Private keys で鍵を作り、Install App で製品のリポジトリ（と factory-engine）に入れる
+4. `.env` に `GH_APP_ID`（App の画面の App ID）と `GH_APP_PRIVATE_KEY_B64`（`base64 < 鍵.pem | tr -d '\n'`）を入れ、`GH_TOKEN` を空にする
+5. `docker compose up -d` で作り直す。製品の ruleset で main への反映を工場の App に許しているなら、PAT の利用者から App に替える
+
+段（`ghapp.GRANTS`）: 見る（observe）・作る（build）・工程を変える（privileged）。今は全ジョブが作る段（PAT と同じ権限）。役ごとの絞り込みと特権のラインは ADR 0041 の順番 3・4。
 
 ## ワーカーのイメージ
 

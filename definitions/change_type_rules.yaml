@@ -13,7 +13,7 @@ rules:
   - type: constitution
     paths: [".factory-config/manifest.yaml", ".factory-config/base/**"]
   - type: factory_rule
-    paths: [".factory-config/overlay/**", ".factory-config/evals/**"]
+    paths: [".factory-config/overlay/**", ".factory-config/evals/**", ".factory-config/engine.lock"]   # engine.lock は製品の CI が使う Engine の版（ADR 0041 の決定 4）
   - type: knowledge                  # 知見の変更セット（ADR 0024）。委員会ができるまでは manifest に無い種別として人の承認に倒れる
     paths: [".factory-config/knowledge/**"]
   - type: always:secrets_iam
