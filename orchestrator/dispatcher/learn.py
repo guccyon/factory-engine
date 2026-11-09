@@ -1,6 +1,7 @@
 """Learn ループの Retrospective（ADR 0013 の 1・2）。
 
 教師信号を制御プレーンの記録（artifacts の Judgment、events の judgment.graded・taste.flagged・kpi.forecast_scored・sendback.*）から集め、signature で束ねる。
+違和感の印の束の鍵は taste:<業務>:<観点>（ADR 0040 の決定 9）。印の文面は材料（evidence）に残し、鍵には入れない。前の形（taste:<文面>）の印も、ここで鍵を作り直して束ねる。
 決定的（LLM を使わない）。同じ記録と同じ期間には同じ束を返す。Lesson を書く learn ジョブはこの束を入力にする（別の PR）。
 数え方は definitions/learning.yaml（teacher_signals・retrospective・knowledge_stages）に合わせる。
 """
@@ -9,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
+
+import choice
 
 WINDOW_DAYS = 30
 RUBRIC_MIN_SIGNALS = 3        # Stage 2（rubric）の候補: 同じ signature が窓の中で 3 件以上
@@ -52,7 +55,8 @@ def collect_signals(cur, frm: datetime, to: datetime) -> list[dict]:
     for r in cur.fetchall():
         p, sub = r["payload"], r["payload"].get("subject") or {}
         where = " ".join(x for x in (sub.get("app"), p.get("option_label"), f"({p['option_note']})" if p.get("option_note") else None) if x)
-        out.append({"kind": "taste_flag", "signature": p.get("signature") or "taste:?", "pr_url": sub.get("pr_url"), "ticket": r["correlation_id"],
+        out.append({"kind": "taste_flag", "signature": choice.signature(p.get("kind"), p.get("viewpoint")), "pr_url": sub.get("pr_url"),
+                    "ticket": r["correlation_id"], "work": choice.CHOICE_WORK.get(p.get("kind") or "", "dev.design.screen"),
                     "at": r["occurred_at"], "artifact_id": p.get("artifact_id"),
                     "defect": {"evidence": p.get("note"), "location": where or None, "remediation_hint": None}})
     # KPI の予測誤差（kpi_error、ADR 0043 の O3）。プランナーの見込みと週次の実測の差。KPI ごとに束ねる（テーマ 1 の教師信号の 1 種）。

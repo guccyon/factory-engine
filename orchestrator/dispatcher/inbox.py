@@ -457,7 +457,7 @@ VIA_JA = {"console": "操業コンソール", "review_page": "レビューペー
 
 
 def answer(cur, key: str, option: str, by: str, via: str, *, note: str = "", raw: str = "", confidence: float | None = None,
-           on: str | None = None, explicit: bool = True, role: str | None = None) -> tuple[str, str]:
+           on: str | None = None, explicit: bool = True, role: str | None = None, viewpoint: str | None = None) -> tuple[str, str]:
     """受信トレイの 1 件に答える唯一の口（ADR 0034 の決定 1）。返り値は (結果, 文)。
     結果は answered（答えた）・noted（印を付けた。件は開いたまま）・already（答え済み）・not_found・invalid・failed（作用の側が受けなかった）。
 
@@ -470,7 +470,7 @@ def answer(cur, key: str, option: str, by: str, via: str, *, note: str = "", raw
         return "invalid", f"via は {' / '.join(VIAS)} のどれか"
     note = _clip(note)
     try:
-        return _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role)
+        return _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role, viewpoint)
     except _Failed as e:   # 作用の途中で受けなかったら、書いた分も戻す（件は開いたまま）
         return "failed", str(e)
 
@@ -479,7 +479,7 @@ class _Failed(Exception):
     pass
 
 
-def _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role) -> tuple[str, str]:
+def _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role, viewpoint=None) -> tuple[str, str]:
     with cur.connection.transaction():
         cur.execute("select pg_advisory_xact_lock(hashtext(%s))", (f"inbox.answer:{key}",))
         it = find(cur, key)
@@ -501,7 +501,7 @@ def _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role
             return "invalid", "取り返しのつかない作用なので、ボタンか明示した答え（approve）で確定する"
         if role is not None and role not in (spec.get("allowed") or [it["who"]]):
             return "invalid", f"この件に答えられるのは {'・'.join(WHO.get(w, w) for w in spec.get('allowed') or [it['who']])}"
-        ok, msg = _apply(cur, spec["target"], option, by, via, note, on)
+        ok, msg = _apply(cur, spec["target"], option, by, via, note, on, viewpoint)
         if not ok:
             raise _Failed(msg)
         closes = o.get("closes", True)
@@ -512,13 +512,14 @@ def _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role
         return ("answered" if closes else "noted"), msg
 
 
-def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_option: str | None) -> tuple[bool, str]:
+def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_option: str | None,
+           viewpoint: str | None = None) -> tuple[bool, str]:
     """件の種類ごとの今の関数を呼ぶ（入口の側は件の種類を知らない）"""
     import choice
     kind, ref = target
     if kind == "choice":
         if option == "flag":
-            return choice.flag(cur, ref, note, by, flag_option)
+            return choice.flag(cur, ref, note, by, flag_option, viewpoint)
         return _answer_choice(cur, ref, option, by, note)
     if kind == "captures":
         n = sum(1 for aid in ref if choice.mark_seen(cur, aid, by, note)[0])

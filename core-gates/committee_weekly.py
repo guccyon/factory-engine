@@ -52,12 +52,13 @@ def schema(defs: dict) -> dict:
         "contradictions": {"type": "array", "maxItems": 5, "items": item},
         "promote": {"type": "array", "maxItems": 5, "items": item},
         "retire": {"type": "array", "maxItems": 5, "items": item},
+        "widen": {"type": "array", "maxItems": 5, "items": item},
         "enforce": {"type": "array", "maxItems": 3, "items": {"type": "object", "properties": {
             "ids": ids, "why": {"type": "string"}, "proposal": {"type": "string"},
             "solution_kind": {"type": "string", "enum": defs["knowledge"]["enforcement"]["solution_kinds"]}},
             "required": ["ids", "why", "proposal", "solution_kind"]}},
         "structure": {"type": "object", "properties": {"needed": {"type": "boolean"}, "proposal": {"type": "string"}}, "required": ["needed", "proposal"]}},
-        "required": ["summary", "contradictions", "promote", "retire", "enforce", "structure"]}
+        "required": ["summary", "contradictions", "promote", "retire", "widen", "enforce", "structure"]}
 
 
 def prompt(defs: dict, f: dict) -> str:
@@ -70,7 +71,8 @@ def prompt(defs: dict, f: dict) -> str:
 作業ディレクトリに材料があります。読むだけにし、何も書き換えないでください。
 - knowledge/: 既定ブランチの知見の置き場（K-*.yaml、cases/、committee/、INDEX.md、README.md）
 - specs/: 製品の規範
-- week.json: この週の議決（committee.decided）、起票した知見の Issue、担保の Issue、決定論で出した数（facts）
+- week.json: この週の議決（committee.decided）、起票した知見の Issue、担保の Issue、決定論で出した数（facts）、
+  効き目の信号（reach。事例の分析で真因と同じだった知見が、その回に届かなかった missed と理由・届いたのに差し戻された delivered_failed）
 
 決定論で出したこと（facts の要点）: 知見 {f['items']} 件、事例 {f['cases']} 件、議決 {f['decisions']} 件、期限切れ {len(f['stale'])} 件、置き場の直下の知見のファイル {f['files_in_root']} 件{'（構造を見直す目安を超えた）' if f['structure_signal'] else ''}
 
@@ -79,6 +81,10 @@ def prompt(defs: dict, f: dict) -> str:
 - contradictions: 互いに矛盾する・重複する知見の組と、直し方（amend・supersede・retire のどれか）
 - promote: 独立した事例 2 件以上で再現した hypothesis の知見（confirmed に上げる候補）。根拠の事例を why に書く
 - retire: 根拠が崩れた・使われなくなった・規範（specs/）に取り込まれた知見
+- widen: reach の missed のうち scope が true のもの（業務が合わない other_work・軸の食い違い mismatch・点が低い low_fit・上限で落ちた over_limit・入口がつながっていない not_wired）について、
+  知見の scope をどう広げるか（業務を親に上げる・成果物を足す・軸の条件を外す）。missed の work と role に、届かなかった回の業務がある。
+  入口がつながっていない（not_wired）は知見ではなく工場の側の課題なので、why にそう書き proposal は空にする。理由が hypothesis のものは promote の材料にする
+  delivered_failed（届いたのに差し戻された）は、知見の中身が足りないか古い印。contradictions か retire の材料にする
 - enforce: 繰り返し起き、線が引け、外したときに痛い知見で、決定論（solution_kind）で担保すべきもの
 - structure: 置き場のディレクトリの分け方を変えるべきか（needed）と案。量が少ないうちは変えない
 
@@ -121,8 +127,11 @@ def main(argv: list[str] | None = None) -> int:
         print("[committee_weekly] no knowledge root", file=sys.stderr)
         return 2
     f = facts(repo, today, int((defs["committee"].get("weekly") or {}).get("structure_review_over", 150)))
+    f["reach"] = {"missed": sum(1 for x in inp.get("reach") or [] if x.get("signal") == "missed"),
+                  "missed_scope": sum(1 for x in inp.get("reach") or [] if x.get("signal") == "missed" and x.get("scope")),
+                  "delivered_failed": sum(1 for x in inp.get("reach") or [] if x.get("signal") == "delivered_failed")}
     r = review(repo, inp, f, defs) if f["items"] or inp.get("decisions") else {"result": {"summary": "知見も議決もまだない", "contradictions": [],
-                                                                                          "promote": [], "retire": [], "enforce": [],
+                                                                                          "promote": [], "retire": [], "widen": [], "enforce": [],
                                                                                           "structure": {"needed": False, "proposal": ""}},
                                                                                "model": None, "cost_usd": 0, "usage": {}}
     Path(a.out).write_text(json.dumps({"facts": f, **r}, ensure_ascii=False), encoding="utf-8")

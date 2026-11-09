@@ -113,7 +113,16 @@ def build_input(cur, inc: dict) -> dict:
         rows = []
     inp["timeline"] = [{"name": e["name"], "at": e["occurred_at"].isoformat(), "job_id": e["job_id"], "payload": _short(e["payload"])}
                        for e in rows[-TIMELINE_MAX:]]
+    inp["knowledge_used"] = knowledge_used(cur, inc.get("corr"))
     return inp
+
+
+def knowledge_used(cur, corr: str | None) -> list[dict]:
+    """そのチケットの回に渡した知見（knowledge.used）。分析役が「真因と同じ知見が渡っていたか」を確かめる材料（ADR 0040 の決定 8）"""
+    if not corr:
+        return []
+    cur.execute("select job_id, payload from events where name='knowledge.used' and correlation_id=%s order by id", (corr,))
+    return [{"job_id": r["job_id"], **{k: r["payload"].get(k) for k in ("role", "entry", "ids", "work", "values")}} for r in cur.fetchall()]
 
 
 # ------------------------------------------------------------------ セッションの抜粋（後片付けのアーカイブから）
@@ -179,14 +188,46 @@ def record(cur, corr: str, job_id: int, inp: dict, result: dict) -> bool:
     inc = inp.get("incident") or {}
     payload = {"incident": inc.get("key"), "kind": inc.get("kind"), "ticket": inp.get("correlation_id"),
                "summary": rep.get("summary", ""), "viewpoints": rep.get("viewpoints", []), "root_causes": rep.get("root_causes", []),
-               "learnings": rep.get("learnings", []), "had_session": bool(inp.get("session_excerpt"))}
+               "learnings": rep.get("learnings", []), "had_session": bool(inp.get("session_excerpt")),
+               "knowledge_reach": rep.get("knowledge_reach", [])}
     cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('case.analyzed',%s,%s,%s,%s) "
                 "on conflict (dedupe_key) do nothing returning id", (corr, job_id, Jsonb(payload), f"case.analyzed:{inc.get('key')}"))
     if not cur.fetchone():
         return False
+    record_reach(cur, corr, job_id, inp, rep.get("knowledge_reach") or [])
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('CaseAnalysis',%s,%s,'case_review',%s)",
                 (corr, job_id, Jsonb(payload)))
     return True
+
+
+# 効き目の信号（ADR 0040 の決定 8）。届かなかった理由のうち scope の当たり外れに当たるもの（委員会に広げる候補を出す）。
+# hypothesis・expired は scope ではなく確かさ・期限の問題なので、届かなかった記録には残すが scope の候補にはしない
+SCOPE_MISSES = ("other_work", "other_role", "mismatch", "low_fit", "over_limit", "not_wired")
+KID = re.compile(r"^K-\d{4,}$")
+
+
+def record_reach(cur, corr: str, job_id: int, inp: dict, reach: list) -> int:
+    """分析役が「真因と同じ」と言った既存の知見ごとに、その回に届いたかを残す。
+    届かなかった → knowledge.missed（理由つき）、届いたのに差し戻された → knowledge.delivered_failed。数えるのは測る側"""
+    inc = inp.get("incident") or {}
+    m = re.match(r"github:([^#]+)#\d+$", inp.get("correlation_id") or "")
+    repo = m.group(1) if m else None
+    n = 0
+    for r in reach[:5]:
+        if not isinstance(r, dict) or not KID.match(str(r.get("id") or "")):
+            continue
+        base = {"repo": repo, "incident": inc.get("key"), "kind": inc.get("kind"), "ticket": inp.get("correlation_id"), "id": r["id"],
+                "work": [w for w in r.get("work") or [] if isinstance(w, str)][:6], "role": r.get("role")}
+        if r.get("delivered"):
+            if inc.get("kind") != "sendback":
+                continue
+            name, extra = "knowledge.delivered_failed", {}
+        else:
+            name, extra = "knowledge.missed", {"reason": r.get("reason"), "scope": r.get("reason") in SCOPE_MISSES}
+        cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values (%s,%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
+                    (name, corr, job_id, Jsonb({**base, **extra}), f"{name}:{inc.get('key')}:{r['id']}"))
+        n += 1
+    return n
 
 
 # ------------------------------------------------------------------ 工程の改善案の Issue（ADR 0027 の 3）
@@ -283,6 +324,32 @@ def pending_knowledge(cur, themes: dict[int, str], limit: int) -> list[dict]:
     return out
 
 
+SITUATION_AXES = ("purpose", "product_stage", "request_form", "code_origin")
+SCOPE_TOKEN = re.compile(r"^[A-Za-z0-9_.]{1,64}$")
+
+
+def scope_of(x: dict) -> dict:
+    """分析役の学びの効く範囲を、知見の scope の形に（ADR 0040 の決定 8）。語彙の検査は変更セットの CI（knowledge_check.py）"""
+    out: dict = {}
+    for key in ("work", "artifacts"):
+        vals = [v for v in x.get(key) or [] if isinstance(v, str) and SCOPE_TOKEN.match(v)][:3]
+        if vals:
+            out[key] = vals
+    sit = x.get("situation") if isinstance(x.get("situation"), dict) else {}
+    for key in SITUATION_AXES:
+        v = sit.get(key)
+        if isinstance(v, str) and v and SCOPE_TOKEN.match(v):
+            out[key] = [v]
+    return out
+
+
+def scope_line(x: dict) -> str:
+    s = scope_of(x)
+    if not s:
+        return "（分析役が書かなかった。事例の業務から決める）"
+    return "`{" + ", ".join(f"{k}: [{', '.join(v)}]" for k, v in s.items()) + "}`"
+
+
 def knowledge_issue(a: dict, themes: dict[int, str]) -> tuple[str, str]:
     """事例の分析 1 件から、事例記録と知見の下書きを 1 本の変更セットの PR にする Issue"""
     summary = scrub(a.get("summary", "")).strip()
@@ -297,7 +364,8 @@ def knowledge_issue(a: dict, themes: dict[int, str]) -> tuple[str, str]:
         whys = "\n".join(f"  {i}. なぜ: {scrub(w)}" for i, w in enumerate(v.get("whys") or [], 1))
         views.append(f"- {v.get('viewpoint', '')}（確からしさ {v.get('confidence', '-')}）\n{whys}\n  - 真因: {scrub(v.get('root_cause', ''))}")
     learns = "\n".join(f"{i}. テーマ {x['theme']}（{themes.get(x['theme'], '')}）: {scrub(x.get('statement', ''))}\n"
-                       f"   - 作用先の候補: {x.get('target', '')} / 提案: {scrub(x.get('proposal', ''))} / 繰り返しそう: {'はい' if x.get('recurring') else 'いいえ'}"
+                       f"   - 作用先の候補: {x.get('target', '')} / 提案: {scrub(x.get('proposal', ''))} / 繰り返しそう: {'はい' if x.get('recurring') else 'いいえ'}\n"
+                       f"   - 効く範囲（scope）: {scope_line(x)}"
                        for i, x in enumerate(a.get("learnings") or [], 1))
     body = f"""事例型の分析役（ADR 0023）が {kind} の出来事を分析した結果を、知見の置き場（`{KNOWLEDGE_ROOT}/`、ADR 0024）に足してください。
 
@@ -320,7 +388,8 @@ def knowledge_issue(a: dict, themes: dict[int, str]) -> tuple[str, str]:
 ## やること（1 本の PR）
 1. `{KNOWLEDGE_ROOT}/README.md` を読み、置き場の決まりに従う
 2. 事例記録 `{KNOWLEDGE_ROOT}/cases/C-NNNN.md` を 1 つ足す（番号は空いている次の番号）。出来事・観点ごとのなぜなぜ・真因・学びを書く
-3. 学び 1 つにつき知見 `{KNOWLEDGE_ROOT}/K-NNNN.yaml` を 1 つ足す。`status: draft`、`confidence: hypothesis`、`verified_at` は今日、`review_by` は 30 日以内、`evidence` に `case:C-NNNN`、`theme` は上の番号、`kind` は中身に合うもの（なぜなぜの結論なら causal）
+3. 学び 1 つにつき知見 `{KNOWLEDGE_ROOT}/K-NNNN.yaml` を 1 つ足す。`status: draft`、`confidence: hypothesis`、`verified_at` は今日、`review_by` は 30 日以内、`evidence` に `case:C-NNNN`、`theme` は上の番号、`kind` は中身に合うもの（なぜなぜの結論なら causal）。
+   `scope` は学びの「効く範囲」をそのまま写す（業務 `work` か成果物 `artifacts` は必ず。状況の軸 `purpose`・`product_stage`・`request_form`・`code_origin` も付いていれば残す。知見は狭く生まれ、別の状況で再現したら委員会が軸を外して広げる。ADR 0040 の決定 8）
 4. 既存の知見（`K-*.yaml`）を全部読み、新しい知見と重なる・矛盾するものの扱い（keep・amend・supersede・retire・recheck）を決める。置き換えるときは supersedes と superseded_by を両方に書き、古い方を superseded にする。ファイルは消さない
 5. `python3 /work/engine/core-gates/knowledge_check.py --repo . --index` で `INDEX.md` を作り直し、`python3 /work/engine/core-gates/knowledge_check.py --repo .` が通ることを確かめる
 6. PR の本文に、足した知見と、既存の知見ごとの扱いと理由を並べる

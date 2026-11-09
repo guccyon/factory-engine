@@ -293,3 +293,36 @@ def test_supervisor_skips_when_same_signature_is_open(cur, monkeypatch):
     assert not [c for c in calls if c[0] == "POST"]
     cur.execute("select payload from events where name='process.proposal_filed'")
     assert cur.fetchone()["payload"]["duplicate_of"] == "https://github.com/e/f/issues/9"
+
+
+def test_knowledge_issue_carries_narrow_scope():
+    """ADR 0040 の決定 8: 分析役が書いた業務・成果物・状況の軸を、知見の scope の下書きとして Issue に載せる（狭く生まれる）"""
+    x = {**L(4), "work": ["dev.describe"], "artifacts": ["PR.body", "bad value!"],
+         "situation": {"purpose": "bugfix", "product_stage": "", "request_form": "ticket", "code_origin": "factory", "other": "x"}}
+    assert case.scope_of(x) == {"work": ["dev.describe"], "artifacts": ["PR.body"], "purpose": ["bugfix"], "request_form": ["ticket"],
+                                "code_origin": ["factory"]}
+    a = {"incident": "sendback:x", "kind": "sendback", "event_id": 9, "summary": "s", "viewpoints": [], "root_causes": [], "learnings": [x, L(4)]}
+    _, body = case.knowledge_issue(a, {4: "言葉と伝達"})
+    assert "`{work: [dev.describe], artifacts: [PR.body], purpose: [bugfix], request_form: [ticket], code_origin: [factory]}`" in body
+    assert "分析役が書かなかった" in body and "`scope` は学びの「効く範囲」をそのまま写す" in body
+
+
+def test_build_input_carries_knowledge_used_and_record_keeps_reach(cur):
+    """ADR 0040 の決定 8: 分析役にその回に渡した知見を見せ、真因と同じ知見が届かなかったら knowledge.missed を残す"""
+    ev(cur, "knowledge.used", "github:o/r#7", {"role": "implement", "entry": "ticket", "ids": ["K-0001"], "work": ["dev.build", "dev.describe"],
+                                               "values": {"request_form": ["ticket"]}})
+    inp = case.build_input(cur, {"key": "sendback:x", "kind": "sendback", "pr_url": "https://github.com/o/r/pull/8", "corr": "github:o/r#7"})
+    assert inp["knowledge_used"] == [{"job_id": None, "role": "implement", "entry": "ticket", "ids": ["K-0001"],
+                                      "work": ["dev.build", "dev.describe"], "values": {"request_form": ["ticket"]}}]
+    inp["correlation_id"] = "github:o/r#7"
+    reach = [{"id": "K-0001", "delivered": True, "role": "implement", "work": ["dev.build"]},
+             {"id": "K-0002", "delivered": False, "reason": "other_work", "role": "implement", "work": ["dev.build"]},
+             {"id": "K-0003", "delivered": False, "reason": "hypothesis", "role": "implement", "work": []},
+             {"id": "bad", "delivered": False, "reason": "x"}]
+    assert case.record(cur, "case:sendback:x", None, inp, {"report": {"summary": "s", "knowledge_reach": reach}})
+    assert not case.record(cur, "case:sendback:x", None, inp, {"report": {"summary": "s", "knowledge_reach": reach}})   # 1 度だけ
+    cur.execute("select name, payload from events where name like 'knowledge.%%' and name <> 'knowledge.used' order by id")
+    got = [(r["name"], r["payload"]["id"], r["payload"].get("reason"), r["payload"].get("scope"), r["payload"]["repo"]) for r in cur.fetchall()]
+    assert got == [("knowledge.delivered_failed", "K-0001", None, None, "o/r"),
+                   ("knowledge.missed", "K-0002", "other_work", True, "o/r"),
+                   ("knowledge.missed", "K-0003", "hypothesis", False, "o/r")]
