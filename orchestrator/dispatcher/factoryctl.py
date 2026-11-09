@@ -64,6 +64,9 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
       # 製品の固定 Issue（factory:qa）に積む。--stories を省けば active な全部（上限 6）。--through-pause はラインの一時停止の間もこれだけ流す
   factoryctl qa show <repo> [--limit 10]                     # 最近の判定と夜間の探索
   factoryctl qa explore <repo> [--through-pause] [--by ..]   # 夜間の探索（nightly_explore）を今すぐ 1 回積む（その夜のチャーター。人が積んだものは無人の夜に数えない）
+  factoryctl qa synthetic <repo> [--friction example|none|<JSON>] [--through-pause] [--by ..]
+      # 合成の利用者（ADR 0043 の O4）を今すぐ 1 回積む。仕込みは --friction か工場の SYNTH_FRICTION（staging だけ）。提案は受信トレイに出る
+  factoryctl qa learn <repo>                                  # 品質の Learn（ADR 0043 の O9）を今すぐ回す（その週にまだ回っていなければ）
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -766,8 +769,19 @@ def qa_cmd(cur, argv) -> int:
     import qa_line
     sub = argv[2] if len(argv) > 2 else ""
     repo = argv[3] if len(argv) > 3 else ""
-    if sub not in ("run", "show", "explore") or "/" not in repo:
-        print("factoryctl qa run|show|explore <owner/repo> ..."); return 2
+    if sub not in ("run", "show", "explore", "synthetic", "learn") or "/" not in repo:
+        print("factoryctl qa run|show|explore|synthetic|learn <owner/repo> ..."); return 2
+    if sub == "learn":
+        import quality_learn
+        from datetime import datetime, timezone
+        got = quality_learn.step(cur, repo, datetime.now(timezone.utc), force=True)
+        if not got:
+            print("この週の品質の Learn はもう回っている（supervisor の週 1 回か、前の factoryctl qa learn）"); return 1
+        f = got["facts"]
+        print(f"{got['week']}: Defect {f['defects']} 件・Incident {f['incidents']} 件・流出防止率 {f['escape_prevention']}・発見工程 {f['by_found_in']}")
+        print(f"  重点 {got['focus']}・足したシナリオ {got['scenarios'] or 'なし'}・基準の変更案 {got['proposal'] or 'なし'}"
+              "（案は supervisor が委員会の順番を見て知見の Issue にする）")
+        return 0
     if sub == "show":
         rows = qa_line.latest(cur, repo, int(opt(argv, "--limit", "10")))
         for r in rows:
@@ -789,6 +803,22 @@ def qa_cmd(cur, argv) -> int:
     def gh(method, path, body=None):
         return ghapi.request(method, path, body, user_agent="factoryctl", token=ghapp.token())
     stories = [x for x in (opt(argv, "--stories", "") or "").split(",") if x]
+    if sub == "synthetic":
+        fr = opt(argv, "--friction", None)
+        friction = None if fr is None else qa_line.friction_from(fr)
+        try:
+            got = qa_line.enqueue_synthetic(cur, gh, repo, by=opt(argv, "--by", "factoryctl"), env=opt(argv, "--env", "staging"),
+                                            friction=friction, unattended=False)
+        except psycopg.errors.UniqueViolation:
+            print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
+        print(f"enqueued job {got['job_id']}（合成の利用者・{repo}#{got['issue']}・版 {got['release_id'] or '不明'}・仕込み {sorted(got['friction']) or 'なし'}）")
+        if drain.active(cur):
+            if "--through-pause" in argv:
+                drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "合成の利用者（factoryctl qa synthetic --through-pause）")
+                print("  ラインは一時停止中。このジョブだけ流す（drain allow）")
+            else:
+                print("  ラインは一時停止中なので、再開するまで流れない（--through-pause を付けて積み直す）")
+        return 0
     if sub == "explore":
         from datetime import datetime, timezone
         night = qa_line.night_of(datetime.now(timezone.utc))

@@ -54,7 +54,8 @@ CHOICE_EFFECTS = {
 }
 TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）",
             "desk_waiting": "見たとして閉じる（依頼は閉じない。依頼者に直接確かめ、答えは依頼者が窓口か受信トレイから返す）",
-            "desk_notice_failed": "見たとして閉じる（知らせはもう送り直さない。依頼者には直接知らせる）"}   # 見たら閉じてよい依頼
+            "desk_notice_failed": "見たとして閉じる（知らせはもう送り直さない。依頼者には直接知らせる）",
+            "opportunity": "見たとして閉じる（拾うなら製品の Issue に起票する。工場は起票しない。ADR 0043）"}   # 見たら閉じてよい依頼
 # 窓口の単発の依頼の確認と受取確認（ADR 0039 の決定 2・5）。答えは desk_line.answer に渡す。依頼者のほか、運用主（role なし）も答えられる
 DESK_ANSWERS = {
     "desk_confirm": {"options": [{"id": "run", "label": "実行する"}, {"id": "cancel", "label": "やめる"}],

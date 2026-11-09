@@ -578,6 +578,38 @@ events:
     source: control_plane
     required: [repo, night, reason]
     note: "ADR 0028 の nightly_explore。夜の探索を積まなかった（reason は over_budget＝予算の枠を使い切っていた、paused＝一時停止中で explore.through_pause が偽）。同じ夜の後の周回で積めることもある。朝の日報が「昨夜は回らなかった」と出す。dedupe は supervisor.nightly_explore_skipped:<repo>:<夜>:<reason>"
+  qa.synthetic:
+    source: control_plane
+    required: [repo, release_id, env, week, unattended, walks, reached_exit, requests, events_logged, slowest, planted, proposed, synthetic_id, issue]
+    note: "ADR 0043 の O4 synthetic_users_loop。合成の利用者がストーリーに沿って staging を歩いた 1 回。walks は歩いた回数、events_logged は歩いた中で起きたはずの行動イベントの名前（製品の specs/analytics/events.yaml）、slowest は応答の一番遅い API（ワーカーの中継が測った p95）、planted はわざと仕込んだ詰まり（slow・hide。工場の SYNTH_FRICTION で staging だけ）、proposed は出した改善の提案（planted_hit は仕込みに当たったか）。同じ中身を artifacts の QASynthetic に残す。dedupe は qa.synthetic:<job_id>"
+  supervisor.synthetic_users_enqueued:
+    source: control_plane
+    required: [repo, week, issue, job_id, release_id, planted]
+    note: "ADR 0043 の O4。supervisor が週に 1 回（definitions/qa.yaml の synthetic.weekday・hours、JST）、製品ごとに合成の利用者のジョブ（kind=qa、入力の mode: synthetic）を積んだ。dedupe は supervisor.synthetic_users:<repo>:<週>"
+  opportunity.proposed:
+    source: control_plane
+    required: [repo, source, key, theme, title, problem, expected_effect, opportunity_id]
+    note: "ADR 0043 の O4（O2 の Report ラインも同じ口の想定）。改善の提案（artifacts の Opportunity）を残し、受信トレイにプロダクトオーナーの依頼（kind opportunity）を 1 件積んだ。起票はしない（人かプランナーが拾う）。theme は definitions/learning_taxonomy.yaml の themes（1 利用者の体験・2 信頼性と性能）。合成の利用者から出したものは planted_hit（仕込みのどれに当たったか。roadmap の synthetic_users_loop が数える）と signal を持つ。dedupe は opportunity.proposed:<source>:<repo>:<key>"
+  quality.learned:
+    source: control_plane
+    required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
+    note: "ADR 0043 の O9 quality_learn。週に 1 回（definitions/defects.yaml の learn）、直近の Defect（defect.recorded）と Incident（incident.recorded）を集計した。dedupe は quality.learned:<repo>:<週>"
+  qa.focus_updated:
+    source: control_plane
+    required: [repo, week, stories, viewpoints, basis]
+    note: "ADR 0043 の O9。品質の Learn が決めた QA の重点（厚く流すストーリーと観点）。QA のジョブを積むとき、最新の 1 件を入力の focus に足す（夜間の探索と合成の利用者のプロンプトが読む。合成の利用者は重点のストーリーを多く歩く）。dedupe は qa.focus_updated:<repo>:<週>"
+  qa.scenario_added:
+    source: control_plane
+    required: [repo, week, id, title, reproduce, viewpoint, severity, from_defect, defect_event]
+    note: "ADR 0043 の O9。品質の Learn が足した回帰のシナリオ（QA で見つかった Defect の再現の手順）。QA のジョブを積むとき、新しい順に 5 件を入力の scenarios に足す（夜間の探索と合成の利用者のプロンプトが試す）。dedupe は qa.scenario_added:<repo>:<題>"
+  quality.proposal_drafted:
+    source: control_plane
+    required: [repo, week, viewpoint, after_merge, statement, change, expected]
+    note: "ADR 0043 の O9。品質の Learn の基準の変更案（同じ観点の Defect がマージの後で線より多い）。supervisor が委員会の順番を見て知見の Issue にする（quality.proposal_filed）。dedupe は quality.proposal_drafted:<repo>:<週>"
+  quality.proposal_filed:
+    source: control_plane
+    required: [repo, week, viewpoint, drafted_event, issue]
+    note: "ADR 0043 の O9。基準の変更案を、製品の知見の変更セットの Issue（factory:planned・factory:learn）にした。同時に knowledge.case_filed（source: quality_learn）を残すので、委員会の列（committee.queue）に入り、PR は委員会が審査する。品質方針の値は変えない（人の承認）"
   qa.defect_filed:
     source: control_plane
     required: [repo, release_id, story_id, verdict_id, title, severity, issue]
