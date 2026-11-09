@@ -4,7 +4,7 @@
 - 依頼: artifacts の HumanChoice（status: open）と events の choice.requested
 - 選択: choice.made（選んだ案、推奨と一致したか、理由の一言）。デザインの線では、選ばれた案が実装の線の入口になる
 - 戻す: choice.returned（どの案も選ばず、作り手に戻す）
-- 違和感の印: taste.flagged（教師信号 taste_flag。signature は taste:<言語化の候補>。learning.yaml）
+- 違和感の印: taste.flagged（教師信号 taste_flag。signature は taste:<業務>:<観点>。ADR 0040 の決定 9、learning.yaml）
 - 実装後の画面（exit_capture。exit_capture.py が CI のキャプチャから作る。ADR 0025 の 4）: 選ぶものはなく、画面ごとに違和感の印を付けるか、
   「見た」で閉じる（choice.seen。違和感のなかった画面として負例の材料）。新しい head のキャプチャや期限で閉じる（choice.closed）
 
@@ -24,6 +24,14 @@ MAX_OPTIONS, MAX_LEN = 4, 1000
 MAX_OPTIONS_BY_KIND = {"exit_capture": 12}   # 実装後の画面は選ぶものでなく見るもの。画面の数だけ並べる（多ければ残りは成果物で）
 SUBJECT_KEYS = ("repo", "ticket", "pr_url", "uxspec", "app", "head_sha", "artifact_url")
 OPTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
+# 違和感の印の束ね方（ADR 0040 の決定 9）。束の鍵は taste:<業務>:<観点>。文面は材料に残し、鍵に入れない（文面ごとに束が割れる #264）。
+# 業務は依頼の種類から（definitions/work.yaml のノード）。観点は definitions/design_guideline.yaml の節の id
+# （dispatcher のコンテナには definitions/ がないので写す。食い違いはテストで見る）。語彙の外・付いていない印は unclassified
+CHOICE_WORK = {"design_variants": "dev.design.screen", "design_look": "dev.design.screen", "concept_tone": "dev.design.system",
+               "taste_sample": "dev.design.screen", "exit_capture": "dev.design.screen"}
+VIEWPOINTS = ("principles", "concept_tone", "foundations", "components", "patterns", "content", "accessibility", "platforms",
+              "data_visualization", "governance")
+UNCLASSIFIED = "unclassified"
 
 
 def _clip(v, n=MAX_LEN) -> str:
@@ -162,13 +170,20 @@ def close(cur, aid: int, status: str, by: str, reason: str) -> bool:
     return True
 
 
-def signature(note: str) -> str:
-    """違和感の言葉を束ねるための仮の signature。言語化の候補は learn が後で寄せる（ここでは空白を詰めて切るだけ）"""
-    return "taste:" + re.sub(r"\s+", " ", note.strip())[:40]
+def viewpoint_of(v) -> str:
+    """観点の語彙に入っていれば その id、外か空なら unclassified（決定論。文面からは推し量らない）"""
+    v = str(v or "").strip()
+    return v if v in VIEWPOINTS else UNCLASSIFIED
 
 
-def flag(cur, aid: int, note: str, by: str, option_id: str | None = None) -> tuple[bool, str]:
-    """違和感の印。開いている依頼でも閉じた依頼でも付けられる（出口のキャプチャへの印もこの形で受ける）"""
+def signature(kind: str | None, viewpoint: str | None = None) -> str:
+    """違和感の印の束の鍵 taste:<業務>:<観点>（ADR 0040 の決定 9）"""
+    return f"taste:{CHOICE_WORK.get(kind or '', 'dev.design.screen')}:{viewpoint_of(viewpoint)}"
+
+
+def flag(cur, aid: int, note: str, by: str, option_id: str | None = None, viewpoint: str | None = None) -> tuple[bool, str]:
+    """違和感の印。開いている依頼でも閉じた依頼でも付けられる（出口のキャプチャへの印もこの形で受ける）。
+    viewpoint は人が言語化の候補から選んだ観点（design_guideline の節の id。なければ未分類で束ねる）"""
     if not note.strip():
         return False, "note required"
     cur.execute("select correlation_id, payload from artifacts where id=%s and type='HumanChoice'", (aid,))
@@ -182,5 +197,6 @@ def flag(cur, aid: int, note: str, by: str, option_id: str | None = None) -> tup
     cur.execute("insert into events(name, correlation_id, payload) values ('taste.flagged',%s,%s)",
                 (r["correlation_id"], Jsonb({"artifact_id": aid, "kind": r["payload"]["kind"], "option": option_id, "note": _clip(note, 300),
                                              "option_label": o.get("label"), "option_note": o.get("note"),
-                                             "signature": signature(note), "subject": r["payload"].get("subject"), "by": by})))
+                                             "work": CHOICE_WORK.get(r["payload"]["kind"], "dev.design.screen"), "viewpoint": viewpoint_of(viewpoint),
+                                             "signature": signature(r["payload"]["kind"], viewpoint), "subject": r["payload"].get("subject"), "by": by})))
     return True, "flagged"

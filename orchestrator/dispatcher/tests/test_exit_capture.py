@@ -172,7 +172,7 @@ def test_step_collects_once_writes_pr_and_inbox_then_flag_reaches_learn(cur):
     assert f["option_label"] == "評価の絞り込み（空）" and f["subject"]["pr_url"] == PR_URL
     now = datetime.now(timezone.utc) + timedelta(minutes=1)
     [sig] = [s for s in learn.collect_signals(cur, now - timedelta(days=1), now) if s["kind"] == "taste_flag"]
-    assert sig["signature"] == "taste:評価の空の表示が寂しい" and sig["pr_url"] == PR_URL and "評価の絞り込み（空）" in sig["defect"]["location"]
+    assert sig["signature"] == "taste:dev.design.screen:unclassified" and sig["defect"]["evidence"] == "評価の空の表示が寂しい" and sig["pr_url"] == PR_URL and "評価の絞り込み（空）" in sig["defect"]["location"]
     retro = learn.retrospect(cur, now=now)
     [cl] = [x for x in retro["clusters"] if x["signature"].startswith("taste:")]
     assert cl["by_kind"] == {"taste_flag": 1} and cl["evidence"][0]["evidence"] == "評価の空の表示が寂しい"

@@ -27,9 +27,12 @@ def test_validate_rejects_bad_shapes():
     assert choice.validate("design_variants", OPTS) is None
 
 
-def test_signature_squeezes_spaces_and_clips():
-    assert choice.signature("  余白が\n 詰まって  見える ") == "taste:余白が 詰まって 見える"
-    assert len(choice.signature("あ" * 100)) == len("taste:") + 40
+def test_signature_is_work_and_viewpoint_not_text():
+    """ADR 0040 の決定 9: 束の鍵は taste:<業務>:<観点>。語彙の外・空は unclassified"""
+    assert choice.signature("exit_capture", "foundations") == "taste:dev.design.screen:foundations"
+    assert choice.signature("concept_tone", None) == "taste:dev.design.system:unclassified"
+    assert choice.signature("design_look", "余白が詰まって見える") == "taste:dev.design.screen:unclassified"
+    assert set(choice.CHOICE_WORK) == set(choice.KINDS)
 
 
 @pytest.fixture()
@@ -79,9 +82,21 @@ def test_flag_is_a_teacher_signal_even_after_close(cur):
     assert choice.flag(cur, aid, "", "t") == (False, "note required")
     assert choice.flag(cur, aid, "余白が詰まって見える", "t", "A") == (True, "flagged")
     [f] = events(cur, "taste.flagged")
-    assert f["signature"] == "taste:余白が詰まって見える" and f["subject"]["pr_url"].endswith("/10")
+    assert f["signature"] == "taste:dev.design.screen:unclassified" and f["note"] == "余白が詰まって見える"
+    assert f["subject"]["pr_url"].endswith("/10") and f["work"] == "dev.design.screen" and f["viewpoint"] == "unclassified"
+    assert choice.flag(cur, aid, "行間が狭い", "t", "A", viewpoint="foundations") == (True, "flagged")
+    assert events(cur, "taste.flagged")[1]["signature"] == "taste:dev.design.screen:foundations"
 
 
 def test_request_rejects_unknown_recommended(cur):
     with pytest.raises(ValueError):
         choice.request(cur, "design_variants", "c", "q", OPTS, recommended="Z")
+
+
+def test_console_viewpoint_choices_match_vocabulary():
+    """操業コンソールの違和感の観点の選択肢は choice.VIEWPOINTS と同じ（ADR 0040 の決定 9）"""
+    import re
+
+    import console_page
+    js = re.search(r"const VIEWS=\[(.*?)\];", console_page.PAGE, re.S).group(1)
+    assert sorted(re.findall(r'\["([a-z_]+)"', js)) == sorted(choice.VIEWPOINTS)

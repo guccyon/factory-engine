@@ -371,9 +371,10 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
             if choice.get(cur, aid) is None:
                 return 404, {"error": "no such choice"}
             if not inbox.find(cur, f"choice:{aid}"):   # 閉じた依頼にも印は付けられる（受信トレイの件ではないので印だけ残す）
-                ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, opt or None)
+                ok, msg = choice.flag(cur, aid, str(body.get("note") or ""), by, opt or None, body.get("viewpoint"))
                 return (200, {"message": msg}) if ok else (409, {"error": msg})
-            return answered(*inbox.answer(cur, f"choice:{aid}", "flag", by, "console", note=str(body.get("note") or ""), on=opt or None))
+            return answered(*inbox.answer(cur, f"choice:{aid}", "flag", by, "console", note=str(body.get("note") or ""), on=opt or None,
+                                          viewpoint=body.get("viewpoint")))
         return answered(*inbox.answer(cur, f"choice:{aid}", {"choose": opt, "return": "return", "seen": "seen"}[what], by, "console", note=reason))
     if path == "/api/inbox/answer":   # 受信トレイの件の上のボタン。{"key", "option", "note"?, "on"?}
         return answered(*inbox.answer(cur, str(body.get("key") or ""), str(body.get("option") or ""), by, "console",

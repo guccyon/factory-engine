@@ -206,7 +206,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-ch]"
  const note=((fin||document.getElementById("note-"+id)||{}).value)||"";
  if(b.dataset.ch==="seen")return post(`/api/choices/${id}/seen`,{reason:note}).then(ok=>ok&&advance("choice:"+id));
  if(b.dataset.ch==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note}).then(ok=>ok&&advance("choice:"+id));
- if(b.dataset.ch==="flag"){if(!note.trim()){if(fin)fin.focus();return toast("違和感の一言を入れてください")}return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note}).then(ok=>{if(ok&&fin){fin.value="";fin.placeholder="送りました。ほかにもあれば一言（Enter で送る）"}})}
+ if(b.dataset.ch==="flag"){if(!note.trim()){if(fin)fin.focus();return toast("違和感の一言を入れてください")}const vs=b.dataset.o?document.querySelector(`select[data-fview="${id}"][data-o="${b.dataset.o}"]`):null;return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note,viewpoint:(vs&&vs.value)||null}).then(ok=>{if(ok&&fin){fin.value="";fin.placeholder="送りました。ほかにもあれば一言（Enter で送る）"}})}
  if(!note.trim())return toast("戻す理由を一言入れてください");post(`/api/choices/${id}/return`,{reason:note}).then(ok=>ok&&advance("choice:"+id))});
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b)return;
  if(b.dataset.a==="stop"){if(!b.classList.contains("armed")){b.classList.add("armed");b.textContent="もう一度押すと止める";setTimeout(()=>{b.classList.remove("armed");b.textContent="止める"},4000);return}
@@ -374,6 +374,10 @@ function ibBody(i){const n=0;
  if(i.key.startsWith("release:")){const rid=i.key.slice(8),r=(S.releases||[]).find(x=>rid.startsWith(x.repo+"@"));
   return i.answered||!r?answerView(i,n):`${i.answer?`<div class="m">答えると: ${esc(i.answer.effect)}</div>`:""}${shipView([r])}`}
  return answerView(i,n)}
+// 違和感の観点（ADR 0040 の決定 9）。印を束ねる鍵になる（文面では束ねない）。選ばなければ未分類。値は definitions/design_guideline.yaml の節の id（choice.VIEWPOINTS）
+const VIEWS=[["foundations","基礎（色・文字・余白）"],["components","部品"],["patterns","画面の型と振る舞い"],["content","文言と表記"],["concept_tone","トーン＆マナー"],
+ ["principles","デザインの原則"],["accessibility","アクセシビリティ"],["platforms","端末ごとの差"],["data_visualization","グラフと数字"],["governance","ガイドラインの運用"]];
+const VIEW_SELECT=(cid,oid)=>`<select data-fview="${cid}" data-o="${esc(oid)}" title="違和感の観点（束ねるのに使う）"><option value="">観点（任意）</option>${VIEWS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>`;
 // 画面の判断: 画面を実際の 1/4 の大きさで並べ（押すと拡大）、下に選んでいる画面への違和感と答え
 function choiceDetail(c){const sub=c.subject||{},os=c.options||[];
  if((c.kind==="design_variants"||c.kind==="design_look")&&/^\d+$/.test(sub.uxspec||""))
@@ -383,7 +387,7 @@ function choiceDetail(c){const sub=c.subject||{},os=c.options||[];
  // 画像は実際の大きさの 1/4 で並べ、何枚あるかと画面の全体が一度に見えるようにする（11-08。前は 1 枚を幅いっぱいに出し、ウインドウを広げるほど大きくなった）。押すと拡大
  const tiles=os.map((x,j)=>`<div class="ti ${j===k?"on":""}">${x.image_key?`<a class="zm" href="${img(x)}" target="_blank" rel="noopener" data-zsrc="${img(x)}" data-zalt="${esc(x.id)}. ${esc(x.label)}" title="押すと拡大（別タブは ⌘/Ctrl＋クリック）"><img class="q" loading="lazy" alt="${esc(x.id)}. ${esc(x.label)}" src="${img(x)}"></a>`:'<span class="noimg">画像なし</span>'}<button class="th ${j===k?"on":""}" data-gi="${c.id}" data-k="${j}" title="この画面について答える">${esc(x.id)}. ${esc(x.label)}${x.id===c.recommended?"（推奨）":""}</button></div>`).join("");
  const per=`<div class="cap"><b>${esc(o.id)}. ${esc(o.label)}</b>${o.id===c.recommended?' <span class="m">（推奨）</span>':""} <span class="m">${k+1} / ${os.length} · ← → で前後の画面</span></div>${o.note?`<div class="m">${esc(o.note)}</div>`:""}
-  <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<input data-fnote="${c.id}" data-o="${esc(o.id)}" placeholder="この画面の違和感を一言（Enter で送る。例: 余白が詰まって見える）" maxlength="300"><button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感を送る</button></div>`;
+  <div class="acts">${exit?"":`<button class="go" data-ch="choose" data-c="${c.id}" data-o="${esc(o.id)}">この案にする</button>`}<input data-fnote="${c.id}" data-o="${esc(o.id)}" placeholder="この画面の違和感を一言（Enter で送る。例: 余白が詰まって見える）" maxlength="300">${VIEW_SELECT(c.id,o.id)}<button data-ch="flag" data-c="${c.id}" data-o="${esc(o.id)}">違和感を送る</button></div>`;
  const tail=exit?`<div class="acts"><span class="m">全部見終えたら</span><button class="go" data-ch="seen" data-c="${c.id}">見た（ほかに違和感なし）</button></div>`
   :`<div class="acts"><input id="note-${c.id}" placeholder="一言（理由・違和感。任意、戻すときは必須）" maxlength="300"><button class="danger" data-ch="return" data-c="${c.id}">どれも違う（戻す）</button></div>`;
  return `<div class="cd" id="choice-${c.id}">${head}<div class="m">画面 ${os.length} 枚。押すと拡大、名前を押すとその画面について答える</div><div class="gal" data-zl>${tiles}</div><div class="dock">${per}${tail}</div></div>`}

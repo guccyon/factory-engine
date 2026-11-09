@@ -136,3 +136,12 @@ def test_case_review_asks_for_scope_in_vocabulary():
     assert set(sit) == set(case_review.SITUATION_AXES) and sit["request_form"]["enum"] == ["", "ticket", "one_off"]
     p = case_review.prompt(tax, {"kind": "sendback"})
     assert "dev.design.screen" in p and "situation" in p
+
+
+def test_taste_bundle_vocabularies_match_definitions():
+    """違和感の印の束の鍵（ADR 0040 の決定 9）: 業務は work.yaml のノード、観点は design_guideline.yaml の節の id（dispatcher の写し）"""
+    src = (ENGINE / "orchestrator" / "dispatcher" / "choice.py").read_text(encoding="utf-8")
+    works = re.findall(r'"[a-z_]+": "([a-z_.]+)"', re.search(r"^CHOICE_WORK = \{([^}]*)\}", src, re.M).group(1))
+    assert works and all(w in NODES for w in works)
+    views = re.findall(r'"([a-z_]+)"', re.search(r"^VIEWPOINTS = \(([^)]*)\)", src, re.M).group(1))
+    assert views == [s["id"] for s in load("design_guideline.yaml")["sections"]]

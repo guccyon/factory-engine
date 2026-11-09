@@ -122,3 +122,22 @@ def test_rule_stats(cur):
     assert [(x["id"], x["fires"], x["adopt"], x["reject"], x["shadow"]) for x in s] == [("OV-001", 4, 2, 1, True)]
     assert abs(s[0]["precision"] - 2 / 3) < 1e-9
     assert "OV-001 | shadow | 4" in "\n".join(learn.rule_lines(s))
+
+
+def test_taste_flags_bundle_by_work_and_viewpoint_not_text(cur):
+    """ADR 0040 の決定 9（#264 の束割れ）: 文面が違っても同じ業務・観点の印は 1 つの束。前の形（taste:<文面>）の印も束ね直す。文面は材料に残る"""
+    def flag(ticket, kind, note, viewpoint=None, old_sig=None):
+        p = {"kind": kind, "note": note, "subject": {"pr_url": R + str(ticket)}, "signature": old_sig or "x"}
+        if viewpoint:
+            p["viewpoint"] = viewpoint
+        cur.execute("insert into events(name, correlation_id, payload) values ('taste.flagged', %s, %s)", (f"github:o/r#{ticket}", Jsonb(p)))
+    flag(1, "exit_capture", "余白が詰まって見える", old_sig="taste:余白が詰まって見える")
+    flag(2, "exit_capture", "ボタンが窮屈")
+    flag(3, "design_look", "文字が小さい")
+    flag(4, "exit_capture", "行間が狭い", viewpoint="foundations")
+    flag(5, "concept_tone", "冷たい印象")
+    clusters = {c["signature"]: c for c in learn.retrospect(cur)["clusters"]}
+    assert set(clusters) == {"taste:dev.design.screen:unclassified", "taste:dev.design.screen:foundations", "taste:dev.design.system:unclassified"}
+    c = clusters["taste:dev.design.screen:unclassified"]
+    assert c["signals"] == 3 and c["tickets"] == 3 and c["stage_candidate"] == "rubric"
+    assert [e["evidence"] for e in c["evidence"]] == ["余白が詰まって見える", "ボタンが窮屈", "文字が小さい"]
