@@ -901,6 +901,10 @@ def incident_cmd(cur, argv) -> int:
         plant = opt(argv, "--plant", "s1_data_leak")
         if incident.drill_active(cur, repo):
             print("この製品は演習の最中（factoryctl incident drill-end で終える）"); return 1
+        cur.execute("select id, state from jobs where kind='qa' and repo=%s and state in ('queued','running') order by id limit 1", (repo,))
+        busy = cur.fetchone()
+        if busy:   # QA のジョブは製品ごとに 1 本。仕込んだのに探索を積めない、を避けるため先に確かめる
+            print(f"この製品の QA のジョブ {busy['id']} が {busy['state']}。終わってから演習を始める（仕込みはしていない）"); return 1
         ok, msg = ship.request_drill(cur, repo, "staging", plant, by, "factoryctl")
         print(msg)
         if not ok:

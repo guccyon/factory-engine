@@ -162,3 +162,13 @@ def test_qa_s2_defect_is_incident_without_hold(cur):
     assert not incident.held(cur)
     assert [i["severity"] for i in incident.open_incidents(cur, REPO)] == ["s2"]
     assert not any(c[1].endswith("/labels") for c in gh.calls)
+
+
+def test_drill_does_not_plant_while_qa_is_busy(cur, capsys):
+    """QA のジョブは製品ごとに 1 本。動いていれば仕込まずに断る（仕込んだのに探索を積めない、を避ける）"""
+    import factoryctl
+    queue(cur, QA_CORR, kind="qa")
+    assert factoryctl.incident_cmd(cur, ["factoryctl", "incident", "drill", REPO]) == 1
+    assert "仕込みはしていない" in capsys.readouterr().out
+    cur.execute("select count(*) as n from events where name in ('release.drill_requested','incident.drill_started')")
+    assert cur.fetchone()["n"] == 0
