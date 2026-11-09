@@ -479,6 +479,28 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally                 
 - dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。同じ題の開いた Defect があれば起票せずにその Issue に書く）。固定 Issue にまとめを書く
 - 朝 5 時の日報（`health/daily/status_report.py`）とページに「夜間の探索（昨夜）」として、Defect（s1・s2 は太字）と印、回らなかった理由を出す。印は人が採点して Golden Set に入れる材料
 
+### 合成の利用者（ADR 0043 の O4 synthetic_users_loop）
+
+実際の利用者がまだいない製品で、合成の利用者がユーザーストーリーに沿って staging を歩き、行動ログ（製品の `specs/analytics/events.yaml` の名前）と応答時間を残す。遅い API（テーマ 2）と入口が見つけにくい流れ（テーマ 1）を決定論で拾い、改善の提案（Opportunity）にして受信トレイに出す（起票はしない）。形と数値は `definitions/qa.yaml` の `synthetic`。
+
+```bash
+docker compose exec dispatcher factoryctl qa synthetic guccyon/rally --friction example [--through-pause]   # 今すぐ 1 回（仕込みつき）
+```
+
+- supervisor が週に 1 回（既定は日曜の JST 5〜7 時）、`SYNTHETIC_USERS` の製品（既定は `NIGHTLY_EXPLORE` と同じ。空で止める）ごとに QA のジョブ（入力の `mode: synthetic`）を固定 Issue に積む
+- ワーカー（`core-gates/qa.py`）は、画面の入口ごとに中継（`core-gates/synthetic_proxy.py`）を立て、エージェントには中継の URL だけを渡す。応答時間はエージェントの申告ではなく中継が 1 回ごとに測る
+- わざと仕込む詰まり（遅い API 1 本・見つけにくい入口 1 つ）は、工場の環境変数 `SYNTH_FRICTION`（`example` で `definitions/qa.yaml` の例、JSON で任意、空で仕込まない）で入れ、staging のときだけ中継が入れる。製品のコードにも環境の設定にも入れない
+- dispatcher が artifacts の `QASynthetic` と events の `qa.synthetic` を残し、提案を `opportunity.proposed`（artifacts の `Opportunity`）と受信トレイ（プロダクトオーナーの「見て、拾うなら起票」）に出し、固定 Issue にまとめを書く。roadmap の `synthetic_users_loop` は仕込みに当たった提案を数える
+
+### 品質の Learn（ADR 0043 の O9 quality_learn）
+
+supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は月曜の JST 7 時過ぎ）、製品ごとに直近 30 日の Defect（`defect.recorded`）と Incident（`incident.recorded`）を集計する（`dispatcher/quality_learn.py`。LLM は使わない）。
+
+- 発見工程の分布と出やすい場所を `quality.learned` に残す
+- QA の重点（Defect の多いストーリー・マージの後で多い観点）を `qa.focus_updated` に、回帰のシナリオ（QA で見つかった Defect の再現の手順）を `qa.scenario_added` に足す。QA のジョブを積むとき入力の `focus`・`scenarios` に足し、夜間の探索と合成の利用者のプロンプトが読む（工程は変えない）
+- 同じ観点の Defect がマージの後で線より多ければ、基準の変更案（`quality.proposal_drafted`）にし、委員会の順番が空いたら知見の変更セットの Issue にして委員会の列に入れる（`quality.proposal_filed` と `knowledge.case_filed`）。品質方針の値は変えない（人の承認）
+- 手で回すときは `factoryctl qa learn guccyon/rally`（その週にまだ回っていなければ）。`QUALITY_LEARN=0` で止める
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
