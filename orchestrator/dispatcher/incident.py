@@ -57,7 +57,8 @@ def open_incident(cur, repo: str, key: str, severity: str, title: str, *, detect
     if severity not in SEVERITIES:
         raise ValueError(f"severity は {'・'.join(SEVERITIES)} のどれか: {severity}")
     iid = incident_id(repo, key)
-    drill = drill_active(cur, repo)
+    # 演習の印は、演習が起こす重要度（S1）だけに付ける。演習の最中に見つかったほかの重要度は本物の不具合として数える
+    drill = drill_active(cur, repo) if severity in HOLD_SEVERITIES else None
     now = datetime.now(timezone.utc)
     payload = {"incident_id": iid, "repo": repo, "severity": severity, "title": str(title or "")[:200], "detected_at": now.isoformat(),
                "detected_by": detected_by, "env": env, "release_id": release_id, "issue": issue, "related_pr_ids": [],

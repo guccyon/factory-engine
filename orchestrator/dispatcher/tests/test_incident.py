@@ -62,6 +62,10 @@ def test_open_incident_once_and_drill_mark(cur):
     cur.execute("insert into events(name, payload) values ('incident.drill_started', %s)", (Jsonb({"repo": REPO, "drill": "s1_data_leak", "by": "t"}),))
     b = incident.open_incident(cur, REPO, "u2", "s1", "他人のメールが見える")
     assert b["drill"] and b["drill_id"] == "s1_data_leak"
+    c = incident.open_incident(cur, REPO, "u3", "s2", "演習の最中に見つかった本物の不具合")
+    assert not c["drill"]   # 演習の印は S1 だけ
+    cur.execute("delete from artifacts where payload->>'incident_id' = %s", (c["incident_id"],))
+    cur.execute("delete from events where name='incident.opened' and payload->>'incident_id' = %s", (c["incident_id"],))
     cur.execute("select count(*) as n from artifacts where type='Incident'")
     assert cur.fetchone()["n"] == 2
     assert {i["incident_id"] for i in incident.open_incidents(cur, REPO)} == {f"{REPO}:u1", f"{REPO}:u2"}
