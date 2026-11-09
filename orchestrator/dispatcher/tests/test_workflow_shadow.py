@@ -158,3 +158,19 @@ def test_planner_records_workflow_and_attaches_context(cur):
     assert inp["round"] == 1 and [t["issue"] for t in inp["inflight"]] == [9]
     assert inp["inflight"][0]["files"] == ["apps/admin-web/src/screens.ts"]
     assert "hot_files" in inp and "cap_hits" in inp
+
+
+def test_default_caps_match_definitions():
+    assert ws.DEFAULT_CAPS == WDEFS["caps"]["defaults"]
+    assert ws.DEFAULT_BAND in WDEFS["caps"]["defaults"]
+
+
+@needs_db
+def test_ticket_without_plan_uses_default_caps(cur):
+    for _ in range(4):                               # プランナーを通らずに入ったチケット（差し戻しの直しなど）
+        job(cur, cost=0.1, conflict=True)
+    caps, wf = ws.caps_of(cur, CORR)
+    assert wf is None and caps["retries.conflict"] == 3 and caps["implement.turns"] == 60
+    hits = ws.evaluate(cur, CORR)
+    assert [(h["cap"], h["plan_id"], h["default"]) for h in hits] == [("retries.conflict", None, True)]
+    assert ws.evaluate(cur, CORR) == []

@@ -220,7 +220,7 @@ def plan_cmd(cur, argv) -> int:
     if sub == "show" and len(argv) > 3:
         repo, n = split_ref(argv[3])
         rows = planner.plans(cur, f"github:{repo}#{n}")
-        if not rows and not serialize.serialized(cur, f"github:{repo}#{n}"):
+        if not rows and not serialize.serialized(cur, f"github:{repo}#{n}") and not workflow_shadow.shadows(cur, f"github:{repo}#{n}"):
             print("no plan"); return 1
         for p in rows:
             print(f"## Plan {p['id']}（job {p['job_id']}、{p['created_at']:%Y-%m-%d %H:%M}、{p.get('round')} 回目）: {p.get('decision')}  {planner.path_ja(p.get('steps') or [])}")
@@ -247,6 +247,12 @@ def plan_cmd(cur, argv) -> int:
                    (f"飛ばす宣言の {s.get('step')} が動いた（ジョブ {s.get('job_id')}）" if s.get("kind") == "would_skip" else
                     f"start: after（{' '.join(f'#{x}' for x in s.get('after') or [])}）の前に投入した")
             print(f"宣言との差（{s['at']:%m-%d %H:%M}、記録だけ）: {what}")
+        cur.execute("select occurred_at, payload from events where name='workflow.enforced' and correlation_id=%s order by id", (f"github:{repo}#{n}",))
+        ja = {"conflict_wait": "同じファイルに触るチケットを待たせた", "conflict_retry": "待ちの後に 1 回だけ解いた", "conflict_human": "もう解かず人に回した"}
+        for r in cur.fetchall():
+            e = r["payload"]
+            print(f"守らせた（{r['occurred_at']:%m-%d %H:%M}）: 衝突の解消 {e.get('conflicts')} 回で上限 {e.get('cap')} に当たり、{ja.get(e.get('kind'), e.get('kind'))}"
+                  + (f"（{' '.join(e.get('behind') or [])}）" if e.get("behind") else ""))
         return 0
     if sub in ("outcomes", "sizes", "pass"):
         return plan_outcome_cmd(cur, argv, sub)

@@ -2,7 +2,8 @@
 
 プランナーが Plan の workflow に宣言した上限・飛ばすステップ・着手のしかた（start）と、実際の動きを比べ、
 「宣言どおりに守らせていたら、どこで止め、何を飛ばし、何を待たせたか」を events の workflow.shadow に残す。
-ラインの動きは変えない（止めない・飛ばさない・待たせない）。1 週見てから、順番 2 で上限から守らせる。
+ここ自体はラインの動きを変えない。守らせるのは workflow_guard.py（順番 2。最初は衝突の解消の回数）。
+宣言のないチケット（プランナーを通らずに入ったもの）は既定値の上限で数える（ADR 0038 の決定 7）。
 
 - 台帳（ledger）: チケットごとの実績。実装のターン（衝突の解消の続きを除く。ADR 0036 と同じ数え方）と費用、チケット全体の費用、
   続きのジョブの理由ごとの回数（衝突・CI 落ち・検査の指摘・途中終了）、QA と judge のやり直し
@@ -30,6 +31,17 @@ CAP_JA = {
 }
 ACTION_JA = {"replan": "プランナーに戻して切る", "human": "人へ", "serialize_then_human": "並べて待ち、それでも衝突したら人へ",
              "offer_analysis": "決まったところまで返し、分析役の報告を提案する"}
+# 帯ごとの既定値（definitions/workflow.yaml の caps.defaults の写し）。宣言のないチケット（プランナーを通らずに factory:planned で入った
+# 差し戻しの直し・Defect・Learn の改善など。2026-11-09 の実績で実装のチケットの 9 割）は any と M で数え、守らせる（ADR 0038 の決定 7）
+DEFAULT_CAPS = {
+    "S": {"implement.turns": 30, "implement.cost_usd": 3, "ticket.cost_usd": 6},
+    "M": {"implement.turns": 60, "implement.cost_usd": 8, "ticket.cost_usd": 15},
+    "L": {"implement.turns": 90, "implement.cost_usd": 15, "ticket.cost_usd": 25},
+    "XL": {"implement.turns": 120, "implement.cost_usd": 25, "ticket.cost_usd": 30},
+    "any": {"retries.conflict": 3, "retries.ci_fix": 2, "retries.review_fix": 2, "retries.continue": 1, "retries.qa_rerun": 1,
+            "retries.judge_rounds": 1, "quick.turns": 8, "quick.cost_usd": 0.5, "analysis.cost_usd": 5},
+}
+DEFAULT_BAND = "M"
 CONTINUE_CAP = {"conflict": "retries.conflict", "ci_failed": "retries.ci_fix", "review_fix": "retries.review_fix", "incomplete": "retries.continue"}
 SKIPPABLE_JOBS = {"inspect": "inspect", "qa": "qa"}   # ジョブの kind → ステップ。宣言で飛ばしたのに動いたら would_skip
 STEP_DAYS = 30
@@ -51,6 +63,14 @@ def latest_workflow(cur, corr: str) -> dict | None:
     if not r or not isinstance((r["payload"] or {}).get("workflow"), dict):
         return None
     return {"plan_id": r["id"], "at": r["created_at"], **r["payload"]["workflow"]}
+
+
+def caps_of(cur, corr: str) -> tuple[dict, dict | None]:
+    """そのチケットの上限と宣言。宣言がなければ既定値（any と M）で、宣言は None"""
+    wf = latest_workflow(cur, corr)
+    if wf and isinstance(wf.get("caps"), dict):
+        return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND], **wf["caps"]}, wf
+    return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND]}, wf
 
 
 def ledger(cur, corr: str) -> dict:
@@ -95,20 +115,21 @@ def _ticket(corr: str) -> tuple[str, int | None]:
 
 def evaluate(cur, corr: str) -> list[dict]:
     """1 件のチケットの宣言と実績を比べ、新しく当たったものを残す。返り値は今回残したもの"""
-    wf = latest_workflow(cur, corr)
-    if not wf:
-        return []
+    caps, wf = caps_of(cur, corr)
     repo, issue = _ticket(corr)
     out = []
     led = ledger(cur, corr)
+    pid = wf["plan_id"] if wf else None
     for cap, actual in led.items():
-        limit = (wf.get("caps") or {}).get(cap)
+        limit = caps.get(cap)
         if not isinstance(limit, (int, float)) or actual <= limit:
             continue
-        p = {"repo": repo, "issue": issue, "plan_id": wf["plan_id"], "cap": cap, "declared": limit, "actual": actual,
-             "action": ON_CAP.get(cap), "declared_by_planner": cap in (wf.get("caps_declared") or {})}
-        if _record(cur, corr, "cap_hit", f"cap:{corr}:{wf['plan_id']}:{cap}", p):
+        p = {"repo": repo, "issue": issue, "plan_id": pid, "cap": cap, "declared": limit, "actual": actual,
+             "action": ON_CAP.get(cap), "declared_by_planner": bool(wf) and cap in (wf.get("caps_declared") or {}), "default": wf is None}
+        if _record(cur, corr, "cap_hit", f"cap:{corr}:{pid or 'default'}:{cap}", p):
             out.append(p)
+    if not wf:
+        return out
     skipped = {s.get("step") for s in wf.get("steps") or [] if isinstance(s, dict) and s.get("run") is False}
     cur.execute("select id, kind from jobs where correlation_id=%s and kind = any(%s) and enqueued_at >= %s order by id",
                 (corr, list(SKIPPABLE_JOBS), wf["at"]))
@@ -140,10 +161,10 @@ def declared_after(cur, corr: str) -> list[int]:
 
 
 def step(cur, days: int = STEP_DAYS, limit: int = STEP_LIMIT, log=lambda *a: None) -> int:
-    """宣言のある、まだ閉じていないか最近動いたチケットを突き合わせる（supervisor の周回）"""
-    cur.execute("""select distinct a.correlation_id as corr from artifacts a
-                    where a.type='Plan' and a.payload ? 'workflow' and a.created_at > now() - make_interval(days => %s)
-                      and exists (select 1 from jobs j where j.correlation_id=a.correlation_id and j.finished_at > now() - interval '2 days')
+    """最近実装のジョブが動いたチケットを突き合わせる（supervisor の周回）。宣言のないチケットは既定値で数える"""
+    cur.execute("""select distinct j.correlation_id as corr from jobs j
+                    where j.finished_at > now() - interval '2 days' and j.kind='implement'
+                      and j.enqueued_at > now() - make_interval(days => %s)
                     limit %s""", (days, limit))
     n = 0
     for r in cur.fetchall():
@@ -176,17 +197,24 @@ def summary(cur, frm, to) -> dict:
     cur.execute("select count(*) as n, count(*) filter (where payload->'workflow_marks' is not null and jsonb_array_length(payload->'workflow_marks') > 0) as marked "
                 "from artifacts where type='Plan' and payload ? 'workflow' and created_at >= %s and created_at < %s", (frm, to))
     pl = cur.fetchone()
-    return {"plans": int(pl["n"]), "plans_marked": int(pl["marked"]), "cap_hit": caps,
+    cur.execute("select payload->>'kind' as k, count(*) as n from events where name='workflow.enforced' and occurred_at >= %s and occurred_at < %s group by 1",
+                (frm, to))
+    enforced = {r["k"]: int(r["n"]) for r in cur.fetchall()}
+    return {"plans": int(pl["n"]), "plans_marked": int(pl["marked"]), "cap_hit": caps, "enforced": enforced,
             "would_skip": sum(1 for p in rows if p.get("kind") == "would_skip"),
             "would_wait": sum(1 for p in rows if p.get("kind") == "would_wait")}
 
 
 def report_lines(s: dict) -> list[str]:
-    if not s.get("plans") and not s.get("cap_hit") and not s.get("would_skip") and not s.get("would_wait"):
+    if not s.get("plans") and not s.get("cap_hit") and not s.get("would_skip") and not s.get("would_wait") and not s.get("enforced"):
         return []
-    lines = [f"ワークフローの宣言（ADR 0038、記録だけ）: 宣言 {s['plans']} 件（決まりで直した {s['plans_marked']} 件）"]
+    lines = [f"ワークフローの宣言（ADR 0038）: 宣言 {s['plans']} 件（決まりで直した {s['plans_marked']} 件）"]
+    e = s.get("enforced") or {}
+    if e:
+        lines.append(f"- 守らせた（衝突の解消の上限）: 待たせた {e.get('conflict_wait', 0)} 件、待ちの後に 1 回解いた {e.get('conflict_retry', 0)} 件、"
+                     f"人に回した {e.get('conflict_human', 0)} 件")
     for cap, n in sorted(s.get("cap_hit", {}).items()):
-        lines.append(f"- 守らせていたら止めた: {CAP_JA.get(cap, cap)} {n} 件（{ACTION_JA.get(ON_CAP.get(cap), '')}）")
+        lines.append(f"- 上限を超えた（記録だけ）: {CAP_JA.get(cap, cap)} {n} 件（守らせれば{ACTION_JA.get(ON_CAP.get(cap), '')}）")
     if s.get("would_skip"):
         lines.append(f"- 守らせていたら飛ばした: {s['would_skip']} 件")
     if s.get("would_wait"):
