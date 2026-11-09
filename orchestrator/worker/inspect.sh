@@ -12,7 +12,28 @@ ENGINE_REPO="${ENGINE_REPO:-guccyon/factory-engine}"
 ENGINE_REF="${ENGINE_REF:-main}"
 echo "[inspect] job=${JOB_ID} pr=${PR_URL} engine=${ENGINE_REPO}@${ENGINE_REF}"
 
+git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
 git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+
+# この製品の知見（ADR 0040 の決定 7 の 5）: 業務は work.yaml の from_agent_steps.inspect。製品の既定ブランチの .factory-config だけを取り、
+# core-gates/knowledge_context.py（決定論）で選ぶ。触ったファイルを軸 files に渡す。取れなくても検査は続ける。KNOWLEDGE_CONTEXT=0 で止める
+KNOWLEDGE_IDS='[]'
+KNOWLEDGE_SEL='{}'
+export KNOWLEDGE_FILE=""
+REPO_OF_PR=$(sed -E 's#https://github.com/([^/]+/[^/]+)/pull/.*#\1#' <<<"${PR_URL}")
+if [ "${KNOWLEDGE_CONTEXT:-1}" != "0" ] \
+   && git clone --quiet --depth 1 --filter=blob:none --sparse "https://github.com/${REPO_OF_PR}.git" /work/kprod 2>/dev/null \
+   && git -C /work/kprod sparse-checkout set .factory-config 2>/dev/null \
+   && [ -d /work/kprod/.factory-config/knowledge ]; then
+  FILES=$(gh pr view "${PR_URL}" --json files -q '[.files[].path] | .[:200] | join(",")' 2>/dev/null || echo "")
+  KX=$(python3 /work/engine/core-gates/knowledge_context.py --repo /work/kprod --role inspect --set request_form=ticket ${FILES:+--files "${FILES}"} --out /work/knowledge.md 2>/dev/null || echo '{}')
+  KNOWLEDGE_IDS=$(jq -c '.ids // []' <<<"${KX}" 2>/dev/null || echo '[]')
+  [ -z "${KNOWLEDGE_IDS}" ] && KNOWLEDGE_IDS='[]'
+  KNOWLEDGE_SEL=$(jq -c '{work: (.work // []), values: ((.values // {}) | del(.files)), fit: (.fit // {})}' <<<"${KX}" 2>/dev/null || echo '{}')
+  [ -z "${KNOWLEDGE_SEL}" ] && KNOWLEDGE_SEL='{}'
+  if [ "${KNOWLEDGE_IDS}" != "[]" ] && [ -s /work/knowledge.md ]; then KNOWLEDGE_FILE=/work/knowledge.md; fi
+fi
+echo "[inspect] knowledge context ids=${KNOWLEDGE_IDS}"
 set +e
 python3 /work/engine/core-gates/shadow_review.py --pr "${PR_URL}" --out /work/shadow.json 2>/work/inspect.err
 RC=$?
@@ -22,5 +43,5 @@ if [ "${RC}" -ne 0 ] || [ ! -s /work/shadow.json ]; then
   echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg rc "${RC}" '{kind:"inspect", pr_url:$pr, ok:false, exit:($rc|tonumber)}')"
   exit 1
 fi
-echo "FACTORY_RESULT:$(jq -c --arg pr "${PR_URL}" '{kind:"inspect", pr_url:$pr, ok:true, report:.[0], cost_usd:(.[0].cost_usd // 0), usage:(.[0].usage // {}), model:.[0].model}' /work/shadow.json)"
+echo "FACTORY_RESULT:$(jq -c --arg pr "${PR_URL}" --argjson kids "${KNOWLEDGE_IDS}" --argjson ksel "${KNOWLEDGE_SEL}" '{kind:"inspect", pr_url:$pr, ok:true, report:.[0], cost_usd:(.[0].cost_usd // 0), usage:(.[0].usage // {}), model:.[0].model, knowledge_ids:$kids, knowledge_selection:$ksel}' /work/shadow.json)"
 exit 0

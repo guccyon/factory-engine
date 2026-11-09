@@ -50,7 +50,7 @@ context_for_agents:
   attach: [confidence, verified_at]
   usage_event: knowledge.used   # 渡した記録。数えるのは測る側
   selector: core-gates/knowledge_context.py   # 決定論で選ぶ。review_by を過ぎたもの・client の区分は渡さない。役割は scope.roles（空ならすべて）
-  roles_wired: [implement]                    # 今つないでいる役割（2026-11-05）。検査・judge などはつなぐときに足す
+  roles_wired: [implement, body_fix, plan, desk.consult, desk.answer, ui_design, design_system, ui_design_review, inspect, judge, qa]   # 今つないでいる役（ADR 0040 の決定 7 の 1〜5、2026-11-09）。業務は work.yaml の from_agent_steps
   limits: { items: 12, chars: 12000 }         # 仮置き。確認日の新しい順
 
 # 知見の作用先の軸（ADR 0040 の決定 2・3）。業務が主軸で、ほかの軸は知見にタグのように付ける。軸は後から足せる（足しても、今ある知見はその軸では「書いていない」扱い）

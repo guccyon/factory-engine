@@ -27,5 +27,5 @@ if [ "${RC}" -ne 0 ] || [ ! -s /work/review.json ]; then
   echo "FACTORY_RESULT:$(jq -nc --arg rc "${RC}" '{kind:"ui_design_review", ok:false, exit:($rc|tonumber)}')"
   exit 1
 fi
-echo "FACTORY_RESULT:$(jq -c '{kind:"ui_design_review", ok:true, decision:.decision, human_reasons:.human_reasons, verdict:.verdict, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, num_turns:.num_turns}' /work/review.json)"
+echo "FACTORY_RESULT:$(jq -c '{kind:"ui_design_review", ok:true, decision:.decision, human_reasons:.human_reasons, verdict:.verdict, knowledge_ids:(.knowledge_ids // []), knowledge_selection:(.knowledge_selection // {}), cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, num_turns:.num_turns}' /work/review.json)"
 exit 0

@@ -571,6 +571,7 @@ docker compose exec dispatcher factoryctl report learning --days 30
 ```
 
 知見をワーカーに渡す（ADR 0024 の 6）: implement のワーカーは、製品の知見のうち active で確認済み以上（settled で決定論の担保が効いているもの・再確認の期限を過ぎたもの・client の区分は除く）を `core-gates/knowledge_context.py` で選び、確かさと確認日を付けて `/work/context/knowledge.md` に置く。プロンプトには場所と扱い方（目の前の事実を優先し、食い違いは「## 補足」に書く）だけを書く。渡した id は events の `knowledge.used` に残る。`KNOWLEDGE_CONTEXT=0` で止める。
+ADR 0040 の決定 7 で、ほかの役にも業務で選んだ知見を渡す（業務は `definitions/work.yaml` の `from_agent_steps`）: 続きのジョブと本文の直し（`dev.describe`）、プランナー（`plan.workflow`）、窓口の相談役（`desk.converse`・`plan.route`）と回答役（`desk.converse`）、デザイナー役（`dev.design.screen`。単発の道なら `dev.design.proposal`）、デザインシステムのデザイナー役（`dev.design.system`）、デザイン検査役（`dev.review.design`）、検査（`dev.review.inspect`）、judge（`dev.review.judge`）、QA 役（`ops.qa`）。作業ディレクトリを持つ役は `knowledge/knowledge.md` に置いてプロンプトの末尾で案内し、製品の `.factory-config/knowledge/` は直接読ませない。ツールを持たない検査と judge は、ワーカーのスクリプトが製品の既定ブランチの `.factory-config` だけを取って選び、PR の触ったファイルを軸 `files` に渡して、プロンプトに足す。窓口の相談役と回答役には依頼者の好み（`requester.md`）も渡す。
 
 知見の制限付きの保管先（ADR 0024 の 5）: 障害対応などで利用者の情報をどうしても含む知見の根拠は、git に置かず制御プレーンの Postgres の専用スキーマ `restricted` に置き、git の知見からは evidence の `restricted: R-NNNN` で指すだけにする。
 守り方は利用者を分けること。`restricted` は保管先の専用の利用者 `factory_restricted` の持ち物で、ほかの利用者（PUBLIC）からは何もできない。`factory_restricted` は最初は NOLOGIN で、管理者が合言葉を決めて有効にし、合言葉は管理者だけが持つ（`.env` に置かない）。ワーカーのジョブの DB は別の利用者 `factory_job` で、制御プレーンの DB には繋げない（「ジョブ用の DB」）。

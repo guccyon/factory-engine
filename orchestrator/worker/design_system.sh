@@ -34,5 +34,5 @@ fi
 for f in $(jq -r '.files // [] | .[]' /work/design.json); do
   echo "FACTORY_FILE:${f}:$(base64 -w0 "/work/design/${f}")"
 done
-echo "FACTORY_RESULT:$(jq -c '{kind:"design_system", ok:true, phase, delta, round, concepts, spec_files, files, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model, num_turns}' /work/design.json)"
+echo "FACTORY_RESULT:$(jq -c '{kind:"design_system", ok:true, phase, delta, round, concepts, spec_files, files, knowledge_ids:(.knowledge_ids // []), knowledge_selection:(.knowledge_selection // {}), cost_usd:(.cost_usd // 0), usage:(.usage // {}), model, num_turns}' /work/design.json)"
 exit 0

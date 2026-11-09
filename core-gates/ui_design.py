@@ -27,6 +27,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import knowledge_context  # noqa: E402  知見の選び手（ADR 0040 の決定 7 の 5）
+
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("UI_DESIGN_DEFINITIONS") or HERE.parent / "definitions" / "ui_design.yaml")
 CHROMIUM = os.environ.get("CHROMIUM_BIN", "chromium")
@@ -285,8 +288,9 @@ def run(repo_dir: Path, issue: dict, inp: dict, out_dir: Path, defs: dict, chrom
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         stage(root, repo_dir, issue, inp)
+        ksel = knowledge(root, repo_dir, inp)
         state = str(root / ".agent-state")
-        text = prompt(defs, issue, inp)
+        text = prompt(defs, issue, inp) + knowledge_context.prompt_note(ksel)
         errs: list[str] = []
         for attempt in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
             res = agent_runner.run_agentic("ui_design", text, max_turns=defs["designer"]["max_turns"], cwd=str(root), state_dir=state)
@@ -310,7 +314,16 @@ def run(repo_dir: Path, issue: dict, inp: dict, out_dir: Path, defs: dict, chrom
     failed = capture_all(spec, out_dir, defs, chromium)
     return {"ok": not failed, "uxspec": spec, "errors": [f"案 {v} を撮れなかった" for v in failed],
             "files": emitted_files(out_dir, defs["designer"]["max_file_bytes"]),
-            "cost_usd": cost, "usage": usage, "num_turns": turns, "model": model}
+            "cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, **knowledge_context.result_fields(ksel)}
+
+
+def knowledge(root: Path, repo_dir: Path, inp: dict) -> dict:
+    """この回の業務で選んだ知見を knowledge/knowledge.md に置く（ADR 0040 の決定 7 の 5）。
+    ラインのチケットはバックログの画面を仕上げる（dev.design.screen）、単発の依頼の道なら依頼に応じた案（dev.design.proposal）"""
+    path = inp.get("path")
+    return knowledge_context.stage(repo_dir, root / "knowledge", "ui_design",
+                                   {"request_form": ["one_off" if path in ("quick", "analysis") else "ticket"]},
+                                   work=knowledge_context.work_for_step("ui_design", path))
 
 
 def _load(p: Path):

@@ -214,7 +214,8 @@ def comment(repo: str, issue: int, text: str):
 # ------------------------------------------------------------------ キュー（薄いワークフロー I/F：enqueue / claim / finish / cancel）
 def record_knowledge_used(cur, corr, job_id, repo, issue, result: dict, cont: dict | None, role: str = "implement"):
     """ワーカーが文脈に渡した知見（ADR 0024 の 6）を knowledge.used に残す。使われ方（差し戻し・60 日使われない）は測る側が数える。
-    role は知見を受け取った役（implement・body_fix・plan・desk.consult。ADR 0040 の決定 7）"""
+    role は知見を受け取った役（implement・body_fix・plan・desk.consult、7 の 5 で ui_design・design_system・ui_design_review・inspect・judge・qa・desk.answer。
+    ADR 0040 の決定 7）"""
     ids = [i for i in (result.get("knowledge_ids") or []) if isinstance(i, str)][:50]
     if ids:
         sel = result.get("knowledge_selection") if isinstance(result.get("knowledge_selection"), dict) else {}
@@ -600,6 +601,8 @@ def run_job(job: dict, reattaching: bool = False):
                 if state == "succeeded" and result:
                     record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="body_fix")
             elif kind == "judge":
+                if state == "succeeded" and result:
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="judge")
                 if state == "succeeded" and (result or {}).get("verdicts"):
                     ev_mode = judge_inp.get("mode") or "attended"
                     cur.execute("select payload->>'mode_basis' as b from events where name='job.enqueued' and job_id=%s limit 1", (job_id,))
@@ -635,6 +638,8 @@ def run_job(job: dict, reattaching: bool = False):
                         log("committee act failed", result.get("pr_url"), repr(e))
             elif kind == "qa":
                 # QA 役（ADR 0028 の決定 2）: ストーリーごとの Verdict を残し、hold の Defect を起票し、固定 Issue にまとめを書く
+                if state == "succeeded" and result:
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="qa")
                 try:
                     if state == "succeeded" and result.get("mode") == "explore":   # 夜間の探索（nightly_explore）: 1 晩 1 件の qa.explore と Defect の起票
                         keys = qa_line.store_files(store_put, job_id, design_files)
@@ -661,6 +666,9 @@ def run_job(job: dict, reattaching: bool = False):
                     log("desk consult record failed", job_id, repr(e))
             elif kind == "desk_answer":
                 # 窓口の回答役（ADR 0030 の 4）: 問い返しか根拠つきの回答を会話に書く。失敗も会話で依頼者に知らせる
+                if state == "succeeded" and result:
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="desk.answer")
+                    record_preferences_used(cur, corr, job_id, judge_inp, role="desk.answer")
                 try:
                     desk_answer.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
@@ -682,6 +690,7 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "design_system":
                 # デザインシステムのデザイナー役（ADR 0025・0026）: concept は案を人の選択に回す、spec は正本を Issue に足して実装役へ
                 if state == "succeeded":
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="design_system")
                     try:
                         if result.get("phase") == "concept":
                             keys = design_line.store_files(store_put, job_id, design_files)
@@ -702,6 +711,7 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind in ("ui_design", "ui_design_review"):
                 # デザインの線（ADR 0025）: 案を残して検査役に回す／検査役の判断で 承認・直し・人へ。失敗はタスクを止めて知らせる
                 if state == "succeeded":
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result or {}, None, role=kind)
                     try:
                         if kind == "ui_design":
                             keys = design_line.store_files(store_put, job_id, design_files)
@@ -723,6 +733,8 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "inspect":
                 # 検査（shadow）: gate.evaluated と InspectionReport を残すだけ。差し戻し（修正 Issue の起票）は judge の後半（ADR 0006）
                 rep = ((result or {}).get("report") or {}).get("result") or {}
+                if state == "succeeded" and result:
+                    record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="inspect")
                 if state == "succeeded" and rep:
                     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('InspectionReport',%s,%s,'verify',%s)",
                                 (corr, job_id, Jsonb({"pr_url": result["pr_url"], "mode": "shadow", "gate": "rubric", "model": result.get("model"),

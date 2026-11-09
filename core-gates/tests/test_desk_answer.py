@@ -94,3 +94,23 @@ def test_answer_end_to_end_with_fake_agent(monkeypatch, tmp_path):
 def test_step_is_declared():
     conf = agent_runner.load_agents()
     assert agent_runner.resolve("desk.answer", conf=conf).model
+
+
+def test_stage_writes_preferences_and_picked_knowledge(tmp_path):
+    """ADR 0040 の決定 6・7 の 5: 依頼者の好みと、窓口の業務で選んだ知見だけを置く（仮説や他の業務の知見は置かない）"""
+    repo = tmp_path / "product"
+    kdir = repo / ".factory-config" / "knowledge"
+    kdir.mkdir(parents=True)
+    base = ("theme: 1\nkind: practice\nstatus: active\nverified_at: '2026-11-01'\nreview_by: '2099-01-01'\nconfidentiality: product\n"
+            "evidence:\n  - pr: 1\ndecided_by: committee:D-0001\n")
+    (kdir / "K-0001.yaml").write_text("id: K-0001\n" + base + "confidence: confirmed\nscope: {work: [desk]}\nstatement: 結論を先に\n", encoding="utf-8")
+    (kdir / "K-0002.yaml").write_text("id: K-0002\n" + base + "confidence: hypothesis\nscope: {work: [desk]}\nstatement: 仮説\n", encoding="utf-8")
+    (kdir / "K-0003.yaml").write_text("id: K-0003\n" + base + "confidence: confirmed\nscope: {work: [dev.build]}\nstatement: 実装の話\n", encoding="utf-8")
+    root = tmp_path / "work"
+    root.mkdir()
+    sel = da.stage(root, {"product": "guccyon/rally", "requester": "cs-1", "messages": [],
+                          "requester_preferences": [{"id": "P-0001", "statement": "数字は表で", "work": ["desk"]}]}, repo, [])
+    assert sel["ids"] == ["K-0001"] and sel["work"] == ["desk.converse"]
+    assert "K-0001" in (root / "knowledge" / "knowledge.md").read_text(encoding="utf-8")
+    assert "P-0001" in (root / "requester.md").read_text(encoding="utf-8")
+    assert not (root / "product" / ".factory-config").exists()

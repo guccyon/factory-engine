@@ -26,6 +26,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import knowledge_context  # noqa: E402  知見の選び手（ADR 0040 の決定 7 の 5）
+
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("UI_DESIGN_DEFINITIONS") or HERE.parent / "definitions" / "ui_design.yaml")
 DECISIONS = ["approve", "revise", "human"]
@@ -109,7 +112,7 @@ def prompt(defs: dict, inp: dict) -> str:
 """
 
 
-def stage(root: Path, inp: dict, repo_dir: Path | None):
+def stage(root: Path, inp: dict, repo_dir: Path | None) -> dict:
     issue = inp.get("issue") or {}
     (root / "issue.md").write_text(f"# {issue.get('title', '')}\n\n{issue.get('body') or ''}\n", encoding="utf-8")
     (root / "uxspec.yaml").write_text(yaml.safe_dump(inp.get("uxspec") or {}, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -119,6 +122,8 @@ def stage(root: Path, inp: dict, repo_dir: Path | None):
             (root / "mocks" / name).write_bytes(base64.b64decode(b64))
     if repo_dir and (repo_dir / "specs").is_dir():
         shutil.copytree(repo_dir / "specs", root / "specs", ignore=shutil.ignore_patterns("*.jpg", "*.pdf", "*.mp4"))
+    # 知見はデザインを検査する業務（dev.review.design）で選んだものだけ（ADR 0040 の決定 7 の 5）
+    return knowledge_context.stage(repo_dir, root / "knowledge", "ui_design_review", {"request_form": ["ticket"]})
 
 
 def review(inp: dict, defs: dict, repo_dir: Path | None) -> dict:
@@ -126,17 +131,18 @@ def review(inp: dict, defs: dict, repo_dir: Path | None) -> dict:
     ids = [str(v.get("id")) for v in (inp.get("uxspec") or {}).get("variants") or []]
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        stage(root, inp, repo_dir)
+        ksel = stage(root, inp, repo_dir)
         cwd = os.getcwd()
         os.chdir(root)   # agent_runner はカレントディレクトリでエージェントを動かす
         try:
-            res = agent_runner.run("ui_design_review", prompt(defs, inp), schema=schema(defs, ids), max_turns=defs["inspector"]["max_turns"])
+            res = agent_runner.run("ui_design_review", prompt(defs, inp) + knowledge_context.prompt_note(ksel), schema=schema(defs, ids),
+                                   max_turns=defs["inspector"]["max_turns"])
         finally:
             os.chdir(cwd)
     verdict = res.output if isinstance(res.output, dict) else {}
     decision, reasons = route(verdict, inp.get("uxspec") or {}, int(inp.get("round") or 1), defs)
     return {"decision": decision, "human_reasons": reasons, "verdict": verdict,
-            "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns}
+            "cost_usd": res.cost_usd, "usage": res.usage, "model": res.model, "num_turns": res.num_turns, **knowledge_context.result_fields(ksel)}
 
 
 def main(argv: list[str] | None = None) -> int:
