@@ -417,7 +417,7 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 ## 触れる環境（ADR 0028 の touchable_env）
 
-Release 候補ごとに、人がスマートフォンと PC で触れる環境を 1 コマンドで立てる。Gen1 は staging を QA の環境と兼ねる（使い捨ての環境は P5b の `ephemeral_env`）。
+Release 候補ごとに、人がスマートフォンと PC で触れる環境を 1 コマンドで立てる。Gen1 は staging を QA の環境と兼ねる。PR ごとの使い捨ての環境は下の「PR ごとの使い捨て環境」。
 手を動かすのは shipper で、`factoryctl env up` は依頼を順に書いて結果を待ち、入口（URL・QR・ログインの手がかり）を出すだけ。
 
 ```bash
@@ -445,6 +445,23 @@ docker compose exec dispatcher factoryctl env restart guccyon/rally --reset-cloc
 - iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
 - 時間をまたぐシナリオ（ADR 0028 の `scenario_time`）: `env restart` は ship.yaml の `touch.restart` の部品（なければ `verify` の部品）を作り直して再起動し、`touch.clock_env` の変数にサーバーの時計を進める秒数を渡す（rally は backend の `CLOCK_OFFSET_SECONDS`）。DB は残す。進めた量は前の再起動に足していき、1 回 7 日・合計 62 日まで。次に版を出す・戻す・入れ直すと 0 に戻る。本番は受け付けない。依頼は events の `release.restart_requested`、結果は `release.restarted`（`clock_offset_seconds`）
 
+
+## PR ごとの使い捨て環境（ADR 0043 の O7 ephemeral_env）
+
+触れる環境の仕組みを PR の単位に広げたもの。Gen1 は回路の確認まで（Gen1.5 で複数リポジトリの PR の束に作り直す前提）。
+shipper が PR の head を `<製品>-pr-<番号>` の compose のプロジェクトで立て、合成シードを入れ、入口を `env.ephemeral_up` に残す。
+ポートは製品の ship.yaml の `ephemeral`（`base` の環境の値に枠の番号 × `port_step` を足す）。同時に立てるのは `EPHEMERAL_MAX`（既定 2）まで。
+製品のリポジトリの中のブランチから出た開いた PR だけを立てる（fork の PR のコードはこの機械で作らない）。
+
+```bash
+docker compose exec dispatcher factoryctl env pr-up guccyon/rally 1234    # 立つまで待って入口（URL・QR）を出す
+docker compose exec dispatcher factoryctl env pr-show                     # 立っている環境と触った印
+docker compose exec dispatcher factoryctl env pr-touch guccyon/rally 1234 --note "iPad で予約まで"   # 人が触った印
+docker compose exec dispatcher factoryctl env pr-down guccyon/rally 1234  # 開いたままでも壊す
+```
+
+PR が閉じたら（マージでも閉じただけでも）、supervisor が壊す依頼を書き、shipper が `docker compose down -v` とイメージ・ソースの片付けをして `env.ephemeral_down`（触った印つき）を残す。
+PR が開いたままでも `EPHEMERAL_TTL_HOURS`（既定 48）を過ぎたら壊す。
 ## QA 役（ADR 0028 の決定 2。P5a の qa_verdict）
 
 触れる環境（Gen1 は staging を兼ねる）に、製品の `specs/stories/` のユーザーストーリーを利用者として流し、ストーリーごとに Verdict（pass・hold・blocked、確信度、根拠）を出す。形と決まりは `definitions/qa.yaml`。
