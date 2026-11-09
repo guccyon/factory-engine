@@ -172,3 +172,32 @@ def test_drill_does_not_plant_while_qa_is_busy(cur, capsys):
     assert "仕込みはしていない" in capsys.readouterr().out
     cur.execute("select count(*) as n from events where name in ('release.drill_requested','incident.drill_started')")
     assert cur.fetchone()["n"] == 0
+
+
+def test_s1_is_not_absorbed_into_an_open_lighter_defect_at_the_same_step(cur):
+    """11/9 の演習: 同じ歩に開いている S2 の Defect があると、S1 がその Issue に吸われて差し止めが起きなかった"""
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values (%s, %s, 5, 't', 'qa')", (QA_CORR, REPO))
+    old = {"story_id": "s", "env": "staging", "release_id": "r6", "sha": "a"}
+    body = qa_line.defect_body(REPO, old, {"title": "入口が出ない", "step": 1, "viewpoint": "flow", "severity": "s2"}, 1, 5)
+    gh = FakeGH()
+    gh_defects = [{"number": 50, "title": "QA: 入口が出ない", "html_url": f"https://github.com/{REPO}/issues/50", "body": body}]
+    def call(method, path, body=None):
+        if method == "GET" and "factory:qa-defect" in path:
+            gh.calls.append((method, path, body))
+            return gh_defects
+        return gh(method, path, body)
+    res = {"kind": "qa", "ok": True, "sha": "b", "env": "staging", "release_id": "r7", "model": "m",
+           "verdicts": [{"story_id": "s", "decision": "hold", "confidence": 0.8, "steps": [{"n": 1, "result": "ng", "saw": "x"}],
+                         "evidence": ["x"], "interpretation": "止めた",
+                         "defects": [{"title": "入口が出ない", "step": 1, "viewpoint": "flow", "severity": "s2", "actual": "x"},
+                                     {"title": "他人の連絡先が見える", "step": 1, "viewpoint": "authz", "severity": "s1", "actual": "x"}]}]}
+    recorded = qa_line.record(cur, REPO, QA_CORR, 1, res, {})
+    out = qa_line.act(cur, call, lambda *a: None, REPO, 5, QA_CORR, 1, res, recorded, {})
+    assert out["seen"] == [f"https://github.com/{REPO}/issues/50"] and len(out["filed"]) == 1
+    st = incident.hold_status(cur)
+    assert st and st["incidents"][0]["severity"] == "s1" and st["incidents"][0]["issue"] == out["filed"][0]
+    assert sorted(i["severity"] for i in incident.open_incidents(cur, REPO)) == ["s1", "s2"]
+    # 起票した S1 の本文から作り直した目印も S1 のまま（次の回に同じ歩の S2 と混ざらない）
+    s1_body = [c[2]["body"] for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")][0]
+    keys = qa_line.open_defects(lambda *a: gh_defects + [{"title": "QA: 他人の連絡先が見える", "html_url": "u1", "body": s1_body}], REPO, "x")
+    assert keys == {"s#1": f"https://github.com/{REPO}/issues/50", "s#1#s1": "u1"}
