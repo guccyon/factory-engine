@@ -271,3 +271,21 @@ def test_enforce_files_when_no_open_issue_or_lookup_fails(cur):
     enf = [{"knowledge": "K-0003", "level": "deterministic", "solution_kind": "lint", "proposal": "lint"}]
     committee.record(cur, "o/r", 14, f"committee:{other}", None, result("enforce", pr_url=other, enforce=enf), gh, lambda *a: None)
     assert [c[2]["title"] for c in calls if c[0] == "POST"] == ["担保: K-0003 を lint で決定論にする"]
+
+
+def test_weekly_input_and_issue_carry_reach(cur):
+    """ADR 0040 の決定 8: 届かなかった知見を週 1 の定例に渡し、広げる案を見直しの変更セットに入れる"""
+    from datetime import datetime, timezone
+
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into events(name, payload) values ('knowledge.missed', %s), ('knowledge.missed', %s)",
+                (Jsonb({"repo": "o/r", "id": "K-0002", "reason": "other_work", "scope": True, "work": ["dev.describe"], "role": "body_fix"}),
+                 Jsonb({"repo": "x/y", "id": "K-0009", "reason": "other_work", "scope": True})))
+    inp = committee.weekly_input(cur, "o/r", datetime.now(timezone.utc))
+    assert [(x["signal"], x["id"], x["reason"]) for x in inp["reach"]] == [("missed", "K-0002", "other_work")]
+    res = {**WEEK_RESULT, "facts": {**WEEK_RESULT["facts"], "reach": {"missed": 1, "missed_scope": 1, "delivered_failed": 0}},
+           "report": {**WEEK_RESULT["report"], "contradictions": [], "enforce": [],
+                      "widen": [{"ids": ["K-0002"], "why": "本文の直しに届かない", "proposal": "work を dev.describe に"}]}}
+    [(key, title, body)] = committee.weekly_issues("2026-W46", res)
+    assert key == "review:2026-W46" and "効く範囲を広げる" in body and "K-0002: 本文の直しに届かない" in body
+    assert "届かなかった 1 件（うち効く範囲の当たり外れ 1 件）" in committee.weekly_markdown("2026-W46", res)

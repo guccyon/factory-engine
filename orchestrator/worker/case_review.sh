@@ -12,8 +12,16 @@ cat > /work/case_input.json
 echo "[case_review] job=${JOB_ID} engine=${ENGINE_REPO}@${ENGINE_REF} input_bytes=$(wc -c < /work/case_input.json)"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
 git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+# 製品の知見（ADR 0040 の決定 8）: 真因と同じ知見があったか、その回に届いたかを見る。既定ブランチの .factory-config だけを取る。取れなくても分析は続ける
+REPO_ARG=()
+if [[ "${REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+   && git clone --quiet --depth 1 --filter=blob:none --sparse "https://github.com/${REPO}.git" /work/kprod 2>/dev/null \
+   && git -C /work/kprod sparse-checkout set .factory-config 2>/dev/null \
+   && [ -d /work/kprod/.factory-config/knowledge ]; then
+  REPO_ARG=(--repo-dir /work/kprod)
+fi
 set +e
-python3 /work/engine/core-gates/case_review.py --input /work/case_input.json --out /work/case.json 2>/work/case.err
+python3 /work/engine/core-gates/case_review.py --input /work/case_input.json --out /work/case.json "${REPO_ARG[@]}" 2>/work/case.err
 RC=$?
 set -e
 sed 's/^/[case_review.err] /' /work/case.err | tail -20 || true

@@ -246,7 +246,12 @@ def weekly_input(cur, repo: str, now) -> dict:
     filed = [{k: r["payload"].get(k) for k in ("incident", "themes", "issue")} for r in cur.fetchall()]
     cur.execute("select payload from events where name='committee.enforce_filed' and occurred_at >= %s order by id", (since,))
     enforce = [r["payload"] for r in cur.fetchall()]
-    return {"decisions": decisions, "case_filed": filed, "enforce_filed": enforce}
+    # 効き目の信号（ADR 0040 の決定 8）: 真因と同じ知見が、その回に届かなかった・届いたのに差し戻された
+    cur.execute("""select name, payload from events where name in ('knowledge.missed','knowledge.delivered_failed') and occurred_at >= %s
+                     and payload->>'repo'=%s order by id""", (since, repo))
+    reach = [{"signal": "missed" if r["name"] == "knowledge.missed" else "delivered_failed",
+              **{k: r["payload"].get(k) for k in ("id", "incident", "reason", "scope", "work", "role")}} for r in cur.fetchall()]
+    return {"decisions": decisions, "case_filed": filed, "enforce_filed": enforce, "reach": reach}
 
 
 def _items(xs: list[dict]) -> str:
@@ -262,6 +267,7 @@ def weekly_markdown(week: str, result: dict) -> str:
 {r.get('summary', '')}
 
 - 知見 {f.get('items', 0)} 件（状態 {f.get('by_status', {})}、active の確かさ {f.get('by_confidence', {})}）、事例 {f.get('cases', 0)} 件、議決 {f.get('decisions', 0)} 件
+- 効き目（ADR 0040 の決定 8）: 真因と同じ知見が届かなかった {(f.get('reach') or {}).get('missed', 0)} 件（うち効く範囲の当たり外れ {(f.get('reach') or {}).get('missed_scope', 0)} 件）、届いたのに差し戻された {(f.get('reach') or {}).get('delivered_failed', 0)} 件
 
 ### 期限切れ（要再確認）
 {stale}
@@ -278,6 +284,9 @@ def weekly_markdown(week: str, result: dict) -> str:
 ### 決定論で担保する候補
 {_items(r.get('enforce') or [])}
 
+### 効く範囲を広げる候補（届かなかった知見）
+{_items(r.get('widen') or [])}
+
 ### 置き場の構造
 {('見直す: ' + st.get('proposal', '')) if st.get('needed') else '今は変えない'}
 
@@ -290,7 +299,8 @@ def weekly_issues(week: str, result: dict) -> list[tuple[str, str, str]]:
     f, r = result.get("facts") or {}, result.get("report") or {}
     out = []
     stale = [s["id"] for s in f.get("stale") or []]
-    review = {"contradictions": r.get("contradictions") or [], "promote": r.get("promote") or [], "retire": r.get("retire") or []}
+    review = {"contradictions": r.get("contradictions") or [], "promote": r.get("promote") or [], "retire": r.get("retire") or [],
+              "widen": r.get("widen") or []}
     if stale or any(review.values()):
         body = f"""知見の委員会の週 1 の定例（{week}）で決めた見直しを、1 本の変更セットの PR にしてください（ADR 0024）。
 
@@ -306,6 +316,10 @@ def weekly_issues(week: str, result: dict) -> list[tuple[str, str, str]]:
 
 ## 廃止（retire）
 {_items(review['retire'])}
+
+## 効く範囲を広げる（scope。ADR 0040 の決定 8）
+{_items(review['widen'])}
+真因と同じだったのにその回に届かなかった知見。scope の業務を親のノードに上げる・成果物を足す・状況の軸の条件を外すなど、案のとおりに直す。広げすぎない（届かなかった回の業務と状況が入るところまで）
 
 ## やること
 - `.factory-config/knowledge/README.md` の決まりに従い、ファイルは消さず状態だけ変える。置き換えは supersedes と superseded_by を両方に書く
