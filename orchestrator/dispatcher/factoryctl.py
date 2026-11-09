@@ -940,7 +940,8 @@ def incident_cmd(cur, argv) -> int:
         if not d:
             print("この製品は演習の最中ではない"); return 1
         reason = opt(argv, "--reason", "演習を終えた")
-        n = sum(incident.close_incident(cur, i["incident_id"], by, reason) for i in incident.open_incidents(cur, repo) if i.get("drill"))
+        n = sum(incident.close_incident(cur, i["incident_id"], by, reason) for i in incident.open_incidents(cur, repo)
+                if i.get("drill") and i.get("severity") in incident.HOLD_SEVERITIES)   # 演習が起こした S1 だけ。ほかは本物の不具合として残す
         cur.execute("insert into events(name, payload) values ('incident.drill_ended', %s)",
                     (Jsonb({"repo": repo, "drill": d.get("drill"), "by": by, "reason": reason, "closed_incidents": n}),))
         ok, msg = ship.request_reseed(cur, repo, "staging", by, "factoryctl")
