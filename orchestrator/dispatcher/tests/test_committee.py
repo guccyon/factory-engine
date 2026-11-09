@@ -289,3 +289,25 @@ def test_weekly_input_and_issue_carry_reach(cur):
     [(key, title, body)] = committee.weekly_issues("2026-W46", res)
     assert key == "review:2026-W46" and "効く範囲を広げる" in body and "K-0002: 本文の直しに届かない" in body
     assert "届かなかった 1 件（うち効く範囲の当たり外れ 1 件）" in committee.weekly_markdown("2026-W46", res)
+
+
+def test_enforce_is_not_filed_again_after_the_first_closed(cur):
+    # 2026-11-08〜09 rally: 担保の PR（知見の enforcement を書き足す）に委員会がまた同じ担保を決め、元の Issue が閉じたあと同じ題を繰り返し起票した
+    calls = []
+
+    def gh(m, p, b=None):
+        calls.append((m, p, b))
+        return [] if m == "GET" else {"html_url": "https://github.com/o/r/issues/77"}
+
+    enf = [{"knowledge": "K-0004", "level": "deterministic", "solution_kind": "ci_check", "proposal": "検査を足す"}]
+    first, again = PR.replace("/12", "/20"), PR.replace("/12", "/21")
+    committee.record(cur, "o/r", 20, f"committee:{first}", None, result("enforce", pr_url=first, enforce=enf, decision="D-0010"), gh, lambda *a: None)
+    committee.record(cur, "o/r", 21, f"committee:{again}", None, result("enforce", pr_url=again, enforce=enf, decision="D-0011"), gh, lambda *a: None)
+    assert [c[2]["title"] for c in calls if c[0] == "POST"] == ["担保: K-0004 を ci_check で決定論にする"]
+    cur.execute("select payload from events where name='committee.enforce_skipped'")
+    assert cur.fetchone()["payload"]["pr_url"] == again
+    # 別の製品・別の解決策の種類は起票する
+    other = [{"knowledge": "K-0004", "level": "deterministic", "solution_kind": "lint", "proposal": "lint"}]
+    third = PR.replace("/12", "/22")
+    committee.record(cur, "o/r", 22, f"committee:{third}", None, result("enforce", pr_url=third, enforce=other, decision="D-0012"), gh, lambda *a: None)
+    assert [c[2]["title"] for c in calls if c[0] == "POST"][-1] == "担保: K-0004 を lint で決定論にする"
