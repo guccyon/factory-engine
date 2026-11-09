@@ -19,9 +19,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from psycopg.types.json import Jsonb
-
 import ship
+from psycopg.types.json import Jsonb
 
 JST = timezone(timedelta(hours=9))
 KINDS = ("regular", "emergency")

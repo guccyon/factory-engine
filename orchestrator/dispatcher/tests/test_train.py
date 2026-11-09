@@ -14,11 +14,10 @@ pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL がない")
 
 if URL:
     import psycopg
-    from psycopg.rows import dict_row
-    from psycopg.types.json import Jsonb
-
     import ship
     import train
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
 
 A, B = "o/app", "o/mobile"
 NOW = datetime(2026, 11, 9, 9, 30, tzinfo=timezone.utc)   # JST 18:30
