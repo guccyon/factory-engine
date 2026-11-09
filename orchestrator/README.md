@@ -496,6 +496,61 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally                 
 - dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。同じ題の開いた Defect があれば起票せずにその Issue に書く）。固定 Issue にまとめを書く
 - 朝 5 時の日報（`health/daily/status_report.py`）とページに「夜間の探索（昨夜）」として、Defect（s1・s2 は太字）と印、回らなかった理由を出す。印は人が採点して Golden Set に入れる材料
 
+### 週次の KPI の Report ライン（P5b の report_line・kpi_error_signal、ADR 0043 の O2・O3）
+
+製品の KPI を週に 1 回 staging で測り、前回と比べて、外れた値を Opportunity の下書きとして受信トレイに出す。工場は起票しない（人かプランナーが窓口から拾う）。決定的でトークンを使わない。組み立ては `dispatcher/report_kpi.py`。
+
+```bash
+docker compose exec dispatcher factoryctl report kpi guccyon/rally             # いちばん新しい週次の KPI
+docker compose exec dispatcher factoryctl report kpi guccyon/rally --measure   # 今すぐ staging で測り、Report・下書き・見込みの採点まで回す
+```
+
+- 測り方は製品の `.factory-config/ship.yaml` の `kpi`（測る環境・実行する部品とコマンド・値ごとの id・名前・単位・よい向き・目安の幅 `expected`・前回からの変化の閾値 `change_alert`）。コマンドの出力は `{id: 数}` の JSON。Gen1 は合成の利用者の行動ログ（O4）がまだないので、staging の DB から近似する
+- supervisor が毎週月曜 7 時（JST）を過ぎたら、`KPI_WEEKLY` の製品（既定は `RELEASE_TRAIN` と同じ。空で止める）ごとに測る依頼（`release.kpi_requested`）を書き、shipper が staging で実行して `release.kpi_measured` に残す。staging に版がなければ `report.kpi_skipped` に週 1 回。測れなくても停止には開かない
+- 測れた結果は、同じ製品・同じ環境のひとつ前の測定と比べて artifacts の `KPIReport` と events の `report.kpi_weekly` に残す。目安の幅の外・前回より悪い向きに `change_alert`（既定 20%）以上・見込みと逆に動いた値を異常とし、1 回 3 件まで改善の提案（`Opportunity`。題・問題・期待する効果）にして、合成の利用者と同じ口（`dispatcher/opportunity.py`）から `opportunity.proposed`（source `report.kpi`）と受信トレイのプロダクトオーナーの依頼に出す
+- 見込み（O3）: プランナーは着手を決めるとき、変更が KPI を動かすと見込めれば Requirements に `kpi_forecast`（KPI の id・変化・理由）を書く（任意。製品の `ship.yaml` の `kpi.metrics` にない id は落とす）。週次の Report が、前回の測定から今回までにマージしたチケットの見込みを実測の差と突き合わせて `kpi.forecast_scored` に残し、Learn の Retrospective が教師信号 `kpi_error`（signature `kpi:<id>`）として束ねる
+- 開発状況レポート（`report.product`）の節「製品の KPI（週次）」にいちばん新しい値と前回差を出し、異常は注意の印にする
+- Gen1 の値は staging の合成シードなので、異常や誤差の中身に意味はない（回路の確認）
+
+### 合成の利用者（ADR 0043 の O4 synthetic_users_loop）
+
+実際の利用者がまだいない製品で、合成の利用者がユーザーストーリーに沿って staging を歩き、行動ログ（製品の `specs/analytics/events.yaml` の名前）と応答時間を残す。遅い API（テーマ 2）と入口が見つけにくい流れ（テーマ 1）を決定論で拾い、改善の提案（Opportunity）にして受信トレイに出す（起票はしない）。形と数値は `definitions/qa.yaml` の `synthetic`。
+
+```bash
+docker compose exec dispatcher factoryctl qa synthetic guccyon/rally --friction example [--through-pause]   # 今すぐ 1 回（仕込みつき）
+```
+
+- supervisor が週に 1 回（既定は日曜の JST 5〜7 時）、`SYNTHETIC_USERS` の製品（既定は `NIGHTLY_EXPLORE` と同じ。空で止める）ごとに QA のジョブ（入力の `mode: synthetic`）を固定 Issue に積む
+- ワーカー（`core-gates/qa.py`）は、画面の入口ごとに中継（`core-gates/synthetic_proxy.py`）を立て、エージェントには中継の URL だけを渡す。応答時間はエージェントの申告ではなく中継が 1 回ごとに測る
+- わざと仕込む詰まり（遅い API 1 本・見つけにくい入口 1 つ）は、工場の環境変数 `SYNTH_FRICTION`（`example` で `definitions/qa.yaml` の例、JSON で任意、空で仕込まない）で入れ、staging のときだけ中継が入れる。製品のコードにも環境の設定にも入れない
+- dispatcher が artifacts の `QASynthetic` と events の `qa.synthetic` を残し、提案を `opportunity.proposed`（artifacts の `Opportunity`）と受信トレイ（プロダクトオーナーの「見て、拾うなら起票」）に出し、固定 Issue にまとめを書く。roadmap の `synthetic_users_loop` は仕込みに当たった提案を数える
+
+### 品質の Learn（ADR 0043 の O9 quality_learn）
+
+supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は月曜の JST 7 時過ぎ）、製品ごとに直近 30 日の Defect（`defect.recorded`）と Incident（`incident.opened`。演習を除く）を集計する（`dispatcher/quality_learn.py`。LLM は使わない）。
+
+- 発見工程の分布と出やすい場所を `quality.learned` に残す
+- QA の重点（Defect の多いストーリー・マージの後で多い観点）を `qa.focus_updated` に、回帰のシナリオ（QA で見つかった Defect の再現の手順）を `qa.scenario_added` に足す。QA のジョブを積むとき入力の `focus`・`scenarios` に足し、夜間の探索と合成の利用者のプロンプトが読む（工程は変えない）
+- 同じ観点の Defect がマージの後で線より多ければ、基準の変更案（`quality.proposal_drafted`）にし、委員会の順番が空いたら知見の変更セットの Issue にして委員会の列に入れる（`quality.proposal_filed` と `knowledge.case_filed`）。品質方針の値は変えない（人の承認）
+- 手で回すときは `factoryctl qa learn guccyon/rally`（その週にまだ回っていなければ）。`QUALITY_LEARN=0` で止める
+
+## 障害の重要度とエラーバジェット・QA 役の差し止め（ADR 0043 の O5 severity_budget）
+
+重要度の基準（S1 の条件と S2〜S4）とエラーバジェットは製品の `.factory-config/quality_policy.yaml`（欄の型は `definitions/quality_policy.yaml`）。QA 役のワーカーはその条件を重要度の説明に足して読む。
+
+- Gen1 は本番を立てないので staging を本番の代わりにし、QA 役（判定・夜間の探索）が起票した Defect（known_gap を除く）を同じ重要度の Incident として残す（`dispatcher/incident.py`、events の `incident.opened` と artifacts の `Incident`）。同じ Defect の Issue は 1 件
+- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人だけ**（操業コンソールの「差し止めを解除」か下の `line release`。QA 役と工場の常駐は解除できない）
+- エラーバジェット: 期間の中の Incident（演習を除く）が許容件数を超えたら `incident.budget_exceeded` を期間と重要度ごとに 1 回残し、工場の状況に知らせる
+
+```bash
+docker compose exec dispatcher factoryctl incident list [guccyon/rally]     # 最近の Incident と差し止めの状態
+docker compose exec dispatcher factoryctl incident budget guccyon/rally     # エラーバジェットと期間の中の件数
+docker compose exec dispatcher factoryctl line release --reason "演習を終えた"   # 差し止めを解除（人）
+# S1 の演習: staging に仕込み（ship.yaml の touch.drills）、QA 役の探索を 1 回積む。終えたら演習の Incident を閉じて staging を入れ直す
+docker compose exec dispatcher factoryctl incident drill guccyon/rally [--plant s1_data_leak] [--charter other-user]
+docker compose exec dispatcher factoryctl incident drill-end guccyon/rally
+```
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。

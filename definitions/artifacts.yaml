@@ -36,7 +36,7 @@ types:
   Requirements:
     stage: define
     required: [acceptance_criteria, non_goals, success_definition]
-    optional: [stories]
+    optional: [stories, kpi_forecast]
     note: "P4 の typed_upstream。プランナーが着手できると決めたときに出し、dispatcher が artifacts（produced_by plan）に残して Issue の本文の節に書く。stories は このタスクが増やす（add）・変える（change）・守る（keep）ユーザーストーリーの宣言（id は製品の specs/stories/。形は definitions/planner.yaml の upstream）"
   Ticket:
     stage: design
@@ -58,6 +58,7 @@ types:
   KPIReport:
     stage: [operate, routine]
     required: [period, metrics, diff_from_previous, explanations]   # 前回差分の説明責任
+    note: "ADR 0043 の O2。週次の Report（report_kpi.py）が測れた結果 1 つにつき 1 つ残す。period は JST の ISO 週。explanations は前回の測定からマージした PR の数と、見込みと実測の組。correlation_id は kpi:<repo>:<週>"
   Retrospective:
     stage: learn
     required: [day, window_days, signals, clusters]
@@ -138,6 +139,7 @@ auxiliary_types:
   UXSpec:           { stage: design, required: [screens, states, design_system_constraints, design_system_gaps, uxspec, files, round] }   # ADR 0025。デザイナー役の案 1 回分。uxspec は definitions/ui_design.yaml の形、files は案のファイルのオブジェクトストアのキー
   DesignVerdict:    { stage: design, required: [design_artifact_id, round, decision, inspector_decision, chosen_variant, findings, evidence, interpretation, score, decided_by] }   # ADR 0025。デザイン検査役の判断（approve・revise・human）を judge と同じ 3 層で
   QAExplore:        { stage: verify, required: [repo, night, charter, env, release_id, tried, findings, interpretation, confidence] }   # ADR 0028 の nightly_explore。QA 役の夜間の探索 1 回分（試したこと・見つけたもの・印）。形は definitions/qa.yaml の explore.result
+  QASynthetic:      { stage: verify, required: [repo, release_id, env, walks, timings, planted, interpretation, confidence] }   # ADR 0043 の O4。合成の利用者が歩いた 1 回分（行動ログと、中継が測った API の応答時間）。形は definitions/qa.yaml の synthetic.result
   QAVerdict:        { stage: verify, required: [repo, release_id, env, story_id, decision, confidence, steps, evidence, interpretation, defects, flags] }   # ADR 0028 の決定 2。QA 役がストーリー 1 本を流した判断（pass・hold・blocked）を judge と同じ 3 層で。形は definitions/qa.yaml
   ADR:              { stage: design, required: [title, status, context, decision, alternatives, consequences] }   # P4 の typed_upstream。プランナーが着手できると決めたときに、このタスクで新しく残す判断を出す（status は proposed）。dispatcher が artifacts（produced_by plan）に残して Issue の本文の節に書き、実装役が同じ PR で製品の docs/adr/ に書く。従う既存の ADR は Requirements の adrs_follow
   ContractDiff:     { stage: design, required: [contract, kind, compat_impact] }   # P4 の typed_upstream。プランナーが出す契約の差分（contract は specs/contracts/ のパス、kind は add・change・remove、compat_impact は none・additive・breaking、operations と summary）。置き場は製品と決定論で突き合わせる。形は definitions/planner.yaml の upstream.contracts

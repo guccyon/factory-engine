@@ -194,3 +194,17 @@ def test_check_explore_cli(tmp_path, capsys):
     p.write_text(yaml.safe_dump(explore_doc(tried=[{"did": "a", "saw": "b"}]), allow_unicode=True))
     assert qa.main(["--check-explore", str(p), "--charter", "detour", "--repo-dir", str(d)]) == 0
     assert capsys.readouterr().out.strip() == "ok"
+
+
+def test_product_severities_reach_the_prompt(tmp_path):
+    """製品の品質方針の S1 の条件と S2〜S4 の基準を、重要度の説明に足す（ADR 0043 の O5）。名前（s1〜s4）は変えない"""
+    d = product(tmp_path)
+    assert qa.with_product_severities(DEFS, d) is DEFS   # 品質方針がなければそのまま
+    (d / ".factory-config" / "quality_policy.yaml").write_text(yaml.safe_dump({
+        "s1": {"conditions": [{"id": "data_leak", "ja": "他人のデータが見える"}]},
+        "severities": {"s2": {"ja": "流れが止まる", "conditions": [{"id": "x", "ja": "予約が確定しない"}]}}}, allow_unicode=True), encoding="utf-8")
+    got = qa.with_product_severities(DEFS, d)
+    assert set(got["severities"]) == set(DEFS["severities"])
+    assert "他人のデータが見える" in got["severities"]["s1"] and "予約が確定しない" in got["severities"]["s2"]
+    assert got["severities"]["s3"] == DEFS["severities"]["s3"]
+    assert "他人のデータが見える" in qa.prompt(got, [STORY], {"env": "staging", "entries": []}, {})

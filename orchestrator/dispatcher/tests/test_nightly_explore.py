@@ -99,10 +99,13 @@ def test_enqueue_explore_and_record(cur):
     gh = FakeGH(defects=[{"number": 50, "title": "QA: 二度押しで 2 件", "html_url": f"https://github.com/{REPO}/issues/50", "body": existing}])
     said = []
     out = qa_line.record_explore(cur, gh, lambda r, n, t: said.append((n, t)), REPO, 7, got["corr"], jid, explore_result(findings), {"01-a.png": "qa/1/01-a.png"})
-    titles = [c[2]["title"] for c in gh.calls if c[0] == "POST"]
+    titles = [c[2]["title"] for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")]
     assert titles == ["QA: 取り消した予約が戻ると残る", "QA: 他人の予約が見える", "QA: 4 件目は上限で起票しない"]
     assert out["seen"] == [f"https://github.com/{REPO}/issues/50"] and out["skipped"] == []
-    assert [n for n, _ in said] == [50, 7] and "また見つかりました" in said[0][1]
+    assert [n for n, _ in said if n in (50, 7)] == [50, 7] and "また見つかりました" in said[0][1]
+    # S1 は Incident になり、QA 役がラインを差し止める（ADR 0043 の O5）
+    import incident
+    assert incident.held(cur) and any("差し止め" in t for _, t in said)
     summary = said[-1][1]
     assert "夜間の探索" in summary and "余白が詰まっている" in summary and "（起票しない）" in summary and "iOS あり" in summary
     cur.execute("select payload from events where name='qa.explore'")
@@ -112,7 +115,7 @@ def test_enqueue_explore_and_record(cur):
     cur.execute("select count(*) as n from events where name='defect.recorded' and payload->>'found_in'='qa' and payload->>'source'='qa_explore'")
     assert cur.fetchone()["n"] == 6   # Defect の型（ADR 0028 の決定 5）にも 1 件ずつ
     # 本文の印から、同じ題の Defect は次の夜に起票し直さない
-    body = [c[2]["body"] for c in gh.calls if c[0] == "POST"][0]
+    body = [c[2]["body"] for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")][0]
     assert qa_line.open_defects(lambda *a: [{"title": "QA: 取り消した予約が戻ると残る", "html_url": "u", "body": body}], REPO, "x") == \
         {qa_line.explore_key("取り消した予約が戻ると残る"): "u"}
     # 上限

@@ -43,7 +43,7 @@ GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方�
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
                "design_after_implement": "実装の後にデザインの役がある", "no_size": "大きさの見積もりがない",
                "split_after_design": "大きいので、画面が決まってから実装の手前で切る", "no_requirements": "要件（受け入れ条件）がない",
-               "no_stories": "画面を含むのにユーザーストーリーの宣言がない", "unknown_story": "製品にないストーリーの id を落とした",
+               "no_stories": "画面を含むのにユーザーストーリーの宣言がない", "unknown_story": "製品にないストーリーの id を落とした", "unknown_kpi": "製品にない KPI の見込みを落とした",
                "story_exists": "増やすストーリーの id がもうあるので、変えるにした", "unknown_adr": "製品にない ADR の番号を落とした",
                "unknown_contract": "製品にない契約の置き場の差分を落とした", "breaking_contract": "互換を壊す契約の差分がある",
                "no_contract_diff": "契約の層を触るのに契約の差分がない"}
@@ -171,6 +171,9 @@ def requirements_section(plan_id: int, req: dict | None, stories: list[dict], ad
             lines += ["", "やらないこと:"] + [f"- {a}" for a in req["non_goals"]]
         if req.get("success_definition"):
             lines += ["", f"できあがりの定義: {req['success_definition']}"]
+        kf = req.get("kpi_forecast")
+        if isinstance(kf, dict) and kf.get("kpi"):   # KPI の見込み（ADR 0043 の O3）。週次の Report が実測と突き合わせる
+            lines += ["", f"KPI の見込み: `{kf['kpi']}` が {kf.get('change'):+g} 動く（{kf.get('why') or '理由なし'}）"]
         lines.append("")
     if stories:
         lines.append("ユーザーストーリー:")

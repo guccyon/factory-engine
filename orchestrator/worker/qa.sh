@@ -3,7 +3,7 @@
 # ユーザーストーリー（specs/stories/）を流させ、ストーリーごとの Verdict を返す。
 # 製品のリポジトリにも Issue にも何も書かない（Defect の起票と固定 Issue のまとめは dispatcher の qa_line.py）。
 # 出力: 根拠のスクリーンショットを 1 枚ずつ FACTORY_FILE:<名前>:<base64> の行で、最終行に FACTORY_RESULT の JSON
-# 標準入力: dispatcher が組み立てた JSON（stories・env・env_host・release_id・touchable。夜間の探索は mode: explore・charter・night）
+# 標準入力: dispatcher が組み立てた JSON（stories・env・env_host・release_id・touchable。夜間の探索は mode: explore・charter・night、合成の利用者は mode: synthetic・friction。重点 focus と回帰の scenarios は品質の Learn から）
 # 環境変数: JOB_ID REPO ISSUE_NUMBER GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
 set -euo pipefail
 
@@ -33,5 +33,5 @@ fi
 for f in $(jq -r '.files[]' /work/qa.json); do
   echo "FACTORY_FILE:${f}:$(base64 -w0 "/work/qa/${f}")"
 done
-echo "FACTORY_RESULT:$(jq -c --arg sha "${SHA}" '{kind:"qa", ok:true, sha:$sha, mode:(.mode // "verdict"), env:.env, release_id:.release_id, stories:(.stories // []), verdicts:(.verdicts // []), charter:.charter, night:.night, explore:.explore, mobile:.mobile, files:.files, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, num_turns:.num_turns}' /work/qa.json)"
+echo "FACTORY_RESULT:$(jq -c --arg sha "${SHA}" '{kind:"qa", ok:true, sha:$sha, mode:(.mode // "verdict"), env:.env, release_id:.release_id, stories:(.stories // []), verdicts:(.verdicts // []), charter:.charter, night:.night, explore:.explore, synthetic:.synthetic, mobile:.mobile, files:.files, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, num_turns:.num_turns}' /work/qa.json)"
 exit 0

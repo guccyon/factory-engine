@@ -146,16 +146,24 @@ phases:
     weight_weeks: 6
     items:
       - { id: answer_line, ja: "Answer ライン（曖昧な問いに精緻化を経て回答）", measure: { manual: todo } }   # ADR 0030 の 4。窓口の問い合わせを 1 つの回答役がファンクションの立場を選んで根拠つきで答える。最小形（計画・工場長の立場、問い返し 1 回、根拠の id の確かめ）は dispatcher/desk_answer.py。済の条件は窓口の MCP から実際の問いを 1 本流して desk.answered が残ること
-      - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
-      - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
-      - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）
-      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028
+      - id: report_line
+        ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）"
+        measure: { db: { target: 1, sql: "select count(*) from events where name = 'report.kpi_weekly' and (payload->>'opportunities')::int > 0" } }   # ADR 0043 の O2。済の条件は週次の集計が 1 回出て、異常 1 件が Opportunity の下書きになったこと。supervisor が毎週月曜 7 時（JST）に staging で製品の ship.yaml の kpi を測り、前回と比べる（orchestrator/dispatcher/report_kpi.py）。今すぐは factoryctl report kpi --measure
+      - id: kpi_error_signal
+        ja: "KPI 予測誤差が教師信号として流れる"
+        measure: { db: { target: 1, sql: "select count(*) from events s where s.name = 'kpi.forecast_scored' and exists (select 1 from artifacts a where a.type = 'Retrospective' and a.created_at > s.occurred_at and a.payload->'clusters' @> jsonb_build_array(jsonb_build_object('signature', 'kpi:' || (s.payload->>'kpi'))))" } }   # ADR 0043 の O3。プランナーが Requirements に書いた KPI の見込み（kpi_forecast）の誤差が kpi.forecast_scored に残り、その後の learn.retrospected の束（signature kpi:<id>）に入った数
+      - id: synthetic_users_loop
+        ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る"
+        measure: { db: { target: 1, sql: "select count(*) from events where name = 'opportunity.proposed' and payload->>'source' = 'synthetic_users' and payload->>'planted_hit' is not null" } }   # ADR 0023 の決めどころ 3・ADR 0043 の O4。済の条件は仕込みの 2 つ（遅い API・見つけにくい入口）のうち 1 つ以上が提案になったこと。仕込みは工場の SYNTH_FRICTION（staging だけ、ワーカーの中継で入れる）。factoryctl qa synthetic
+      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028・0043 の O5。回路は dispatcher/incident.py（Incident・差し止め line.held_by_qa・エラーバジェット）と factoryctl incident drill。済は演習で S1 の差し止めと人の解除が events に残ってから
       - id: release_train
         ja: "定期便（人の承認は便ごと 1 回）で Release が出て、S1 だけ緊急便"
         measure: { db: { target: 3, sql: "select count(*) from events where name = 'release.train'" } }   # 2026-11-09 定期便（train.py）。supervisor の 1 日 1 便と、factoryctl release train --emergency の緊急便を数える。Gen1.5 で複数リポジトリの便に作り直す前提の回路の確認
       - { id: ephemeral_env, ja: "PR ごとの使い捨て環境が立って壊れる", measure: { db: { target: 1, sql: "select count(*) from events where name = 'env.ephemeral_down' and payload->>'reason' = 'pr_closed' and jsonb_array_length(payload->'touched') > 0" } } }   # 2026-11-09 ephemeral.py。PR 1 本で立つ → 触った印 → PR が閉じて壊れた数。factoryctl env pr-up / pr-touch。Gen1.5 で複数リポジトリの PR の束に作り直す前提の回路の確認
       - { id: preview_distribution, ja: "日中に人が並走し、TestFlight に 1 本配った（署名は人の Mac）", measure: { manual: todo } }
-      - { id: quality_learn, ja: "品質の Learn（Defect と Incident を入力に、重点とシナリオの追加が自動で、基準の変更案が委員会に出た）が 1 周回った", measure: { manual: todo } }
+      - id: quality_learn
+        ja: "品質の Learn（Defect と Incident を入力に、重点とシナリオの追加が自動で、基準の変更案が委員会に出た）が 1 周回った"
+        measure: { db: { target: 1, sql: "select least((select count(*) from events where name = 'qa.scenario_added'), (select count(*) from events where name = 'quality.proposal_filed'))" } }   # ADR 0043 の O9。dispatcher/quality_learn.py（週 1 回、definitions/defects.yaml の learn）。シナリオが 1 本自動で足され（qa.scenario_added）、基準の変更案が知見の Issue として委員会の列に入った（quality.proposal_filed）。factoryctl qa learn
 
   - id: P6
     ja: メタ化

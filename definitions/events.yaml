@@ -76,9 +76,33 @@ events:
     required: [subject_id, decided_at, automated_decision, human_decision, reason]
     note: "P0 は承認ログがないので pr-merge-criteria の判断の記録を手で写す"
   incident.opened:
-    source: monitoring
+    source: [qa, monitoring]
     required: [incident_id, detected_at, severity, related_pr_ids]
-    note: "P0 では発生源がない（Gen1 はモック環境のエラー監視を P2 で）"
+    note: "ADR 0043 の O5。Gen1 は staging を本番の代わりにし、QA 役が起票した Defect（known_gap を除く）を同じ重要度で開く（dispatcher/incident.py）。incident_id は <repo>:<Defect の Issue>。drill: true は演習（エラーバジェットに数えない）。artifacts の Incident と同じ中身"
+  incident.closed:
+    source: control_plane
+    required: [incident_id, by]
+    note: "直った・演習を終えた（factoryctl incident close / drill-end）"
+  incident.budget_exceeded:
+    source: control_plane
+    required: [repo, severity, count, allowed, period_days, since]
+    note: "製品の quality_policy.yaml の error_budget を超えた。期間と重要度ごとに 1 回（dedupe）。工場の状況に知らせる"
+  incident.drill_started:
+    source: control_plane
+    required: [repo, drill, by]
+    note: "S1 の演習（factoryctl incident drill）。staging に仕込んだ（release.drill_planted）あと。drill_ended までに開いたその製品の Incident は drill: true"
+  incident.drill_ended:
+    source: control_plane
+    required: [repo, by]
+    note: "演習を終えた。演習の Incident を閉じ、staging を入れ直して仕込みを消す（release.reseed_requested）"
+  line.held_by_qa:
+    source: control_plane
+    required: [by, incidents, corrs, min_priority]
+    note: "QA 役が S1 の Incident でラインを差し止めた（ADR 0043 の O5）。ラインの一時停止（factory.drain_requested）とは別の札。差し止めの間、dispatcher はラインのジョブのうち corrs（S1 の Defect の Issue と QA の固定 Issue）と min_priority（p0）以上だけを取り出す。差し止め中に S1 が増えたら incidents を足して出し直す。停止（stoppage、category human）も開く"
+  line.hold_released:
+    source: [console, factoryctl]
+    required: [by, reason]
+    note: "人が差し止めを解除した。QA 役と工場の常駐は解除できない（incident.release が断る）。停止を閉じる"
   stoppage.opened:
     source: control_plane
     required: [key, category, what, detected_by]
@@ -578,6 +602,38 @@ events:
     source: control_plane
     required: [repo, night, reason]
     note: "ADR 0028 の nightly_explore。夜の探索を積まなかった（reason は over_budget＝予算の枠を使い切っていた、paused＝一時停止中で explore.through_pause が偽）。同じ夜の後の周回で積めることもある。朝の日報が「昨夜は回らなかった」と出す。dedupe は supervisor.nightly_explore_skipped:<repo>:<夜>:<reason>"
+  qa.synthetic:
+    source: control_plane
+    required: [repo, release_id, env, week, unattended, walks, reached_exit, requests, events_logged, slowest, planted, proposed, synthetic_id, issue]
+    note: "ADR 0043 の O4 synthetic_users_loop。合成の利用者がストーリーに沿って staging を歩いた 1 回。walks は歩いた回数、events_logged は歩いた中で起きたはずの行動イベントの名前（製品の specs/analytics/events.yaml）、slowest は応答の一番遅い API（ワーカーの中継が測った p95）、planted はわざと仕込んだ詰まり（slow・hide。工場の SYNTH_FRICTION で staging だけ）、proposed は出した改善の提案（planted_hit は仕込みに当たったか）。同じ中身を artifacts の QASynthetic に残す。dedupe は qa.synthetic:<job_id>"
+  supervisor.synthetic_users_enqueued:
+    source: control_plane
+    required: [repo, week, issue, job_id, release_id, planted]
+    note: "ADR 0043 の O4。supervisor が週に 1 回（definitions/qa.yaml の synthetic.weekday・hours、JST）、製品ごとに合成の利用者のジョブ（kind=qa、入力の mode: synthetic）を積んだ。dedupe は supervisor.synthetic_users:<repo>:<週>"
+  opportunity.proposed:
+    source: control_plane
+    required: [repo, source, key, theme, title, problem, expected_effect, opportunity_id]
+    note: "ADR 0043 の O4（O2 の Report ラインも同じ口の想定）。改善の提案（artifacts の Opportunity）を残し、受信トレイにプロダクトオーナーの依頼（kind opportunity）を 1 件積んだ。起票はしない（人かプランナーが拾う）。theme は definitions/learning_taxonomy.yaml の themes（1 利用者の体験・2 信頼性と性能）。合成の利用者から出したものは planted_hit（仕込みのどれに当たったか。roadmap の synthetic_users_loop が数える）と signal を持つ。dedupe は opportunity.proposed:<source>:<repo>:<key>"
+  quality.learned:
+    source: control_plane
+    required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
+    note: "ADR 0043 の O9 quality_learn。週に 1 回（definitions/defects.yaml の learn）、直近の Defect（defect.recorded）と Incident（incident.opened。演習を除く）を集計した。dedupe は quality.learned:<repo>:<週>"
+  qa.focus_updated:
+    source: control_plane
+    required: [repo, week, stories, viewpoints, basis]
+    note: "ADR 0043 の O9。品質の Learn が決めた QA の重点（厚く流すストーリーと観点）。QA のジョブを積むとき、最新の 1 件を入力の focus に足す（夜間の探索と合成の利用者のプロンプトが読む。合成の利用者は重点のストーリーを多く歩く）。dedupe は qa.focus_updated:<repo>:<週>"
+  qa.scenario_added:
+    source: control_plane
+    required: [repo, week, id, title, reproduce, viewpoint, severity, from_defect, defect_event]
+    note: "ADR 0043 の O9。品質の Learn が足した回帰のシナリオ（QA で見つかった Defect の再現の手順）。QA のジョブを積むとき、新しい順に 5 件を入力の scenarios に足す（夜間の探索と合成の利用者のプロンプトが試す）。dedupe は qa.scenario_added:<repo>:<題>"
+  quality.proposal_drafted:
+    source: control_plane
+    required: [repo, week, viewpoint, after_merge, statement, change, expected]
+    note: "ADR 0043 の O9。品質の Learn の基準の変更案（同じ観点の Defect がマージの後で線より多い）。supervisor が委員会の順番を見て知見の Issue にする（quality.proposal_filed）。dedupe は quality.proposal_drafted:<repo>:<週>"
+  quality.proposal_filed:
+    source: control_plane
+    required: [repo, week, viewpoint, drafted_event, issue]
+    note: "ADR 0043 の O9。基準の変更案を、製品の知見の変更セットの Issue（factory:planned・factory:learn）にした。同時に knowledge.case_filed（source: quality_learn）を残すので、委員会の列（committee.queue）に入り、PR は委員会が審査する。品質方針の値は変えない（人の承認）"
   qa.defect_filed:
     source: control_plane
     required: [repo, release_id, story_id, verdict_id, title, severity, issue]
@@ -710,6 +766,27 @@ events:
     source: inspector
     required: [pr_id, gate, result, defects]
     note: "P1 から。supervisor が積む検査ジョブ（kind=inspect）が mode=shadow で出す。InspectionReport が同じ中身を持つ"
+  # 週次の KPI の Report ライン（ADR 0043 の O2・O3）。orchestrator/dispatcher/report_kpi.py
+  release.kpi_requested:
+    source: control_plane
+    required: [release_id, repo, env, week, by, via]
+    note: "その環境で製品の KPI を測る依頼（ship.request_kpi）。supervisor は毎週月曜 7 時（JST）を過ぎたら製品ごとに 1 回（by=supervisor、via=report_line）。factoryctl report kpi --measure は今すぐ。手を動かすのは shipper"
+  release.kpi_measured:
+    source: control_plane
+    required: [release_id, repo, env, week, ok, metrics, error, request_id]
+    note: "shipper が製品の .factory-config/ship.yaml の kpi のコマンドをその環境で実行した結果。metrics は [{id, ja, unit, direction, expected, change_alert, value}]（値が数でなければ null）。測れなければ ok: false と error で、停止には開かない"
+  report.kpi_skipped:
+    source: control_plane
+    required: [repo, week, env, reason, by]
+    note: "週次の KPI を測る依頼を書けなかった（staging に版がないなど）。dedupe は report.kpi_skipped:<repo>:<週>"
+  report.kpi_weekly:
+    source: control_plane
+    required: [repo, env, week, measured_id, base_id, metrics, anomalies, opportunities, merged_prs, scored]
+    note: "測れた結果 1 つを前回の測定と比べた週次の Report（1 測定に 1 回。dedupe は report.kpi_weekly:<measured_id>）。中身は artifacts の KPIReport、異常から起こした下書きは改善の提案の口（opportunity.proposed、source report.kpi）。roadmap の report_line は opportunities が 1 以上のものを数える"
+  kpi.forecast_scored:
+    source: control_plane
+    required: [repo, kpi, ticket, pr_url, forecast, actual, error, unit, week, measured_id, base_id]
+    note: "ADR 0043 の O3。プランナーが Requirements に書いた KPI の見込み（kpi_forecast）を、前回の測定から今回までにマージしたチケットについて実測の差（actual）と突き合わせた。error = actual - forecast。correlation_id はチケット。Learn の教師信号 kpi_error（signature kpi:<id>）。dedupe は kpi.forecast_scored:<チケット>:<KPI>"
 
 tier_map:                        # モデル名 → tier（budgets.model_tiers）。末尾の [1m] などの文脈長の印は外して照合する
   claude-opus-5-5: tier-large

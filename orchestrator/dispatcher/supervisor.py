@@ -13,6 +13,8 @@
 - 依存順の投入: `factory:planned` の Issue を工場のチケットに写し（ADR 0009）、本文の「依存: #12 #13」がすべて閉じたものを
   優先度の高い順に `factory:implement` に替える（同時に流すのは上限まで。緊急（p0）は上限を待たない。保留中は流さない）
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
+- 合成の利用者（ADR 0043 の O4）: 週に 1 回（definitions/qa.yaml の synthetic）、製品ごとに QA 役の合成の利用者のジョブを積む
+- 品質の Learn（ADR 0043 の O9）: 週に 1 回、Defect と Incident から QA の重点と回帰のシナリオを足し、基準の変更案を知見の Issue にして委員会の列に入れる
 - 夜間の探索（ADR 0028 の nightly_explore）: JST の夜（definitions/qa.yaml の explore.hours）に、製品ごとに 1 晩 1 回、QA 役の探索のジョブを積む。
   予算の枠を使い切っていれば次の枠を待つ。ラインの一時停止中は explore.through_pause が真ならこのジョブだけ流す
 - 出荷の列車・定期便（ADR 0012、ADR 0043 の O6）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品が今日の定期便にまだ載っておらず、まだ Release に入っていない
@@ -58,7 +60,9 @@ import ops
 import plan_outcome
 import process_learn
 import qa_line
+import quality_learn
 import report
+import report_kpi
 import serialize
 import ship
 import stoppage
@@ -111,7 +115,15 @@ ENGINE_REPO = ENV.get("ENGINE_REPO", "guccyon/factory-engine")   # 工場自体�
 PROCESS_LABEL = "factory:process-proposal"
 # 夜間の探索（ADR 0028 の nightly_explore）。探索する製品（触れる環境を持つもの）。既定は出荷の列車の製品。空で止める
 NIGHTLY_EXPLORE = [r.strip() for r in ENV.get("NIGHTLY_EXPLORE", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
+# 週次の KPI の Report ライン（ADR 0043 の O2）を回す製品。既定は出荷の列車の製品（staging と ship.yaml を持つもの）。空で止める
+KPI_WEEKLY = [r.strip() for r in ENV.get("KPI_WEEKLY", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
 QA_DEFS = ENV.get("QA_DEFINITIONS", "/definitions/qa.yaml")
+# 合成の利用者（ADR 0043 の O4）。週に 1 回（definitions/qa.yaml の synthetic.weekday・hours）歩かせる製品。既定は夜間の探索と同じ。空で止める。
+# わざと仕込む詰まりは SYNTH_FRICTION（example か JSON。staging だけ）
+SYNTHETIC_USERS = [r.strip() for r in ENV.get("SYNTHETIC_USERS", ",".join(NIGHTLY_EXPLORE)).split(",") if r.strip()]
+# 品質の Learn（ADR 0043 の O9）。週に 1 回（definitions/defects.yaml の learn）Defect と Incident を集計し、QA の重点とシナリオを足し、基準の変更案を委員会へ。0 で止める
+QUALITY_LEARN = ENV.get("QUALITY_LEARN", "1") == "1"
+DEFECT_DEFS = ENV.get("DEFECT_DEFINITIONS", "/definitions/defects.yaml")
 _transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
@@ -1180,6 +1192,80 @@ def nightly_explore_step(cur, now: datetime | None = None):
         log("nightly explore enqueued", repo, night, got["charter"], "job", got["job_id"])
 
 
+def kpi_weekly_step(cur, now: datetime | None = None):
+    """週次の KPI の Report ライン（ADR 0043 の O2・O3）。週に 1 回、出荷の列車の製品ごとに staging で KPI を測る依頼を書き、
+    測れた結果を前回と比べて Report・Opportunity の下書き（受信トレイ）・見込みの誤差（kpi.forecast_scored）にする。決定的でトークンを使わない"""
+    if DRY_RUN or not KPI_WEEKLY:
+        return
+    try:
+        report_kpi.request_step(cur, KPI_WEEKLY, now, log=log)
+        report_kpi.report_step(cur, log=log)
+    except Exception as e:  # noqa: BLE001  報告の失敗でラインを止めない。次の周回でやり直す
+        log("kpi weekly step error", repr(e)[:300])
+
+
+def _qa_defs() -> dict:
+    """definitions/qa.yaml の explore と synthetic（なければ qa_line の写し）"""
+    try:
+        with open(QA_DEFS, encoding="utf-8") as f:
+            full = yaml.safe_load(f) or {}
+    except OSError:
+        full = {}
+    return {**qa_line.load_defs(), **{k: full[k] for k in ("explore", "synthetic") if full.get(k)}}
+
+
+def synthetic_users_step(cur, now: datetime | None = None):
+    """週に 1 回、製品ごとに合成の利用者のジョブを積む（ADR 0043 の O4）。判断は持たず、曜日・時刻・予算・一時停止を見るだけ"""
+    if not SYNTHETIC_USERS or DRY_RUN:
+        return
+    defs = _qa_defs()
+    sd = defs["synthetic"]
+    now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
+    lo, hi = (int(h) for h in sd.get("hours") or [5, 7])
+    if now.weekday() != int(sd.get("weekday", 6)) or not lo <= now.hour < hi:
+        return
+    week = qa_line.week_of(now)
+    for repo in SYNTHETIC_USERS:
+        key = f"supervisor.synthetic_users:{repo}:{week}"
+        cur.execute("select 1 from events where dedupe_key=%s", (key,))
+        if cur.fetchone():
+            continue
+        if over_budget(cur) or (drain.active(cur) and not sd.get("through_pause")):
+            continue   # 同じ時間帯の後の周回で積めることもある
+        try:
+            got = qa_line.enqueue_synthetic(cur, gh, repo, defs=defs, week=week,
+                                            friction=qa_line.friction_from(ENV.get(sd.get("friction_env") or "SYNTH_FRICTION"), defs))
+        except psycopg.errors.UniqueViolation:
+            continue   # 同じ固定 Issue の QA のジョブが待ち・実行中。次の周回で
+        except Exception as e:  # noqa: BLE001  次の周回でやり直す
+            log("synthetic users enqueue failed", repo, repr(e)[:200])
+            continue
+        if drain.active(cur):
+            drain.allow(cur, [got["corr"]], "supervisor", f"合成の利用者（{week}）")
+        record(cur, "supervisor.synthetic_users_enqueued", got["corr"], {"repo": repo, "week": week, "issue": got["issue"], "job_id": got["job_id"],
+                                                                          "release_id": got["release_id"], "planted": sorted(got["friction"])}, key)
+        log("synthetic users enqueued", repo, week, "job", got["job_id"], "planted", sorted(got["friction"]))
+
+
+def quality_learn_step(cur, now: datetime | None = None):
+    """週に 1 回、品質の Learn を回す（ADR 0043 の O9）。集計・重点・シナリオは決定論。基準の変更案は知見の Issue にして委員会の列に入れる"""
+    if not QUALITY_LEARN or DRY_RUN:
+        return
+    try:
+        with open(DEFECT_DEFS, encoding="utf-8") as f:
+            ld = {**quality_learn.DEFS, **((yaml.safe_load(f) or {}).get("learn") or {})}
+    except OSError:
+        ld = quality_learn.DEFS
+    now = now or datetime.now(timezone.utc)
+    for repo in REPOS:
+        try:
+            quality_learn.step(cur, repo, now, ld, log=log)
+            if KNOWLEDGE_ISSUES and knowledge_root_exists(repo) and not committee.turn(cur, repo):
+                quality_learn.file_proposals(cur, gh, repo, now, log=log)
+        except Exception as e:  # noqa: BLE001  集計の失敗でラインを止めない
+            log("quality learn step error", repo, repr(e)[:200])
+
+
 def plan_outcome_step(cur):
     """結果の出た工場の PR を、最新の Plan と突き合わせて plan.outcome に残す（ADR 0036 の 4a。決定的）"""
     try:
@@ -1216,6 +1302,10 @@ def tick():
         release_train_step(cur)
         ephemeral_step(cur)
         nightly_explore_step(cur)
+        kpi_weekly_step(cur)
+
+
+        synthetic_users_step(cur)
         learn_step(cur)
         rule_transition_step(cur)
         case_review_step(cur)
@@ -1223,6 +1313,7 @@ def tick():
         process_issue_step(cur)
         design_review_step(cur)
         committee_weekly_step(cur)
+        quality_learn_step(cur)
 
 
 def main():

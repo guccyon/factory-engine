@@ -27,3 +27,4 @@ reports:
       - { id: doing,    ja: 進めているもの, parties: [provider, business_owner] }   # 進行中のチケット
       - { id: next,     ja: 次に流すもの,   parties: [provider, business_owner] }   # 投入待ちのチケット（優先度の高い順）
       - { id: releases, ja: 版,             parties: [provider, business_owner] }   # 期間に切った版
+      - { id: kpi,      ja: 製品の KPI（週次）, parties: [provider, business_owner] }   # いちばん新しい週次の KPI の値と前回差、異常の印（ADR 0043 の O2。orchestrator/dispatcher/report_kpi.py）
