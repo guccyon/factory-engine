@@ -18,6 +18,7 @@
   POST /api/budget                        {"mode"?: "daily"|"weekday", "daily_usd"?, "weekday_usd"?: {"mon".."sun"}, "reason"?} 使用量の予算の宣言（usage.set_budget）。
                                           渡したものだけ変える。今の決め方は /api/state の factory.budget
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の更新のため（ADR 0020）
+  POST /api/line/release-hold             {"reason"} QA 役の差し止め（S1 の Incident。ADR 0043 の O5）を人が解除する。理由は必須
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
   GET  /api/host/keep-awake?factory=running|stopped   ホストの keep-awake.sh が 2 分ごとに問い合わせる（居ることの知らせを兼ねる）
   POST /api/runners/<id>/uninstall        {"reason"?} そのランナーを外す（次の連絡でランナーが自分の常駐を外し、鍵を捨てる）。/api/state の runners に一覧
@@ -52,6 +53,7 @@ from psycopg.rows import dict_row
 import alerts
 import choice
 import drain
+import incident
 import line
 import inbox
 import judgment
@@ -227,6 +229,7 @@ def snapshot(cur) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur), "budget": usage.budget_spec(cur),
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
+                    "qa_hold": incident.hold_status(cur),
                     "planned": planned, "line_low_below": LINE_LOW_BELOW},
         "levels": {k: {"priority": v[0], "name": v[1], "meaning": v[2]} for k, v in ops.LEVELS.items()},
         "items": items,
@@ -350,6 +353,12 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
     if path in ("/api/factory/drain", "/api/factory/resume"):
         drain.set_drain(cur, path.endswith("/drain"), by, reason)
         return 200, {"line": drain.status(cur)}
+    if path == "/api/line/release-hold":   # QA 役の差し止めの解除（ADR 0043 の O5）。人だけ（コンソールの操作は人）
+        try:
+            ok = incident.release(cur, by, reason)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return (200, {"released": True}) if ok else (409, {"error": "差し止めていない"})
     if path == "/api/host/keep-awake":
         if not isinstance(body.get("prevent_sleep"), bool):
             return 400, {"error": "prevent_sleep（true か false）が要る"}

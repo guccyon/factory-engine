@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 
 JST = timezone(timedelta(hours=9))
 AFTER_MERGE = ("qa", "diagnose", "prod")   # definitions/defects.yaml の stages の before_merge: false
-INCIDENT_EVENT = "incident.recorded"       # O5（severity_budget）の Incident。まだなければ 0 件として扱う
+INCIDENT_EVENT = "incident.opened"         # O5（severity_budget）の Incident（dispatcher/incident.py）。演習（drill）は数えない
 STORY_KEY = re.compile(r"^[\w.-]+/[\w.-]+:([A-Za-z0-9_-]+)#")
 DEFS = {"weekday": 0, "hour": 7, "window_days": 30, "focus_stories_max": 3, "focus_viewpoints_max": 2,
         "scenario_severities": ["s1", "s2", "s3"], "scenarios_per_week": 1, "proposal_min_after_merge": 2, "proposals_per_week": 1}
@@ -41,7 +41,8 @@ def facts(cur, repo: str, now: datetime, window_days: int) -> dict:
     cur.execute("select id, payload from events where name='defect.recorded' and occurred_at >= %s and payload->>'repo'=%s order by id",
                 (since, repo))
     rows = [{"event_id": r["id"], **r["payload"]} for r in cur.fetchall()]
-    cur.execute("select count(*) as n from events where name=%s and occurred_at >= %s and payload->>'repo'=%s", (INCIDENT_EVENT, since, repo))
+    cur.execute("select count(*) as n from events where name=%s and occurred_at >= %s and payload->>'repo'=%s "
+                "and coalesce((payload->>'drill')::boolean, false) = false", (INCIDENT_EVENT, since, repo))
     incidents = cur.fetchone()["n"]
     by_found: dict[str, int] = {}
     by_vp: dict[str, int] = {}

@@ -8,10 +8,12 @@
   release.approved            {release_id, by, via}   承認ボタン。staging で確かめた版を prod に出す
   release.rollback_requested  {repo, env, by, via}    その環境を、いま出ている版の 1 つ前の版に戻す
   release.reseed_requested    {env, by, via}          触れる環境の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env。release_id はいまその環境の版）
+  release.drill_requested     {repo, env, drill, by, via} 演習の仕込み（ADR 0043 の O5）。ship.yaml の touch.drills のコマンドを触れる環境で 1 回流す。
+                                                      元に戻すのは入れ直し（release.reseed_requested）
   release.restart_requested   {repo, env, advance_seconds, reset_clock, by, via}
                                                       触れる環境の部品を再起動し、サーバーの時計を進める（ADR 0028 の scenario_time。DB は残す）
 結果（同じ release の correlation_id で）:
-  release.built / release.deployed / release.rolled_back / release.reseeded / release.restarted / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
+  release.built / release.deployed / release.rolled_back / release.reseeded / release.restarted / release.drill_planted / release.ship_failed（payload に request_id。処理済みの印も兼ねる）
   release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ。入れ直しのたびにも）
   release.touchable（触れる環境の入口。ship.yaml の touch の環境に出す・戻す・入れ直すたびに。URL・QR を付ける入口・ログインの手がかり）
 
@@ -35,8 +37,11 @@ import stoppage
 
 WORK = os.environ.get("SHIP_WORKDIR", "/ship")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,40}$")
-REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested", "release.restart_requested")
-RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.restarted", "release.ship_failed")
+REQUESTS = ("release.ship_requested", "release.approved", "release.rollback_requested", "release.reseed_requested", "release.restart_requested",
+            "release.drill_requested")
+RESULTS = ("release.built", "release.deployed", "release.rolled_back", "release.reseeded", "release.restarted", "release.drill_planted",
+           "release.ship_failed")
+DRILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
 # 時計を進める上限（ADR 0028 の scenario_time）。1 回に進める量と、進めた量の合計。翌日・暦月の境をまたぐのに足りる幅に限る
 ADVANCE_MAX_SECONDS = 7 * 24 * 3600
 OFFSET_MAX_SECONDS = 62 * 24 * 3600
@@ -204,6 +209,32 @@ def request_reseed(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, s
         return False, f"{env} にまだ版が出ていない"
     record(cur, "release.reseed_requested", rid, {"repo": repo, "env": env, "by": by, "via": via})
     return True, f"{env} の DB を空にして、{rid} の合成シードから入れ直す依頼をした"
+
+
+def request_drill(cur, repo: str, env: str, drill: str, by: str, via: str) -> tuple[bool, str]:
+    """演習の仕込みの依頼（ADR 0043 の O5）。どの仕込みがあるかは shipper が ship.yaml の touch.drills で確かめる。本番には仕込まない"""
+    if env == "prod":
+        return False, "本番には仕込まない"
+    if not DRILL_ID_RE.match(drill or ""):
+        return False, "仕込みの id は英小文字・数字・_・-"
+    rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
+    if not rid:
+        return False, f"{env} にまだ版が出ていない"
+    record(cur, "release.drill_requested", rid, {"repo": repo, "env": env, "drill": drill, "by": by, "via": via})
+    return True, f"{env}（{rid}）に演習の仕込み {drill} を依頼した"
+
+
+def plant_drill(cfg: dict, repo: str, env: str, drill: str) -> float:
+    """触れる環境に演習の仕込み（touch.drills の 1 つ）を流す。DB を変えるだけで、部品は作り直さない"""
+    t = touch_config(cfg, env)
+    if not t:
+        raise RuntimeError(f"{env} は触れる環境ではない（ship.yaml の touch.environments）")
+    d = next((x for x in t.get("drills") or [] if isinstance(x, dict) and x.get("id") == drill), None)
+    if not d or not d.get("service") or not d.get("command"):
+        raise RuntimeError(f"仕込み {drill} が ship.yaml の touch.drills にない")
+    t0 = time.monotonic()
+    sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", str(d["service"]), *[str(c) for c in d["command"]]], timeout=120)
+    return round(time.monotonic() - t0, 1)
 
 
 def clock_offset(cur, repo: str, env: str) -> int:
@@ -516,6 +547,14 @@ def handle(cur, ev: dict):
             secs = reseed(cur, cfg, path, repo, env, rel, common)
             record(cur, "release.reseeded", rid, {**common, "env": env, "ok": True, "seconds": secs, "by": p.get("by"), "via": p.get("via")})
             touch_points(cur, cfg, repo, env, rel, common)
+        elif name == "release.drill_requested":
+            env = p["env"]
+            if env == "prod":
+                raise RuntimeError("本番には仕込まない")
+            path, _ = source(repo, rel["app_version"])
+            secs = plant_drill(ship_config(path), repo, env, str(p.get("drill")))
+            record(cur, "release.drill_planted", rid, {**common, "env": env, "ok": True, "drill": p.get("drill"), "seconds": secs,
+                                                       "by": p.get("by"), "via": p.get("via")})
         elif name == "release.restart_requested":
             env = p["env"]
             if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:

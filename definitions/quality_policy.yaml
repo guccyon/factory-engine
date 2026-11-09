@@ -52,4 +52,22 @@ fields:
   s1:
     ja: "S1（止める）の条件。当たったら QA 役はどの機能開発より優先して、指示役とプランナーに対してラインを差し止める"
     keys:
-      conditions: "list of {id, ja}。重要度 S2〜S4 とエラーバジェットは P5b の severity_budget で足す"
+      conditions: "list of {id, ja}。どれかに当たれば重要度は S1"
+
+  # 重要度とエラーバジェット（ADR 0043 の O5 severity_budget。ADR 0028 の文脈「エラーバジェットを決め、超えない限り無視する」）
+  severities:
+    ja: "重要度 S2〜S4 の判定基準。S1 は上の s1.conditions。QA 役（判定・夜間の探索）が Defect に付け、Incident の重要度にもなる"
+    keys:
+      s2: "{ja, conditions: list of {id, ja}}。流れが exit まで通らない類"
+      s3: "{ja, conditions}。通るが、見えるもの・言葉が違う類"
+      s4: "{ja, conditions}。気づきにくい小さな食い違い。起票しない（まとめに載せる）"
+    hold: "S1 だけがラインを差し止める（line.held_by_qa）。解除は人。差し止めの間も S1 の修正（p0）と QA の確かめ直しは流れる"
+
+  error_budget:
+    ja: "重要度ごとに、期間の中で許す Incident の数。超えない限り S2〜S4 は機能開発の順番を変えない。超えたら知らせる（incident.budget_exceeded）"
+    keys:
+      period_days: "期間の日数（JST の暦日で今日を含めて遡る）"
+      allowed: "{s1, s2, s3, s4} の許容件数。s1 は 0（1 件で差し止め。バジェットでは許さない）"
+      on_exceed: "超えたときにどうするか（文で。Gen1 は知らせるだけ。品質の Learn と委員会の材料）"
+    counts: "Gen1 は本番を立てないので staging を本番の代わりにし、QA 役が起票した Defect（known_gap を除く）を同じ重要度の Incident として数える。演習（drill）は数えない"
+    loosen: "許容件数を増やす・期間を縮めるのは緩める変更（人の承認）"

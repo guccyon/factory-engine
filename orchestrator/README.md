@@ -494,12 +494,29 @@ docker compose exec dispatcher factoryctl qa synthetic guccyon/rally --friction 
 
 ### 品質の Learn（ADR 0043 の O9 quality_learn）
 
-supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は月曜の JST 7 時過ぎ）、製品ごとに直近 30 日の Defect（`defect.recorded`）と Incident（`incident.recorded`）を集計する（`dispatcher/quality_learn.py`。LLM は使わない）。
+supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は月曜の JST 7 時過ぎ）、製品ごとに直近 30 日の Defect（`defect.recorded`）と Incident（`incident.opened`。演習を除く）を集計する（`dispatcher/quality_learn.py`。LLM は使わない）。
 
 - 発見工程の分布と出やすい場所を `quality.learned` に残す
 - QA の重点（Defect の多いストーリー・マージの後で多い観点）を `qa.focus_updated` に、回帰のシナリオ（QA で見つかった Defect の再現の手順）を `qa.scenario_added` に足す。QA のジョブを積むとき入力の `focus`・`scenarios` に足し、夜間の探索と合成の利用者のプロンプトが読む（工程は変えない）
 - 同じ観点の Defect がマージの後で線より多ければ、基準の変更案（`quality.proposal_drafted`）にし、委員会の順番が空いたら知見の変更セットの Issue にして委員会の列に入れる（`quality.proposal_filed` と `knowledge.case_filed`）。品質方針の値は変えない（人の承認）
 - 手で回すときは `factoryctl qa learn guccyon/rally`（その週にまだ回っていなければ）。`QUALITY_LEARN=0` で止める
+
+## 障害の重要度とエラーバジェット・QA 役の差し止め（ADR 0043 の O5 severity_budget）
+
+重要度の基準（S1 の条件と S2〜S4）とエラーバジェットは製品の `.factory-config/quality_policy.yaml`（欄の型は `definitions/quality_policy.yaml`）。QA 役のワーカーはその条件を重要度の説明に足して読む。
+
+- Gen1 は本番を立てないので staging を本番の代わりにし、QA 役（判定・夜間の探索）が起票した Defect（known_gap を除く）を同じ重要度の Incident として残す（`dispatcher/incident.py`、events の `incident.opened` と artifacts の `Incident`）。同じ Defect の Issue は 1 件
+- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人だけ**（操業コンソールの「差し止めを解除」か下の `line release`。QA 役と工場の常駐は解除できない）
+- エラーバジェット: 期間の中の Incident（演習を除く）が許容件数を超えたら `incident.budget_exceeded` を期間と重要度ごとに 1 回残し、工場の状況に知らせる
+
+```bash
+docker compose exec dispatcher factoryctl incident list [guccyon/rally]     # 最近の Incident と差し止めの状態
+docker compose exec dispatcher factoryctl incident budget guccyon/rally     # エラーバジェットと期間の中の件数
+docker compose exec dispatcher factoryctl line release --reason "演習を終えた"   # 差し止めを解除（人）
+# S1 の演習: staging に仕込み（ship.yaml の touch.drills）、QA 役の探索を 1 回積む。終えたら演習の Incident を閉じて staging を入れ直す
+docker compose exec dispatcher factoryctl incident drill guccyon/rally [--plant s1_data_leak] [--charter other-user]
+docker compose exec dispatcher factoryctl incident drill-end guccyon/rally
+```
 
 ## Learn ループ（ADR 0013）
 
