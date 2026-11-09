@@ -479,6 +479,23 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally                 
 - dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。同じ題の開いた Defect があれば起票せずにその Issue に書く）。固定 Issue にまとめを書く
 - 朝 5 時の日報（`health/daily/status_report.py`）とページに「夜間の探索（昨夜）」として、Defect（s1・s2 は太字）と印、回らなかった理由を出す。印は人が採点して Golden Set に入れる材料
 
+## 障害の重要度とエラーバジェット・QA 役の差し止め（ADR 0043 の O5 severity_budget）
+
+重要度の基準（S1 の条件と S2〜S4）とエラーバジェットは製品の `.factory-config/quality_policy.yaml`（欄の型は `definitions/quality_policy.yaml`）。QA 役のワーカーはその条件を重要度の説明に足して読む。
+
+- Gen1 は本番を立てないので staging を本番の代わりにし、QA 役（判定・夜間の探索）が起票した Defect（known_gap を除く）を同じ重要度の Incident として残す（`dispatcher/incident.py`、events の `incident.opened` と artifacts の `Incident`）。同じ Defect の Issue は 1 件
+- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人だけ**（操業コンソールの「差し止めを解除」か下の `line release`。QA 役と工場の常駐は解除できない）
+- エラーバジェット: 期間の中の Incident（演習を除く）が許容件数を超えたら `incident.budget_exceeded` を期間と重要度ごとに 1 回残し、工場の状況に知らせる
+
+```bash
+docker compose exec dispatcher factoryctl incident list [guccyon/rally]     # 最近の Incident と差し止めの状態
+docker compose exec dispatcher factoryctl incident budget guccyon/rally     # エラーバジェットと期間の中の件数
+docker compose exec dispatcher factoryctl line release --reason "演習を終えた"   # 差し止めを解除（人）
+# S1 の演習: staging に仕込み（ship.yaml の touch.drills）、QA 役の探索を 1 回積む。終えたら演習の Incident を閉じて staging を入れ直す
+docker compose exec dispatcher factoryctl incident drill guccyon/rally [--plant s1_data_leak] [--charter other-user]
+docker compose exec dispatcher factoryctl incident drill-end guccyon/rally
+```
+
 ## Learn ループ（ADR 0013）
 
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。

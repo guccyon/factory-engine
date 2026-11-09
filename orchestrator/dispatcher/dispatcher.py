@@ -47,6 +47,7 @@ import desk_line
 import planner
 import version
 import drain
+import incident
 import exit_capture
 import jobdb
 import judgment
@@ -885,6 +886,8 @@ def _claim_loop(name: str, claim):
 def _claim_line(cur):
     if drain.active(cur):   # ラインの一時停止中は取り出さない（ADR 0020）。一時停止の間も流すと決めたもの（factoryctl drain allow）だけは取り出す
         return drain.claim_allowed(cur, drain.allowed(cur), drain.allowed_min_priority(cur))
+    if incident.held(cur):   # QA 役の差し止め（ADR 0043 の O5。解除は人）。S1 の修正（p0）と QA の確かめ直しだけ取り出す
+        return incident.claim(cur)
     return line.claim_line(cur)
 
 

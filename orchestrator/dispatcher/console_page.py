@@ -181,8 +181,12 @@ function scaleView(sc,l){if(!sc)return"";const d=sc.desired,r=sc.running,n=(v)=>
  return `<span class="stat ${paused?"bad":""}" title="流量（いま動いている数 / 上限）。ワーカー: 同時に動かす作業、チケット: 同時に手を付けるチケット（PR の検査・マージ待ちを含む）、委員会: 知見をまとめる係、窓口: 相談に答える係。上限は ${who}。変えるのは factoryctl line scale か POST /api/line/scale${paused?"。ラインは一時停止中なので、ワーカーの枠は取り出さない":""}">流量 ワーカー <b>${n(r.workers)} / ${d.workers}</b> · チケット <b>${n(r.tickets)} / ${d.tickets}</b> · 委員会 <b>${n(r.governance)} / ${d.governance}</b> · 窓口 <b>${n(r.desk)} / ${d.desk}</b></span>`}
 function lineView(l){if(!l)return"";const w=[l.running.length?`実行中 ${l.running.length} 件の終わり待ち`:"",l.shipping.length?`出荷 ${l.shipping.length} 件の処理待ち`:""].filter(Boolean).join("・");
  return `<label class="stat sw ${l.draining&&!l.ready?"bad":""}" title="オフにすると順番待ちを取り出さない（実行中のジョブは最後まで流す）。工場の更新のとき">ライン <input type="checkbox" role="switch" id="line" ${l.draining?"":"checked"}><b class="${l.draining?"":"on"}">${l.draining?(l.ready?"一時停止中（更新してよい）":"一時停止中（"+w+"）"):"流している"}</b></label>`}
+function holdView(h){if(!h)return"";const xs=(h.incidents||[]).map(i=>`${esc(String(i.severity||"").toUpperCase())} ${esc(i.title||"")}${i.drill?"（演習）":""}`).join("・");
+ return `<span class="stat bad" title="QA 役が S1 の Incident でラインを差し止めている（ADR 0043 の O5）。S1 の修正（p0）と QA の確かめ直しだけ流れる。解除は人だけ">QA が差し止め中 <b>${xs}</b> <button data-hold="release">差し止めを解除</button></span>`}
 const put=(id,h)=>{const e=document.getElementById(id);if(e&&e._h!==h){e._h=h;e.innerHTML=h}};
 document.addEventListener("change",e=>{const t=e.target;if(t.id==="keepawake")return post("/api/host/keep-awake",{prevent_sleep:t.checked});if(t.id==="line")return post(t.checked?"/api/factory/resume":"/api/factory/drain",{reason:"操業コンソール"});if(t.matches("select[data-t]"))post(`/api/tickets/${t.dataset.t}/priority`,{level:t.value})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-hold]");if(!b)return;
+ const r=(prompt("解除の理由（直した・演習を終えた など）")||"").trim();if(!r)return;post("/api/line/release-hold",{reason:r})});
 document.addEventListener("click",e=>{const s=e.target.closest("button[data-ship]");if(!s)return;
  if(!s.classList.contains("armed")){s.dataset.label=s.textContent;s.classList.add("armed");s.textContent="もう一度押すと実行";setTimeout(()=>{s.classList.remove("armed");s.textContent=s.dataset.label},4000);return}
  if(s.dataset.ship==="approve")post("/api/releases/approve",{release_id:s.dataset.r}).then(ok=>ok&&advance("release:"+s.dataset.r));else if(s.dataset.ship==="reseed")post("/api/releases/reseed",{repo:s.dataset.repo});else post("/api/releases/rollback",{repo:s.dataset.repo,env:"prod"})});
@@ -484,7 +488,7 @@ async function load(){if(document.hidden&&!force)return;let s;try{s=await (await
   scaleView(f.scale,f.line),
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
   `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="まだ手を付けていないチケット（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">着手待ちのチケット <b>${f.planned}</b></span>`,
-  lineView(f.line)].join(" "));
+  lineView(f.line),holdView(f.qa_hold)].join(" "));
  const n=document.getElementById("nav-n");n.textContent=ib.count;n.classList.toggle("has",ib.count>0);
  document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";
  render()}

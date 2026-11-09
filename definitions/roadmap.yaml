@@ -149,7 +149,7 @@ phases:
       - { id: report_line, ja: "Report ライン（週次 KPI の Routine と異常の Opportunity 化）", measure: { manual: todo } }
       - { id: kpi_error_signal, ja: "KPI 予測誤差が教師信号として流れる", measure: { manual: todo } }
       - { id: synthetic_users_loop, ja: "合成の利用者で、テーマ 1・2（利用者の体験・信頼性と性能）が入力から改善の提案まで 1 周回る", measure: { manual: todo } }   # ADR 0023。回路は P3 の間に先に作ってよい（決めどころ 3）
-      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028
+      - { id: severity_budget, ja: "障害の重要度（S1〜S4）の判定基準とエラーバジェットが Blueprint にあり、Incident が重要度つきで記録され、S1 がラインに割り込んで差し止めた（演習でよい）", measure: { manual: todo } }   # ADR 0028・0043 の O5。回路は dispatcher/incident.py（Incident・差し止め line.held_by_qa・エラーバジェット）と factoryctl incident drill。済は演習で S1 の差し止めと人の解除が events に残ってから
       - id: release_train
         ja: "定期便（人の承認は便ごと 1 回）で Release が出て、S1 だけ緊急便"
         measure: { db: { target: 3, sql: "select count(*) from events where name = 'release.train'" } }

@@ -73,6 +73,31 @@ def env_entries(repo_dir: Path, env: str, host: str) -> dict:
     return {"env": env, "entries": entries}
 
 
+def with_product_severities(defs: dict, repo_dir: Path) -> dict:
+    """製品の .factory-config/quality_policy.yaml の S1 の条件と S2〜S4 の基準を、重要度の説明に足した defs（ADR 0043 の O5）。
+    重要度の名前（s1〜s4）は変えない。品質方針がなければ defs のまま"""
+    p = repo_dir / ".factory-config" / "quality_policy.yaml"
+    try:
+        qp = yaml.safe_load(p.read_text(encoding="utf-8")) if p.is_file() else None
+    except yaml.YAMLError:
+        qp = None
+    if not isinstance(qp, dict):
+        return defs
+    sev = dict(defs["severities"])
+    conds = {"s1": ((qp.get("s1") or {}).get("conditions") or [])}
+    for k, v in ((qp.get("severities") or {}).items() if isinstance(qp.get("severities"), dict) else []):
+        if k in sev and isinstance(v, dict):
+            if v.get("ja"):
+                sev[k] = str(v["ja"])
+            conds[k] = v.get("conditions") or []
+    for k, cs in conds.items():
+        items = [str(c.get("ja")) for c in cs if isinstance(c, dict) and c.get("ja")]
+        if k in sev and items:
+            sev[k] = f"{sev[k]}。この製品では次のどれかに当たれば {k}: " + " / ".join(items)
+    sev["s1"] = str(sev.get("s1")) + "。s1 は工場のラインを止めるので、当たると思ったら推測で下げない（ただし再現できたものだけ）"
+    return {**defs, "severities": sev}
+
+
 # ------------------------------------------------------------------ 形の検査
 def validate(doc, stories: list[dict], defs: dict, out_dir: Path | None = None) -> list[str]:
     if not isinstance(doc, dict) or not isinstance(doc.get("verdicts"), list):
@@ -400,6 +425,7 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
 
 # ------------------------------------------------------------------ 本体
 def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
+    defs = with_product_severities(defs, repo_dir)   # 製品の S1 の条件と S2〜S4 の基準（ADR 0043 の O5）
     if inp.get("mode") == "explore":   # 夜間の探索（nightly_explore）
         return run_explore(repo_dir, inp, out_dir, defs)
     import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）

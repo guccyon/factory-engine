@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from psycopg.types.json import Jsonb
 
 import defect
+import incident
 import ops
 import touch
 
@@ -198,6 +199,14 @@ def open_defects(gh, repo: str, label: str) -> dict[str, str]:
     return out
 
 
+def to_incident(cur, gh, comment, repo: str, d: dict, url: str, v: dict, corr: str, job_id: int):
+    """起票した（または開いている同じ）Defect を、その重要度の Incident にする（ADR 0043 の O5。S1 ならラインを差し止める）"""
+    if d.get("severity") in incident.SEVERITIES and not d.get("known_gap"):
+        incident.from_qa(cur, gh, comment, repo, key=url, severity=d["severity"], title=str(d.get("title") or ""), issue_url=url,
+                         env=v.get("env"), release_id=v.get("release_id"), qa_corr=corr, job_id=job_id,
+                         log=lambda *a: print("[qa_line]", *a, flush=True))
+
+
 def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result: dict, recorded: list[dict],
         keys: dict[str, str], defs: dict | None = None) -> dict:
     """hold の Defect を起票し（known_gaps と上限を超えたものは除く）、固定 Issue にまとめを書く。返り値 {filed, skipped}"""
@@ -228,6 +237,7 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
                 url = known[key]
                 filed[(r["verdict_id"], i)] = f"{url}（既存）"
                 remember(v, d, key, url, url)
+                to_incident(cur, gh, comment, repo, d, url, v, corr, job_id)
                 num = url.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
                 if num.isdigit():
                     comment(repo, int(num), f"QA 役の判定（ジョブ {job_id}・版 {v.get('release_id') or '不明'}・判定 {r['verdict_id']}）で、同じところでまた止まりました。"
@@ -247,6 +257,7 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
             filed[(r["verdict_id"], i)] = url
             known[key] = url
             remember(v, d, key, url, url)
+            to_incident(cur, gh, comment, repo, d, url, v, corr, job_id)
             cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('qa.defect_filed',%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                         (corr, job_id, Jsonb({"repo": repo, "release_id": v.get("release_id"), "story_id": v["story_id"], "verdict_id": r["verdict_id"],
                                               "title": d.get("title"), "severity": d.get("severity"), "viewpoint": d.get("viewpoint"), "issue": url}),
@@ -348,6 +359,7 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
                 comment(repo, int(num), f"夜間の探索（{ex.get('night')} の夜・ジョブ {job_id}・版 {ex.get('release_id') or '不明'}）で、また見つかりました。"
                                         f"まとめは #{issue}。\n\n> {str(f.get('actual') or '')[:500]}")
             seen.append(known[key])
+            to_incident(cur, gh, comment, repo, d, known[key], ex, corr, job_id)
         elif len(filed) >= int(xd["defects_per_night_max"]):
             skipped.append(d["title"][:60])
             d["not_filed"] = True
@@ -357,6 +369,7 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
             d["issue"] = got.get("html_url") or f"#{got.get('number')}"
             known[key] = d["issue"]
             filed.append(d["issue"])
+            to_incident(cur, gh, comment, repo, d, d["issue"], ex, corr, job_id)
         defects.append(d)
         # Defect の型（ADR 0028 の決定 5）。夜間の探索で見つけたものも found_in=qa。同じ Issue に当たったものは 1 件
         defect.safe_record(cur, "qa", f"{repo}:explore:{key}:{d['issue'] or ('known_gap' if d['known_gap'] else 'unfiled')}", "qa_explore",
