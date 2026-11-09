@@ -1,0 +1,40 @@
+id: FIR-2026-0001
+title: 全 PR が共有の追記ファイルを書き換え、衝突の解消が止まらずに 1 日の予算の枠を大きく超えた
+status: draft
+resource: llm_tokens
+mechanism_class: contention
+also: [unbounded_repeat]
+severity: high
+affects:
+  components: [supervisor の衝突の解消の続きのジョブ, 製品の変更履歴の規約]
+  conditions:
+    - 同時に 2 本以上の PR を流している
+    - 製品の規約で、ほぼすべての PR が同じファイル（CHANGELOG.md など）の同じ箇所に追記する
+    - 衝突の解消の回数に、チケットごとの上限がない
+symptom:
+  - 衝突の解消のジョブが、ジョブ全体の大半を占める
+  - 衝突したファイルが 1 つのファイルに極端に偏る
+  - 1 日の消費が予算の枠を大きく超える
+mechanism: |
+  1 本マージされるたびに、同じ箇所に追記していた残りの PR がすべて衝突し、解消のジョブがまた次の衝突を生んだ。
+  解消の回数に上限がなく、各ステップは自分の失敗だけを見て「直せば通る」と判断して続けた。
+  プランナーは、並行で流れている PR が触るファイルを見ていなかった。
+impact:
+  cost_vs_daily_budget: 2.5
+  share_of_spend: 0.8
+  wasted_vs_median: null
+  noticed_by: builder
+detection:
+  viewpoints: [PV-tokens-contention, PV-tokens-repeat]
+mitigation:
+  fixed_in: 7cb1fd71b2b678bd6ff2599be7a85981de6e2c25
+  root_fix: 追記を PR ごとの断片にし、取りまとめを LLM を使わない別の工程にした（ADR 0027 の 1）
+  generic_guards: [ticket_ceilings, daily_budget]
+  dedicated_checks:
+    - name: 変更履歴ファイルだけの衝突を機械で解く処理（断片を使わない古い PR のための移行措置）
+      review_by: 2027-02-01
+  workaround: 同時に流す本数を 1 本に絞る
+related:
+  adr: ["0027", "0038"]
+recurrences: []
+local_ref: null

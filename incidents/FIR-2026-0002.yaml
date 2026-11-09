@@ -1,0 +1,38 @@
+id: FIR-2026-0002
+title: 知見の担保の PR が同じ担保の起票を呼び戻し、閉じた後も同じ題の起票と PR が繰り返された
+status: draft
+resource: llm_tokens
+mechanism_class: self_feedback
+also: [unbounded_repeat]
+severity: high
+affects:
+  components: [知見の委員会の担保の起票, 知見の変更セットの PR]
+  conditions:
+    - 担保の PR が知見の enforcement を書き足し、その PR も委員会の審査にかかる
+    - 起票の重複を、開いている Issue だけで見ている
+symptom:
+  - 同じ題の担保の Issue と PR が、閉じた後にまた出てくる
+  - 1 つの知見の enforcement.solutions が増え続ける
+  - 知見の PR の本数が、元の事例の数に比べて桁違いに多い
+mechanism: |
+  担保の PR は知見の enforcement を書き足すので、委員会の審査にかかる。
+  委員会は同じ知見に同じ担保をまた決め、元の Issue が閉じていたので重複と見なさず、同じ題の担保 Issue を起票した。
+  その Issue からまた担保の PR ができ、輪が閉じた。
+impact:
+  cost_vs_daily_budget: null
+  share_of_spend: null
+  wasted_vs_median: null
+  noticed_by: owner
+detection:
+  viewpoints: [PV-tokens-self-feedback]
+mitigation:
+  fixed_in: a32fe9cf1d10288086051919cf155ab28f6ebd3f
+  root_fix: 同じ知見 × 同じ解決策の種類を一度起票していれば、閉じた後でも起票せずに記録だけを残す
+  generic_guards: [same_purpose_once]
+  dedicated_checks: []
+  workaround: 委員会の担保の起票を止め、開いている重複の Issue を閉じる
+related:
+  adr: ["0024"]
+recurrences: []
+local_ref: null
+note: 費用の比は台帳（制御プレーンの events）から集計して埋める。埋めるまでは帯を仮置きの high とする
