@@ -61,6 +61,7 @@ import serialize
 import ship
 import stoppage
 import usage
+import workflow_guard
 import workflow_shadow
 
 ENV = os.environ
@@ -243,9 +244,16 @@ def ci_failure_step(cur, p: dict, sha: str, mergeable_state: str | None = None, 
         # 人の判断待ちと予算の枠を使い切っている間は衝突を解かない（conflict_step）。解けなかった扱いの停止は開かず、開いていれば閉じる
         stoppage.close_stoppage(cur, key, remedy="人の判断待ち。判断が付いたら衝突を解く", closed_by="supervisor")
         return
+    if ("pr.conflicted" in seen or mergeable_state == "dirty") and workflow_guard.waiting(cur, p["corr"]):
+        # 衝突の解消の上限に当たり、同じファイルに触るチケットが終わるのを待っている（ADR 0038 の順番 2）。待ちの間は人に回さない
+        stoppage.close_stoppage(cur, key, remedy="衝突の解消の上限に当たり、同じファイルに触るチケットを待っている", closed_by="supervisor", quiet=True)
+        return
     if "pr.conflicted" in seen or mergeable_state == "dirty":   # 衝突（2026-10-31。これまでは何も起きず止まっていた）
+        cap = workflow_guard.capped(cur, p["corr"])
         stoppage.open_stoppage(cur, key, "ticket", "工場の PR が main と衝突している。検査と judge に進めない",
-                               waiting_for="工場の衝突の解消が通らなかった。builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
+                               waiting_for=(f"衝突の解消が上限（{cap.get('cap')} 回）に当たり、待った後の 1 回でも衝突した（計 {cap.get('conflicts')} 回）。"
+                                            "工場はもう解かない。builder が衝突を解くか、チケットを切り直すか、差し戻す") if cap else
+                               "工場の衝突の解消が通らなかった。builder が衝突を解くか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
     elif "pr.ci_failed" in seen:
         stoppage.open_stoppage(cur, key, "ticket", f"工場の PR の CI が落ちた（{', '.join(seen['pr.ci_failed'].get('failed') or [])}）。検査と judge に進めない",
                                waiting_for=f"工場の続きのジョブ（{tried} 回）でも通らなかった。builder が直すか、差し戻す" if tried else "builder が直すか、差し戻す", correlation_id=p["corr"], detected_by="supervisor")
@@ -305,6 +313,15 @@ def conflict_step(cur, p: dict, pr: dict):
     if awaiting_decision(cur, p["url"], pr):
         # 人の判断待ちの間は解かない。main が動くたびに解き直して費用がかさむ（11-01 rally #505、約 3 時間で 6 回・$36）。
         # 判断が付いて待ちが外れたら、その時点の head で 1 回だけ解く
+        return
+    cur.execute("select 1 from events where dedupe_key=%s", (f"continue:{p['url']}@{pr['head']['sha']}:conflict",))
+    if cur.fetchone():
+        return   # この head はもう積んである（解いている途中か、解けなかった）。上限を数え直さない
+    # 衝突の解消の上限（ADR 0038 の順番 2）。チケットの合計で上限に当たったら、同じファイルに触るチケットが終わるまで待ち、
+    # 待ちの後に 1 回だけ解く。それでも衝突したら、もう解かない（ci_failure_step が人への停止を開く）。rally #1054 は 13 回解いていた
+    gate = workflow_guard.conflict_gate(cur, p["corr"], p["url"], lambda: inflight_touched_files(cur))
+    if gate != "ok":
+        log("conflict fix held", p["url"], gate)
         return
     jid = continuation.enqueue(cur, repo=p["repo"], pr_number=p["number"], pr_url=p["url"], branch=pr["head"]["ref"],
                                head_sha=pr["head"]["sha"], reason="conflict", by="supervisor")

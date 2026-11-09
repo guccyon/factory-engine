@@ -609,7 +609,11 @@ events:
   workflow.shadow:
     source: control_plane
     required: [kind, repo, issue, plan_id]
-    note: "ADR 0038 の順番 1（記録だけ。ラインの動きは変えない）。プランナーの宣言（Plan の workflow）と実績の差。kind=cap_hit は実績が宣言の上限を超えた（cap・declared・actual・action＝守らせていたら取った動き・declared_by_planner）、would_skip は飛ばす宣言のステップ（inspect・qa）のジョブが動いた（step・job_id）、would_wait は start: after の前のチケット（after）が開いているうちに投入した（files・why）。supervisor の workflow_shadow_step と enqueue_step が残す。dedupe は workflow.shadow:<cap|skip|wait>:<チケット>:<plan_id>[:<種類>]。factoryctl plan show と建設状況の日報に出る。上限に当たった事例はプランナーの入力（caps.md）に戻る"
+    note: "ADR 0038 の順番 1（記録だけ。ラインの動きは変えない。守らせるのは workflow.enforced）。宣言のないチケットは既定値（any と M）で数え、plan_id は null・default は true。プランナーの宣言（Plan の workflow）と実績の差。kind=cap_hit は実績が宣言の上限を超えた（cap・declared・actual・action＝守らせていたら取った動き・declared_by_planner）、would_skip は飛ばす宣言のステップ（inspect・qa）のジョブが動いた（step・job_id）、would_wait は start: after の前のチケット（after）が開いているうちに投入した（files・why）。supervisor の workflow_shadow_step と enqueue_step が残す。dedupe は workflow.shadow:<cap|skip|wait>:<チケット>:<plan_id>[:<種類>]。factoryctl plan show と建設状況の日報に出る。上限に当たった事例はプランナーの入力（caps.md）に戻る"
+  workflow.enforced:
+    source: control_plane
+    required: [kind, pr_url, cap, conflicts]
+    note: "ADR 0038 の順番 2。supervisor がワークフローの上限を守らせた（WORKFLOW_ENFORCE、既定 conflict）。kind=conflict_wait は衝突の解消がチケットの合計で上限（宣言か既定の 3 回）に当たり、最後に衝突したファイル（files）に触る流れているチケット（behind）が終わるまで解かずに待たせた。conflict_retry は待ちが明けた（触るチケットがなければすぐ）ので 1 回だけ解いた。conflict_human は待ちの後の 1 回でも衝突したので、もう解かない（ci_failure_step が人への停止 ci: を開く）。待っている間は ci: を開かない。dedupe は workflow.enforced:<wait|retry|human>:<チケット>。default は宣言のないチケットで既定値を当てたか"
   plan.asked:
     source: control_plane
     required: [plan_id, repo, issue, round, questions]
