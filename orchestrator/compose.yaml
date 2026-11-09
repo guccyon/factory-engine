@@ -177,6 +177,8 @@ services:
       RELEASE_TRAIN_HOUR: ${RELEASE_TRAIN_HOUR:-17}
       # 夜間の探索（ADR 0028 の nightly_explore）。この製品に、definitions/qa.yaml の explore.hours（JST）の間に 1 晩 1 回 QA 役の探索を積む。既定は出荷の列車と同じ。空で止める
       NIGHTLY_EXPLORE: ${NIGHTLY_EXPLORE-${RELEASE_TRAIN-guccyon/rally}}
+      # 週次の KPI の Report ライン（ADR 0043 の O2）。毎週月曜 7 時（JST）を過ぎたら、この製品の staging で ship.yaml の kpi を測る。既定は出荷の列車と同じ。空で止める
+      KPI_WEEKLY: ${KPI_WEEKLY-${RELEASE_TRAIN-guccyon/rally}}
       # 週 1 回の設計の診断（ADR 0022）。definitions/design_review.yaml の曜日・時（JST）を過ぎたら製品ごとに 1 回。0 で止める
       DESIGN_REVIEW: ${DESIGN_REVIEW:-1}
       QUALITY_REPOS: ${QUALITY_REPOS:-}

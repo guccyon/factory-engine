@@ -71,6 +71,7 @@ advisories:                          # 経路は変えず、見返すための�
   no_stories: "画面を含む変更なのに、増やす・変える・守るユーザーストーリーがない"
   unknown_story: "変える・守るとしたストーリーの id が製品の specs/stories/ にない（その宣言は落とす）"
   story_exists: "増やすとしたストーリーの id がもうある（変えるとして扱う）"
+  unknown_kpi: "KPI の見込みの id が製品の .factory-config/ship.yaml の kpi.metrics にない、または変化が数でない（その見込みは落とす）"
   unknown_adr: "従うとした ADR の番号が製品の docs/adr/ にない（その宣言は落とす）"
   unknown_contract: "契約の差分の置き場が製品の specs/contracts/ にない（その差分は落とす）"
   breaking_contract: "互換を壊す契約の差分がある（expand → 移行 → contract で分け、contract は人の承認。製品の ADR 0004）"
@@ -115,6 +116,9 @@ upstream:
   requirements:
     required: [acceptance_criteria, non_goals, success_definition]   # artifacts.yaml の Requirements と同じ
     max_acceptance: 10
+    # 任意の KPI の見込み（ADR 0043 の O3）。{kpi, change, why}。kpi は製品の .factory-config/ship.yaml の kpi.metrics の id（ないものは落として印 unknown_kpi）。
+    # change は出荷の後の週次の値の変化（KPI の単位）。週次の Report（orchestrator/dispatcher/report_kpi.py）が実測の差と突き合わせて kpi.forecast_scored に残す
+    optional: [kpi_forecast]
   story_actions:                     # ストーリーへの作用（ADR 0028「タスクは どのストーリーを増やす・変える・守るか を宣言する」）
     add: "新しい利用者の流れができる。ストーリーを specs/stories/ に足す（実装役が同じ PR で書く）"
     change: "既存のストーリーの流れ（steps・exit・must_not）が変わる。実装役が同じ PR で直す"

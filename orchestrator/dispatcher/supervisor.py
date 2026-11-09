@@ -60,6 +60,7 @@ import process_learn
 import qa_line
 import quality_learn
 import report
+import report_kpi
 import serialize
 import ship
 import stoppage
@@ -112,6 +113,8 @@ ENGINE_REPO = ENV.get("ENGINE_REPO", "guccyon/factory-engine")   # 工場自体�
 PROCESS_LABEL = "factory:process-proposal"
 # 夜間の探索（ADR 0028 の nightly_explore）。探索する製品（触れる環境を持つもの）。既定は出荷の列車の製品。空で止める
 NIGHTLY_EXPLORE = [r.strip() for r in ENV.get("NIGHTLY_EXPLORE", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
+# 週次の KPI の Report ライン（ADR 0043 の O2）を回す製品。既定は出荷の列車の製品（staging と ship.yaml を持つもの）。空で止める
+KPI_WEEKLY = [r.strip() for r in ENV.get("KPI_WEEKLY", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
 QA_DEFS = ENV.get("QA_DEFINITIONS", "/definitions/qa.yaml")
 # 合成の利用者（ADR 0043 の O4）。週に 1 回（definitions/qa.yaml の synthetic.weekday・hours）歩かせる製品。既定は夜間の探索と同じ。空で止める。
 # わざと仕込む詰まりは SYNTH_FRICTION（example か JSON。staging だけ）
@@ -1169,6 +1172,18 @@ def nightly_explore_step(cur, now: datetime | None = None):
         log("nightly explore enqueued", repo, night, got["charter"], "job", got["job_id"])
 
 
+def kpi_weekly_step(cur, now: datetime | None = None):
+    """週次の KPI の Report ライン（ADR 0043 の O2・O3）。週に 1 回、出荷の列車の製品ごとに staging で KPI を測る依頼を書き、
+    測れた結果を前回と比べて Report・Opportunity の下書き（受信トレイ）・見込みの誤差（kpi.forecast_scored）にする。決定的でトークンを使わない"""
+    if DRY_RUN or not KPI_WEEKLY:
+        return
+    try:
+        report_kpi.request_step(cur, KPI_WEEKLY, now, log=log)
+        report_kpi.report_step(cur, log=log)
+    except Exception as e:  # noqa: BLE001  報告の失敗でラインを止めない。次の周回でやり直す
+        log("kpi weekly step error", repr(e)[:300])
+
+
 def _qa_defs() -> dict:
     """definitions/qa.yaml の explore と synthetic（なければ qa_line の写し）"""
     try:
@@ -1266,6 +1281,9 @@ def tick():
         changelog_step(cur)
         release_train_step(cur)
         nightly_explore_step(cur)
+        kpi_weekly_step(cur)
+
+
         synthetic_users_step(cur)
         learn_step(cur)
         rule_transition_step(cur)

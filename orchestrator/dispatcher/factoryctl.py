@@ -54,6 +54,9 @@
   factoryctl release train-approve <train_id> [--by ..]     # 便に載った Release をまとめて prod へ承認する（本番を立てない段階の製品は飛ばす）
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
+週次の KPI の Report ライン（ADR 0043 の O2・O3）。supervisor が毎週月曜 7 時（JST）に staging で測る。今すぐ 1 回測るには --measure:
+  factoryctl report kpi [<repo>] [--measure] [--env staging] [--timeout 300]   # いちばん新しい週次の KPI。--measure は測る依頼を書き、結果を待って Report・Opportunity の下書き・見込みの採点まで回す
+
 触れる環境（ADR 0028 の touchable_env。Gen1 は staging と兼ねる）。Release 候補を 1 コマンドで立て、シードを入れ、URL と QR を出す:
   factoryctl env up <repo> [--release <id>] [--fresh] [--no-wait] [--timeout 3600] [--by ..]   # 版がなければ未 Release の PR から切る。--fresh は DB を空にしてシードから入れ直す
   factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
@@ -351,6 +354,39 @@ def design_cmd(cur, argv) -> int:
 
 def opt(argv, name, default=None):
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
+
+
+def report_kpi_cmd(cur, argv):
+    """週次の KPI（ADR 0043 の O2）。--measure は shipper に測る依頼を書き、結果を待って supervisor と同じ組み立てを今すぐ回す"""
+    import design
+    import report_kpi
+    repo = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else (report_kpi_repos() or ["guccyon/rally"])[0]
+    if "--measure" in argv:
+        ok, msg = ship.request_kpi(cur, repo, opt(argv, "--env", report_kpi.ENV), design.week_of(), opt(argv, "--by", "builder"), "factoryctl")
+        print(msg)
+        if not ok:
+            return 1
+        cur.execute("select max(id) as id from events where name='release.kpi_requested'")
+        rid, t0 = cur.fetchone()["id"], time.monotonic()
+        while time.monotonic() - t0 < float(opt(argv, "--timeout", "300")):
+            cur.execute("select payload from events where name='release.kpi_measured' and (payload->>'request_id')::bigint = %s", (rid,))
+            got = cur.fetchone()
+            if got:
+                if not got["payload"].get("ok"):
+                    print(f"測れなかった: {got['payload'].get('error')}")
+                    return 1
+                report_kpi.report_step(cur)
+                break
+            time.sleep(2)
+        else:
+            print("待ち切れなかった（shipper が動いているか factoryctl release status で見る。結果が出れば supervisor が Report にする）")
+            return 1
+    print("\n".join(report_kpi.lines(report_kpi.latest(cur, repo))))
+    return 0
+
+
+def report_kpi_repos() -> list[str]:
+    return [r.strip() for r in os.environ.get("KPI_WEEKLY", os.environ.get("RELEASE_TRAIN", "")).split(",") if r.strip()]
 
 
 def report_send(cur, argv):
@@ -1146,6 +1182,8 @@ def main(argv):
         else:
             print("\n".join([f"# 工場の使用量（{v['generated_at'][:16]} 時点、制御プレーンから生成）", "",
                              "生成: `factoryctl report usage`。費用は API 単価に換算した消費の物差しで、定額の契約の実請求ではない", ""] + usage.report_lines(v)))
+    elif cmd == "report" and len(argv) > 2 and argv[2] == "kpi":
+        return report_kpi_cmd(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "send":
         return report_send(cur, argv)
     elif cmd == "report" and len(argv) > 2 and argv[2] == "process":

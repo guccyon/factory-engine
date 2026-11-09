@@ -72,7 +72,7 @@ def test_versions_reads_git_heads(tmp_path):
 def test_facts(tmp_path):
     assert pl.facts(None)["has_design_system"] is False
     assert pl.facts(tmp_path) == {"has_design_system": False, "design_files": [], "has_knowledge": False, "story_ids": [],
-                                 "adr_ids": [], "contract_files": []}
+                                 "adr_ids": [], "contract_files": [], "kpi_ids": []}
     (tmp_path / "specs" / "design").mkdir(parents=True)
     (tmp_path / "specs" / "design" / "README.md").write_text("x")
     assert pl.facts(tmp_path)["has_design_system"] is False      # トークンがなければ、まだない
@@ -89,7 +89,7 @@ def test_schema_matches_definitions():
     assert "alternatives" in pl.schema(DEFS)["required"]
     assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized"}
     assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design",
-                                       "no_requirements", "no_stories", "unknown_story", "story_exists",
+                                       "no_requirements", "no_stories", "unknown_story", "story_exists", "unknown_kpi",
                                        "unknown_adr", "unknown_contract", "breaking_contract", "no_contract_diff"}
     assert s["stories"]["items"]["properties"]["action"]["enum"] == list(DEFS["upstream"]["story_actions"]) == ["add", "change", "keep"]
     assert s["requirements"]["required"] == DEFS["upstream"]["requirements"]["required"]

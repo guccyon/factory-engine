@@ -766,6 +766,27 @@ events:
     source: inspector
     required: [pr_id, gate, result, defects]
     note: "P1 から。supervisor が積む検査ジョブ（kind=inspect）が mode=shadow で出す。InspectionReport が同じ中身を持つ"
+  # 週次の KPI の Report ライン（ADR 0043 の O2・O3）。orchestrator/dispatcher/report_kpi.py
+  release.kpi_requested:
+    source: control_plane
+    required: [release_id, repo, env, week, by, via]
+    note: "その環境で製品の KPI を測る依頼（ship.request_kpi）。supervisor は毎週月曜 7 時（JST）を過ぎたら製品ごとに 1 回（by=supervisor、via=report_line）。factoryctl report kpi --measure は今すぐ。手を動かすのは shipper"
+  release.kpi_measured:
+    source: control_plane
+    required: [release_id, repo, env, week, ok, metrics, error, request_id]
+    note: "shipper が製品の .factory-config/ship.yaml の kpi のコマンドをその環境で実行した結果。metrics は [{id, ja, unit, direction, expected, change_alert, value}]（値が数でなければ null）。測れなければ ok: false と error で、停止には開かない"
+  report.kpi_skipped:
+    source: control_plane
+    required: [repo, week, env, reason, by]
+    note: "週次の KPI を測る依頼を書けなかった（staging に版がないなど）。dedupe は report.kpi_skipped:<repo>:<週>"
+  report.kpi_weekly:
+    source: control_plane
+    required: [repo, env, week, measured_id, base_id, metrics, anomalies, opportunities, merged_prs, scored]
+    note: "測れた結果 1 つを前回の測定と比べた週次の Report（1 測定に 1 回。dedupe は report.kpi_weekly:<measured_id>）。中身は artifacts の KPIReport、異常から起こした下書きは改善の提案の口（opportunity.proposed、source report.kpi）。roadmap の report_line は opportunities が 1 以上のものを数える"
+  kpi.forecast_scored:
+    source: control_plane
+    required: [repo, kpi, ticket, pr_url, forecast, actual, error, unit, week, measured_id, base_id]
+    note: "ADR 0043 の O3。プランナーが Requirements に書いた KPI の見込み（kpi_forecast）を、前回の測定から今回までにマージしたチケットについて実測の差（actual）と突き合わせた。error = actual - forecast。correlation_id はチケット。Learn の教師信号 kpi_error（signature kpi:<id>）。dedupe は kpi.forecast_scored:<チケット>:<KPI>"
 
 tier_map:                        # モデル名 → tier（budgets.model_tiers）。末尾の [1m] などの文脈長の印は外して照合する
   claude-opus-5-5: tier-large
