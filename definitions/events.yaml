@@ -76,9 +76,33 @@ events:
     required: [subject_id, decided_at, automated_decision, human_decision, reason]
     note: "P0 は承認ログがないので pr-merge-criteria の判断の記録を手で写す"
   incident.opened:
-    source: monitoring
+    source: [qa, monitoring]
     required: [incident_id, detected_at, severity, related_pr_ids]
-    note: "P0 では発生源がない（Gen1 はモック環境のエラー監視を P2 で）"
+    note: "ADR 0043 の O5。Gen1 は staging を本番の代わりにし、QA 役が起票した Defect（known_gap を除く）を同じ重要度で開く（dispatcher/incident.py）。incident_id は <repo>:<Defect の Issue>。drill: true は演習（エラーバジェットに数えない）。artifacts の Incident と同じ中身"
+  incident.closed:
+    source: control_plane
+    required: [incident_id, by]
+    note: "直った・演習を終えた（factoryctl incident close / drill-end）"
+  incident.budget_exceeded:
+    source: control_plane
+    required: [repo, severity, count, allowed, period_days, since]
+    note: "製品の quality_policy.yaml の error_budget を超えた。期間と重要度ごとに 1 回（dedupe）。工場の状況に知らせる"
+  incident.drill_started:
+    source: control_plane
+    required: [repo, drill, by]
+    note: "S1 の演習（factoryctl incident drill）。staging に仕込んだ（release.drill_planted）あと。drill_ended までに開いたその製品の Incident は drill: true"
+  incident.drill_ended:
+    source: control_plane
+    required: [repo, by]
+    note: "演習を終えた。演習の Incident を閉じ、staging を入れ直して仕込みを消す（release.reseed_requested）"
+  line.held_by_qa:
+    source: control_plane
+    required: [by, incidents, corrs, min_priority]
+    note: "QA 役が S1 の Incident でラインを差し止めた（ADR 0043 の O5）。ラインの一時停止（factory.drain_requested）とは別の札。差し止めの間、dispatcher はラインのジョブのうち corrs（S1 の Defect の Issue と QA の固定 Issue）と min_priority（p0）以上だけを取り出す。差し止め中に S1 が増えたら incidents を足して出し直す。停止（stoppage、category human）も開く"
+  line.hold_released:
+    source: [console, factoryctl]
+    required: [by, reason]
+    note: "人が差し止めを解除した。QA 役と工場の常駐は解除できない（incident.release が断る）。停止を閉じる"
   stoppage.opened:
     source: control_plane
     required: [key, category, what, detected_by]
@@ -593,7 +617,7 @@ events:
   quality.learned:
     source: control_plane
     required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
-    note: "ADR 0043 の O9 quality_learn。週に 1 回（definitions/defects.yaml の learn）、直近の Defect（defect.recorded）と Incident（incident.recorded）を集計した。dedupe は quality.learned:<repo>:<週>"
+    note: "ADR 0043 の O9 quality_learn。週に 1 回（definitions/defects.yaml の learn）、直近の Defect（defect.recorded）と Incident（incident.opened。演習を除く）を集計した。dedupe は quality.learned:<repo>:<週>"
   qa.focus_updated:
     source: control_plane
     required: [repo, week, stories, viewpoints, basis]

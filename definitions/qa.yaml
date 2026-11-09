@@ -36,7 +36,8 @@ viewpoints:
   persistence: "データの持続（再読み込み・ログインし直し・時間をまたぐ）"
   words:       "言葉と文脈（reader に合った語・内部のコードが出ていないか）"
 
-# 重要度（P5b の severity_budget までの仮置き）。s1 は「止める」条件の候補（quality_policy.yaml の stop_conditions）
+# 重要度の既定（ADR 0043 の O5）。製品の .factory-config/quality_policy.yaml に s1.conditions と severities があれば、ワーカーはそちらの条件も読む。
+# s1 は止める: dispatcher（incident.py）が Incident を開き、ラインを差し止める（line.held_by_qa。解除は人）
 severities:
   s1: "個人情報・他人のデータが見える、お金・契約が消える"
   s2: "流れが exit まで通らない"

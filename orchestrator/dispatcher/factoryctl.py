@@ -71,6 +71,15 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
       # 合成の利用者（ADR 0043 の O4）を今すぐ 1 回積む。仕込みは --friction か工場の SYNTH_FRICTION（staging だけ）。提案は受信トレイに出る
   factoryctl qa learn <repo>                                  # 品質の Learn（ADR 0043 の O9）を今すぐ回す（その週にまだ回っていなければ）
 
+障害の重要度とエラーバジェット（ADR 0043 の O5）。QA 役が S1 の Incident を開くとラインを差し止める（一時停止とは別の札）。解除は人だけ:
+  factoryctl line release --reason "..." [--by 名前]   # QA 役の差し止めを解除する（直した・演習を終えた）。理由は必須
+  factoryctl incident list [<repo>] [--limit 20]       # 最近の Incident（重要度・演習か・閉じたか）と差し止めの状態
+  factoryctl incident budget <repo>                    # エラーバジェット（製品の quality_policy.yaml の error_budget）と期間の中の件数（演習を除く）
+  factoryctl incident close <incident_id> --reason "..."   # Incident を閉じる（直った・演習を終えた）
+  factoryctl incident drill <repo> [--plant s1_data_leak] [--charter other-user] [--wait 300]
+      # S1 の演習: staging に仕込み（ship.yaml の touch.drills）、仕込めたら QA 役の探索を 1 回積む（一時停止中も流す）。終えるまでの Incident は演習の印
+  factoryctl incident drill-end <repo> [--reason ..]   # 演習を終える: 演習の Incident を閉じ、staging を合成シードから入れ直して仕込みを消す
+
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
   factoryctl desk token list
@@ -134,6 +143,7 @@ import choice
 import desk
 import design_line
 import drain
+import incident
 import line
 import usage
 import ghapp
@@ -800,6 +810,102 @@ def restricted_cmd(cur, argv):
         return 2
 
 
+def hold_report(cur) -> None:
+    st = incident.hold_status(cur)
+    if not st:
+        print("QA 役の差し止めはない")
+        return
+    print(f"QA 役がラインを差し止め中（{st['since']} から {st['minutes']} 分・{st['reason']}）。解除は人: factoryctl line release --reason ...")
+    for i in st["incidents"]:
+        print(f"  {i.get('severity', '').upper()} {i.get('incident_id')}{'（演習）' if i.get('drill') else ''}: {i.get('title')} {i.get('issue') or ''}")
+    if st["allowed"]:
+        print(f"  差し止めの間も流すもの: {' '.join(st['allowed'])} と p0 のチケット")
+
+
+def incident_cmd(cur, argv) -> int:
+    """factoryctl incident list|budget|close|drill|drill-end（ADR 0043 の O5）"""
+    sub = argv[2] if len(argv) > 2 else "list"
+    arg = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None
+    by = opt(argv, "--by", "factoryctl")
+    if sub == "list":
+        for r in incident.recent(cur, arg, int(opt(argv, "--limit", "20"))):
+            print(f"{r['at']:%m-%d %H:%M} {str(r.get('severity')).upper()} {r['incident_id']}{'（演習）' if r.get('drill') else ''}"
+                  f"{'（閉じた）' if r.get('closed') else ''}: {r.get('title')} {r.get('issue') or ''}")
+        hold_report(cur)
+        return 0
+    if sub == "close" and arg:
+        reason = opt(argv, "--reason", "")
+        if not reason:
+            print("--reason が要る"); return 2
+        ok = incident.close_incident(cur, arg, by, reason)
+        print("閉じた" if ok else "開いている Incident ではない")
+        return 0 if ok else 1
+    if not arg or "/" not in arg:
+        print("factoryctl incident list|budget|close|drill|drill-end ..."); return 2
+    repo = arg
+    import ghapi
+
+    def gh(method, path, body=None):
+        return ghapi.request(method, path, body, user_agent="factoryctl", token=ghapp.token())
+    if sub == "budget":
+        b = incident.budget(cur, repo, incident.fetch_policy(gh, repo))
+        if not b:
+            print(f"{repo} の quality_policy.yaml に error_budget がない"); return 1
+        print(f"{repo} のエラーバジェット（{b['period_days']} 日・{b['since'][:10]} から・演習を除く{'・仮置きの値' if b['provisional'] else ''}）")
+        for s_, v in b["severities"].items():
+            mark = " ← 超えた" if s_ in b["over"] else ""
+            print(f"  {s_.upper()}: {v['count']} 件 / 許容 {v['allowed'] if v['allowed'] is not None else '-'} 件{mark}")
+        return 1 if b["over"] else 0
+    if sub == "drill":
+        plant = opt(argv, "--plant", "s1_data_leak")
+        if incident.drill_active(cur, repo):
+            print("この製品は演習の最中（factoryctl incident drill-end で終える）"); return 1
+        ok, msg = ship.request_drill(cur, repo, "staging", plant, by, "factoryctl")
+        print(msg)
+        if not ok:
+            return 1
+        cur.execute("select max(id) as id from events where name='release.drill_requested'")
+        req = cur.fetchone()["id"]
+        until = time.time() + int(opt(argv, "--wait", "300"))
+        got = None
+        while time.time() < until:
+            cur.execute("select name, payload from events where name in ('release.drill_planted','release.ship_failed') "
+                        "and (payload->>'request_id')::bigint = %s", (req,))
+            got = cur.fetchone()
+            if got:
+                break
+            time.sleep(3)
+        if not got or got["name"] != "release.drill_planted":
+            print("仕込めなかった: " + (str(got["payload"].get("error"))[-300:] if got else "shipper が時間内に応えなかった")); return 1
+        cur.execute("insert into events(name, payload) values ('incident.drill_started', %s)",
+                    (Jsonb({"repo": repo, "drill": plant, "by": by, "env": "staging", "request_id": req}),))
+        import qa_line
+        night = qa_line.night_of(datetime.now(timezone.utc))
+        try:
+            q = qa_line.enqueue(cur, gh, repo, by=by, priority="p1",
+                                extra={"mode": "explore", "charter": opt(argv, "--charter", "other-user"), "night": night, "unattended": False})
+        except psycopg.errors.UniqueViolation:
+            print("仕込んだが、この製品の QA のジョブがもう動いているので積めなかった（終わってから factoryctl qa explore で積む）"); return 1
+        if drain.active(cur):
+            drain.allow(cur, [q["corr"]], by, "S1 の演習（factoryctl incident drill）")
+        print(f"仕込んだ。QA 役の探索を積んだ（ジョブ {q['job_id']}・{repo}#{q['issue']}）。S1 が見つかればラインを差し止める")
+        return 0
+    if sub == "drill-end":
+        d = incident.drill_active(cur, repo)
+        if not d:
+            print("この製品は演習の最中ではない"); return 1
+        reason = opt(argv, "--reason", "演習を終えた")
+        n = sum(incident.close_incident(cur, i["incident_id"], by, reason) for i in incident.open_incidents(cur, repo) if i.get("drill"))
+        cur.execute("insert into events(name, payload) values ('incident.drill_ended', %s)",
+                    (Jsonb({"repo": repo, "drill": d.get("drill"), "by": by, "reason": reason, "closed_incidents": n}),))
+        ok, msg = ship.request_reseed(cur, repo, "staging", by, "factoryctl")
+        print(f"演習を終えた（演習の Incident {n} 件を閉じた）。{msg}")
+        if incident.held(cur):
+            print("※ ラインの差し止めはまだ残っている。解除は factoryctl line release --reason ... か操業コンソールで")
+        return 0 if ok else 1
+    print("factoryctl incident list|budget|close|drill|drill-end ..."); return 2
+
+
 def qa_cmd(cur, argv) -> int:
     """factoryctl qa run|show（ADR 0028 の決定 2）"""
     import qa_line
@@ -934,6 +1040,13 @@ def main(argv):
             hold = " 保留" if t["held"] else ""
             wait = f" 依存待ち {' '.join(t['waiting_on'])}" if t["waiting_on"] else ""
             print(f"{t['id']:>4} {ops.level_of(t['priority'])}({t['priority']}) {t['state']:<7} {t['source_ref']} {t['title'][:40]}{hold}{wait} {t['jobs'] or ''}")
+    elif cmd == "line" and len(argv) > 2 and argv[2] == "release":   # QA 役の差し止めの解除（ADR 0043 の O5）。人だけ
+        try:
+            ok = incident.release(cur, f"factoryctl:{opt(argv, '--by', 'human')}", opt(argv, "--reason", "") or "")
+        except ValueError as e:
+            print(e); return 2
+        print("差し止めを解除した。ラインは次の周回から流れる" if ok else "差し止めていない")
+        return 0 if ok else 1
     elif cmd == "line":
         if len(argv) > 2 and argv[2] == "scale":
             vals = {k: int(opt(argv, f"--{k}")) for k in line.FIELDS if opt(argv, f"--{k}") is not None}
@@ -951,6 +1064,7 @@ def main(argv):
         print(f"宣言: {st['by']}{'（' + st['reason'] + '）' if st['reason'] else ''}{' ' + st['at'] if st['at'] else '（環境変数の値）'}")
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")
+        hold_report(cur)
     elif cmd == "budget":
         if len(argv) > 2 and argv[2] == "set":
             try:
@@ -1161,6 +1275,8 @@ def main(argv):
         return 0 if t else 1
     elif cmd == "qa":
         return qa_cmd(cur, argv)
+    elif cmd == "incident":
+        return incident_cmd(cur, argv)
     elif cmd == "swap":
         return swap_cmd(cur, argv)
     elif cmd == "desk":
