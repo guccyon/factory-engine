@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 import yaml
 from psycopg.types.json import Jsonb
 
+import ephemeral
 import ghapp
 import stoppage
 
@@ -660,6 +661,9 @@ def main():
                     for ev in reqs:
                         print(f"shipper: {ev['name']} {ev['payload'].get('release_id')}", flush=True)
                         handle(cur, ev)
+                    for ev in ephemeral.pending(cur):   # PR ごとの使い捨て環境（ADR 0043 の O7）
+                        print(f"shipper: {ev['name']} {ev['payload'].get('repo')}#{ev['payload'].get('pr')}", flush=True)
+                        ephemeral.handle(cur, ev)
                     time.sleep(interval)
         except Exception as e:  # noqa: BLE001  DB が切れたらつなぎ直す
             print(f"shipper: {e}", flush=True)

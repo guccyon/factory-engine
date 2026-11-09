@@ -62,6 +62,12 @@
   factoryctl env show <repo> [--env staging]                 # いまの版の入口（URL・QR・ログインの手がかり）
   factoryctl env restart <repo> [--advance-hours N | --reset-clock] [--env staging]   # 再起動して時計を進める（DB は残す。時間をまたぐシナリオ）
 
+PR ごとの使い捨て環境（ADR 0043 の O7）。PR の head を <製品>-pr-<番号> の compose で立て、シードを入れる。PR が閉じたら supervisor が壊す:
+  factoryctl env pr-up <repo> <PR 番号> [--no-wait] [--timeout 3600] [--by ..]   # 同時に EPHEMERAL_MAX（既定 2）まで。fork の PR は立てない
+  factoryctl env pr-show [<repo>]                            # 立っている環境の入口（URL・QR・ログインの手がかり）と触った印
+  factoryctl env pr-touch <repo> <PR 番号> [--note ..] [--by ..]   # 人が触った印を残す（QA 役をこの環境に向けるのは Gen1.5）
+  factoryctl env pr-down <repo> <PR 番号> [--by ..]          # PR が開いたままでも壊す
+
 QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー（specs/stories/）を流し、ストーリーごとに Verdict を出す:
   factoryctl qa run <repo> [--stories id,id] [--env staging] [--priority p0|p1|p2|p3] [--through-pause] [--by ..]
       # 製品の固定 Issue（factory:qa）に積む。--stories を省けば active な全部（上限 6）。--through-pause はラインの一時停止の間もこれだけ流す
@@ -143,6 +149,7 @@ import choice
 import desk
 import design_line
 import drain
+import ephemeral
 import incident
 import line
 import usage
@@ -473,6 +480,40 @@ def release_create(cur, argv):
         print(f"{repo}@{version} already exists"); return 1
     print(f"created {rid} with {len(prs)} PRs")
     return 0
+
+
+def env_pr_show(cur, repo: str | None) -> int:
+    envs = [a for a in ephemeral.active(cur) if not repo or a["repo"] == repo]
+    if not envs:
+        print("立っている使い捨て環境はない")
+    for a in envs:
+        cur.execute("select count(*) as n from events where name='env.ephemeral_touched' and correlation_id=%s and occurred_at >= %s",
+                    (ephemeral.corr(a["repo"], int(a["pr"])), a["at"]))
+        print(touch.render({"release_id": f"{a['repo']}#{a['pr']}（{a['project']}・{str(a.get('head_sha') or '')[:8]}）", "env": f"枠 {a['slot']}",
+                            "reachable_from_phone": any(not e["url"].startswith("http://127.0.0.1") for e in a.get("entries") or []),
+                            "entries": a.get("entries"), "accounts": a.get("accounts"),
+                            "note": f"立てた {a['at']:%m-%d %H:%M}・触った印 {cur.fetchone()['n']} 件"}))
+        print()
+    return 0
+
+
+def env_pr_wait(cur, repo: str, pr: int, timeout: float) -> int:
+    t0 = time.monotonic()
+    cur.execute("select max(id) as id from events where name='env.ephemeral_up_requested' and correlation_id=%s", (ephemeral.corr(repo, pr),))
+    req = cur.fetchone()["id"]
+    while time.monotonic() - t0 < timeout:
+        cur.execute("select name, payload from events where name = any(%s) and (payload->>'request_id')::bigint = %s",
+                    (list(ephemeral.RESULTS), req))
+        r = cur.fetchone()
+        if r and r["name"] == "env.ephemeral_failed":
+            print(f"失敗: {r['payload'].get('error')}")
+            return 1
+        if r:
+            print(f"立った（{r['payload'].get('seconds')} 秒）")
+            return env_pr_show(cur, repo)
+        time.sleep(3)
+    print(f"{int(timeout)} 秒待っても立たなかった（shipper が動いているか見る）")
+    return 1
 
 
 def release_trains(cur, limit: int) -> int:
@@ -1259,6 +1300,20 @@ def main(argv):
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":
         return release_status(cur, argv[3])
+    elif cmd == "env" and len(argv) > 4 and argv[2] in ("pr-up", "pr-touch", "pr-down"):
+        repo, pr, by = argv[3], int(argv[4].lstrip("#")), opt(argv, "--by", "builder")
+        if argv[2] == "pr-up":
+            ok, msg = ephemeral.request_up(cur, repo, pr, by, "factoryctl")
+            print(msg)
+            if not ok or "--no-wait" in argv:
+                return 0 if ok else 1
+            return env_pr_wait(cur, repo, pr, float(opt(argv, "--timeout", "3600")))
+        ok, msg = (ephemeral.touch(cur, repo, pr, by, "human", opt(argv, "--note", "")) if argv[2] == "pr-touch"
+                   else ephemeral.request_down(cur, repo, pr, by, "factoryctl"))
+        print(msg)
+        return 0 if ok else 1
+    elif cmd == "env" and len(argv) > 2 and argv[2] == "pr-show":
+        return env_pr_show(cur, argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None)
     elif cmd == "env" and len(argv) > 3 and argv[2] == "up":
         return touch.up(cur, argv[3], release_id=opt(argv, "--release"), fresh="--fresh" in argv, by=opt(argv, "--by", "builder"),
                         timeout=float(opt(argv, "--timeout", "3600")), do_wait="--no-wait" not in argv,

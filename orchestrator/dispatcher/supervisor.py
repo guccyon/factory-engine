@@ -20,6 +20,7 @@
 - 出荷の列車・定期便（ADR 0012、ADR 0043 の O6）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品が今日の定期便にまだ載っておらず、まだ Release に入っていない
   マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼し、
   その日の便（release.train）に載せる。prod へは便ごとの承認を待つ（train.py）
+- PR ごとの使い捨て環境（ADR 0043 の O7）: 立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く（ephemeral.py）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
 """
@@ -50,6 +51,7 @@ import committee
 import continuation
 import design
 import drain
+import ephemeral
 import judgment
 import line
 import learn
@@ -1128,6 +1130,24 @@ def committee_weekly_step(cur, now: datetime | None = None):
         log("committee weekly enqueued", repo, week, "job", jid)
 
 
+def ephemeral_step(cur):
+    """PR ごとの使い捨て環境（ADR 0043 の O7）。立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く。
+    立っているのは EPHEMERAL_MAX（既定 2）までなので、GitHub を見るのも周回ごとにその数まで（GET は ETag つき）"""
+    if DRY_RUN:
+        return
+
+    def closed(repo: str, pr: int) -> bool:
+        try:
+            return gh("GET", f"repos/{repo}/pulls/{pr}").get("state") == "closed"
+        except Exception as e:  # noqa: BLE001  見えないときは壊さない（TTL で壊れる）
+            log("ephemeral pr check failed", repo, pr, repr(e)[:200])
+            return False
+
+    for repo, pr, reason in ephemeral.due_down(cur, closed):
+        ok, m = ephemeral.request_down(cur, repo, pr, "supervisor", "ephemeral_step", reason)
+        log("ephemeral down", repo, pr, reason, m)
+
+
 def nightly_explore_step(cur, now: datetime | None = None):
     """夜に 1 回、製品ごとに QA 役の探索のジョブを積む（ADR 0028 の nightly_explore）。判断は持たず、時刻・予算・一時停止を見るだけ。
     積めなかった理由は 1 晩 1 回だけ supervisor.nightly_explore_skipped に残す（朝の日報が「昨夜は回らなかった」と出す）"""
@@ -1280,6 +1300,7 @@ def tick():
         notify_report_step(cur)
         changelog_step(cur)
         release_train_step(cur)
+        ephemeral_step(cur)
         nightly_explore_step(cur)
         kpi_weekly_step(cur)
 
