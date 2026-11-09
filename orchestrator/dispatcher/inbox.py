@@ -150,6 +150,8 @@ def _stoppages(cur, now) -> list[dict]:
         # この場で答えられるのはラインの一時停止の再開と、judge が人に回した判断（上の _judgment_items）。マージの判断は GitHub の PR で
         ans = {"type": "approve", "options": [{"id": "resume", "label": "ラインを再開する"}], "extra": [],
                "effect": "ラインの一時停止を解き、順番待ちの取り出しを再開する", "allowed": [who], "target": ("resume_line", None)} if prefix == "drain" else None
+        if prefix == "sendback" and url:
+            ans = _sendback_answer(cur, url, who)
         # 題と「すること」は停止のアラートと同じ読む文（alerts.py。記録の文は工場の内側の言葉で、事業主には読めない。11-08）
         al = alerts.describe(cur, s)
         fixing = _sendback_fixing(cur, url) if prefix == "sendback" and url else None
@@ -162,18 +164,24 @@ def _stoppages(cur, now) -> list[dict]:
 
 def _sendback_fixing(cur, pr_url: str) -> dict | None:
     """差し戻しを直しに回した（直しの Issue に factory:planned を付けて投入待ち・実装中にした）なら、その答えの形。
-    受信トレイでは「回答済（反映待ち）」に移す。停止は直しが入ってから閉じるので、それまで「未回答」に残っていた（2026-11-09 rally #1228・#1251）"""
-    cur.execute("select payload->>'fix_corr' as c from events where name='sendback.filed' and payload->>'origin_pr'=%s order by id desc limit 1", (pr_url,))
-    r = cur.fetchone()
-    ref = ((r or {}).get("c") or "").removeprefix("github:")
-    if not ref:
-        return None
-    cur.execute("select state, updated_at from tickets where source='github' and source_ref=%s and state in ('planned','active') limit 1", (ref,))
-    t = cur.fetchone()
-    if not t:
-        return None
-    n = ref.rsplit("#", 1)[-1]
-    return {"by": "Issue のラベル", "via": "github", "label": f"直しに回した（#{n}）", "at": t["updated_at"]}
+    受信トレイでは「回答済（反映待ち）」に移す。supervisor が次の周期に停止を閉じるまでの間（2026-11-09 rally #1228・#1251）"""
+    import sendback
+    f = sendback.fixing(cur, pr_url)
+    return {"by": "Issue のラベル", "via": "github", "label": f"直しに回した（#{f['number']}）", "at": f["at"]} if f else None
+
+
+SENDBACK_EFFECT = ("流す: 差し戻しの Issue のラベルを factory:planned に替える。次の周期に停止を閉じ、元 PR の衝突の解消とマージに進め、"
+                   "元 PR が入ったら差し戻しを直す。受け入れる: 残った指摘を直さずに停止を閉じ、元 PR を先へ進める")
+
+
+def _sendback_answer(cur, pr_url: str, who: str) -> dict:
+    """流さなかった差し戻し（sendback:）の答え。起票済みの差し戻しの Issue があれば「流す」、なければ「受け入れる」だけ"""
+    import sendback
+    options = ([{"id": "flow", "label": f"差し戻しを流す（#{sendback.fix_issue(cur, pr_url).rsplit('#', 1)[-1]}）"}]
+               if sendback.fix_issue(cur, pr_url) else [])
+    options.append({"id": "accept", "label": "受け入れて先へ進める"})
+    return {"type": "choose", "options": options, "recommended": options[0]["id"], "extra": [], "note_hint": "一言（任意。受け入れる理由など）",
+            "effect": SENDBACK_EFFECT, "allowed": [who], "target": ("sendback", pr_url)}
 
 
 JUDGMENT_EFFECT = ("答えを判断として記録する。この PR の判断がすべて決まったら停止を閉じてマージの判定に進める。"
@@ -535,6 +543,11 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
     if kind == "desk":
         import desk_line
         return desk_line.answer(cur, ref, option, by, via, note)
+    if kind == "sendback":
+        import sendback
+        if option == "flow":
+            return sendback.request_flow(cur, ref, by)
+        return sendback.accept(cur, ref, by, note)
     if kind == "judgment":
         import judgment
         return judgment.decide(cur, ref, option, by, via, note)

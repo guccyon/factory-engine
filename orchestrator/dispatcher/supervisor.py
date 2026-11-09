@@ -63,6 +63,7 @@ import qa_line
 import quality_learn
 import report
 import report_kpi
+import sendback
 import serialize
 import ship
 import stoppage
@@ -415,6 +416,12 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
         queued, current = knowledge_turns[p["repo"]]
         if p["corr"] in queued and p["corr"] != current:
             continue   # 知見は製品ごとに 1 件ずつ直列に流す。順番が来るまで衝突も解かず委員会にも持ち込まない（同時上限にも数えない）
+        # 差し戻しの Issue を人が直しに回したら（factory:planned）、流さなかった差し戻しの停止を閉じてから衝突・マージを見る。
+        # 停止が開いたままだと衝突を解かず、直しの Issue は元 PR のマージを待つので循環して止まる（11-09 rally #1228・#1251）
+        # 受信トレイで「流す」と答えたものは、ここでラベルを替える（受信トレイの入口は GitHub のトークンを持たない）
+        if not DRY_RUN:
+            sendback.apply_flow(cur, p["url"], gh)
+        sendback.release_if_fixing(cur, p["url"], p["corr"])
         if not pr.get("draft"):
             # 衝突と CI 落ちは、まず同じ担当の続きのジョブで直す（ADR 0016・0017）。直せない・上限に達したときだけ停止（ci:）を開いて人へ
             if pr.get("mergeable_state") == "dirty":
