@@ -77,7 +77,7 @@ committee:
   slot: governance                 # ADR 0024 の追記の専用の枠（GOVERNANCE_PARALLEL）。ラインを止めても動く
   implements: false                # 直さない。Engine の直しは改善 Issue（建設者が直す）
   patrol:
-    daily:  { llm: false, hour_jst: 5, note: "決定論の集計だけ（資源ごとの消費と枠の比・費用の外れ値・Rate Limit・残っている環境）。兆しを events に残す" }
+    daily:  { llm: false, hour_jst: 4, note: "決定論の集計だけ（資源ごとの消費と枠の比・費用の外れ値・Rate Limit・残っている環境）。兆しを events に残す" }
     weekly: { llm: true, weekday: sunday, hour_jst: 12, budget_usd: 10, viewpoints: 8, free_share: 0.3 }
     investigate: { budget_usd: 5 }
     weekly_cap_usd: 25

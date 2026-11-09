@@ -207,6 +207,44 @@ def explore_view(conn, now: datetime | None = None) -> dict | None:
     return {"runs": runs, "skipped": [x for x in skipped if not any(r.get("repo") == x.get("repo") for r in runs)], "nights": nights}
 
 
+def incident_view(conn, now: datetime | None = None) -> dict | None:
+    """工場の事故の見回り（ADR 0046）。直近 30 時間の fincident.patrolled と兆し、開いている台帳。数えられなくてもレポートは出す"""
+    if conn is None:
+        return None
+    since = (now or datetime.now(timezone.utc)) - timedelta(hours=30)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select payload from events where name='fincident.patrolled' and occurred_at >= %s order by id desc limit 1", (since,))
+            r = cur.fetchone()
+            cur.execute("select payload from events where name='fincident.sign' and occurred_at >= %s order by id", (since,))
+            signs = [x[0] for x in cur.fetchall()]
+            cur.execute("select o.payload from events o where o.name='fincident.opened' and not exists "
+                        "(select 1 from events c where c.name='fincident.closed' and c.correlation_id=o.correlation_id) order by o.id")
+            open_cases = [x[0] for x in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] 事故の見回りを数えられない:", repr(e), file=sys.stderr)
+        return None
+    return {"patrolled": r[0] if r else None, "signs": signs, "open": open_cases}
+
+
+def fmt_incident(iv: dict | None) -> list[str]:
+    """工場の事故の見回りの行（お金の損だけ。可用性は見ない）"""
+    if not iv or not iv.get("patrolled"):
+        return ["- 昨日から今日の見回りの記録はない"]
+    p, out = iv["patrolled"], []
+    t = p.get("llm_tokens") or {}
+    ratio = t.get("cost_vs_daily_budget")
+    out.append(f"- トークン: {t.get('day')} の予算の日に ${t.get('spent_usd', 0):,.2f}" + (f"（枠の {round(ratio * 100)}%）" if ratio is not None else "（枠なし）"))
+    for sg in iv.get("signs") or []:
+        mark = "**" if sg.get("severity") in ("critical", "high") else ""
+        out.append(f"  - ⚠️ {mark}[{sg.get('severity')}/{sg.get('resource')}] {sg.get('title')}{mark}")
+    if not (p.get("external_api") or {}).get("measured", True):
+        out.append("- 外部サービスの API: まだ測っていない")
+    for c in iv.get("open") or []:
+        out.append(f"- 台帳で開いている: {c.get('id')} [{c.get('severity')}] {c.get('title')}")
+    return out
+
+
 SKIP_JA = {"over_budget": "予算の枠を使い切っていた", "paused": "ラインが一時停止中だった"}
 
 
@@ -745,7 +783,7 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
+    lines += ["## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 事故の見回り（お金の損）", "", *fmt_incident(snap.get("incident")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
               "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "",
               "## 品質（Defect）", "", *fmt_defects(snap.get("defects")), "",
               "## 工程ごとの ROI（費用・時間・一発で通ったか・混入した Defect）", "", *stage_roi.fmt(snap.get("stage_roi")), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
@@ -775,6 +813,7 @@ def render_daily(snap: dict, prev: dict | None) -> str:
         lines.append(roi)
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
     lines += ["", "**夜間の探索（昨夜）**", *fmt_explore(snap.get("explore"))]
+    lines += ["", "**事故の見回り（お金の損）**", *fmt_incident(snap.get("incident"))]
     lines += fmt_usage(snap.get("usage"))
     if snap.get("workflow"):
         lines += ["", "**ワークフローの宣言（記録だけ）**", *[f"- {x}" if not x.startswith("- ") else x for x in snap["workflow"]]]
@@ -863,7 +902,7 @@ def main() -> int:
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
-            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now),
+            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now), "incident": incident_view(conn, now),
             "defects": defect_view(conn), "stage_roi": stage_roi.view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)

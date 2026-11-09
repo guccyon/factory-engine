@@ -20,6 +20,7 @@
 - 出荷の列車・定期便（ADR 0012、ADR 0043 の O6）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品が今日の定期便にまだ載っておらず、まだ Release に入っていない
   マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼し、
   その日の便（release.train）に載せる。prod へは便ごとの承認を待つ（train.py）
+- 工場の事故の日次の見回り（ADR 0046）: definitions/incident.yaml の時（JST）を過ぎたら 1 日 1 回、費用の記録を決定論で集計して兆しを残し、medium 以上は台帳に開く（factory_incident.py）
 - PR ごとの使い捨て環境（ADR 0043 の O7）: 立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く（ephemeral.py）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
@@ -52,6 +53,7 @@ import continuation
 import design
 import drain
 import ephemeral
+import factory_incident
 import judgment
 import line
 import learn
@@ -1155,6 +1157,20 @@ def ephemeral_step(cur):
         log("ephemeral down", repo, pr, reason, m)
 
 
+def incident_patrol_step(cur):
+    """工場の事故の日次の見回り（ADR 0046）。definitions/incident.yaml の committee.patrol.daily の時を過ぎたら 1 日 1 回、決定論の集計で兆しを残し、
+    medium 以上は台帳に開く（dispatcher/factory_incident.py）。LLM は使わない。日報（DAILY_REPORT_HOUR）より前の時に置く"""
+    if DRY_RUN:
+        return
+    try:
+        got = factory_incident.daily_step(cur)
+    except Exception as e:  # noqa: BLE001  見回りの失敗で周回を止めない
+        log("incident patrol failed", repr(e)[:300])
+        return
+    if got:
+        log("incident patrol", got["day"], "signs", len(got["signs"]), "opened", got["opened"])
+
+
 def nightly_explore_step(cur, now: datetime | None = None):
     """夜に 1 回、製品ごとに QA 役の探索のジョブを積む（ADR 0028 の nightly_explore）。判断は持たず、時刻・予算・一時停止を見るだけ。
     積めなかった理由は 1 晩 1 回だけ supervisor.nightly_explore_skipped に残す（朝の日報が「昨夜は回らなかった」と出す）"""
@@ -1303,6 +1319,7 @@ def tick():
         stage_step(cur, manifests)
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
+        incident_patrol_step(cur)
         daily_report_step(cur)
         notify_report_step(cur)
         changelog_step(cur)
