@@ -33,6 +33,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import knowledge_context  # noqa: E402  知見の選び手（ADR 0040 の決定 7 の 5）
+
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("QA_DEFINITIONS") or HERE.parent / "definitions" / "qa.yaml")
 PNG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}\.png$")
@@ -398,7 +401,8 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
                                                   ensure_ascii=False, indent=1), encoding="utf-8")
         state = str(root / ".agent-state")
         mcp = relay_config(root)
-        text = explore_prompt(defs, charter, stories, env, inp, mobile=bool(mcp))
+        ksel = knowledge(root, repo_dir)
+        text = explore_prompt(defs, charter, stories, env, inp, mobile=bool(mcp)) + knowledge_context.prompt_note(ksel)
         errs: list[str] = []
         doc = None
         for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
@@ -419,7 +423,8 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
         files = screenshots(root / "out")
         for n in files:
             shutil.copy2(root / "out" / n, out_dir / n)
-    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": bool(mcp), "stories": [], "verdicts": []})
+    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": bool(mcp), "stories": [], "verdicts": [],
+                 **knowledge_context.result_fields(ksel)})
     if errs:
         return {"ok": False, "errors": errs, **base}
     known = {s["id"]: s.get("known_gaps") or [] for s in stories}
@@ -595,7 +600,8 @@ def run_synthetic(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
                                                       ensure_ascii=False, indent=1), encoding="utf-8")
             (root / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
             state = str(root / ".agent-state")
-            text = synthetic_prompt(defs, stories, plan, relayed, inp, events)
+            ksel = knowledge(root, repo_dir)
+            text = synthetic_prompt(defs, stories, plan, relayed, inp, events) + knowledge_context.prompt_note(ksel)
             entries = {e.get("port_env") for e in env["entries"]}
             errs: list[str] = []
             doc = None
@@ -614,7 +620,7 @@ def run_synthetic(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
                 text = "out/walk.yaml に次の崩れがあります。直してください。\n" + "\n".join(f"- {e}" for e in errs)
         rows = synthetic_proxy.read_log(log_path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": False})
+    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": False, **knowledge_context.result_fields(ksel)})
     if errs:
         return {"ok": False, "errors": errs, **base}
     planted = {k: v for k, v in friction.items() if k in ("slow", "hide") and v}
@@ -649,7 +655,8 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
                                                   ensure_ascii=False, indent=1), encoding="utf-8")
         state = str(root / ".agent-state")
         mcp = relay_config(root)
-        text = prompt(defs, stories, env, inp, mobile=bool(mcp))
+        ksel = knowledge(root, repo_dir)
+        text = prompt(defs, stories, env, inp, mobile=bool(mcp)) + knowledge_context.prompt_note(ksel)
         errs: list[str] = []
         doc = None
         for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
@@ -671,12 +678,17 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
         for n in files:
             shutil.copy2(root / "out" / n, out_dir / n)
     base = {"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "env": env["env"],
-            "release_id": inp.get("release_id"), "stories": [s["id"] for s in stories], "mobile": bool(mcp)}
+            "release_id": inp.get("release_id"), "stories": [s["id"] for s in stories], "mobile": bool(mcp), **knowledge_context.result_fields(ksel)}
     if errs:
         return {"ok": False, "errors": errs, **base}
     known = {s["id"]: s.get("known_gaps") or [] for s in stories}
     verdicts = [{**v, "known_gaps": known.get(v["story_id"], [])} for v in doc["verdicts"]]
     return {"ok": True, "verdicts": verdicts, "files": files, **base}
+
+
+def knowledge(root: Path, repo_dir: Path) -> dict:
+    """QA の業務（ops.qa）で選んだ知見を knowledge/knowledge.md に置く（ADR 0040 の決定 7 の 5）。product/ の知見のディレクトリは丸ごと読ませない"""
+    return knowledge_context.stage(repo_dir, root / "knowledge", "qa")
 
 
 def _load(p: Path):

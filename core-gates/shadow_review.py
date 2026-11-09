@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+import knowledge_context   # 製品の知見（ADR 0040 の決定 7 の 5。inspect.sh が選んで KNOWLEDGE_FILE に置く）
 import pr_diff        # PR の差分（300 ファイルを超える PR はファイルごとの差分から組み立てる）
 
 HERE = Path(__file__).resolve().parent
@@ -134,6 +135,7 @@ def review(pr_url: str, tier: str = "tier-judge", max_diff_chars: int = 60000) -
 # 差分
 {diff}
 """
+    prompt += knowledge_context.file_section("この製品で過去に繰り返した欠陥や決まりです。欠陥を挙げるときの観点として踏まえてください（ルーブリックの外の指摘はしない）。")
     r = agent_runner.run("inspect", prompt, schema=SCHEMA, tier=tier)
     for d in (r.output or {}).get("defects", []):
         if d.get("rubric_id") in shadow_ids:

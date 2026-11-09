@@ -94,3 +94,25 @@ def test_every_step_and_entry_is_mapped():
     src = (ENGINE / "orchestrator" / "dispatcher" / "continuation.py").read_text(encoding="utf-8")
     reasons = re.search(r"^REASONS = \(([^)]*)\)", src, re.M).group(1)
     assert set(WORK["from_continue_reasons"]) == set(re.findall(r'"([a-z_]+)"', reasons))
+
+
+def test_every_knowledge_entry_uses_a_mapped_role():
+    """知見を選ぶ入口（knowledge_context.stage の役・CLI の --role）が from_agent_steps の業務を持つ役であること（ADR 0040 の決定 7）。
+    役の名前を書き違えると業務が空になり、知見が 1 件も届かない"""
+    roles = set()
+    for p in (ENGINE / "core-gates").glob("*.py"):
+        roles |= set(re.findall(r'knowledge_context\.stage\([^,]+,\s*[^,]+,\s*"([^"]+)"', p.read_text(encoding="utf-8")))
+    for p in (ENGINE / "orchestrator" / "worker").glob("*.sh"):
+        roles |= set(re.findall(r"knowledge_context\.py [^\n]*--role ([a-z_.]+)", p.read_text(encoding="utf-8")))
+    assert {"implement", "body_fix", "plan", "desk.consult", "desk.answer", "ui_design", "design_system", "ui_design_review",
+            "inspect", "judge", "qa"} <= roles
+    for role in roles:
+        assert WORK["from_agent_steps"].get(role), role
+
+
+def test_dispatcher_work_lists_match_work_yaml():
+    """dispatcher が依頼者の好みを選ぶときの業務は、work.yaml の役の業務と同じ"""
+    for name, role in (("desk_line.py", "desk.consult"), ("desk_answer.py", "desk.answer")):
+        src = (ENGINE / "orchestrator" / "dispatcher" / name).read_text(encoding="utf-8")
+        listed = re.search(r'^[A-Z_]+_WORK = \[([^\]]*)\]', src, re.M).group(1)
+        assert re.findall(r'"([a-z_.]+)"', listed) == WORK["from_agent_steps"][role], name

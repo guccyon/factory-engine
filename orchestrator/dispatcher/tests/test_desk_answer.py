@@ -67,6 +67,19 @@ def test_inquiry_goes_to_answer_not_consult(cur):
     assert j["correlation_id"] == desk.corr(c["id"])
 
 
+def test_input_carries_requester_preferences(cur):
+    """ADR 0040 の決定 6: 回答役にも依頼者の好みを渡す。業務が窓口（desk.converse）に当たるものだけ。渡したのは id だけを残す"""
+    cur.execute("truncate requester_preferences restart identity")
+    cur.execute("insert into requester_preferences(product, requester, statement, work, confidence, created_by) values "
+                "(%s,'cs-1','数字は表で',%s,'confirmed','requester'), (%s,'cs-1','報告は税抜き',%s,'confirmed','requester'), "
+                "(%s,'cs-1','朝にまとめて',%s,'hypothesis','factory'), (%s,'cs-2','ほかの人の好み',%s,'confirmed','requester')",
+                (REPO, ["desk"], REPO, ["analyze.report"], REPO, [], REPO, []))
+    desk.open_conversation(cur, requester(cur), "inquiry", REPO, "今週どこまで進んだ？")
+    [jid] = desk_answer.enqueue(cur, "tier-small", [REPO])
+    inp = job_input(cur, jid)
+    assert [(p["id"], p["statement"]) for p in inp["requester_preferences"]] == [("P-0001", "数字は表で")]
+
+
 def test_request_is_not_answered(cur):
     desk.open_conversation(cur, requester(cur), "request", REPO, "予約まわりの通知を先に進めて")
     assert desk_answer.enqueue(cur, "tier-small", [REPO]) == []

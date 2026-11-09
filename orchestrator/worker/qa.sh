@@ -33,5 +33,5 @@ fi
 for f in $(jq -r '.files[]' /work/qa.json); do
   echo "FACTORY_FILE:${f}:$(base64 -w0 "/work/qa/${f}")"
 done
-echo "FACTORY_RESULT:$(jq -c --arg sha "${SHA}" '{kind:"qa", ok:true, sha:$sha, mode:(.mode // "verdict"), env:.env, release_id:.release_id, stories:(.stories // []), verdicts:(.verdicts // []), charter:.charter, night:.night, explore:.explore, synthetic:.synthetic, mobile:.mobile, files:.files, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, num_turns:.num_turns}' /work/qa.json)"
+echo "FACTORY_RESULT:$(jq -c --arg sha "${SHA}" '{kind:"qa", ok:true, sha:$sha, mode:(.mode // "verdict"), env:.env, release_id:.release_id, stories:(.stories // []), verdicts:(.verdicts // []), charter:.charter, night:.night, explore:.explore, synthetic:.synthetic, mobile:.mobile, files:.files, knowledge_ids:(.knowledge_ids // []), knowledge_selection:(.knowledge_selection // {}), cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, num_turns:.num_turns}' /work/qa.json)"
 exit 0

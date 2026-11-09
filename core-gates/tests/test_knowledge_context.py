@@ -160,3 +160,71 @@ def test_stage_without_knowledge_writes_nothing(tmp_path):
     assert kx.stage(tmp_path, dest, "plan") == {"ids": [], "work": [], "values": {}, "fit": {}}
     assert kx.stage(None, dest, "desk.consult")["ids"] == []
     assert not dest.exists()
+
+
+# ------------------------------------------------------------------ ADR 0040 の決定 7 の 5: デザイン・検査と裁き・QA・窓口
+def wk(kid, work, **over):
+    return k(kid, scope="{work: [" + ", ".join(work) + "]}", **over)
+
+
+def test_work_for_step_reads_by_path():
+    assert kx.work_for_step("ui_design") == ["dev.design.screen"]
+    assert kx.work_for_step("ui_design", "quick") == ["dev.design.proposal"]
+    assert kx.work_for_step("ui_design", "ticket") == ["dev.design.screen"]
+    assert kx.work_for_step("merge") is None and kx.work_for_step("no_such_step") is None
+
+
+def test_stage_picks_by_role_work_and_writes_note(tmp_path):
+    r = repo(tmp_path / "p", {
+        "K-0001": wk("K-0001", ["dev.design"]),             # デザイン全般は画面にも案にも効く
+        "K-0002": wk("K-0002", ["dev.design.proposal"]),    # 単発の案だけ
+        "K-0003": wk("K-0003", ["dev.review.inspect"]),
+        "K-0004": wk("K-0004", ["ops.qa"]),
+        "K-0005": wk("K-0005", ["desk.converse"]),
+        "K-0006": wk("K-0006", ["dev.design.screen"], confidence="hypothesis"),
+    })
+    got = {}
+    for role, work in (("ui_design", None), ("ui_design", ["dev.design.proposal"]), ("ui_design_review", None), ("qa", None),
+                       ("desk.answer", None), ("design_system", None)):
+        sel = kx.stage(r, tmp_path / f"out-{role}-{bool(work)}", role, {"request_form": ["ticket"]}, today=TODAY, work=work)
+        got[(role, bool(work))] = sel["ids"]
+    assert got[("ui_design", False)] == ["K-0001"]
+    assert sorted(got[("ui_design", True)]) == ["K-0001", "K-0002"]
+    assert got[("ui_design_review", False)] == []        # dev.review.design はデザインの下ではない
+    assert got[("qa", False)] == ["K-0004"]
+    assert got[("desk.answer", False)] == ["K-0005"]
+    assert got[("design_system", False)] == ["K-0001"]
+    sel = kx.stage(r, tmp_path / "o", "qa", today=TODAY)
+    assert (tmp_path / "o" / "knowledge.md").is_file()
+    note = kx.prompt_note(sel)
+    assert "knowledge/knowledge.md" in note and "ops.qa" in note and ".factory-config/knowledge/ は直接読まない" in note
+    assert kx.result_fields(sel) == {"knowledge_ids": ["K-0004"], "knowledge_selection": {"work": ["ops.qa"], "values": sel["values"], "fit": sel["fit"]}}
+
+
+def test_nothing_staged_means_no_note(tmp_path):
+    assert kx.prompt_note({"ids": []}) == ""
+    assert kx.result_fields({}) == {"knowledge_ids": [], "knowledge_selection": {"work": [], "values": {}, "fit": {}}}
+    assert kx.stage(tmp_path, tmp_path / "o", "qa")["ids"] == []   # 知見のディレクトリがない製品
+
+
+def test_file_section_reads_knowledge_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("KNOWLEDGE_FILE", raising=False)
+    assert kx.file_section("使い方") == ""
+    f = tmp_path / "knowledge.md"
+    f.write_text("## K-0003（確認済み）\n\n主張\n", encoding="utf-8")
+    monkeypatch.setenv("KNOWLEDGE_FILE", str(f))
+    s = kx.file_section("観点として踏まえる")
+    assert "# この製品の知見（データ）" in s and "観点として踏まえる" in s and "K-0003" in s
+
+
+def test_cli_files_axis_for_inspect(tmp_path, capsys):
+    """inspect.sh・judge.sh は PR のファイルを --files で渡す。ファイルの合う知見が上に来る"""
+    r = repo(tmp_path, {
+        "K-0001": k("K-0001", scope="{work: [dev.review], files: [\"apps/backend/**\"]}"),
+        "K-0002": k("K-0002", scope="{work: [dev.review.inspect], files: [\"apps/admin-web/**\"]}"),
+    })
+    kx.main(["--repo", str(r), "--role", "inspect", "--set", "request_form=ticket", "--files", "apps/backend/src/a.rs",
+             "--out", str(tmp_path / "k.md"), "--today", TODAY.isoformat()])
+    out = json.loads(capsys.readouterr().out)
+    assert out["work"] == ["dev.review.inspect"] and out["ids"][0] == "K-0001"
+    assert out["fit"]["K-0001"]["parts"]["files"] == 1 and out["fit"]["K-0002"]["parts"]["files"] == -1

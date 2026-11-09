@@ -20,11 +20,13 @@ import psycopg
 import desk
 import line
 import ops
+import requester_prefs
 from desk_line import MAX_USD, _add_cost, _event, messages, question_text
 
 KIND = "desk_answer"
 MAX_ROUNDS = 1           # 問い返しは 1 回まで（ADR 0043 案の O1）。使い切ったら、分かる範囲で答えて分からないことを書く
 STANCES = {"planner": "計画", "factory_head": "工場長"}
+ANSWER_WORK = ["desk.converse"]   # 回答役の業務（definitions/work.yaml の from_agent_steps の desk.answer）
 REF_IN_TEXT = re.compile(r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<n>\d{1,6})\b")
 MAX_REFERENCED = 10
 MAX_REPORT_CHARS = int(os.environ.get("DESK_ANSWER_REPORT_CHARS", "20000"))
@@ -138,7 +140,9 @@ def answer_input(cur, c: dict) -> dict:
     return {"conversation_id": c["id"], "product": c["product"], "requester": c.get("opened_by"),
             "messages": [{k: m.get(k) for k in ("author", "role", "kind", "body", "at", "options")} for m in msgs if m.get("kind") != "ack"],
             "questions_asked": asked, "max_rounds": MAX_ROUNDS, "force_answer": asked >= MAX_ROUNDS,
-            "stances": STANCES, "records": records(cur, c["product"], referenced(msgs, c["product"]))}
+            "stances": STANCES, "records": records(cur, c["product"], referenced(msgs, c["product"])),
+            # 依頼者の好み（ADR 0040 の決定 6）。答え方の好み（「数字は表で」など）が効く
+            "requester_preferences": requester_prefs.for_job(cur, c["product"], c.get("opened_by"), ANSWER_WORK)}
 
 
 def enqueue(cur, model_tier: str, repos: list[str]) -> list[int]:

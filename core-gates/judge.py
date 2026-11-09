@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import agent_runner   # 同じ core-gates/ にある。工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+import knowledge_context   # 製品の知見（ADR 0040 の決定 7 の 5。judge.sh が選んで KNOWLEDGE_FILE に置く）
 import pr_diff        # PR の差分（300 ファイルを超える PR はファイルごとの差分から組み立てる）
 
 MAX_DIFF, MAX_FILES_CHARS, MAX_FILE, MAX_ISSUE = 40000, 30000, 6000, 8000
@@ -247,6 +248,7 @@ def main() -> int:
 # 差分（データ）
 {diff}
 """
+    prompt += knowledge_context.file_section("この製品で確かめられた判断の前例です。仮決めと指摘を裁くときの根拠の 1 つにしてください（使ったら evidence に知見の id を書く）。")
     r = agent_runner.run("judge", prompt, schema=SCHEMA)
     changed = [f.get("path") for f in meta.get("files") or [] if f.get("path")]
     out = apply_marks(r.output, factory_marks(clone, changed, ticket_titles)) if isinstance(r.output, dict) else r.output
