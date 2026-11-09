@@ -151,11 +151,28 @@ def _stoppages(cur, now) -> list[dict]:
                "effect": "ラインの一時停止を解き、順番待ちの取り出しを再開する", "allowed": [who], "target": ("resume_line", None)} if prefix == "drain" else None
         # 題と「すること」は停止のアラートと同じ読む文（alerts.py。記録の文は工場の内側の言葉で、事業主には読めない。11-08）
         al = alerts.describe(cur, s)
-        out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
+        fixing = _sendback_fixing(cur, url) if prefix == "sendback" and url else None
+        out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "fixing": fixing, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
                     "action": al["todo"] or "判断して止まりを解く", "detail": al["detail"], "url": url, "since": s["started_at"],
                     "ref": (s["correlation_id"] or ":").split(":", 1)[1], "announced": True,   # 開いたときに停止の通知で一度知らせている
                     "answer": ans, "also": []})
     return out
+
+
+def _sendback_fixing(cur, pr_url: str) -> dict | None:
+    """差し戻しを直しに回した（直しの Issue に factory:planned を付けて投入待ち・実装中にした）なら、その答えの形。
+    受信トレイでは「回答済（反映待ち）」に移す。停止は直しが入ってから閉じるので、それまで「未回答」に残っていた（2026-11-09 rally #1228・#1251）"""
+    cur.execute("select payload->>'fix_corr' as c from events where name='sendback.filed' and payload->>'origin_pr'=%s order by id desc limit 1", (pr_url,))
+    r = cur.fetchone()
+    ref = ((r or {}).get("c") or "").removeprefix("github:")
+    if not ref:
+        return None
+    cur.execute("select state, updated_at from tickets where source='github' and source_ref=%s and state in ('planned','active') limit 1", (ref,))
+    t = cur.fetchone()
+    if not t:
+        return None
+    n = ref.rsplit("#", 1)[-1]
+    return {"by": "Issue のラベル", "via": "github", "label": f"直しに回した（#{n}）", "at": t["updated_at"]}
 
 
 JUDGMENT_EFFECT = ("答えを判断として記録する。この PR の判断がすべて決まったら停止を閉じてマージの判定に進める。"
@@ -356,6 +373,9 @@ def _mark_answered(cur, xs: list[dict]) -> None:
         if i["kind"] == "release":   # 本番への出荷は shipper の結果を待っている間だけ答え済み。失敗したらまた開く
             p = i.pop("processing", None)
             a = (a or {"by": p.get("by"), "via": p.get("via"), "label": "本番に出す"}) if p else None
+        fixing = i.pop("fixing", None)
+        if not a and fixing:   # 差し戻しを直しに回した件は、直しが入って停止が閉じるまで回答済（反映待ち）に置く
+            a = fixing
         i["answered"] = {k: (_iso(v) if k == "at" else v) for k, v in a.items() if k in ("by", "via", "option", "label", "at")} if a else None
 
 
@@ -429,7 +449,7 @@ def last_answer(cur, key: str) -> dict | None:
 def answered_text(a: dict) -> str:
     """「誰が・どの入口で・何と」答えたか（ほかの入口に返す文と同じ言葉）"""
     via = VIA_JA.get(a.get("via"), a.get("via") or "")
-    return f"{a.get('by') or '?'} が{via}で『{a.get('label') or a.get('option') or '?'}』と回答済み"
+    return f"{a.get('by') or '?'} が{via}で『{a.get('label') or a.get('option') or '?'}』と回答済"
 
 
 VIA_JA = {"console": "操業コンソール", "review_page": "レビューページ", "factoryctl": " factoryctl ", "mcp": " Claude（窓口）", "github": " GitHub ", "slack": " Slack "}

@@ -159,7 +159,7 @@ function runnersView(rs){if(!rs.length)return"";
 const WHO_ORDER=["owner","po","design_chief","builder","requester"];
 // 受信トレイの 1 件の答え方（ADR 0034 の決定 2）。押したら何が起きるか（effect）を必ず出す。取り返しのつかない作用は 2 度押し
 function answerView(i,n){const a=i.answer;
- if(i.answered){const w=i.answered;return `<div class="ans done">答え済み: ${esc(w.by||"?")}（${esc({console:"操業コンソール",review_page:"レビューページ",factoryctl:"factoryctl",mcp:"Claude",github:"GitHub",slack:"Slack"}[w.via]||w.via||"")}）が『${esc(w.label||w.option||"")}』と回答。反映を待っている</div>`}
+ if(i.answered){const w=i.answered;return `<div class="ans done">回答済: ${esc(w.by||"?")}（${esc({console:"操業コンソール",review_page:"レビューページ",factoryctl:"factoryctl",mcp:"Claude",github:"GitHub",slack:"Slack"}[w.via]||w.via||"")}）が『${esc(w.label||w.option||"")}』と回答。反映を待っている</div>`}
  if(!a)return "";
  const agg=i.key==="choice:exit_capture";   // まとめた実装後の画面: 印は画面ごとに下の欄で付ける
  const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.note_hint?esc(a.note_hint):a.extra.some(e=>e.id==="return")?"一言（理由・違和感。戻す・違和感では必須）":"一言（任意。違和感では必須）"}" maxlength="300">`:"";
@@ -348,7 +348,7 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 // ---- 受信トレイ（2 ペイン。選ぶまでは一覧が全面、選ぶと右に詳細）
 function ibItems(ib){return ib.items.filter(i=>(ibTab==="open"?!i.answered:!!i.answered)&&(!ibKind||i.kind===ibKind)&&(!ibWho||i.who===ibWho))}
 function ibFilters(ib){const n=ib.items.filter(i=>!i.answered).length,a=ib.items.length-n,opt=(m,v)=>Object.entries(m).map(([k,t])=>`<option value="${esc(k)}" ${k===v?"selected":""}>${esc(t)}</option>`).join("");
- return `<div class="tabs"><button data-ibtab="open" class="${ibTab==="open"?"on":""}">未回答 ${n}</button><button data-ibtab="answered" class="${ibTab==="answered"?"on":""}">答え済み（反映待ち） ${a}</button></div>
+ return `<div class="tabs"><button data-ibtab="open" class="${ibTab==="open"?"on":""}">未回答 ${n}</button><button data-ibtab="answered" class="${ibTab==="answered"?"on":""}">回答済（反映待ち） ${a}</button></div>
   <label class="m">種類 <select id="ib-kind"><option value="">すべて</option>${opt(ib.kinds,ibKind)}</select></label><label class="m">宛先 <select id="ib-who"><option value="">すべて</option>${opt(ib.who,ibWho)}</select></label>`}
 function ibList(ib,key){const xs=ibItems(ib);
  if(!xs.length)return `<div class="m empty">${ibTab==="open"?"対応が必要なものはありません":"反映待ちの答えはありません"}</div>`;

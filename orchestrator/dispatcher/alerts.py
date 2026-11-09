@@ -111,7 +111,7 @@ def _judge(cur, s: dict, a: dict, url: str) -> None:
         a["todo"] = f"受信トレイで問いに答える（{len(es)} 件）。答えると工場が続きを進める"
         a["links"] = [{"label": "受信トレイで答える", "href": f"/inbox/judgment:{es[0]['id']}", "nav": True}, {"label": _pr(url) + " を開く", "href": url}]
     else:
-        a["todo"] = "問いには答え済み。工場が判定の続きを進めるのを待っている（しばらく消えなければ建設者に回す）"
+        a["todo"] = "問いは回答済。工場が判定の続きを進めるのを待っている（しばらく消えなければ建設者に回す）"
         a["links"] = [{"label": _pr(url) + " を開く", "href": url}]
 
 
