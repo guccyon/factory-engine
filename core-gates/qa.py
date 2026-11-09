@@ -14,6 +14,9 @@
   core-gates/qa.py --check-explore out/explore.yaml --charter detour --repo-dir /work/product   # 夜間の探索の形
 
 入力の mode が explore なら夜間の探索（P5a の nightly_explore）: その夜のチャーターに沿って寄り道し、out/explore.yaml（試したこと・見つけたもの・印）を返す
+入力の mode が synthetic なら合成の利用者（ADR 0043 の O4）: 入口ごとの中継（synthetic_proxy.py）越しにストーリーを歩き、out/walk.yaml（行動ログ）を返す。
+応答時間は中継が測り、わざと仕込む詰まり（入力の friction）も中継が入れる
+  core-gates/qa.py --check-synthetic out/walk.yaml --repo-dir /work/product --env-file env.json --plan plan.json
 
 依存: python3、PyYAML、chromium（CHROMIUM_BIN）、playwright-core（NODE_PATH）、agent_runner（工程 qa）
 """
@@ -367,6 +370,7 @@ QA の定義は「プロダクトの利用者（エンドユーザー、カス�
 ログインの手がかり（モックのトークン。画面のログインに使う）:
 {json.dumps(accounts, ensure_ascii=False, indent=1)}
 
+{focus_text(inp)}
 ## 地図（ストーリーの要点。{len(smap)} 本）
 {yaml.safe_dump(smap, allow_unicode=True, sort_keys=False)}
 ## 出力の形（out/explore.yaml）
@@ -423,11 +427,211 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
     return {"ok": True, "files": files, "explore": {**doc, "charter": charter["id"], "findings": findings, "flags": doc.get("flags") or []}, **base}
 
 
+# ------------------------------------------------------------------ 品質の Learn の重点と回帰のシナリオ（ADR 0043 の O9）
+def focus_text(inp: dict) -> str:
+    """dispatcher が入力に足した重点（厚く流すストーリー・観点）と回帰のシナリオを、プロンプトの節にする。なければ空"""
+    f = inp.get("focus") or {}
+    sc = inp.get("scenarios") or []
+    if not f.get("stories") and not f.get("viewpoints") and not sc:
+        return ""
+    lines = ["## 品質の Learn の重点（工場が Defect の記録から週 1 回決めた）"]
+    if f.get("stories"):
+        lines.append(f"- 厚く見るストーリー: {', '.join(f['stories'])}")
+    if f.get("viewpoints"):
+        lines.append(f"- 厚く見る観点: {', '.join(f['viewpoints'])}")
+    if sc:
+        lines.append("- 回帰のシナリオ（前に見つかった Defect の再現の手順。直っているかも試し、試したことに書く）:")
+        for x in sc[:5]:
+            rep = " → ".join(str(r) for r in (x.get("reproduce") or [])[:8])
+            lines.append(f"  - {x.get('id')}: {x.get('title')}（{rep}）。期待: {x.get('expected') or '-'}")
+    return "\n".join(lines) + "\n"
+
+
+# ------------------------------------------------------------------ 合成の利用者（ADR 0043 の O4 synthetic_users_loop）
+def event_names(repo_dir: Path) -> set[str]:
+    """製品の行動イベントの名前（specs/analytics/events.yaml）"""
+    p = repo_dir / "specs" / "analytics" / "events.yaml"
+    try:
+        doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return set()
+    return {e.get("name") for e in doc.get("events") or [] if isinstance(e, dict) and e.get("name")}
+
+
+def walk_plan(stories: list[dict], inp: dict, sd: dict) -> list[dict]:
+    """歩く予定。重点のストーリーは walks_focus 回、ほかは walks_other 回"""
+    focus = set((inp.get("focus") or {}).get("stories") or [])
+    return [{"story_id": s["id"], "rounds": int(sd["walks_focus"] if s["id"] in focus else sd["walks_other"])} for s in stories]
+
+
+def validate_synthetic(doc, sd: dict, plan: list[dict], events: set[str], entries: set[str]) -> list[str]:
+    if not isinstance(doc, dict):
+        return ["walk.yaml の最上位は対応表（walks・interpretation・confidence）"]
+    errs = []
+    for k in sd["result"]["required"]:
+        if doc.get(k) in (None, "", []):
+            errs.append(f"{k} がない")
+    c = doc.get("confidence")
+    if not isinstance(c, (int, float)) or isinstance(c, bool) or not 0 <= c <= 1:
+        errs.append("confidence は 0〜1 の数")
+    want = {p["story_id"]: p["rounds"] for p in plan}
+    got: dict[str, int] = {}
+    for i, w in enumerate(doc.get("walks") or []):
+        at = f"walks[{i}]"
+        if not isinstance(w, dict):
+            errs.append(f"{at} が対応表でない")
+            continue
+        sid = w.get("story_id")
+        if sid not in want:
+            errs.append(f"{at}.story_id {sid!r} は歩く予定のストーリーにない")
+            continue
+        got[sid] = got.get(sid, 0) + 1
+        if entries and w.get("entry") not in entries:
+            errs.append(f"{at}.entry は env.json の入口の port_env（{'・'.join(sorted(entries))}）のどれか")
+        for k in ("found_entry", "reached_exit"):
+            if not isinstance(w.get(k), bool):
+                errs.append(f"{at}.{k} は真偽")
+        a = w.get("attempts_to_entry")
+        if not isinstance(a, int) or isinstance(a, bool) or a < 0:
+            errs.append(f"{at}.attempts_to_entry は 0 以上の整数")
+        steps = w.get("steps")
+        if not isinstance(steps, list) or not steps:
+            errs.append(f"{at}.steps は 1 歩以上")
+            continue
+        for j, st in enumerate(steps):
+            if not isinstance(st, dict) or not st.get("did"):
+                errs.append(f"{at}.steps[{j}] に did が要る")
+                continue
+            if st.get("waited") not in ("none", "short", "long"):
+                errs.append(f"{at}.steps[{j}].waited は none・short・long のどれか")
+            if not isinstance(st.get("stuck"), bool):
+                errs.append(f"{at}.steps[{j}].stuck は真偽")
+            ev = st.get("event")
+            if ev not in (None, "") and events and ev not in events:
+                errs.append(f"{at}.steps[{j}].event {ev!r} は specs/analytics/events.yaml にない（なければ null）")
+    short = [f"{sid}（{got.get(sid, 0)}/{n}）" for sid, n in want.items() if got.get(sid, 0) < n]
+    if short:
+        errs.append(f"歩いた回数が足りないストーリー: {', '.join(short)}")
+    return errs
+
+
+def synthetic_prompt(defs: dict, stories: list[dict], plan: list[dict], env: dict, inp: dict, events: set[str]) -> str:
+    sd = defs["synthetic"]
+    accounts = ((inp.get("touchable") or {}).get("accounts") or [])
+    s0 = stories[0]["id"] if stories else "<id>"
+    ex = {"confidence": 0.7, "interpretation": "どのストーリーを何回歩き、どこで待たされ・迷ったか",
+          "walks": [{"story_id": s0, "round": 1, "actor": "cs", "entry": (env.get("entries") or [{}])[0].get("port_env"),
+                     "found_entry": True, "attempts_to_entry": 1, "reached_exit": True,
+                     "steps": [{"n": 1, "did": "本部の画面のトップから予約の一覧を開いた", "event": None, "waited": "long", "stuck": False,
+                                "note": "一覧が出るまで数秒かかった"}],
+                     "felt": "利用者として感じたこと 1〜2 行"}]}
+    return f"""あなたはソフトウェア工場の「合成の利用者」です。実際の利用者がまだいない製品で、利用者の代わりにユーザーストーリーに沿って画面を歩き、
+利用者がどこで待たされ、どこで迷うかの記録（行動ログ）を残します。判定（pass / hold）や不具合探しはしません。ふつうの利用者として、
+案内（画面の文言・リンク・ボタン）だけを頼りに目的にたどり着こうとしてください。URL を直接打つ・API を直接呼ぶ・製品のコードを読んで入口を探すのはしない
+（それをすると利用者の迷いが記録に残らない）。
+
+## 作業の場所
+- 作業ディレクトリ（いまの場所）。製品のチェックアウトは product/（ストーリーと用語を読むだけ。書き換えない）
+- 環境の入口と、ログインの手がかりは env.json。ここに書いた URL 以外には繋がない（入口はこのジョブの中継で、応答時間を工場が測っている）
+- 成果物は out/walk.yaml（下の形）。スクリーンショットは要らない
+
+## 道具
+- 画面はヘッドレスの Chromium を playwright-core で動かす。node で `const {{ chromium }} = require('playwright-core'); const b = await chromium.launch({{ executablePath: process.env.CHROMIUM_BIN, args: ['--no-sandbox'] }});`
+  （NODE_PATH は設定済み）。スマートフォンの利用者（生徒アプリ）は幅 390・高さ 844 で開く
+- データは画面で作ってよい（合成シードの環境なので消えても困らない）。ほかの利用者のログインの手がかりを使えなくする操作（退会・停止）はしない
+- サーバーの再起動と時計の進めはできない（時間をまたぐ歩は飛ばして note に書く）
+
+## 歩き方
+- 下の予定のとおり、ストーリーごとに決まった回数だけ歩く（2 回目は 1 回目の記憶に頼らず、もう一度画面の案内から探す）
+- 入口（ストーリーの entry と最初の歩の where）を、ログイン直後の画面から案内だけで探す。見つけるまでに開いた画面・押したものの数を attempts_to_entry に。
+  見つけられなければ found_entry: false にして、その回はそこまで
+- 1 歩ごとに、待たされたか（none: すぐ・short: 1 秒くらい・long: 2 秒より長い）、詰まったか（stuck）、このとき起きたはずの行動イベント（event）を書く。
+  event は product/specs/analytics/events.yaml の name から選ぶ（当てはまらなければ null）
+- exit まで行けたら reached_exit: true
+
+## env.json の要点
+{json.dumps(env, ensure_ascii=False, indent=1)}
+ログインの手がかり（モックのトークン。画面のログインに使う）:
+{json.dumps(accounts, ensure_ascii=False, indent=1)}
+
+{focus_text(inp)}
+## 歩く予定（{sum(p['rounds'] for p in plan)} 回）
+{yaml.safe_dump(plan, allow_unicode=True, sort_keys=False)}
+## ストーリー
+{yaml.safe_dump(stories, allow_unicode=True, sort_keys=False)}
+## 行動イベントの名前
+{', '.join(sorted(events)) or '（製品に specs/analytics/events.yaml がない。event は null）'}
+
+## 出力の形（out/walk.yaml）
+{yaml.safe_dump(ex, allow_unicode=True, sort_keys=False)}
+書いたら `python3 {HERE / 'qa.py'} --check-synthetic out/walk.yaml --repo-dir product --env-file env.json --plan plan.json` で形を確かめ、ok になるまで直してください。
+最後に、何回歩いてどこで待たされ・迷ったかを 3 行で答えて終わってください。
+"""
+
+
+def run_synthetic(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
+    import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+    import synthetic_proxy
+    sd = defs["synthetic"]
+    stories = load_stories(repo_dir)[: sd["stories_max"]]
+    env = env_entries(repo_dir, inp.get("env") or "staging", inp.get("env_host") or defs["worker"]["env_host"])
+    env["release_id"] = inp.get("release_id")
+    friction = inp.get("friction") or {}
+    base = {"mode": "synthetic", "env": env["env"], "release_id": inp.get("release_id"), "stories": [], "verdicts": []}
+    if not stories:
+        return {"ok": False, "errors": ["歩くストーリーがない（specs/stories/ の active なもの）"], **base}
+    if not env["entries"]:
+        return {"ok": False, "errors": [f"環境 {env['env']} の画面の入口が ship.yaml にない"], **base}
+    plan = walk_plan(stories, inp, sd)
+    events = event_names(repo_dir)
+    cost, usage, turns, model = 0.0, {}, 0, None
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "out").mkdir()
+        (root / "product").symlink_to(repo_dir.resolve(), target_is_directory=True)
+        log_path = root / "relay.jsonl"
+        with synthetic_proxy.Relays(env, friction, log_path) as relayed:
+            (root / "env.json").write_text(json.dumps({**relayed, "accounts": (inp.get("touchable") or {}).get("accounts") or []},
+                                                      ensure_ascii=False, indent=1), encoding="utf-8")
+            (root / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+            state = str(root / ".agent-state")
+            text = synthetic_prompt(defs, stories, plan, relayed, inp, events)
+            entries = {e.get("port_env") for e in env["entries"]}
+            errs: list[str] = []
+            doc = None
+            for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
+                res = agent_runner.run_agentic("qa", text, max_turns=sd["max_turns"], cwd=str(root), state_dir=state)
+                cost += res.cost_usd or 0
+                turns += res.num_turns or 0
+                model = res.model
+                for k, v in (res.usage or {}).items():
+                    if isinstance(v, (int, float)):
+                        usage[k] = usage.get(k, 0) + v
+                doc = _load(root / "out" / "walk.yaml")
+                errs = validate_synthetic(doc, sd, plan, events, entries) if not isinstance(doc, str) else [doc]
+                if not errs:
+                    break
+                text = "out/walk.yaml に次の崩れがあります。直してください。\n" + "\n".join(f"- {e}" for e in errs)
+        rows = synthetic_proxy.read_log(log_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": False})
+    if errs:
+        return {"ok": False, "errors": errs, **base}
+    planted = {k: v for k, v in friction.items() if k in ("slow", "hide") and v}
+    return {"ok": True, "files": [], **base,
+            "synthetic": {"walks": doc.get("walks") or [], "interpretation": doc.get("interpretation"), "confidence": doc.get("confidence"),
+                          "plan": plan, "timings": synthetic_proxy.timings(rows), "requests": len(rows),
+                          "hidden_served": sum(1 for r in rows if r.get("hidden")), "planted": planted,
+                          "entries": [{"port_env": e.get("port_env"), "label": e.get("label")} for e in env["entries"]]}}
+
+
 # ------------------------------------------------------------------ 本体
 def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
     defs = with_product_severities(defs, repo_dir)   # 製品の S1 の条件と S2〜S4 の基準（ADR 0043 の O5）
     if inp.get("mode") == "explore":   # 夜間の探索（nightly_explore）
         return run_explore(repo_dir, inp, out_dir, defs)
+    if inp.get("mode") == "synthetic":   # 合成の利用者（ADR 0043 の O4）
+        return run_synthetic(repo_dir, inp, out_dir, defs)
     import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
     stories = load_stories(repo_dir, inp.get("stories") or None)[: defs["worker"]["stories_max"]]
     if not stories:
@@ -481,13 +685,16 @@ def _load(p: Path):
     try:
         return yaml.safe_load(p.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
-        return f"verdicts.yaml を YAML として読めない: {str(e)[:200]}"
+        return f"{p.name} を YAML として読めない: {str(e)[:200]}"
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check")
     ap.add_argument("--check-explore")
+    ap.add_argument("--check-synthetic")
+    ap.add_argument("--env-file")
+    ap.add_argument("--plan")
     ap.add_argument("--charter")
     ap.add_argument("--repo-dir", required=True)
     ap.add_argument("--input")
@@ -496,6 +703,15 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     defs = load_defs()
     repo_dir = Path(a.repo_dir)
+    if a.check_synthetic:
+        p = Path(a.check_synthetic)
+        doc = _load(p)
+        plan = json.loads(Path(a.plan).read_text(encoding="utf-8")) if a.plan else []
+        envd = json.loads(Path(a.env_file).read_text(encoding="utf-8")) if a.env_file else {}
+        entries = {e.get("port_env") for e in envd.get("entries") or []}
+        errs = [doc] if isinstance(doc, str) else validate_synthetic(doc, defs["synthetic"], plan, event_names(repo_dir), entries)
+        print("\n".join(errs) if errs else "ok")
+        return 1 if errs else 0
     if a.check_explore:
         p = Path(a.check_explore)
         doc = _load(p)

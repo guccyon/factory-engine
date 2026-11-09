@@ -102,3 +102,39 @@ explore:
     tried: "試したこと 1 件以上。{actor, where, did, saw, story_id（近いストーリーがあれば）}"
     findings: "見つけたもの（なければ []）。{title, viewpoint, severity, where, reproduce, expected, actual, story_id, known_gap}"
     flags: "任意。判定と同じ印 {viewpoint: aesthetic | tone, where, note}"
+
+# 合成の利用者（ADR 0043 の O4 synthetic_users_loop。ADR 0023 の決めどころ 3）。夜間の探索の道具（ワーカー・触れる環境・Chromium）を流用し、
+# ユーザーストーリーに沿って合成の利用者が staging を一定量歩き、行動ログ（製品の specs/analytics/events.yaml の名前）と応答時間を残す。
+# 応答時間はエージェントの申告ではなく、ワーカーの中の中継（core-gates/synthetic_proxy.py）が 1 回ごとに測る。
+# 歩いた結果から、遅い API（テーマ 2 信頼性と性能）と、入口を見つけられなかった・詰まった流れ（テーマ 1 利用者の体験）を決定論で拾い、
+# 改善の提案（Opportunity）にして受信トレイに出す。起票はしない（人かプランナーが拾う。ADR 0043 の O2 と同じ）。
+# 流れ: supervisor が週に 1 回（JST の weekday・hours）、製品ごとに QA のジョブ（入力の mode: synthetic）を固定 Issue（factory:qa）に積む
+# （factoryctl qa synthetic でも積める）→ ワーカー（core-gates/qa.py の合成の利用者）が out/walk.yaml を返し、中継が応答時間を足す
+# → dispatcher（qa_line.record_synthetic）が QASynthetic と qa.synthetic を残し、提案を opportunity.proposed と受信トレイに出し、固定 Issue にまとめを書く。
+synthetic:
+  weekday: 6                    # JST の曜日（0 が月曜）。日曜の朝
+  hours: [5, 7]                 # JST。夜間の探索（1〜5 時）のあと
+  through_pause: true           # ラインの一時停止中もこのジョブだけ流す。予算の枠は守る
+  priority: p2
+  max_turns: 80
+  walks_focus: 2                # 品質の Learn の重点（qa.focus_updated）のストーリーを歩く回数
+  walks_other: 1                # それ以外のストーリーを歩く回数
+  stories_max: 6
+  # 提案にする線（運用パラメータ。工場が調整してよい）
+  slow_p95_ms: 1500             # API のパスごとの p95 がこれ以上なら「遅い」（テーマ 2）
+  slow_min_calls: 2             # 呼ばれた回数がこれより少ないパスは見ない
+  hard_entry_attempts: 3        # 入口（ストーリーの最初の歩の場所）を見つけるまでの試行がこれ以上、または見つけられなかったら「入口が見つけにくい」（テーマ 1）
+  opportunities_max: 4          # 1 回に出す提案の上限
+  # わざと仕込む詰まり（ADR 0043 の O4）。工場の環境変数 SYNTH_FRICTION で入れる（staging のときだけ。製品のコードには入れない）。
+  # SYNTH_FRICTION=example で下の例を、JSON で任意の形を入れる。空なら仕込まない。入れた仕込みは qa.synthetic の planted に残り、
+  # 提案が仕込みに当たったか（planted_hit）を数える（roadmap の synthetic_users_loop）
+  friction_env: SYNTH_FRICTION
+  friction_example:
+    slow: { path: /api/bookings, method: GET, delay_ms: 2500 }             # 本部の予約の一覧（CS が「予約が消えた」を追うストーリー）
+    hide: { entry: ADMIN_WEB_PORT, selector: "a[href='/headquarters/bookings']" }   # 本部の画面のトップから予約の一覧への入口
+  # 結果の形（core-gates/qa.py が検査する。ワーカーは out/walk.yaml に書く）
+  result:
+    required: [walks, interpretation, confidence]
+    walk: "1 回歩いた分。{story_id, round, actor, entry, found_entry, attempts_to_entry, reached_exit, steps, felt}"
+    entry: "使った画面の入口（env.json の entries の port_env）"
+    steps: "1 歩ごとに {n, did, event（このとき起きたはずの行動イベントの name。製品の specs/analytics/events.yaml にあるもの。なければ null）, waited: none | short | long, stuck: 真偽, note}"
