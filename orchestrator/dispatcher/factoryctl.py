@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""工場の手動操作: 一覧・停止・再実行（ADR 0003）。
+"""工場の手動操作: 一覧・停止・再実行（ADR 0003）。工場を動かすマシンで docker exec factory-dispatcher-1 factoryctl … か、compose のディレクトリで docker compose exec dispatcher factoryctl … と打つ（下では factoryctl … と略す）:
 
-  docker compose exec dispatcher factoryctl list [--all]
-  docker compose exec dispatcher factoryctl stop <job_id>
-  docker compose exec dispatcher factoryctl rerun <job_id> [--continue]   # 続きのジョブは続きとして積み直す。--continue: 途中終了のドラフト PR のブランチから続ける（1 回まで。2 回目は plan resplit か --force）
-  docker compose exec dispatcher factoryctl enqueue <repo> <issue> [--tier tier-small]
-  docker compose exec dispatcher factoryctl events <job_id>
+  factoryctl list [--all]   # ジョブの一覧（順番待ち・作業中と直近 1 日。--all はすべて、新しい順に 50 件）
+  factoryctl stop <job_id>   # ジョブを止める（作業中ならコンテナは dispatcher が止める）
+  factoryctl rerun <job_id> [--continue]   # 続きのジョブは続きとして積み直す。--continue: 途中終了のドラフト PR のブランチから続ける（1 回まで。2 回目は plan resplit か --force）
+  factoryctl enqueue <repo> <issue> [--tier tier-small]   # Issue を手で積む（試験運転や、ラベルを使わない再投入）。--tier でモデルの tier を変える
+  factoryctl events <job_id>   # ジョブの出来事（events）を時刻の順に
 
 チケットの順番（ADR 0009）。操業コンソールと同じ操作。<ticket> はチケットの id か owner/repo#123:
   factoryctl tickets [--all]                      # 投入待ち・作業中のチケット（優先度の高い順）
   factoryctl priority <ticket> p0|p1|p2|p3|<0-100> [--reason ..]   # p0 は作業中のものを止めてでも先に流す
   factoryctl hold <ticket> [--reason ..]          # 順番待ちから一時的に外す
-  factoryctl resume <ticket>
+  factoryctl resume <ticket>                      # 保留を外して順番待ちに戻す
 
 工場の更新（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
   factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は更新してよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
@@ -35,12 +35,13 @@
 
 操業停止（ADR 0005）。番人が見えない停止（builder の端末の許可待ちなど）は手で記録する:
   factoryctl stoppage open <分類> <何が止まったか> [--key K] [--waiting-for ..] [--cause ..] [--prevention ..] [--at ISO] [--by builder] [--quiet]
+      # 停止を記録する（番人が見つけられない止まり）
   factoryctl stoppage close <key> [--remedy ..] [--prevention ..] [--at ISO] [--woken-by pr_event|watcher|schedule|human] [--quiet]   # --quiet は通知しない（過去分の取り込み）。始まりを通知した停止は --quiet でも終わりを通知する（#181）。--woken-by は builder を起こしたもの（D8）
-  factoryctl stoppage list [--open]
+  factoryctl stoppage list [--open]               # 停止の記録の一覧（--open はまだ閉じていないものだけ）
   factoryctl report stoppages [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # Markdown。既定は直近 7 日。週次レポートの stoppages.md はこの出力
 
 来歴とロット（ADR 0007）。Release は後付けで、前の Release 以降にマージされた工場の PR をまとめて含める:
-  factoryctl release create <repo> <app_version> [--prs URL,URL]
+  factoryctl release create <repo> <app_version> [--prs URL,URL]   # Release を作る（--prs を省くと前の Release 以降にマージされた工場の PR）
 
 出荷と Rollback（ADR 0012）。依頼を events に書くだけで、手を動かすのは常駐の shipper:
   factoryctl release ship <release_id> [--by ..]            # イメージを作って staging に出す（staging は自動）
@@ -88,8 +89,8 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
-  factoryctl desk token list
-  factoryctl desk token revoke <名前>
+  factoryctl desk token list                               # トークンの一覧（名前・役割・対象の製品。トークンそのものは出ない）
+  factoryctl desk token revoke <名前>                       # トークンを取り消す
   factoryctl desk list                                     # 相談の一覧（新しい順）
   factoryctl desk show <相談の id>                          # 会話（発言・最新の下書き・作ったチケット）
   factoryctl desk reply <相談の id> <本文>                   # 運用主として返事・言い足しを書く（相談役が次の周回で動く）
@@ -97,9 +98,9 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl desk from-issue <owner/repo#番号>              # clarify で確定した Issue などを窓口の依頼として開き直す（相談役が下書きを出す）
 
 モードと判断（ADR 0006）:
-  factoryctl mode show
+  factoryctl mode show                                          # いまのモード（人が並走 attended・全面委任 unattended）と決め手
   factoryctl mode set attended|unattended [--until ISO]       # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先
-  factoryctl judgment list [--ungraded] [--limit N]
+  factoryctl judgment list [--ungraded] [--limit N]             # 工場の判断の記録（--ungraded は人がまだ採点していないもの）
   factoryctl judgment recategorize <remap.yaml>                 # 類型の振り直し（definitions/judgment-remap-*.yaml。元の類型は category_v1 に残す）
   factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
   factoryctl report judgments [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 類型・モード別の件数、確信度、一致率、差し戻し、類型の見直しの候補
@@ -120,10 +121,10 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
 
 知見の制限付きの保管先（ADR 0024 の 5）。利用者の情報をどうしても含む知見の根拠を専用スキーマ restricted に置き、git の知見からは restricted: R-NNNN で指す。
 保管先の専用の利用者（factory_restricted）で繋ぐ。合言葉は管理者だけが持ち（.env に置かない）、使うときに RESTRICTED_DATABASE_URL で渡す。読むたびに誰が・何のために読んだかを残す:
-  export RESTRICTED_DATABASE_URL=postgresql://factory_restricted:<合言葉>@postgres:5432/factory
+  export RESTRICTED_DATABASE_URL=postgresql://factory_restricted:<合言葉>@postgres:5432/factory   # 管理者の手元でだけ渡す
   docker compose exec -T -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted add <owner/repo> [--knowledge K-0001,..] [--by ..] < 中身.md   # R-NNNN を出す
   docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted list [<owner/repo>]   # id・製品・指している知見・読んだ回数だけ（中身は出さない）
-  docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted show <R-NNNN> --purpose "何のために" [--by ..]
+  docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted show <R-NNNN> --purpose "何のために" [--by ..]   # 中身を読む（誰が・何のために読んだかを残す）
   docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted retire <R-NNNN> [--reason ..] [--by ..]   # 中身を消し、id と記録は残す
 
 Learn ループ（ADR 0013）:
@@ -132,6 +133,7 @@ Learn ループ（ADR 0013）:
   factoryctl report send <report.factory_health|report.product|all> [--date YYYY-MM-DD] [--to 宛先] [--html 出力先]
                                                   # 定期レポート（ADR 0032）を今のコードで組み立て、通知の設定の宛先に今すぐ送る（試し送り。既定は前日の分）。--html は送らずに報告書を書き出す
   factoryctl report process [--days 7]            # 工程の信号の束（ADR 0027 の 3。衝突の解消・やり直し・費用の外れ値・待ち・停止）。前の窓との比較つき
+  factoryctl committee reopen <PR の URL>...      # 人に回した知見の PR を委員会にかけ直す（承認待ちのラベルを外す）
   factoryctl learn backfill-conflicts [--days 7]  # 衝突の解消のジョブのログ（オブジェクトストア）から、衝突したファイルの記録（conflict.files）を埋める
 """
 import json

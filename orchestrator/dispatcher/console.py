@@ -5,6 +5,7 @@
   GET  /api/inbox                         受信トレイ: 人が対応するものの一覧（ADR 0026 の決定 7。inbox.py）。/api/state にも inbox として入る
   GET  /api/usage?days=14                 使用量: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
   GET  /usage                             同じ中身のページ（画面の中のページ。中身は GET /usage/body の HTML の断片。usage_page.py）
+  GET  /api/reference                     ヘルプの「API と MCP」「コマンド」の中身。この説明・desk_api.py の説明・MCP の道具・factoryctl の使い方から作る（reference.py）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
@@ -17,6 +18,8 @@
   POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
   POST /api/budget                        {"mode"?: "daily"|"weekday", "daily_usd"?, "weekday_usd"?: {"mon".."sun"}, "reason"?} 使用量の予算の宣言（usage.set_budget）。
                                           渡したものだけ変える。今の決め方は /api/state の factory.budget
+  POST /api/line/scale                    {"workers"?, "tickets"?, "governance"?, "desk"?, "reason"?} ラインの流量の宣言（ADR 0028。factoryctl line scale と同じ）。
+                                          渡したものだけ変える。上げ直さずに次の周回から効く
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の更新のため（ADR 0020）
   POST /api/line/release-hold             {"reason"} QA 役の差し止め（S1 の Incident。ADR 0043 の O5）を人が解除する。理由は必須
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
@@ -59,6 +62,7 @@ import inbox
 import judgment
 import ops
 import prototype
+import reference
 import rerun
 import review_page
 import runners
@@ -82,6 +86,7 @@ PROTOTYPE_ON = ENV.get("PROTOTYPE_PORT", "") not in ("", "0")   # 動くプロ�
 TOKEN = secrets.token_urlsafe(24)   # 起動ごとに変わる。画面を開き直せば新しいものが入る
 HOST_AGENT_FRESH_SEC = 600   # これより長く keep-awake.sh から連絡がなければ、ホストの見張りは居ないとみなす（トグルを出さない）
 host_agent: dict = {}
+REFERENCE: dict = {}   # ヘルプのリファレンス（GET /api/reference）。最初に開いたときに作る
 _store = None
 
 
@@ -428,6 +433,10 @@ class Handler(BaseHTTPRequestHandler):
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur), "trends": trends(cur),
                                         "alerts": alerts.view(cur), "engine_version": version.engine_version()})
+        if self.path == "/api/reference":   # 中身はコードの説明なので、プロセスの間は変わらない。最初の 1 回だけ作る
+            if "ref" not in REFERENCE:
+                REFERENCE["ref"] = reference.build()
+            return self._json(200, REFERENCE["ref"])
         if self.path == "/api/inbox":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, inbox.view(cur))
