@@ -108,3 +108,12 @@ def test_view_against_control_plane():
         v = roi.view(conn)
     assert v["jobs"] == 1 and v["stages"][0]["model"] == "Sonnet" and v["stages"][0]["cost_usd"] == 1.5 and v["stages"][0]["defects"] == 1
     assert round(v["stages"][0]["wait_min"]) == 30 and v["experiment"]["arms"]["trial"]["merged"] == 1
+
+
+def test_agents_candidates_shallow_path_in_container():
+    """コンテナでは /app/stage_roi.py に置かれ、親が 2 つしかない。読み込みで落ちない（2026-11-09 朝の報告と建設日報が止まった）"""
+    c = roi.agents_candidates(Path("/app/stage_roi.py"))
+    assert c[-1] == Path("/definitions/agents.yaml")
+    assert all("definitions" in str(p) for p in c)
+    deep = roi.agents_candidates(Path("/repo/orchestrator/dispatcher/stage_roi.py"))
+    assert Path("/repo/definitions/agents.yaml") in deep
