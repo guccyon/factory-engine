@@ -15,9 +15,9 @@
 - 建設状況の日次レポート: JST の DAILY_REPORT_HOUR 時を過ぎて今日の report.daily がなければ、health/daily/status_report.py を 1 回走らせる（LLM は使わない）
 - 夜間の探索（ADR 0028 の nightly_explore）: JST の夜（definitions/qa.yaml の explore.hours）に、製品ごとに 1 晩 1 回、QA 役の探索のジョブを積む。
   予算の枠を使い切っていれば次の枠を待つ。ラインの一時停止中は explore.through_pause が真ならこのジョブだけ流す
-- 出荷の列車（ADR 0012）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品の Release が今日まだなく、まだ Release に入っていない
-  マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼する。
-  prod へは承認ボタンを待つ
+- 出荷の列車・定期便（ADR 0012、ADR 0043 の O6）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品が今日の定期便にまだ載っておらず、まだ Release に入っていない
+  マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼し、
+  その日の便（release.train）に載せる。prod へは便ごとの承認を待つ（train.py）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
 """
@@ -60,6 +60,7 @@ import report
 import serialize
 import ship
 import stoppage
+import train
 import usage
 import workflow_guard
 import workflow_shadow
@@ -775,21 +776,16 @@ def stage_step(cur, manifests: dict):
 
 
 def release_train_step(cur):
-    """1 日 1 回まで、製品ごとに Release を切って staging に出す（ADR 0012）。判断は持たず、条件を見るだけ"""
+    """定期便（ADR 0012、ADR 0043 の O6）。1 日 1 便、製品ごとに Release を切ってまとめて staging に出し、release.train に残す。
+    判断は持たず、条件を見るだけ（便の中身と承認は train.py）"""
     if DRY_RUN or not RELEASE_TRAIN:
         return
-    now = datetime.now(timezone(timedelta(hours=9)))
-    if now.hour < RELEASE_TRAIN_HOUR:
+    now = datetime.now(timezone.utc)
+    if now.astimezone(timezone(timedelta(hours=9))).hour < RELEASE_TRAIN_HOUR:
         return
-    for repo in RELEASE_TRAIN:
-        cur.execute("select 1 from events where name='release.created' and payload->>'repo'=%s and occurred_at >= %s",
-                    (repo, now.replace(hour=0, minute=0, second=0, microsecond=0)))
-        if cur.fetchone() or ship.unreleased(cur, repo) == 0 or ship.busy(cur, repo):
-            continue
-        rid, prs = ship.create_release(cur, repo, ship.next_version(cur, repo))
-        if rid:
-            ship.request_ship(cur, rid, "supervisor", "release_train")
-            log("release train", rid, len(prs))
+    tid, rels = train.regular(cur, RELEASE_TRAIN, now)
+    if tid:
+        log("release train", tid, [r["release_id"] for r in rels])
 
 
 def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:

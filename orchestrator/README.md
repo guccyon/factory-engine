@@ -411,7 +411,7 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 合成シード: 製品の ship.yaml に `seed` があれば、その環境（rally は staging だけ）に起動を確かめたあと 1 回だけ書く（`release.seeded`）。環境のボリュームを消したら、その記録も消してから出し直す。
 
-出荷の列車: supervisor が 1 日 1 回、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出す。prod は承認ボタンを待つ。
+出荷の列車（定期便。ADR 0043 の O6）: supervisor が 1 日 1 便、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出し、その日の便（`release.train`）にまとめて残す。prod への承認は便ごとに 1 回（`factoryctl release train-approve <train_id>`。本番を立てない段階の製品だけの便は承認が要らない）。S1 の修正だけは緊急便で待たずに出す（`factoryctl release train <repo> --emergency --reason ..`）。最近の便は `factoryctl release trains`。便は Release の束として持ち、Gen1.5 で製品が複数のリポジトリに分かれたら 1 便に複数の Release を載せる。
 
 操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
 
