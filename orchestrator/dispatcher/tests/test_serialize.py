@@ -23,6 +23,13 @@ R = "https://github.com/o/r/pull/"
 LIB = "apps/backend/crates/server/src/lib.rs"
 
 
+@pytest.fixture(autouse=True)
+def _no_plan_gate(monkeypatch):
+    """ここで見るのは差し戻し・並べ方の流れ。プランナーを通す関所（ADR 0038 の追記）は test_workflow_guard と下の 1 本で見る"""
+    if URL:
+        monkeypatch.setattr(supervisor.workflow_guard, "PLAN_GATE", False)
+
+
 @pytest.fixture()
 def cur():
     conn = psycopg.connect(URL, row_factory=dict_row, autocommit=True)
@@ -133,3 +140,35 @@ def test_enqueue_step_holds_same_purpose_ticket(cur, monkeypatch):
     assert posted == [123]
     s = serialize.serialized(cur, "github:o/r#122")
     assert len(s) == 1 and s[0]["behind"] == "github:o/r#52" and "同じ目的" in s[0]["why"]
+
+
+def test_enqueue_step_reroutes_planless_ticket_to_planner(cur, monkeypatch):
+    # ADR 0038 の追記: Plan のない factory:planned のチケットは実装に回さず、プランナーの入口（factory:plan）へ付け替える
+    monkeypatch.setattr(supervisor.workflow_guard, "PLAN_GATE", True)
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Plan','github:o/r#61','plan','{}')")
+    issues = [{"number": 60, "title": "担保: 何か", "body": "", "labels": [{"name": "factory:planned"}], "created_at": "1"},
+              {"number": 61, "title": "Plan あり", "body": "", "labels": [{"name": "factory:planned"}], "created_at": "2"},
+              {"number": 62, "title": "CHANGELOG", "body": "", "labels": [{"name": "factory:planned"}, {"name": "factory:changelog"}], "created_at": "3"}]
+    posted, deleted = [], []
+
+    def fake_gh(method, path, body=None):
+        if "issues?state=open" in path:
+            return issues
+        if method == "POST" and path.endswith("/labels"):
+            posted.append((int(path.split("/")[-2]), body["labels"]))
+        if method == "DELETE":
+            deleted.append(int(path.split("/")[-3]))
+        return {}
+
+    monkeypatch.setattr(supervisor, "gh", fake_gh)
+    monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setenv("SUPERVISOR_MAX_INFLIGHT", "13")
+    monkeypatch.setattr(supervisor, "over_budget", lambda cur: None)
+    monkeypatch.setattr(supervisor, "factory_prs", lambda cur: [])
+    supervisor.enqueue_step(cur, set())
+    assert (60, ["factory:plan"]) in posted
+    assert (61, [supervisor.IMPLEMENT_LABEL]) in posted and (62, [supervisor.IMPLEMENT_LABEL]) in posted
+    assert 60 in deleted
+    cur.execute("select count(*) as n from events where name='plan.rerouted' and correlation_id='github:o/r#60'")
+    assert cur.fetchone()["n"] == 1

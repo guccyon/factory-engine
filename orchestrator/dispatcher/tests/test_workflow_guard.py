@@ -81,3 +81,34 @@ def test_off_switch(cur, monkeypatch):
     monkeypatch.setattr(wg, "ENFORCE", set())
     conflict(cur, 9)
     assert wg.conflict_gate(cur, CORR, PR, lambda: {}) == "ok" and not wg.waiting(cur, CORR)
+
+
+# ------------------------------------------------------------------ プランナーを通す（ADR 0038 の追記）
+def test_planless_ticket_goes_to_planner(cur):
+    assert wg.needs_planner(cur, "o/r", 5, ["factory:planned", "factory:priority:p1"])
+    assert wg.record_rerouted(cur, "o/r", 5, ["factory:planned"])
+    assert not wg.record_rerouted(cur, "o/r", 5, ["factory:planned"])   # 同じチケットの記録は 1 回
+
+
+def test_planned_ticket_passes(cur):
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Plan',%s,'plan',%s)", (CORR, Jsonb({"decision": "ready"})))
+    assert wg.planned_by(cur, "o/r", 5) == "plan"
+    assert not wg.needs_planner(cur, "o/r", 5, ["factory:planned"])
+
+
+def test_split_children_pass(cur):
+    cur.execute("insert into events(name, correlation_id, payload) values ('plan.split','github:o/r#1',%s)",
+                (Jsonb({"repo": "o/r", "issue": 1, "child": 7, "steps": ["design_system"]}),))
+    cur.execute("insert into events(name, correlation_id, payload) values ('plan.split','github:o/r#2',%s)",
+                (Jsonb({"repo": "o/r", "issue": 2, "kind": "tasks", "child": None, "children": [8, 9], "steps": ["implement"]}),))
+    assert wg.planned_by(cur, "o/r", 7) == "split_child"
+    assert wg.planned_by(cur, "o/r", 9) == "split_child"
+    assert wg.planned_by(cur, "o/r", 10) is None
+    assert wg.planned_by(cur, "x/y", 7) is None   # 別のリポの同じ番号は別のチケット
+
+
+def test_one_off_requests_skip_planner(cur, monkeypatch):
+    assert not wg.needs_planner(cur, "o/r", 5, ["factory:planned", "factory:changelog"])
+    assert not wg.needs_planner(cur, "o/r", 5, ["factory:planned", "factory:direct"])
+    monkeypatch.setattr(wg, "PLAN_GATE", False)
+    assert not wg.needs_planner(cur, "o/r", 5, ["factory:planned"])
