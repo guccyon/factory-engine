@@ -98,6 +98,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl incident-record outbox [--all]            # 送り出し口の FIR の下書き（検査と査読を通ったもの。--all で取り出し済みも）
   factoryctl incident-record outbox show <FIR-...>     # 下書きの YAML の全文（Engine の incidents/ に PR で入れる。公開はオーナーの承認）
   factoryctl incident-record outbox take <FIR-...>     # 送り出し口から取り出した印を付ける
+  factoryctl incident-record checks                    # 専用のチェックの棚卸し（場所・関係する記録・見直しの期日。definitions/incident.yaml）
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -879,7 +880,7 @@ def hold_report(cur) -> None:
 
 
 def incident_record_cmd(cur, argv) -> int:
-    """factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox（ADR 0046、dispatcher/factory_incident.py）"""
+    """factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox|checks（ADR 0046、dispatcher/factory_incident.py）"""
     sub = argv[2] if len(argv) > 2 else "list"
     arg = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None
     by = f"factoryctl:{opt(argv, '--by', 'human')}"
@@ -919,6 +920,15 @@ def incident_record_cmd(cur, argv) -> int:
             cur.execute("select payload from events where name='fincident.reviewed' order by id desc limit 1")
             r = cur.fetchone()
             print(json.dumps(r["payload"], ensure_ascii=False, indent=2) if r else "週次の見回りの結果はまだない"); return 0
+        if sub == "checks":
+            items = factory_incident.load_defs().get("dedicated_checks") or []
+            if not items:
+                print("専用のチェックは載っていない"); return 0
+            today = datetime.now(factory_incident.JST).date()
+            for d in items:
+                rb = str(d.get("review_by"))
+                print(f"{rb}{' [期日を過ぎた]' if rb <= today.isoformat() else ''} {d.get('name')}（{', '.join(d.get('where') or [])}、記録 {d.get('fir') or 'なし'}）")
+            return 0
         if sub == "outbox":
             act = arg or "list"
             fid = argv[4] if len(argv) > 4 and not argv[4].startswith("--") else None
@@ -938,7 +948,7 @@ def incident_record_cmd(cur, argv) -> int:
                 print("取り出した印を付けた" if factory_incident.take(cur, fid, by) else "もう取り出してある"); return 0
     except ValueError as e:
         print(str(e)); return 2
-    print("factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox ..."); return 2
+    print("factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox|checks ..."); return 2
 
 
 def incident_cmd(cur, argv) -> int:

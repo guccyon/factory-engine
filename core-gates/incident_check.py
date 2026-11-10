@@ -9,12 +9,15 @@ incidents/ の FIR-YYYY-NNNN.yaml を読み、査読の前に機械で確かめ�
   - 製品の情報: local_ref が空、全文に URL・Issue や PR の番号・コミットのハッシュ・メール・ホスト名・IP・個人のパス・
     生の金額・日付（日まで）・秘密情報の形がない、--deny で渡した名前（製品・リポジトリ・事業主）が出てこない
   - 一覧: INDEX.md が中身から作った一覧と一致する（--index で作り直す）
+  - 専用のチェックの棚卸し（definitions/incident.yaml の dedicated_checks）: 各項目に name・where・added・review_by・why、
+    where のファイルがあり印の文字列がそこにある、fir の記録がある、FIR の dedicated_checks と name・review_by がそろう
 
 値はここに持つ（正本は definitions/incident.yaml。食い違いは core-gates/tests/test_incident_check.py で見る）。
 
 使い方:
   core-gates/incident_check.py [--root incidents] [--deny 名前 ...] [--deny-file names.txt] [--json out.json]
   core-gates/incident_check.py --index [--root incidents]
+  （<root>/../definitions/incident.yaml があれば専用のチェックの棚卸しも見る。--defs で変えられる）
   終了コード: 0 = 緑、1 = 通らない、2 = 読めなかった
 
 依存: python3 と PyYAML
@@ -207,6 +210,57 @@ def run(root: Path, deny: list[str]) -> tuple[list[str], list[tuple[Path, dict]]
     return errs, records
 
 
+def check_inventory(engine: Path, inv: list, records: list[tuple[Path, dict]]) -> list[str]:
+    """専用のチェックの棚卸し（ADR 0046 の 5 の 3）。消し忘れと載せ忘れを見る"""
+    errs: list[str] = []
+    by_fir = {str(r.get("id")): r for _, r in records}
+    names: dict[str, dict] = {}
+    for i, d in enumerate(inv or []):
+        tag = f"dedicated_checks[{i}]"
+        if not isinstance(d, dict):
+            errs.append(f"{tag}: mapping にする"); continue
+        for k in ("name", "where", "added", "review_by", "why"):
+            if not d.get(k):
+                errs.append(f"{tag}: {k} がない")
+        if not _as_date(d.get("review_by")):
+            errs.append(f"{tag}: review_by は日付")
+        if d.get("added") and not MONTH_RE.match(str(d["added"])):
+            errs.append(f"{tag}: added は YYYY-MM")
+        for w in d.get("where") or []:
+            path, _, mark = str(w).partition(":")
+            f = engine / path
+            if not f.is_file():
+                errs.append(f"{tag}: where の {path} がない（外したなら棚卸しからも外す）")
+            elif mark and mark not in f.read_text(encoding="utf-8", errors="replace"):
+                errs.append(f"{tag}: {path} に {mark!r} がない（外したなら棚卸しからも外す）")
+        if d.get("fir"):
+            r = by_fir.get(str(d["fir"]))
+            if not r:
+                errs.append(f"{tag}: fir {d['fir']} の記録がない")
+            else:
+                mine = {str(x.get("name")): x for x in (r.get("mitigation") or {}).get("dedicated_checks") or [] if isinstance(x, dict)}
+                if d.get("name") not in mine:
+                    errs.append(f"{tag}: {d['fir']} の mitigation.dedicated_checks に載っていない")
+                elif _as_date(mine[d["name"]].get("review_by")) != _as_date(d.get("review_by")):
+                    errs.append(f"{tag}: {d['fir']} と review_by が違う")
+        names[str(d.get("name"))] = d
+    for p, r in records:
+        for x in (r.get("mitigation") or {}).get("dedicated_checks") or []:
+            if isinstance(x, dict) and str(x.get("name")) not in names:
+                errs.append(f"{p.name}: 専用のチェック {x.get('name')!r} が definitions/incident.yaml の dedicated_checks にない")
+    return errs
+
+
+def due_checks(inv: list, today: date, ahead_days: int = 14) -> list[dict]:
+    """見直しの期日が来た（ahead_days 日以内に来る）専用のチェック"""
+    out = []
+    for d in inv or []:
+        rb = _as_date(d.get("review_by")) if isinstance(d, dict) else None
+        if rb and (rb - today).days <= ahead_days:
+            out.append({**d, "review_by": rb.isoformat(), "overdue": rb <= today})
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", default=ROOT)
@@ -214,6 +268,7 @@ def main(argv=None) -> int:
     ap.add_argument("--deny-file")
     ap.add_argument("--json")
     ap.add_argument("--index", action="store_true")
+    ap.add_argument("--defs")
     a = ap.parse_args(argv)
     root = Path(a.root)
     if not root.is_dir():
@@ -223,6 +278,10 @@ def main(argv=None) -> int:
     if a.deny_file:
         deny += [ln.strip() for ln in Path(a.deny_file).read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
     errs, records = run(root, deny)
+    defs_path = Path(a.defs) if a.defs else root.resolve().parent / "definitions" / "incident.yaml"
+    if defs_path.is_file():
+        inv = (yaml.safe_load(defs_path.read_text(encoding="utf-8")) or {}).get("dedicated_checks") or []
+        errs += check_inventory(defs_path.resolve().parent.parent, inv, records)
     if a.index:
         (root / "INDEX.md").write_text(build_index(records), encoding="utf-8")
         errs = [e for e in errs if not e.startswith("INDEX.md")]
