@@ -6,18 +6,25 @@
   → record()（結果を成果物 InvestigationResult に残し、報告を会話に提出する。受取確認は desk_line.deliver のまま）
 
 依頼者は種類を選ばない。調査にするかは相談役が依頼の中身から決める（ADR 0048 の決定 1）。
-Engine の改善 Issue の起票・引き継ぎ資料の採番と送り出し・事故の台帳への案件は順番 5（ここでは結果を残すまで）。
+提出（順番 5）: record() が結果を見て、決まった道で次を残す（調査役は何も変えない）
+  - Engine の改善 Issue の案（investigate.issue_proposed）。調査役の検査を通らなかった・ここの検査に掛かったものは起票せず保留（investigate.issue_held と建設者の受信トレイ）
+  - 引き継ぎ資料（INV-YYYY-NNNN、investigate.handoff）。本体は工場の中（events）に置き、提供元の口には要約と id だけ
+  - お金の損の疑いは事故の台帳に案件を開く（ADR 0046）
+  起票は supervisor の周回（file_issues）。Engine の改善 Issue はラベル factory:investigation、引き継ぎは factory:investigation-handoff。
 値は definitions/investigate.yaml の limits と desk.yaml の loop の写し（dispatcher のコンテナには definitions/ がない。食い違いはテストで見る）。
 """
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 import desk
+import factory_incident
+import inbox
 import usage
 
 KIND = "investigate"
@@ -29,6 +36,15 @@ MODEL_TIER = "tier-judge"
 RESULT_TYPE = "InvestigationResult"
 OUTCOME_JA = {"identified": "原因が分かりました。", "outside": "原因は工場の外にありました。",
               "unidentified": "工場の中の記録だけでは、原因を特定できませんでした。"}
+ISSUE_LABEL = "factory:investigation"
+HANDOFF_LABEL = "factory:investigation-handoff"
+HANDOFF_ALWAYS = ("sensitive", "asked")   # 特定できても外に回す止め方（ADR 0048 の決定 6 の 4・5）
+STOP_JA = {"budget": "上限に当たった、または仮説が残らない・確信度が低いまま", "needs_code": "確かめるにはコードを読むしかない",
+           "needs_host": "試しの実行やホストの中を見る必要がある", "sensitive": "秘密情報・権限・決済・DB の破壊的な変更に関わりそう",
+           "asked": "依頼者が外でも調べてと言った"}
+# 起票の前の 2 段目の検査（1 段目は調査役のジョブの core-gates/investigate_check.py。dispatcher には core-gates がないので、漏れやすい形だけを写す）
+LEAK = [("URL", re.compile(r"https?://")), ("番号の参照", re.compile(r"#\d+\b")), ("メールアドレス", re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")),
+        ("記録の参照", re.compile(r"\b(job|ticket|event|stoppage|judgment|desk|pr|issue):\S+"))]   # 製品・依頼者の名前は deny で見る
 FIX_JA = {"engine": "工場の仕組みの直しが要ります。工場の提供元に改善の依頼として渡します。",
           "operation": "運用の値（流量・予算など）を変えると直りそうです。",
           "product": "製品の側の直しが要ります。窓口の依頼として出せます。"}
@@ -102,7 +118,34 @@ def investigate_input(c: dict, rt: dict, engine_ref: str | None) -> dict:
             "window": [(now - timedelta(days=max(days, 1))).isoformat(), now.isoformat()],
             "refs": rt.get("refs") or [], "notes": rt.get("why") or "",
             "limits": {"turns": PER_CASE_TURNS, "usd": PER_CASE_USD},
-            "deny": sorted({product, product.split("/")[-1], product.split("/")[0], c.get("opened_by") or ""} - {""})}
+            "deny": deny_for(c)}
+
+
+def deny_for(c: dict) -> list[str]:
+    """Engine の改善 Issue と引き継ぎの要約に出てはいけない名前（製品のリポジトリ名・製品名・持ち主・依頼者）"""
+    product = c["product"]
+    return sorted({product, product.split("/")[-1], product.split("/")[0], c.get("opened_by") or ""} - {""})
+
+
+def leaks(text: str, deny: list[str]) -> list[str]:
+    """起票の前の 2 段目の検査。引っかかった種類を返す（中身は返さない。ログや受信トレイに名前を写さないため）"""
+    low = (text or "").lower()
+    out = [name for name, rx in LEAK if rx.search(text or "")]
+    if any(d and d.lower() in low for d in deny):
+        out.append("製品・人の名前")
+    return out
+
+
+def _next_inv_id(cur, now: datetime) -> str:
+    prefix = f"INV-{now.astimezone(usage.JST):%Y}-"
+    cur.execute("select count(*) as n from events where name='investigate.handoff' and payload->>'id' like %s", (prefix + "%",))
+    return f"{prefix}{int(cur.fetchone()['n']) + 1:04d}"
+
+
+def needs_handoff(res: dict) -> bool:
+    """外（二次）に引き継ぐか（ADR 0048 の決定 6）。特定できなかった、または特定できても秘密情報に関わる・依頼者が外でもと言った"""
+    stop = (res.get("handoff") or {}).get("stop_reason")
+    return res.get("outcome") == "unidentified" or stop in HANDOFF_ALWAYS
 
 
 def enqueue(cur, repos: list[str], now: datetime | None = None, engine_ref: str | None = None) -> list[int]:
@@ -193,9 +236,115 @@ def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> 
                                               "issue_held": bool(keep["issue_held"]), "has_handoff": bool(keep["handoff"]),
                                               "money_loss": bool((keep["money_loss"] or {}).get("suspected")), "cost_usd": keep["cost_usd"]},
            job_id=job["id"])
+    sub = submit(cur, c, n, job["id"], aid, keep)
     stop = (keep.get("handoff") or {}).get("stop_reason")
-    out = {"ok": keep["outcome"] != "unidentified", "summary": report_text(res)}
+    out = {"ok": keep["outcome"] != "unidentified", "summary": report_text(res) + (f"\n\n引き継ぎ資料: {sub['handoff']}" if sub.get("handoff") else "")}
     if stop == "budget":
         out["cap_hit"] = "費用・ターン"
         out["remaining"] = "まだ見ていない所: " + "、".join((keep["handoff"] or {}).get("not_looked_at") or ["（記録なし）"])
     desk_line.deliver(cur, cid, n, out)
+
+
+# ------------------------------------------------------------------ 提出（ADR 0048 の順番 5）
+def submit(cur, c: dict, round_: int, job_id: int, artifact_id: int, res: dict, now: datetime | None = None) -> dict:
+    """結果を見て、Engine の改善 Issue の案・引き継ぎ資料・事故の台帳の案件を決まった道で残す。起票はしない（supervisor の file_issues）"""
+    now = now or datetime.now(timezone.utc)
+    cid = c["id"]
+    deny = deny_for(c)
+    out: dict = {}
+    base = {"conversation_id": cid, "round": round_, "artifact_id": artifact_id, "job_id": job_id}
+    issue = res.get("engine_issue") if res.get("fix_target") == "engine" else None
+    if issue and issue.get("title"):
+        text = f"{issue['title']}\n{issue.get('body') or ''}"
+        errs = list(res.get("issue_errors") or []) if res.get("issue_held") else leaks(text, deny)
+        key = f"inv:{cid}:{round_}"
+        if res.get("issue_held") or errs:   # 漏れるより遅れるほうを選ぶ（決定 5 の 3）。建設者が直して起票する
+            if _event(cur, "investigate.issue_held", cid, {**base, "key": key, "errors": errs[:10]}, f"investigate.issue_held:{key}", job_id=job_id):
+                inbox.request(cur, f"investigate_issue_held:{cid}:{round_}", "investigate_issue_held", "builder",
+                              f"一次調査の改善 Issue の起票を保留（顧客の情報が残った: {'、'.join(errs[:3]) or '検査'}）。成果物 {artifact_id} を直して起票する",
+                              action="成果物の engine_issue を直し、ラベル factory:investigation で起票する", correlation_id=desk.corr(cid), by="investigate")
+            out["issue"] = "held"
+        elif _event(cur, "investigate.issue_proposed", cid, {**base, "key": key, "title": issue["title"][:200], "body": issue.get("body") or ""},
+                    f"investigate.issue_proposed:{key}", job_id=job_id):
+            out["issue"] = "proposed"
+    if needs_handoff(res):
+        h = res.get("handoff") or {}
+        cur.execute("select payload->>'id' as id from events where name='investigate.handoff' and dedupe_key=%s", (f"investigate.handoff:{cid}:{round_}",))
+        got = cur.fetchone()
+        hid = got["id"] if got else _next_inv_id(cur, now)
+        dossier = {**h, "id": hid}
+        _event(cur, "investigate.handoff", cid, {**base, "id": hid, "stop_reason": h.get("stop_reason"), "dossier": dossier,
+                                                 "errors": list(res.get("handoff_errors") or [])[:10]}, f"investigate.handoff:{cid}:{round_}", job_id=job_id)
+        out["handoff"] = hid
+    if (res.get("money_loss") or {}).get("suspected"):
+        try:
+            case = factory_incident.open_case(cur, "investigate", f"一次調査でお金の損の疑い（窓口の会話 {cid}）", "llm_tokens", "medium",
+                                              {**base, "note": str((res.get("money_loss") or {}).get("note") or "")[:500]},
+                                              note="窓口の一次調査（ADR 0048）が見つけた。資源と仕組みは調査委員会が確かめる",
+                                              dedupe=f"fincident.opened:inv:{cid}:{round_}", now=now)
+        except (ValueError, OSError) as e:   # 台帳の定義が読めないときも提出は止めない
+            case = None
+            _event(cur, "investigate.case_failed", cid, {**base, "error": repr(e)[:200]}, job_id=job_id)
+        if case:
+            out["case"] = case
+    return out
+
+
+def handoff_summary(p: dict, engine_ref: str | None) -> str:
+    """提供元の口（Issue）に書く引き継ぎの要約。決まったひな形だけで組み立て、調査役の文は入れない（顧客の情報を出さない）"""
+    d = p.get("dossier") or {}
+    stop = p.get("stop_reason") or "budget"
+    rows = [f"工場の中の一次調査（ADR 0048）で特定できなかった件を、工場の外の調査に引き継ぎます。",
+            "", f"- 引き継ぎ資料: {p['id']}", f"- 止めた理由: {stop}（{STOP_JA.get(stop, '')}）",
+            f"- Engine の版: {engine_ref or 'unknown'}",
+            f"- 見た事実: {len(d.get('facts') or [])} 件、仮説: {len(d.get('hypotheses') or [])} 件、打ち消した仮説: {len(d.get('ruled_out') or [])} 件、"
+            f"まだ見ていない所: {len(d.get('not_looked_at') or [])} 件",
+            "", f"資料の本体はその工場の中にあります（`factoryctl investigation show {p['id']}`）。一次の事実をやり直さず、資料の id から始めてください。"]
+    if p.get("errors"):
+        rows.append(f"資料の形の検査で {len(p['errors'])} 件の不足があります（本体に記録）。")
+    return "\n".join(rows)
+
+
+def pending(cur, name: str, done: str, limit: int) -> list[dict]:
+    cur.execute(f"select p.payload, p.correlation_id from events p where p.name=%s and not exists "
+                f"(select 1 from events f where f.name=%s and f.dedupe_key = %s || (p.payload->>'conversation_id') || ':' || (p.payload->>'round')) "
+                f"order by p.id limit %s", (name, done, f"{done}:", limit))
+    return [r["payload"] for r in cur.fetchall()]
+
+
+def file_issues(cur, gh, engine_repo: str, engine_ref: str | None = None, limit: int = 2) -> list[str]:
+    """案を Engine の Issue にする（supervisor の周回）。改善 Issue は同じ題が開いていれば足さず、そこに事実が増えたことを書く（ADR 0044）"""
+    filed = []
+    todo = pending(cur, "investigate.issue_proposed", "investigate.issue_filed", limit)
+    if todo:
+        open_ = {i.get("title", ""): i for i in gh("GET", f"repos/{engine_repo}/issues?state=open&labels={ISSUE_LABEL}&per_page=100") or []}
+        for p in todo:
+            hit = open_.get(p["title"])
+            if hit:
+                gh("POST", f"repos/{engine_repo}/issues/{hit['number']}/comments",
+                   {"body": "別の工場の中の一次調査（ADR 0048）でも同じ症状を見ました。直すときに合わせて確かめてください。"})
+                url = hit.get("html_url")
+            else:
+                body = p["body"] + "\n\n---\n工場の中の一次調査（ADR 0048）が起票。直すのは建設者。"
+                url = (gh("POST", f"repos/{engine_repo}/issues", {"title": p["title"], "body": body, "labels": [ISSUE_LABEL]}) or {}).get("html_url")
+            _event(cur, "investigate.issue_filed", p["conversation_id"], {"round": p["round"], "key": p["key"], "issue": url, "duplicate": bool(hit)},
+                   f"investigate.issue_filed:{p['conversation_id']}:{p['round']}")
+            filed.append(url)
+    for p in pending(cur, "investigate.handoff", "investigate.handoff_filed", limit):
+        url = (gh("POST", f"repos/{engine_repo}/issues", {"title": f"一次調査の引き継ぎ {p['id']}", "body": handoff_summary(p, engine_ref),
+                                                         "labels": [HANDOFF_LABEL]}) or {}).get("html_url")
+        _event(cur, "investigate.handoff_filed", p["conversation_id"], {"round": p["round"], "id": p["id"], "issue": url},
+               f"investigate.handoff_filed:{p['conversation_id']}:{p['round']}")
+        filed.append(url)
+    return filed
+
+
+def handoffs(cur, limit: int = 50) -> list[dict]:
+    cur.execute("select h.payload, h.occurred_at, f.payload->>'issue' as issue from events h left join events f on f.name='investigate.handoff_filed' "
+                "and f.payload->>'id' = h.payload->>'id' where h.name='investigate.handoff' order by h.id desc limit %s", (limit,))
+    return [{**r["payload"], "at": r["occurred_at"].isoformat(), "issue": r["issue"]} for r in cur.fetchall()]
+
+
+def get_handoff(cur, hid: str) -> dict | None:
+    """引き継ぎ資料の本体（二次の調査はここから始める）。依頼者の問いは言葉のまま入っている（工場の中だけで見る）"""
+    return next((h for h in handoffs(cur, 1000) if h["id"] == hid), None)

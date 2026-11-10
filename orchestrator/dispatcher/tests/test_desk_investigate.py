@@ -221,3 +221,91 @@ def test_withdrawn_conversation_is_not_delivered(cur):
     cur.execute("update desk_conversations set state='closed' where id=%s", (cid,))
     finish(cur, jid, GOOD, cost=0.5)
     assert "investigate.finished" not in names(cur, cid)
+
+
+def test_labels_and_stops_match_definition():
+    assert di.ISSUE_LABEL == DEFS["labels"]["engine_issue"] and di.HANDOFF_LABEL == DEFS["labels"]["handoff"]
+    assert set(di.STOP_JA) == set(DEFS["stop_reasons"])
+
+
+def test_leaks():
+    deny = ["owner/product", "product", "owner", "cs-1"]
+    assert di.leaks("検査の待ちが上限の 3 倍を超えると続きが積まれない。ADR 0038 と関係する", deny) == []
+    for bad in ("Product の停止", "https://example.com を見た", "#1031 が止まった", "a@b.example に送った", "job:12 で"):
+        assert di.leaks(bad, deny), bad
+
+
+def test_handoff_summary_has_no_free_text():
+    p = {"id": "INV-2026-0001", "stop_reason": "needs_code", "errors": [],
+         "dossier": {"question": "owner/product の #1031 はなぜ", "facts": [{"ref": "job:1", "what": "顧客の話"}], "hypotheses": [], "not_looked_at": ["x"]}}
+    t = di.handoff_summary(p, "abc")
+    assert "INV-2026-0001" in t and "needs_code" in t and "見た事実: 1 件" in t
+    assert di.leaks(t.replace("`factoryctl investigation show INV-2026-0001`", ""), ["owner/product", "product", "owner"]) == []
+
+
+class FakeGH:
+    def __init__(self, open_issues=()):
+        self.calls, self.open = [], list(open_issues)
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        if method == "GET":
+            return self.open
+        return {"html_url": f"https://github.com/x/engine/issues/{len(self.calls)}"}
+
+
+@needs_db
+def test_engine_issue_is_proposed_and_filed_once(cur):
+    _, cid = open_request(cur)
+    consult_route(cur, {"path": "investigate", "question": "q", "why": ""})
+    finish(cur, di.enqueue(cur, [REPO])[0], GOOD, cost=1.0)
+    assert "investigate.issue_proposed" in names(cur, cid) and "investigate.handoff" not in names(cur, cid)
+    gh = FakeGH()
+    assert len(di.file_issues(cur, gh, "x/engine", "abc")) == 1 and di.file_issues(cur, gh, "x/engine") == []
+    post = [c for c in gh.calls if c[0] == "POST"]
+    assert len(post) == 1 and post[0][2]["labels"] == [di.ISSUE_LABEL] and post[0][2]["title"] == GOOD["engine_issue"]["title"]
+
+
+@needs_db
+def test_same_open_issue_gets_a_comment(cur):
+    _, cid = open_request(cur)
+    consult_route(cur, {"path": "investigate", "question": "q", "why": ""})
+    finish(cur, di.enqueue(cur, [REPO])[0], GOOD, cost=1.0)
+    gh = FakeGH([{"title": GOOD["engine_issue"]["title"], "number": 9, "html_url": "u9"}])
+    assert di.file_issues(cur, gh, "x/engine") == ["u9"]
+    assert gh.calls[-1][1] == "repos/x/engine/issues/9/comments"
+
+
+@needs_db
+def test_dirty_issue_is_held_for_builder(cur):
+    _, cid = open_request(cur)
+    consult_route(cur, {"path": "investigate", "question": "q", "why": ""})
+    dirty = {**GOOD, "engine_issue": {"title": "rally の停止", "body": "x"}}   # 調査役の検査をすり抜けた名前
+    finish(cur, di.enqueue(cur, [REPO])[0], dirty, cost=1.0)
+    assert "investigate.issue_held" in names(cur, cid) and "investigate.issue_proposed" not in names(cur, cid)
+    it = inbox.find(cur, f"task:investigate_issue_held:{cid}:1")
+    assert it["who"] == "builder" and "rally" not in it["title"]
+    assert di.file_issues(cur, FakeGH(), "x/engine") == []
+
+
+@needs_db
+def test_unidentified_gets_inv_id_and_handoff_issue(cur):
+    _, cid = open_request(cur)
+    consult_route(cur, {"path": "investigate", "question": "なぜ止まった", "why": ""})
+    hand = {"question": "なぜ止まった", "facts": [{"ref": "job:1", "what": "失敗", "how": "jobs"}], "hypotheses": [], "ruled_out": [],
+            "not_looked_at": ["Engine のソース"], "stop_reason": "needs_code"}
+    res = {**GOOD, "outcome": "unidentified", "fix_target": "none", "engine_issue": None, "handoff": hand,
+           "money_loss": {"suspected": True, "note": "同じ検査を 3 回"}}
+    finish(cur, di.enqueue(cur, [REPO])[0], res, cost=2.0)
+    hs = di.handoffs(cur)
+    assert len(hs) == 1 and hs[0]["id"].startswith("INV-") and hs[0]["id"].endswith("-0001")
+    assert di.get_handoff(cur, hs[0]["id"])["dossier"]["question"] == "なぜ止まった"
+    assert hs[0]["id"] in delivered(cur, cid)
+    cur.execute("select payload from events where name='fincident.opened'")
+    case = cur.fetchone()["payload"]
+    assert case["by"] == "investigate" and case["facts"]["conversation_id"] == cid
+    gh = FakeGH()
+    assert len(di.file_issues(cur, gh, "x/engine", "abc")) == 1
+    body = gh.calls[-1][2]
+    assert body["labels"] == [di.HANDOFF_LABEL] and "なぜ止まった" not in body["body"] and "job:1" not in body["body"]
+    assert di.handoffs(cur)[0]["issue"] and di.file_issues(cur, gh, "x/engine") == []
