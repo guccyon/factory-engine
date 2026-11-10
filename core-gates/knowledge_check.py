@@ -53,7 +53,7 @@ WORK_NODES = [
     "dev", "dev.design", "dev.design.system", "dev.design.screen", "dev.design.proposal", "dev.contract",
     "dev.build", "dev.describe", "dev.ci", "dev.review", "dev.review.inspect", "dev.review.judge", "dev.review.design",
     "ops", "ops.qa", "ops.diagnose", "ops.release", "ops.runtime", "ops.incident", "ops.operate",
-    "desk", "desk.converse", "govern", "govern.design_review", "govern.health", "learn", "learn.case", "learn.committee",
+    "desk", "desk.converse", "govern", "govern.design_review", "govern.health", "govern.patrol", "govern.incident_review", "learn", "learn.case", "learn.committee",
 ]
 ARTIFACT_TYPES = [
     "Signal", "Request", "TaskSetDraft", "Opportunity", "Requirements", "Ticket", "PR", "InspectionReport", "Release", "Incident",

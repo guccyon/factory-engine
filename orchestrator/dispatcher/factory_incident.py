@@ -13,7 +13,11 @@
 - 台帳（open_case / update_case / close_case）: 影響の帯が medium 以上の兆しは、台帳に 1 件開く（fincident.opened、id は IC-YYYYMMDD-N）。
   台帳は工場の中だけの生の事実で、金額や製品の名前を含んでよい。配る事故記録（FIR）は incidents/ に抽象化して別に書く。
   Gen1 は台帳を events に置く（新しい表を作らない）
-- 委員会は直さない（ADR 0046 の 6）。台帳を見て Engine の改善 Issue にするのは調査（次の段）か人
+- 週次の見回り（weekly_due / weekly_input / enqueue_weekly）: 週 1 回（committee.patrol.weekly の曜日と時）、その週の記録を制御プレーンだけで組み立てて
+  ジョブ（kind=incident_review、governance の枠）に積む。ワーカーの core-gates/incident_review.py が見回り＋調査・記録・査読の 3 つのエージェントを順に呼ぶ
+- 週次の結果（record_weekly）: 所見で台帳を開く・足す。検査と査読を通った FIR の下書きは送り出し口（fincident.outboxed）に置き、
+  Engine の改善 Issue の案（fincident.issue_proposed）を残す。起票は supervisor（file_issues）、送り出し口からの取り出しは人（factoryctl）
+- 委員会は直さない（ADR 0046 の 6）。Engine の直しは改善 Issue にして建設者が直す
 
 記録の失敗で supervisor の周回を止めない。
 """
@@ -33,7 +37,10 @@ JST = timezone(timedelta(hours=9))
 DEFS_PATH = os.environ.get("INCIDENT_DEFINITIONS", "/definitions/incident.yaml")
 SEVERITIES = ("critical", "high", "medium", "low")
 OPEN_FROM = ("critical", "high", "medium")   # definitions/incident.yaml の record_from（medium 以上を台帳に開く）
-EVENTS = ("fincident.patrolled", "fincident.sign", "fincident.opened", "fincident.updated", "fincident.closed")
+EVENTS = ("fincident.patrolled", "fincident.sign", "fincident.opened", "fincident.updated", "fincident.closed",
+          "fincident.reviewed", "fincident.outboxed", "fincident.taken", "fincident.issue_proposed", "fincident.issue_filed")
+KIND = "incident_review"
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # 閾値（definitions/incident.yaml の severity を数にしたもの。仮置き）
 KIND_SHARE_OF_BUDGET = 0.30
 KIND_X_MEDIAN = 3.0
@@ -276,5 +283,187 @@ def report_view(cur, now: datetime | None = None) -> dict:
     r = cur.fetchone()
     cur.execute("select payload from events where name='fincident.sign' and occurred_at >= %s order by id", (now - timedelta(hours=30),))
     signs = [x["payload"] for x in cur.fetchall()]
+    cur.execute("select payload from events where name='fincident.reviewed' and occurred_at >= %s order by id desc limit 1", (now - timedelta(days=7),))
+    w = cur.fetchone()
     return {"patrolled": r["payload"] if r else None, "signs": signs,
-            "open": [{"id": c["id"], "title": c["title"], "severity": c["severity"], "resource": c["resource"]} for c in list_cases(cur, "open", 20)]}
+            "open": [{"id": c["id"], "title": c["title"], "severity": c["severity"], "resource": c["resource"]} for c in list_cases(cur, "open", 20)],
+            "weekly": w["payload"] if w else None, "outbox": len(outbox(cur, "pending"))}
+
+
+# ------------------------------------------------------------------ 週次の見回り（ADR 0046 の順番 3・4）
+def week_of(now: datetime) -> str:
+    y, w, _ = now.astimezone(JST).isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def weekly_due(now: datetime, defs: dict) -> str | None:
+    """その週の指定の曜日・時（JST）を過ぎていれば週の名前（2026-W46）。過ぎていなければ None"""
+    wk = ((defs.get("committee") or {}).get("patrol") or {}).get("weekly") or {}
+    if wk.get("enabled") is False:
+        return None
+    now = now.astimezone(JST)
+    wd = WEEKDAYS.index(wk.get("weekday", "sunday"))
+    if (now.weekday(), now.hour) < (wd, int(wk.get("hour_jst", 12))):
+        return None
+    return week_of(now)
+
+
+def deny_names(repos: list[str]) -> list[str]:
+    """製品の情報を抜く検査に渡す名前（制御プレーンの FACTORY_REPOS から。持ち主と名前の両方）"""
+    out: list[str] = []
+    for r in repos:
+        for x in [r, *r.split("/")]:
+            if len(x) >= 3 and x not in out:
+                out.append(x)
+    return out
+
+
+def weekly_input(cur, now: datetime, repos: list[str]) -> dict:
+    """週次の見回りの材料。制御プレーンの記録だけで組み立てる（ワーカーは制御プレーンに触れない）。台帳なので生の数字を含む"""
+    now = now.astimezone(JST)
+    since = now - timedelta(days=7)
+    cur.execute("select payload from events where name='fincident.patrolled' and occurred_at >= %s order by id", (since,))
+    patrols = [{k: v for k, v in r["payload"].items() if k in ("day", "llm_tokens", "plan_quota", "cloud_metered", "external_api", "signs", "opened")}
+               for r in cur.fetchall()]
+    cur.execute("select payload from events where name='fincident.sign' and occurred_at >= %s order by id", (since,))
+    signs = [r["payload"] for r in cur.fetchall()]
+    cases = list_cases(cur, "all", 30)   # 開いている件と、最近閉じた件（閉じた理由も調査の材料）
+    shift = f"{usage.DAY_START_HOUR} hours"
+    cur.execute(
+        "select ((e.occurred_at at time zone 'Asia/Tokyo') - %s::interval)::date as d, coalesce(j.kind, 'implement') as kind, "
+        "sum(coalesce((e.payload->>'cost_usd')::numeric, 0)) as usd, count(*) as jobs, "
+        "count(*) filter (where e.payload->>'state' <> 'succeeded') as failed "
+        "from events e left join jobs j on j.id = e.job_id where e.name = 'job.finished' and e.occurred_at >= %s and e.occurred_at <= %s group by 1, 2 order by 1, 2",
+        (shift, now - timedelta(days=14), now))
+    by_day = [{"day": r["d"].isoformat(), "kind": r["kind"], "usd": round(_f(r["usd"]), 2), "jobs": int(r["jobs"]), "failed": int(r["failed"])} for r in cur.fetchall()]
+    cur.execute(
+        "select coalesce(e.correlation_id, 'job:' || e.job_id::text) as corr, sum(coalesce((e.payload->>'cost_usd')::numeric, 0)) as usd, count(*) as jobs, "
+        "array_agg(distinct coalesce(j.kind, 'implement')) as kinds, count(*) filter (where e.payload->>'state' <> 'succeeded') as failed "
+        "from events e left join jobs j on j.id = e.job_id where e.name = 'job.finished' and e.occurred_at >= %s and e.occurred_at <= %s "
+        "group by 1 order by 2 desc limit 10", (since, now))
+    top = [{"correlation_id": r["corr"], "usd": round(_f(r["usd"]), 2), "jobs": int(r["jobs"]), "failed": int(r["failed"]), "kinds": sorted(r["kinds"])}
+           for r in cur.fetchall()]
+    days = sorted({x["day"] for x in by_day if x["day"] >= since.date().isoformat()})
+    budgets = {d: usage.day_budget(datetime.fromisoformat(d).date(), usage.declared(cur)) for d in days}
+    cur.execute("select payload->>'id' as id from events where name='fincident.outboxed'")
+    return {"week": week_of(now), "from": since.isoformat(), "to": now.isoformat(),
+            "spent_usd": round(sum(x["usd"] for x in by_day if x["day"] >= since.date().isoformat()), 2), "daily_budget_usd": budgets,
+            "patrols": patrols, "signs": signs, "cases": cases, "cost_by_day_kind": by_day, "top_tickets": top,
+            "ephemeral": [{"repo": a["repo"], "pr": a["pr"], "up_hours": round((now - a["at"]).total_seconds() / 3600, 1)} for a in ephemeral.active(cur)],
+            "external_api": {"measured": False},
+            "outbox_ids": [r["id"] for r in cur.fetchall()], "deny": deny_names(repos)}
+
+
+def enqueue_weekly(cur, now: datetime, repos: list[str], defs: dict | None = None) -> dict | None:
+    """週 1 回のジョブを積む。積んだら {week, job_id, corr}。今週はもう積んだ・まだ時刻でないなら None。
+    ジョブは固定 Issue を持たない（issue_number 0）。結果は台帳と送り出し口に残し、Issue は Engine に起票する"""
+    defs = defs if defs is not None else load_defs()
+    week = weekly_due(now, defs)
+    if not week or not repos:
+        return None
+    corr = f"fincident:weekly:{week}"
+    cur.execute("select 1 from jobs where correlation_id=%s", (corr,))
+    if cur.fetchone():
+        return None
+    inp = weekly_input(cur, now, repos)
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,0,'supervisor','tier-judge',%s) returning id",
+                (corr, repos[0], KIND))
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (corr, jid, Jsonb({"by": "supervisor", "kind": KIND, "week": week, "input": inp})))
+    return {"week": week, "job_id": jid, "corr": corr, "signs": len(inp["signs"]), "cases": len(inp["cases"])}
+
+
+def record_weekly(cur, job_id: int, week: str, result: dict) -> dict:
+    """週次の結果を残す（dispatcher が呼ぶ）。所見で台帳を開く・足す。通った下書きは送り出し口へ、Issue の案は supervisor の起票待ちへ"""
+    rep = result.get("report") or {}
+    opened, updated, outboxed, proposed = [], [], [], []
+    by = "committee.weekly"
+    for f in rep.get("findings") or []:
+        if not f.get("is_incident"):
+            continue
+        mech = f.get("mechanism") if f.get("mechanism") != "unknown" else None
+        note = f"{f.get('why') or ''}\n根拠: {f.get('evidence') or ''}".strip()
+        if f.get("case"):
+            if update_case(cur, f["case"], by, mechanism=mech, severity=f.get("severity"), note=note[:2000], fir=f.get("overlaps") or None):
+                updated.append(f["case"])
+        elif f.get("severity") in OPEN_FROM:
+            c = open_case(cur, by, f.get("title") or "", f.get("resource"), f["severity"], {"evidence": f.get("evidence")}, mechanism=mech,
+                          viewpoints=[f["viewpoint"]] if f.get("viewpoint", "free") != "free" else [], note=note,
+                          dedupe=f"fincident.opened:{week}:{f.get('title')}")
+            if c:
+                f["case"] = c
+                opened.append(c)
+                if f.get("overlaps"):
+                    update_case(cur, c, by, fir=f["overlaps"])
+    by_title = {f.get("title"): f.get("case") for f in rep.get("findings") or []}
+    for d in result.get("drafts") or []:
+        cid = d.get("case") or by_title.get(d.get("title")) or None
+        if not d.get("ok"):
+            continue
+        if _record(cur, "fincident.outboxed", {"id": d["id"], "case": cid, "week": week, "job_id": job_id, "title": d.get("title"),
+                                               "resource": d.get("resource"), "mechanism": d.get("mechanism"), "severity": d.get("severity"),
+                                               "yaml": d["yaml"]}, f"fincident.outboxed:{d['id']}", corr=f"fincident:{cid}" if cid else None):
+            outboxed.append(d["id"])
+            if cid:
+                update_case(cur, cid, by, fir=d["id"])
+        if d.get("issue") and d["issue"].get("title"):
+            if _record(cur, "fincident.issue_proposed", {"fir": d["id"], "case": cid, "week": week, "title": d["issue"]["title"][:200],
+                                                         "body": d["issue"].get("body") or ""}, f"fincident.issue_proposed:{d['id']}"):
+                proposed.append(d["id"])
+    summary = {"week": week, "job_id": job_id, "summary": rep.get("summary") or "", "viewpoints": (result.get("facts") or {}).get("viewpoints") or [],
+               "findings": len(rep.get("findings") or []), "incidents": sum(1 for f in rep.get("findings") or [] if f.get("is_incident")),
+               "opened": opened, "updated": updated, "outboxed": outboxed, "issues_proposed": proposed,
+               "rejected": [{"id": d.get("id"), "title": d.get("title"), "check": d.get("check") or [], "review": (d.get("review") or {}).get("problems") or []}
+                            for d in result.get("drafts") or [] if not d.get("ok")],
+               "new_viewpoints": rep.get("new_viewpoints") or [], "cost_usd": result.get("cost_usd")}
+    _record(cur, "fincident.reviewed", summary, f"fincident.reviewed:{week}", corr=f"fincident:weekly:{week}")
+    return summary
+
+
+def pending_issues(cur, limit: int = 2) -> list[dict]:
+    """起票を待つ Engine の改善 Issue の案（supervisor が起票する）"""
+    cur.execute("select p.payload from events p where p.name='fincident.issue_proposed' and not exists "
+                "(select 1 from events f where f.name='fincident.issue_filed' and f.payload->>'fir' = p.payload->>'fir') order by p.id limit %s", (limit,))
+    return [r["payload"] for r in cur.fetchall()]
+
+
+def file_issues(cur, gh, engine_repo: str, label: str, limit: int = 2) -> list[str]:
+    """案を Engine の改善 Issue にする。同じ題が開いていれば足さず、それを指す。台帳に Issue の URL を足す"""
+    todo = pending_issues(cur, limit)
+    if not todo:
+        return []
+    open_titles = {i.get("title", ""): i.get("html_url") for i in gh("GET", f"repos/{engine_repo}/issues?state=open&labels={label}&per_page=100") or []}
+    filed = []
+    for p in todo:
+        url = open_titles.get(p["title"])
+        dup = bool(url)
+        if not url:
+            body = p["body"] + f"\n\n---\n事故の調査委員会の週次の見回り（ADR 0046）が起票。事故記録の下書き {p['fir']}（送り出し口）。直すのは建設者。"
+            url = (gh("POST", f"repos/{engine_repo}/issues", {"title": p["title"], "body": body, "labels": [label]}) or {}).get("html_url")
+        _record(cur, "fincident.issue_filed", {"fir": p["fir"], "case": p.get("case"), "issue": url, "duplicate": dup}, f"fincident.issue_filed:{p['fir']}")
+        if p.get("case") and url:
+            update_case(cur, p["case"], "committee.weekly", engine_issue=url)
+        filed.append(url)
+    return filed
+
+
+# ------------------------------------------------------------------ 送り出し口（ADR 0046 の 9）
+def outbox(cur, status: str = "pending") -> list[dict]:
+    """検査と査読を通った FIR の下書き。Gen1 は人が factoryctl で取り出し、Engine の incidents/ に PR で入れる（公開はオーナーの承認）。
+    将来はメタ工場が吸い上げる。台帳の id（case）は配らない"""
+    cur.execute("select o.payload, o.occurred_at, t.payload as taken from events o left join events t on t.name='fincident.taken' and t.payload->>'id' = o.payload->>'id' "
+                "where o.name='fincident.outboxed' order by o.id")
+    out = []
+    for r in cur.fetchall():
+        x = {**{k: v for k, v in r["payload"].items() if k != "case"}, "at": r["occurred_at"].isoformat(), "taken": bool(r["taken"])}
+        if status == "all" or (status == "pending") != x["taken"]:
+            out.append(x)
+    return out
+
+
+def take(cur, fid: str, by: str) -> bool:
+    """送り出し口から取り出した印（人が集めた・メタ工場が吸い上げた）"""
+    if not any(x["id"] == fid for x in outbox(cur, "all")):
+        return False
+    return bool(_record(cur, "fincident.taken", {"id": fid, "by": by}, f"fincident.taken:{fid}"))

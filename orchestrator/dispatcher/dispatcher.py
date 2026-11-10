@@ -49,6 +49,7 @@ import version
 import drain
 import incident
 import exit_capture
+import factory_incident
 import jobdb
 import judgment
 import line
@@ -408,7 +409,7 @@ def run_job(job: dict, reattaching: bool = False):
                 cur.execute("select payload from events where name='job.started' and job_id=%s order by id desc limit 1", (job_id,))
                 prov = ((cur.fetchone() or {}).get("payload") or {}).get("provenance") or {}
                 image = prov.get("worker_image") or WORKER_IMAGE
-            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design_review", "desk_consult", "desk_answer"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
+            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design_review", "desk_consult", "desk_answer"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
                 image = WORKER_IMAGE
             elif kind == "plan":   # プランナー（ADR 0025・0026）。読むだけなので製品によらず基本のイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
@@ -428,7 +429,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") and not reattaching:
+            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") and not reattaching:
                 dbname = f"job_{job_id}"
                 jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
                 jobdb.create(cur, dbname, JOB_DB_USER)
@@ -457,6 +458,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/design_review.sh"] if kind == "design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/case_review.sh"] if kind == "case_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/committee_weekly.sh"] if kind == "committee_weekly" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/incident_review.sh"] if kind == "incident_review" else []),   # 事故の調査委員会の週次の見回り（ADR 0046）
                    *(["--entrypoint", "/usr/local/bin/committee_review.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "committee_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design.sh"] if kind == "ui_design" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design_review.sh"] if kind == "ui_design_review" else []),
@@ -469,7 +471,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -496,7 +498,7 @@ def run_job(job: dict, reattaching: bool = False):
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
-                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") or signaled
+                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") or signaled
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if piped:
                     proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -545,7 +547,7 @@ def run_job(job: dict, reattaching: bool = False):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
-            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") and result.get("ok"):
+            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
@@ -629,6 +631,15 @@ def run_job(job: dict, reattaching: bool = False):
                         committee.weekly_record(cur, repo, issue, corr, job_id, result, enq.get("week") or design.week_of(), gh, comment, int(enq.get("max_issues") or 4))
                     except Exception as e:  # noqa: BLE001  まとめは events に残る。ラインは止めない
                         log("committee weekly publish failed", repo, repr(e))
+            elif kind == "incident_review":
+                # 事故の調査委員会の週次の見回り（ADR 0046）: 台帳を開く・足す、通った FIR の下書きを送り出し口に、Engine の改善 Issue の案を残す（起票は supervisor）
+                if state == "succeeded":
+                    try:
+                        cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
+                        enq = (cur.fetchone() or {}).get("payload") or {}
+                        factory_incident.record_weekly(cur, job_id, enq.get("week") or design.week_of(), result)
+                    except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
+                        log("incident review record failed", job_id, repr(e))
             elif kind == "committee_review":
                 # 知見の委員会（ADR 0024）: 議決を残し、PR にまとめを書く。差し戻しは閉じ、人の判断は承認のラベル、担保は Issue に
                 if state == "succeeded":

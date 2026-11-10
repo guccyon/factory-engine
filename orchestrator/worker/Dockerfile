@@ -43,4 +43,6 @@ COPY --chown=worker:worker qa.sh /usr/local/bin/qa.sh
 # 知見の委員会のジョブ（ADR 0024）
 COPY --chown=worker:worker committee_review.sh /usr/local/bin/committee_review.sh
 COPY --chown=worker:worker committee_weekly.sh /usr/local/bin/committee_weekly.sh
+# 事故の調査委員会の週次の見回り（ADR 0046）
+COPY --chown=worker:worker incident_review.sh /usr/local/bin/incident_review.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

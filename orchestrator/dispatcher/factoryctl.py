@@ -94,6 +94,10 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl incident-record note <IC-...> [--mechanism ..] [--severity ..] [--engine-issue URL] [--fir FIR-YYYY-NNNN] [--note "..."]   # 調べた結果を台帳に足す
   factoryctl incident-record close <IC-...> --reason "..."   # 台帳を閉じる
   factoryctl incident-record patrol                    # 日次の見回りを今の記録で 1 回試す（何も残さない）
+  factoryctl incident-record weekly                    # 週次の見回りの最新の結果（所見・台帳・送り出し口・落ちた下書き）
+  factoryctl incident-record outbox [--all]            # 送り出し口の FIR の下書き（検査と査読を通ったもの。--all で取り出し済みも）
+  factoryctl incident-record outbox show <FIR-...>     # 下書きの YAML の全文（Engine の incidents/ に PR で入れる。公開はオーナーの承認）
+  factoryctl incident-record outbox take <FIR-...>     # 送り出し口から取り出した印を付ける
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -875,7 +879,7 @@ def hold_report(cur) -> None:
 
 
 def incident_record_cmd(cur, argv) -> int:
-    """factoryctl incident-record list|show|open|note|close|patrol（ADR 0046、dispatcher/factory_incident.py）"""
+    """factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox（ADR 0046、dispatcher/factory_incident.py）"""
     sub = argv[2] if len(argv) > 2 else "list"
     arg = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None
     by = f"factoryctl:{opt(argv, '--by', 'human')}"
@@ -911,9 +915,30 @@ def incident_record_cmd(cur, argv) -> int:
         if sub == "patrol":
             snap = factory_incident.patrol(cur)
             print(json.dumps(snap, ensure_ascii=False, indent=2, default=str)); return 0
+        if sub == "weekly":
+            cur.execute("select payload from events where name='fincident.reviewed' order by id desc limit 1")
+            r = cur.fetchone()
+            print(json.dumps(r["payload"], ensure_ascii=False, indent=2) if r else "週次の見回りの結果はまだない"); return 0
+        if sub == "outbox":
+            act = arg or "list"
+            fid = argv[4] if len(argv) > 4 and not argv[4].startswith("--") else None
+            if act == "list":
+                items = factory_incident.outbox(cur, "all" if "--all" in argv else "pending")
+                if not items:
+                    print("送り出し口に下書きはない"); return 0
+                for x in items:
+                    print(f"{x['id']}{' [取り出し済み]' if x['taken'] else ''} {x['severity']} {x['resource']}×{x['mechanism']}: {x['title']}（{x['week']}）")
+                return 0
+            if act in ("show", "take") and fid:
+                x = next((x for x in factory_incident.outbox(cur, "all") if x["id"] == fid), None)
+                if not x:
+                    print(f"{fid} は送り出し口にない"); return 1
+                if act == "show":
+                    print(x["yaml"], end=""); return 0
+                print("取り出した印を付けた" if factory_incident.take(cur, fid, by) else "もう取り出してある"); return 0
     except ValueError as e:
         print(str(e)); return 2
-    print("factoryctl incident-record list|show|open|note|close|patrol ..."); return 2
+    print("factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox ..."); return 2
 
 
 def incident_cmd(cur, argv) -> int:

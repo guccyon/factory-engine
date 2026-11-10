@@ -16,7 +16,7 @@ import model_route
 
 # 入力を job.enqueued の input で受け取る種類（dispatcher が標準入力で渡す）。積み直すときは前の入力を引き継ぐ。
 # 引き継がないと入力が空のまま走り、本文の追記なら pr_url が無くて落ちる
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa")
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa")
 INCOMPLETE_CONTINUE_MAX = 1   # 途中終了の続きは 1 回まで（ADR 0036 の 6）
 
 
