@@ -56,6 +56,7 @@ import ephemeral
 import factory_incident
 import judgment
 import line
+import ticket_sync
 import learn
 import version
 import ops
@@ -1305,6 +1306,16 @@ def workflow_shadow_step(cur):
         log("workflow shadow step error", repr(e)[:200])
 
 
+def ticket_sync_step(cur):
+    """着手中なのに Issue が閉じたチケットを台帳から外す（ticket_sync.py、2026-11-10 オーナー）。GitHub を見るのは 30 分に 1 回"""
+    if DRY_RUN:
+        return
+    try:
+        ticket_sync.step(cur, gh, log=log)
+    except Exception as e:  # noqa: BLE001  台帳の片付けの失敗でラインを止めない
+        log("ticket sync step error", repr(e)[:200])
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
@@ -1320,6 +1331,7 @@ def tick():
         judge_step(cur, manifests)
         enqueue_step(cur, open_prs)
         incident_patrol_step(cur)
+        ticket_sync_step(cur)
         daily_report_step(cur)
         notify_report_step(cur)
         changelog_step(cur)

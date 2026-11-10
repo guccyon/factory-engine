@@ -43,6 +43,9 @@ def comment(rep: Report, party: str = "provider", factory: str = "") -> str:
     head = f"{f'[{factory}] ' if factory and party == 'provider' else ''}{rep.title}（{period(rep)}）"
     lv = LEVEL.get(rep.level)
     lines = [(f"{lv[2]} *{lv[0]}* " if lv else "") + f"*{head}*"] + [f"• {t}" for t in summary(rep, party)]
+    targets = [(f.get("text", ""), report.link_line(f, True)) for f in rep.findings]
+    if any(x for _, x in targets):   # 人の対応が要るものは、対象へのリンクを本文に出す（添付を開かなくても動ける。2026-11-10 オーナー）
+        lines += ["*対応が要るもの*"] + [f"• {t}: {x}" for t, x in targets if x]
     if rep.provisional:
         lines.append("_項目と閾値は仮置きです。詳しくは添付の報告書を開いてください_")
     return "\n".join(lines)
@@ -79,7 +82,7 @@ ul.findings{list-style:none;margin:0;padding:0}
 ul.findings li{padding:10px 0;border-top:1px solid var(--line)}ul.findings li:first-child{border-top:0;padding-top:0}
 .tag{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:999px;margin-right:6px}
 .tag.warn{background:var(--warn-bg);color:var(--warn-ink)}.tag.bad{background:var(--bad-bg);color:var(--bad-ink)}
-.action{color:var(--sub);font-size:14px;margin-top:2px}.action b{color:var(--ink);font-weight:600}
+.action{color:var(--sub);font-size:14px;margin-top:2px}.action b{color:var(--ink);font-weight:600}.nolink{color:var(--bad)}
 .charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
 .chart{background:var(--bg);border-radius:10px;padding:10px 12px}
 .chart .ct{font-size:13px;color:var(--sub);margin-bottom:4px}.chart .cv{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -156,6 +159,17 @@ def _entry(i) -> str:
     return f"<li{cls}><span>{_tag(i.level)}{label}</span>{state}</li>"
 
 
+def _targets(f: dict) -> str:
+    """兆候の対象へのリンク（report.finding_links）。置けないときはそう書く"""
+    got, more, missing = report.finding_links(f)
+    parts = [f'<a href="{_e(x["url"])}">{_e(x["label"])}</a>' for x in got]
+    if more:
+        parts.append(_e(f"ほか {more} 件"))
+    if missing:
+        parts.append(f'<span class="nolink">{_e(report.NO_LINK)}</span>')
+    return f'<div class="action"><b>対象</b> {"、".join(parts)}</div>' if parts else ""
+
+
 def _section(s) -> str:
     out, ms, es = [f"<section><h2>{_e(s.title)}</h2>"], [], []
 
@@ -227,7 +241,8 @@ def render_html(rep: Report, party: str = "provider", factory: str = "") -> str:
     secs = report.visible(rep, party)
     shown = {s.id for s in secs}
     lines = "".join(f"<p>{_e(t)}</p>" for t in summary(rep, party))
-    found = "".join(f'<li>{_tag(f["level"])}{_e(f["text"])}<div class="action"><b>打ち手</b> {_e(f["action"])}</div></li>' for f in rep.findings)
+    found = "".join(f'<li>{_tag(f["level"])}{_e(f["text"])}<div class="action"><b>打ち手</b> {_e(f["action"])}</div>{_targets(f)}</li>'
+                    for f in rep.findings)
     items = {(s.id, i.label): i for s in secs for i in s.items if i.kind == "metric"}
     charts = "".join(_bars(c["title"], items[(c["section"], c["label"])], rep.days) for c in rep.charts
                      if c["section"] in shown and (c["section"], c["label"]) in items)

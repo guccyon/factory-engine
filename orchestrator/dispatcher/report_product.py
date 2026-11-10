@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import notify
-from report import Report, Section, entry, metric, note
+from report import Report, Section, console_link, entry, finding, link, metric, note
 
 KIND = "report.product"
 TITLE = "開発状況レポート"
@@ -72,8 +72,8 @@ def pace(cur, repo: str, start: datetime, end: datetime):
     per_day = int(r["n"] or 0) / PACE_DAYS
     cur.execute("select count(*) as n from tickets where repo = %s and created_at < %s and (state <> 'closed' or updated_at >= %s)", (repo, end, end))
     left = int(cur.fetchone()["n"] or 0)
-    st = _stalest(cur, repo, end)
-    stale = st["stale"] if st else None
+    rows = _stale(cur, repo, end)
+    stale = rows[0]["stale"] if rows else None
     cur.execute("select count(*) as n from tickets where repo = %s and created_at >= %s and created_at < %s", (repo, start, end))
     added = int(cur.fetchone()["n"] or 0)
     return [metric(f"消化のペース（直近 {PACE_DAYS} 日の 1 日あたり）", round(per_day, 1), "件"),
@@ -82,15 +82,15 @@ def pace(cur, repo: str, start: datetime, end: datetime):
             metric("チケットのリードタイム（作成から済みまで、中央値）", round(float(r["lead"]), 1) if r["lead"] is not None else None, "日"),
             metric("着手したもののうち最も長く動いていない", round(float(stale), 1) if stale is not None else None, "日"),
             metric("期間に増えたチケット", added, "件")] + \
-        ([entry(f"最も長く動いていない: {st['title'] or '(題なし)'}", f"{round(float(stale), 1)} 日", st["url"] or "")] if st else [])
+        [entry(f"{STALE_PREFIX}{r['title'] or '(題なし)'}", f"{round(float(r['stale']), 1)} 日", r["url"] or "")
+         for r in rows if float(r["stale"]) >= THRESHOLDS["stale_days"][0]][:LIST_MAX]
 
 
-# 「進めている」の滞りに数えるチケット（2026-11-10 オーナー「着手までに日数がかかるのは普通。危険にしなくてよい」）。
-# 台帳の active はジョブに渡した時点で付き、PR がマージされるまで外れない。なので次は数えない:
-#   着手前（ジョブがまだ一度も始まっていない）・保留中・やることが残っていない（動いているジョブも開いた PR もない。
-#   窓口の確認だけのジョブや、マージせずに閉じた PR のチケットがここに残る）。
-# 動いた時刻は、台帳の更新とそのチケットのイベント（ジョブ・PR・judge など）のうち最も新しいもの
-STALEST = """
+# 「動いていない」に数えるチケット（2026-11-10 オーナー）。着手前（バックログのまま）は何日たっても数えない。
+# 着手は、ジョブが一度でも始まったこと。保留中は人が止めているので数えない。動いた時刻は、台帳の更新と
+# そのチケットのイベント（ジョブ・PR・judge・窓口の確認など）のうち最も新しいもの。
+# 着手したのに実態がない（Issue はもう閉じている）記録は、supervisor が台帳を閉じる（ticket_sync.py）
+STALE = """
 select t.title, t.url,
        extract(epoch from %(end)s - greatest(t.updated_at, coalesce(
          (select max(e.occurred_at) from events e where e.correlation_id = 'github:' || t.source_ref and e.occurred_at < %(end)s),
@@ -98,19 +98,19 @@ select t.title, t.url,
   from tickets t
  where t.repo = %(repo)s and t.state = 'active' and not t.held
    and exists (select 1 from jobs j where j.correlation_id = 'github:' || t.source_ref and j.started_at < %(end)s)
-   and (exists (select 1 from jobs j where j.correlation_id = 'github:' || t.source_ref and j.state in ('queued', 'running'))
-        or exists (select 1 from artifacts a where a.type = 'PR' and a.correlation_id = 'github:' || t.source_ref
-                     and not exists (select 1 from events e where e.name in ('pr.merged', 'pr.closed_unmerged')
-                                       and e.payload->>'pr_url' = a.payload->>'pr_url' and e.occurred_at < %(end)s)))
  order by stale desc
- limit 1
 """
+STALE_PREFIX = "動いていない: "
 
 
-def _stalest(cur, repo: str, end: datetime) -> dict | None:
-    """着手済みで、まだやることが残っているチケットのうち、いちばん長く動いていないもの（題・URL・日数）"""
-    cur.execute(STALEST, {"repo": repo, "end": end})
-    return cur.fetchone()
+def _stale(cur, repo: str, end: datetime) -> list[dict]:
+    """着手したチケットを、長く動いていない順に（題・URL・日数）。読めなくてもペースの残りの数は出す"""
+    try:
+        cur.execute(STALE, {"repo": repo, "end": end})
+        return cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        notify._log("report stale failed", repr(e)[:200])
+        return []
 
 
 def doing(cur, repo: str, start: datetime, end: datetime):
@@ -174,49 +174,66 @@ def _lvl(x, warn, bad) -> str:
     return "bad" if x >= bad else "warn" if x >= warn else ""
 
 
+def _days(state: str) -> float | None:
+    """「動いていない」の entry の状態（"9.4 日"）から日数を読む"""
+    try:
+        return float(state.split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
 def assess(rep: Report) -> Report:
     """計画が崩れる兆候を数で見て、異常の印（Item.level）と兆候・打ち手（findings）、所感（summary）を詰める"""
     items = {(s.id, i.label): i for s in rep.sections for i in s.items if i.kind == "metric"}
     val = lambda sid, label: getattr(items.get((sid, label)), "value", None)   # noqa: E731
     found: list[dict] = []
 
-    def flag(sid, label, level, text, action):
+    def flag(sid, label, level, text, action, links=None, needs_link=False):
         if not level:
             return
         if (sid, label) in items:
             items[(sid, label)].level = level
-        found.append({"level": level, "text": text, "action": action})
+        found.append(finding(level, text, action, links, needs_link=needs_link))
+
+    def entries(sid, pred=lambda i: True):
+        return [i for s in rep.sections if s.id == sid for i in s.items if i.kind == "entry" and pred(i)]
 
     pace_label = f"消化のペース（直近 {PACE_DAYS} 日の 1 日あたり）"
     per_day, left = val("pace", pace_label), val("pace", "残り（進めている＋投入待ち）")
     if per_day == 0 and isinstance(left, int) and left > 0:
         flag("pace", pace_label, "bad", f"直近 {PACE_DAYS} 日に済んだチケットがない（残り {left} 件）",
-             "ラインが止まっていないか、投入待ちが依存や保留で詰まっていないかを確かめる。止めているなら再開の時期を決める")
+             "ラインが止まっていないか、投入待ちが依存や保留で詰まっていないかを確かめる。止めているなら再開の時期を決める",
+             lambda: console_link("操業コンソールのライン", "/line"))
     fc = val("pace", "残りを今のペースで終えるまでの見込み")
     flag("pace", "残りを今のペースで終えるまでの見込み", _lvl(fc, *THRESHOLDS["forecast_days"]), f"残りを終えるまで今のペースで {fc} 日かかる見込み",
          "期日に間に合うかを確かめる。間に合わないなら、範囲を絞る（優先度の低いものを保留）か、流量を上げる（factoryctl line scale）")
     stale = val("pace", "着手したもののうち最も長く動いていない")
-    who = next((i.label.split(": ", 1)[1] for s in rep.sections if s.id == "pace" for i in s.items
-                if i.kind == "entry" and i.label.startswith("最も長く動いていない: ")), "")
+    stuck = entries("pace", lambda i: i.label.startswith(STALE_PREFIX))
+    for i in stuck:
+        i.level = _lvl(_days(i.state), *THRESHOLDS["stale_days"])
+    many = f" {len(stuck)} 件が {THRESHOLDS['stale_days'][0]:g} 日以上動いていない（最長 {stale} 日）" if len(stuck) > 1 else f"が {stale} 日動いていない"
     flag("pace", "着手したもののうち最も長く動いていない", _lvl(stale, *THRESHOLDS["stale_days"]),
-         f"着手したチケット{f'「{who}」' if who else ''}が {stale} 日動いていない",
-         "そのチケットが何を待っているか（判断・CI・衝突）を確かめる。大きすぎるならプランナーで切り直す")
+         f"着手したチケット{many}",
+         "対象のチケットが何を待っているか（判断・CI・衝突）を確かめる。大きすぎるならプランナーで切り直す。もう要らないなら Issue を閉じる",
+         lambda: [link(i.label[len(STALE_PREFIX):], i.url) for i in stuck], needs_link=True)
     held = val("roadmap", "保留中")
     flag("roadmap", "保留中", _lvl(held, *THRESHOLDS["held"]), f"保留中のチケットが {held} 件ある",
-         "保留の理由を見直し、再開するか、ロードマップから外すかを決める")
-    nxt = [i for s in rep.sections if s.id == "next" for i in s.items if i.kind == "entry"]
+         "保留の理由を見直し、再開するか、ロードマップから外すかを決める", lambda: console_link("操業コンソールのライン", "/line"))
+    nxt = entries("next")
     if nxt and all(i.state.endswith("完了待ち") for i in nxt):
         for i in nxt:
             i.level = "warn"
-        found.append({"level": "warn", "text": "次に流すものがすべて、ほかのチケットの完了待ち",
-                      "action": "依存の先のチケットを先に流すよう優先度を上げる（factoryctl priority）。依存が誤りなら外す"})
+        found.append(finding("warn", "次に流すものがすべて、ほかのチケットの完了待ち",
+                             "依存の先のチケットを先に流すよう優先度を上げる（factoryctl priority）。依存が誤りなら外す",
+                             lambda: [link(i.label, i.url) for i in nxt], needs_link=True))
 
     odd = [i for s in rep.sections if s.id == "kpi" for i in s.items if i.kind == "metric" and i.state]
     for i in odd:
         i.level = "warn"
     if odd:
-        found.append({"level": "warn", "text": f"週次の KPI で {len(odd)} つの値が異常（{'、'.join(i.label for i in odd[:3])}）",
-                      "action": "受信トレイの Opportunity の下書きを見て、拾うなら窓口に相談として持ち込む。見送るなら閉じる"})
+        found.append(finding("warn", f"週次の KPI で {len(odd)} つの値が異常（{'、'.join(i.label for i in odd[:3])}）",
+                             "受信トレイの Opportunity の下書きを見て、拾うなら窓口に相談として持ち込む。見送るなら閉じる",
+                             lambda: console_link("受信トレイ", "/inbox")))
 
     order = {"bad": 0, "warn": 1}
     found.sort(key=lambda f: order.get(f["level"], 2))

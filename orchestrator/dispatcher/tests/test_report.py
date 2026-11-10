@@ -218,46 +218,65 @@ def test_product_build_reads_tickets_and_merges(cur):
     assert "<https://github.com/o/p/issues/2|D2: きのう済んだ>" in text and "別の製品" not in text
 
 
-def test_product_stale_counts_only_started_work_left(cur):
-    """滞り（2026-11-10 オーナー「着手までに日数がかかるのは普通。危険にしなくてよい」）: 着手前・保留・やることが残っていないものは数えない。
-    動いた時刻はそのチケットの最も新しいイベント"""
+def test_product_stale_counts_started_tickets_with_links(cur):
+    """滞り（2026-11-10 オーナー）: 着手前（バックログのまま）と保留は数えない。PR の有無では絞らない（単発の依頼も拾う）。
+    動いた時刻はそのチケットの最も新しいイベント。対応が要る兆候には対象へのリンクを付ける"""
     from psycopg.types.json import Jsonb
     d = lambda x: END - timedelta(days=x)   # noqa: E731
     t = "insert into tickets(source, source_ref, repo, title, url, state, held, created_at, updated_at) " \
         "values ('github', %s, 'o/p', %s, %s, 'active', %s, %s, %s)"
-    j = "insert into jobs(correlation_id, repo, issue_number, kind, state, enqueued_at, started_at) values (%s, 'o/p', %s, 'implement', %s, %s, %s)"
-    # 1: 積まれたが一度も始まっていない（着手前）
-    cur.execute(t, ("o/p#1", "着手前", "", False, d(20), d(20)))
-    cur.execute(j, ("github:o/p#1", 1, "queued", d(20), None))
-    # 2: 窓口の確認だけで終わり、やることが残っていない（台帳に active のまま残る）
-    cur.execute(t, ("o/p#2", "確認だけ", "", False, d(9), d(9)))
-    cur.execute(j, ("github:o/p#2", 2, "succeeded", d(9), d(9)))
-    # 3: PR をマージせずに閉じた
-    cur.execute(t, ("o/p#3", "閉じた PR", "", False, d(9), d(9)))
-    cur.execute(j, ("github:o/p#3", 3, "succeeded", d(9), d(9)))
-    cur.execute("insert into artifacts(correlation_id, type, payload) values ('github:o/p#3', 'PR', %s)", (Jsonb({"pr_url": "https://github.com/o/p/pull/30"}),))
-    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.closed_unmerged', 'github:o/p#3', %s, %s)",
-                (Jsonb({"pr_url": "https://github.com/o/p/pull/30"}), d(8)))
-    # 4: 保留中
-    cur.execute(t, ("o/p#4", "保留", "", True, d(9), d(9)))
-    cur.execute(j, ("github:o/p#4", 4, "succeeded", d(9), d(9)))
-    cur.execute("insert into artifacts(correlation_id, type, payload) values ('github:o/p#4', 'PR', %s)", (Jsonb({"pr_url": "https://github.com/o/p/pull/40"}),))
+    j = "insert into jobs(correlation_id, repo, issue_number, kind, state, enqueued_at, started_at) values (%s, 'o/p', %s, %s, %s, %s, %s)"
+    cur.execute(t, ("o/p#1", "着手前", "https://github.com/o/p/issues/1", False, d(20), d(20)))   # 積まれたが一度も始まっていない
+    cur.execute(j, ("github:o/p#1", 1, "implement", "queued", d(20), None))
+    cur.execute(t, ("o/p#4", "保留", "https://github.com/o/p/issues/4", True, d(20), d(20)))
+    cur.execute(j, ("github:o/p#4", 4, "implement", "succeeded", d(20), d(20)))
     rep = report_product.build(cur, START, END, "o/p")
     m = {i.label: i.value for s in rep.sections for i in s.items if i.kind == "metric"}
     assert m["着手したもののうち最も長く動いていない"] is None
-    # 5: PR が開いたまま。台帳の更新は 9 日前でも、PR のイベントが 4 日前にあれば 4 日
+    # 単発の依頼（PR を作らない）: 確認のジョブが 9 日前に終わったまま
+    cur.execute(t, ("o/p#2", "D2: 単発の依頼", "https://github.com/o/p/issues/2", False, d(9), d(9)))
+    cur.execute(j, ("github:o/p#2", 2, "clarify", "succeeded", d(9), d(9)))
+    # PR が開いたまま。台帳の更新は 9 日前でも、PR のイベントが 4 日前にあれば 4 日
     cur.execute(t, ("o/p#5", "D5: 開いた PR", "https://github.com/o/p/issues/5", False, d(9), d(9)))
-    cur.execute(j, ("github:o/p#5", 5, "succeeded", d(9), d(9)))
-    cur.execute("insert into artifacts(correlation_id, type, payload) values ('github:o/p#5', 'PR', %s)", (Jsonb({"pr_url": "https://github.com/o/p/pull/50"}),))
+    cur.execute(j, ("github:o/p#5", 5, "implement", "succeeded", d(9), d(9)))
     cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.ci_failed', 'github:o/p#5', %s, %s)", (Jsonb({}), d(4)))
+    # きのう動いたもの（閾値の下なので一覧に出さない）
+    cur.execute(t, ("o/p#6", "D6: 動いている", "", False, d(1), d(1)))
+    cur.execute(j, ("github:o/p#6", 6, "implement", "running", d(1), d(1)))
     rep = report_product.build(cur, START, END, "o/p")
     m = {i.label: i.value for s in rep.sections for i in s.items if i.kind == "metric"}
-    assert m["着手したもののうち最も長く動いていない"] == 4.0
-    pace = [i for s in rep.sections if s.id == "pace" for i in s.items if i.kind == "entry"]
-    assert [(i.label, i.state, i.url) for i in pace] == [("最も長く動いていない: D5: 開いた PR", "4.0 日", "https://github.com/o/p/issues/5")]
+    assert m["着手したもののうち最も長く動いていない"] == 9.0
+    pace = [(i.label, i.state, i.url) for s in rep.sections if s.id == "pace" for i in s.items if i.kind == "entry"]
+    assert pace == [("動いていない: D2: 単発の依頼", "9.0 日", "https://github.com/o/p/issues/2"),
+                    ("動いていない: D5: 開いた PR", "4.0 日", "https://github.com/o/p/issues/5")]
     report_product.assess(rep)
-    f = [x for x in rep.findings if "動いていない" in x["text"]]
-    assert f == [{"level": "warn", "text": "着手したチケット「D5: 開いた PR」が 4.0 日動いていない", "action": f[0]["action"]}]
+    f = [x for x in rep.findings if "動いていない" in x["text"]][0]
+    assert f["level"] == "bad" and f["text"] == "着手したチケット 2 件が 3 日以上動いていない（最長 9.0 日）"
+    assert f["links"] == [{"label": "D2: 単発の依頼", "url": "https://github.com/o/p/issues/2"},
+                          {"label": "D5: 開いた PR", "url": "https://github.com/o/p/issues/5"}]
+    text = report.render(rep, "slack_webhook", "business_owner")
+    assert "*対応が要るもの*" in text and "<https://github.com/o/p/issues/2|D2: 単発の依頼>、<https://github.com/o/p/issues/5|D5: 開いた PR>" in text
+    import report_page
+    assert "<https://github.com/o/p/issues/2|D2: 単発の依頼>" in report_page.comment(rep, "business_owner")
+    assert '<a href="https://github.com/o/p/issues/5">D5: 開いた PR</a>' in report_page.render_html(rep, "business_owner")
+
+
+def test_finding_without_link_says_no_substance():
+    """対象が決まる兆候でリンクが置けないのは、実態のない記録の見込み。リンクを作るのに失敗しても兆候と文面は出す"""
+    def boom():
+        raise RuntimeError("x")
+    rep = Report("report.product", "開発状況レポート", START, END, [], level="bad", summary=["計画が崩れる兆候があります"], findings=[
+        report.finding("bad", "着手したチケットが 9.0 日動いていない", "確かめる", [report.link("幽霊", "")], needs_link=True),
+        report.finding("warn", "壊れたリンク", "確かめる", boom, needs_link=True),
+        report.finding("warn", "対象のない兆候", "確かめる", boom),
+        {"level": "warn", "text": "古い形の記録", "action": "x"},
+    ])
+    assert rep.findings[1]["links"] == [] and rep.findings[2]["links"] == []
+    text = report.render(Report.from_dict(rep.to_dict()), "slack_webhook", "provider")
+    assert f"• 着手したチケットが 9.0 日動いていない: {report.NO_LINK}" in text and f"• 壊れたリンク: {report.NO_LINK}" in text
+    assert "対象のない兆候:" not in text and "古い形の記録:" not in text
+    import report_page
+    assert report.NO_LINK in report_page.render_html(rep, "provider") and report.NO_LINK in report_page.comment(rep, "provider")
 
 
 def test_send_now_does_not_count_for_the_morning(cur):
