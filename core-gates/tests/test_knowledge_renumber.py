@@ -30,6 +30,9 @@ def setup(tmp_path):
     repo = tmp_path / "r"
     repo.mkdir()
     sh(repo, "init", "-q", "-b", "main")
+    # 付け直しのコミットは本体が打つので、身元はリポジトリに持たせる（CI の runner には git の身元が無い）
+    sh(repo, "config", "user.name", "t")
+    sh(repo, "config", "user.email", "t@example.invalid")
     write(repo, {"README.md": "x\n", "INDEX.md": "まだない\n"})
     commit(repo, "init")
     sh(repo, "checkout", "-q", "-b", "topic")
@@ -76,6 +79,9 @@ def test_rewrites_only_added_lines_in_existing_files(tmp_path):
     repo = tmp_path / "r"
     repo.mkdir()
     sh(repo, "init", "-q", "-b", "main")
+    # 付け直しのコミットは本体が打つので、身元はリポジトリに持たせる（CI の runner には git の身元が無い）
+    sh(repo, "config", "user.name", "t")
+    sh(repo, "config", "user.email", "t@example.invalid")
     write(repo, {"K-0001.yaml": "id: K-0001\nevidence:\n  - case: C-0001\n", "cases/C-0001.md": "# C-0001\n"})
     commit(repo, "init")
     sh(repo, "checkout", "-q", "-b", "topic")
