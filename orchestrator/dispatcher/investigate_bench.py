@@ -53,8 +53,11 @@ def score(case: dict, res: dict | None) -> dict:
         reasons.append("調査役のジョブが結果を返さなかった")
     if res.get("outcome") != exp.get("outcome"):
         reasons.append(f"結果が {res.get('outcome')}（正解は {exp.get('outcome')}）")
-    if exp.get("fix_target") and (res.get("fix_target") or "none") != exp["fix_target"]:
-        reasons.append(f"直す先が {res.get('fix_target')}（正解は {exp['fix_target']}）")
+    fixes = exp.get("fix_target")
+    if fixes:
+        fixes = fixes if isinstance(fixes, list) else [fixes]
+        if (res.get("fix_target") or "none") not in fixes:
+            reasons.append(f"直す先が {res.get('fix_target')}（正解は {'・'.join(fixes)}）")
     stops = exp.get("stop_reason")
     if stops:
         got = (res.get("handoff") or {}).get("stop_reason")

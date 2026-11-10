@@ -70,7 +70,7 @@ cases:
   fixed_in: eb598b5
   expected:
     outcome: unidentified
-    fix_target: none
+    fix_target: [none, engine]  # 原因が分からないまま、抜けを記録・通知する仕組みを提案するのも正しい（オーナー判断 11/10）
     stop_reason: [needs_code, needs_host]
     cause: '報告の部品が読み込みの時点でコンテナのパスの深さを前提にして落ちていた。記録には残らず、ソースかホストのログを見ないと分からないので、外に引き継ぐのが正しい'
     must_mention: []
