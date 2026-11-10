@@ -507,7 +507,7 @@ docker compose exec dispatcher factoryctl report kpi guccyon/rally --measure   #
 
 - 測り方は製品の `.factory-config/ship.yaml` の `kpi`（測る環境・実行する部品とコマンド・値ごとの id・名前・単位・よい向き・目安の幅 `expected`・前回からの変化の閾値 `change_alert`）。コマンドの出力は `{id: 数}` の JSON。Gen1 は合成の利用者の行動ログ（O4）がまだないので、staging の DB から近似する
 - supervisor が毎週月曜 7 時（JST）を過ぎたら、`KPI_WEEKLY` の製品（既定は `RELEASE_TRAIN` と同じ。空で止める）ごとに測る依頼（`release.kpi_requested`）を書き、shipper が staging で実行して `release.kpi_measured` に残す。staging に版がなければ `report.kpi_skipped` に週 1 回。測れなくても停止には開かない
-- 測れた結果は、同じ製品・同じ環境のひとつ前の測定と比べて artifacts の `KPIReport` と events の `report.kpi_weekly` に残す。目安の幅の外・前回より悪い向きに `change_alert`（既定 20%）以上・見込みと逆に動いた値を異常とし、1 回 3 件まで改善の提案（`Opportunity`。題・問題・期待する効果）にして、合成の利用者と同じ口（`dispatcher/opportunity.py`）から `opportunity.proposed`（source `report.kpi`）と受信トレイのプロダクトオーナーの依頼に出す
+- 測れた結果は、同じ製品・同じ環境のひとつ前の測定と比べて artifacts の `KPIReport` と events の `report.kpi_weekly` に残す。目安の幅の外・前回より悪い向きに `change_alert`（既定 20%）以上・見込みと逆に動いた値を異常とし、1 回 3 件まで改善の提案（`Opportunity`。題・問題・期待する効果）にして、合成の利用者と同じ口（`dispatcher/opportunity.py`）から `opportunity.proposed`（source `report.kpi`）と受信トレイのプロダクトオーナーの依頼に出す。受信トレイで「起票する」と答えると、supervisor が次の周期にプランナー宛ての Issue（`factory:plan`）を作る（`opportunity.ticket_requested` → `opportunity.ticket_filed`。仕込みに当たった提案は「見た」だけ）
 - 見込み（O3）: プランナーは着手を決めるとき、変更が KPI を動かすと見込めれば Requirements に `kpi_forecast`（KPI の id・変化・理由）を書く（任意。製品の `ship.yaml` の `kpi.metrics` にない id は落とす）。週次の Report が、前回の測定から今回までにマージしたチケットの見込みを実測の差と突き合わせて `kpi.forecast_scored` に残し、Learn の Retrospective が教師信号 `kpi_error`（signature `kpi:<id>`）として束ねる
 - 開発状況レポート（`report.product`）の節「製品の KPI（週次）」にいちばん新しい値と前回差を出し、異常は注意の印にする
 - Gen1 の値は staging の合成シードなので、異常や誤差の中身に意味はない（回路の確認）

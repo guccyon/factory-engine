@@ -55,7 +55,9 @@ CHOICE_EFFECTS = {
 TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）",
             "desk_waiting": "見たとして閉じる（依頼は閉じない。依頼者に直接確かめ、答えは依頼者が窓口か受信トレイから返す）",
             "desk_notice_failed": "見たとして閉じる（知らせはもう送り直さない。依頼者には直接知らせる）",
-            "opportunity": "見たとして閉じる（拾うなら製品の Issue に起票する。工場は起票しない。ADR 0043）"}   # 見たら閉じてよい依頼
+            "opportunity": "見たとして閉じる（拾うなら「起票する」で答える）"}   # 見たら閉じてよい依頼
+OPPORTUNITY_FILE = {"id": "file", "label": "起票する（プランナーへ）"}
+OPPORTUNITY_EFFECT = "起票するなら工場がプランナー宛ての Issue（factory:plan）を作り、要否と経路はプランナーが決める。拾わないなら見たとして閉じる"
 # 窓口の単発の依頼の確認と受取確認（ADR 0039 の決定 2・5）。答えは desk_line.answer に渡す。依頼者のほか、運用主（role なし）も答えられる
 DESK_ANSWERS = {
     "desk_confirm": {"options": [{"id": "run", "label": "実行する"}, {"id": "cancel", "label": "やめる"}],
@@ -320,11 +322,19 @@ def _tasks(cur) -> list[dict]:
             d = DESK_ANSWERS[p["kind"]]
             i["answer"] = {"type": "choose", "options": d["options"], "extra": d.get("extra", []), "effect": d["effect"],
                            "allowed": ["requester"], "target": ("desk", p["key"])}
+        elif p.get("kind") == "opportunity" and _opportunity_can_file(cur, p["key"]):   # 仕込みに当たった提案は「見た」だけ
+            i["answer"] = {"type": "choose", "options": [OPPORTUNITY_FILE, {"id": "seen", "label": "見た（閉じる）"}], "extra": [],
+                           "effect": OPPORTUNITY_EFFECT, "allowed": [i["who"]], "target": ("task", p["key"])}
         elif p.get("kind") in TASK_ACK:
             i["answer"] = {"type": "ack", "options": [{"id": "seen", "label": "見た（閉じる）"}], "extra": [], "effect": TASK_ACK[p["kind"]],
                            "allowed": [i["who"]], "target": ("task", p["key"])}
         out.append(i)
     return out
+
+
+def _opportunity_can_file(cur, key: str) -> bool:
+    import opportunity
+    return opportunity.can_file(cur, key)
 
 
 def _review_choice(cur, axis: str, uxspec: str) -> dict | None:
@@ -540,6 +550,12 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
         drain.set_drain(cur, False, by, note or "受信トレイから再開")
         return True, "ラインを再開した"
     if kind == "task":
+        if option == "file":   # 改善の提案を起票に回す（Issue は supervisor が次の周期に作る。入口は GitHub のトークンを持たない）
+            import opportunity
+            ok, msg = opportunity.request_ticket(cur, ref, by, note)
+            if not ok:
+                return ok, msg
+            return (True, msg) if resolve(cur, ref, by, option) else (False, "もう閉じている")
         return (True, "閉じた") if resolve(cur, ref, by, option) else (False, "もう閉じている")
     if kind == "desk":
         import desk_line
