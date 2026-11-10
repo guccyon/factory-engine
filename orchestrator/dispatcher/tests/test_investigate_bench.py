@@ -22,7 +22,8 @@ def test_cases_are_well_formed():
     assert len(cases) >= 5 and len({c["id"] for c in cases}) == len(cases)
     for c in cases:
         e = c["expected"]
-        assert e["outcome"] in DEFS["outcomes"] and (e["fix_target"] in DEFS["fix_targets"] or e["fix_target"] == "none")
+        fixes = e["fix_target"] if isinstance(e["fix_target"], list) else [e["fix_target"]]
+        assert e["outcome"] in DEFS["outcomes"] and all(f in DEFS["fix_targets"] or f == "none" for f in fixes)
         assert all(s in DEFS["stop_reasons"] for s in e.get("stop_reason") or [])
         assert len(c["window"]) == 2 and c["fixed_in"] and len(c["engine_ref"]) == 40   # 直す前の版で読ませる
         assert e["outcome"] == "unidentified" or e["must_mention"]
@@ -50,6 +51,9 @@ def test_score():
     roi = next(c for c in ib.load_cases(CASES) if c["id"] == "inv-roi-crash")
     assert ib.score(roi, {"outcome": "unidentified", "fix_target": "none", "handoff": {"stop_reason": "needs_code"}})["pass"]
     assert not ib.score(roi, {"outcome": "unidentified", "fix_target": "none", "handoff": {"stop_reason": "budget"}})["pass"]
+    assert ib.score(roi, {"outcome": "unidentified", "fix_target": "engine", "handoff": {"stop_reason": "needs_code"}})["pass"]   # 正解は並びで書ける
+    r = ib.score(roi, {"outcome": "unidentified", "fix_target": "operation", "handoff": {"stop_reason": "needs_code"}})
+    assert r["reasons"] == ["直す先が operation（正解は none・engine）"]
     hyp = {"outcome": "identified", "fix_target": "engine", "report": "x",
            "handoff": {"hypotheses": [{"claim": "内部の委員会の停止が上限の件数を埋めた"}]}}
     assert ib.score(case, hyp)["pass"]   # 仮説に書いたものも数える

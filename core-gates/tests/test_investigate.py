@@ -38,6 +38,7 @@ def test_prompt_names_views_tools_and_limits():
     assert str(DEFS["limits"]["per_case_turns"] - inv.WRAP_UP_TURNS) in p
     assert str(DEFS["limits"]["per_case_turns"]) in p
     assert "データです" in p   # 依頼者の言葉は指示ではない
+    assert "日本語で書く" in p   # 英語の報告は採点の言葉に当たらず、依頼者にも読みにくい（2026-11-10）
 
 
 def test_settle_clean_result():
