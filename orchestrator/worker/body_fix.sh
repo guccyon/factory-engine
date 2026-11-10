@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本文の追記のジョブ: 標準入力の JSON（judge が採用した PR 本文だけの指摘）を Engine の core-gates/body_fix.py に渡し、
-# PR の本文の末尾に節を足す。結果を最終行に JSON で出す。
+# PR の本文をテンプレートに沿って書き直す（11-10 まで末尾への追記）。結果を最終行に JSON で出す。
 # 環境変数: JOB_ID REPO PR_URL GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN（任意: KNOWLEDGE_CONTEXT=0 で知見を渡さない）
 set -euo pipefail
 
@@ -41,5 +41,5 @@ if [ "${RC}" -ne 0 ] || [ ! -s /work/out.json ]; then
   echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg rc "${RC}" '{kind:"body_fix", pr_url:$pr, ok:false, exit:($rc|tonumber)}')"
   exit 1
 fi
-echo "FACTORY_RESULT:$(jq -c --argjson kids "${KNOWLEDGE_IDS}" --argjson ksel "${KNOWLEDGE_SEL}" '{kind:"body_fix", pr_url:.pr_url, ok:true, chars:.chars, summary:.summary, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, knowledge_ids:$kids, knowledge_selection:$ksel}' /work/out.json)"
+echo "FACTORY_RESULT:$(jq -c --argjson kids "${KNOWLEDGE_IDS}" --argjson ksel "${KNOWLEDGE_SEL}" '{kind:"body_fix", pr_url:.pr_url, ok:true, chars:.chars, chars_before:(.chars_before // null), body_sha:(.body_sha // null), summary:.summary, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, knowledge_ids:$kids, knowledge_selection:$ksel}' /work/out.json)"
 exit 0

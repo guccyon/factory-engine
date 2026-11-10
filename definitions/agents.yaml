@@ -37,7 +37,7 @@ steps:
   judge:                      # 出口の裁き（core-gates/judge.py）
     tier: tier-judge
     tools: none
-  body_fix:                   # PR 本文への追記（core-gates/body_fix.py）。2026-11-08 に Sonnet から Haiku へ（確信度の高い工程から試す）
+  body_fix:                   # PR 本文の書き直し（core-gates/body_fix.py。2026-11-10 まで追記）。2026-11-08 に Sonnet から Haiku へ（確信度の高い工程から試す）
     tier: tier-light
     tools: none
   design_review:              # 週 1 回の設計の診断（core-gates/design_review.py。製品を読むだけ。ADR 0022）
