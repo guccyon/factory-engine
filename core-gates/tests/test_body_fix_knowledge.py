@@ -26,3 +26,12 @@ def test_section_is_capped(monkeypatch, tmp_path):
     f.write_text("x" * (body_fix.MAX_KNOWLEDGE + 500), encoding="utf-8")
     monkeypatch.setenv("KNOWLEDGE_FILE", str(f))
     assert body_fix.knowledge_section().count("x") == body_fix.MAX_KNOWLEDGE
+
+
+def test_heading_is_normalized_not_rejected():
+    """11-10: 見出しの段違い・付け忘れで落とすと、呼んだ分の費用を捨てて停止が残る。そろえて追記する"""
+    assert body_fix.heading_fixed("## 背景\n本文") == "## 背景\n本文"
+    assert body_fix.heading_fixed("### 背景\n本文") == "## 背景\n本文"
+    assert body_fix.heading_fixed("# 背景\n本文") == "## 背景\n本文"
+    assert body_fix.heading_fixed("背景の説明") == "## 検査の指摘への追記\n\n背景の説明"
+    assert body_fix.heading_fixed("") == ""
