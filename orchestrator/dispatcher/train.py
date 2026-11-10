@@ -46,10 +46,11 @@ def record_train(cur, kind: str, releases: list[dict], by: str, reason: str | No
     now = now or datetime.now(timezone.utc)
     tid = train_id(kind, now)
     required = [r["release_id"] for r in releases if not ship.prod_held(cur, r["repo"])]
-    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.train',%s,%s,%s)",
+    # 時刻は便の時刻（now）にそろえる。ran_today がこの時刻で「今日の便」を見るので、DB の時計とずれると翌日の便を出し損なう
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key, occurred_at) values ('release.train',%s,%s,%s,%s)",
                 (tid, Jsonb({"train_id": tid, "kind": kind, "releases": releases, "repos": sorted({r["repo"] for r in releases}),
                              "approval": {"unit": "train", "required": bool(required), "pending": required},
-                             "by": by, "reason": reason}), f"release.train:{tid}"))
+                             "by": by, "reason": reason}), f"release.train:{tid}", now))
     return tid
 
 

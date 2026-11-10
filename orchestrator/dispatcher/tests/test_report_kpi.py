@@ -111,7 +111,7 @@ def test_measure_failure_is_recorded_without_stoppage(cur, monkeypatch):
 
 def test_weekly_report_opportunities_and_forecast_error(cur, monkeypatch):
     staged(cur)
-    t0 = datetime(2026, 11, 2, 7, tzinfo=JST)
+    t0 = (datetime.now(JST) - timedelta(days=7)).replace(microsecond=0)   # 前回・今回の測定と振り返りが今の時計の前後に収まるように（固定日だと日が過ぎて落ちる）
     measure(cur, monkeypatch, {"slot_fill_rate": 0.6, "video_review_lead_time": 10}, t0)
     first = report_kpi.report_step(cur, log=lambda *a: None)
     assert len(first) == 1 and first[0]["opportunities"] == [] and first[0]["scored"] == []   # 初回は前回がなく、値は目安の中
@@ -167,7 +167,7 @@ def test_weekly_report_opportunities_and_forecast_error(cur, monkeypatch):
 
 def test_product_report_section(cur, monkeypatch):
     staged(cur)
-    t0 = datetime(2026, 11, 2, 7, tzinfo=JST)
+    t0 = (datetime.now(JST) - timedelta(days=7)).replace(microsecond=0)   # 前回・今回の測定と振り返りが今の時計の前後に収まるように（固定日だと日が過ぎて落ちる）
     measure(cur, monkeypatch, {"slot_fill_rate": 0.6, "video_review_lead_time": 10}, t0)
     measure(cur, monkeypatch, {"slot_fill_rate": 0.1, "video_review_lead_time": 10}, t0 + timedelta(days=7))
     report_kpi.report_step(cur, log=lambda *a: None)
