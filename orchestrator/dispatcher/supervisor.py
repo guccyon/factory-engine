@@ -20,6 +20,7 @@
 - 出荷の列車・定期便（ADR 0012、ADR 0043 の O6）: JST の RELEASE_TRAIN_HOUR 時を過ぎて、その製品が今日の定期便にまだ載っておらず、まだ Release に入っていない
   マージ済みの工場の PR があり、出荷が処理中でも承認待ちでもなければ、次の版（minor を 1 つ上げる）の Release を切って staging への出荷を依頼し、
   その日の便（release.train）に載せる。prod へは便ごとの承認を待つ（train.py）
+- 工場の事故の週次の見回り（ADR 0046 の順番 3・4）: 週 1 回、その週の記録で調査委員会のジョブ（incident_review）を積み、結果の Engine の改善 Issue の案を起票する
 - 工場の事故の日次の見回り（ADR 0046）: definitions/incident.yaml の時（JST）を過ぎたら 1 日 1 回、費用の記録を決定論で集計して兆しを残し、medium 以上は台帳に開く（factory_incident.py）
 - PR ごとの使い捨て環境（ADR 0043 の O7）: 立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く（ephemeral.py）
 
@@ -1171,6 +1172,28 @@ def incident_patrol_step(cur):
         log("incident patrol", got["day"], "signs", len(got["signs"]), "opened", got["opened"])
 
 
+def incident_review_step(cur, now: datetime | None = None):
+    """工場の事故の週次の見回り（ADR 0046 の順番 3・4）。committee.patrol.weekly の曜日と時（JST）を過ぎたら週 1 回、その週の記録を
+    制御プレーンだけで組み立ててジョブ（kind=incident_review、governance の枠）に積む。予算の枠を使い切っているときは積まず、次の周回で見る。
+    ラインの一時停止中も流す（見回りはラインを止めても動く）。結果で残った Engine の改善 Issue の案は、ここで起票する（周回ごとに 2 件まで）"""
+    if DRY_RUN:
+        return
+    now = now or datetime.now(timezone.utc)
+    try:
+        if not over_budget(cur):
+            got = factory_incident.enqueue_weekly(cur, now, REPOS)
+            if got:
+                if drain.active(cur):
+                    drain.allow(cur, [got["corr"]], "supervisor", f"事故の週次の見回り（{got['week']}）")
+                record(cur, "supervisor.incident_review_enqueued", got["corr"], got, f"supervisor.incident_review:{got['week']}")
+                log("incident review enqueued", got["week"], "job", got["job_id"])
+        filed = factory_incident.file_issues(cur, gh, ENGINE_REPO, PROCESS_LABEL)
+        if filed:
+            log("incident issues filed", filed)
+    except Exception as e:  # noqa: BLE001  見回りの失敗で周回を止めない
+        log("incident review step failed", repr(e)[:300])
+
+
 def nightly_explore_step(cur, now: datetime | None = None):
     """夜に 1 回、製品ごとに QA 役の探索のジョブを積む（ADR 0028 の nightly_explore）。判断は持たず、時刻・予算・一時停止を見るだけ。
     積めなかった理由は 1 晩 1 回だけ supervisor.nightly_explore_skipped に残す（朝の日報が「昨夜は回らなかった」と出す）"""
@@ -1337,6 +1360,7 @@ def tick():
         process_issue_step(cur)
         design_review_step(cur)
         committee_weekly_step(cur)
+        incident_review_step(cur)
         quality_learn_step(cur)
 
 

@@ -62,6 +62,12 @@ steps:
     tier: tier-judge
   committee_weekly:           # 知見の委員会の週 1 の定例の議長（core-gates/committee_weekly.py。材料の写しを読むだけ。ADR 0024）
     tier: tier-judge
+  incident.patrol:            # 事故の調査委員会の見回り＋調査（core-gates/incident_review.py。その週の費用の記録と既存の FIR の写しを読むだけ。ADR 0046）
+    tier: tier-judge
+  incident.record:            # 事故の調査委員会の記録役（同上。所見から製品の情報を抜いた FIR の下書きと Engine の改善 Issue の文を書く）
+    tier: tier-judge
+  incident.review:            # 事故の調査委員会の査読役（同上。書いた役とは別の呼び出し。割り出せないか・一般か・重複かを見る）
+    tier: tier-judge
   qa:                         # QA 役（core-gates/qa.py。触れる環境にユーザーストーリーを流し、ストーリーごとに Verdict を返す。製品は読むだけ。ADR 0028 の決定 2）
     tier: tier-judge
     mode: agentic

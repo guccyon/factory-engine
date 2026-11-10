@@ -77,9 +77,10 @@ committee:
   slot: governance                 # ADR 0024 の追記の専用の枠（GOVERNANCE_PARALLEL）。ラインを止めても動く
   implements: false                # 直さない。Engine の直しは改善 Issue（建設者が直す）
   patrol:
-    daily:  { llm: false, hour_jst: 4, note: "決定論の集計だけ（資源ごとの消費と枠の比・費用の外れ値・Rate Limit・残っている環境）。兆しを events に残す" }
-    weekly: { llm: true, weekday: sunday, hour_jst: 12, budget_usd: 10, viewpoints: 8, free_share: 0.3 }
+    daily:  { llm: false, tier_if_llm: tier-light, hour_jst: 4, note: "決定論の集計だけ（資源ごとの消費と枠の比・費用の外れ値・Rate Limit・残っている環境）。兆しを events に残す" }
+    weekly: { llm: true, tier: tier-judge, weekday: sunday, hour_jst: 12, budget_usd: 10, viewpoints: 8, free_share: 0.3, max_drafts: 2, note: "見回り＋調査・記録・査読（core-gates/incident_review.py）。supervisor が積み、Engine の改善 Issue は 1 周回 2 件まで起票" }
     investigate: { budget_usd: 5 }
+    # モデル（2026-11-10 オーナー）: 日次の見回りで LLM を使うときは下位の小さいモデル（tier-light）。週次のしっかり見回るものは上位（tier-judge。agents.yaml の incident.*）
     weekly_cap_usd: 25
   publish: owner_approval          # Gen1 は FIR の公開を 1 件ずつオーナーが承認（配ると戻せない）
   outbox: "検査と査読を通った FIR の下書きを置く送り出し口（制御プレーン）。Gen1 は人が集め、将来はメタ工場が吸い上げる"

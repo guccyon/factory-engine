@@ -36,6 +36,7 @@ KIND_JA = {
     "ui_design": "デザイナー", "ui_design_review": "デザイン検査", "design_system": "デザインシステム",
     "design_review": "設計の診断", "case_review": "事例の分析", "committee_review": "知見の委員会",
     "committee_weekly": "委員会の定例",
+    "incident_review": "事故の見回り",
 }
 
 

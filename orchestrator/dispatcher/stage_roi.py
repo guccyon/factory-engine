@@ -49,7 +49,7 @@ STAGE_JA = {
     "implement:conflict": "衝突の解消", "implement:incomplete": "続き（途中終了）",
     "body_fix": "PR 本文の直し", "inspect": "検査", "judge": "判定（judge）", "plan": "プランナー", "clarify": "要求の確認",
     "ui_design": "デザイナー", "ui_design_review": "デザイン検査", "design_system": "デザインシステム", "qa": "QA",
-    "design_review": "設計の診断", "case_review": "事例の分析", "committee_review": "知見の委員会", "committee_weekly": "委員会の定例",
+    "design_review": "設計の診断", "case_review": "事例の分析", "committee_review": "知見の委員会", "committee_weekly": "委員会の定例", "incident_review": "事故の見回り",
     "desk_consult": "窓口の相談役", "desk_answer": "窓口の回答役",
 }
 FIX_STAGES = ("implement:ci_failed", "implement:review_fix", "implement:incomplete")   # 実装が一発で通らなかった印

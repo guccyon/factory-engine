@@ -103,6 +103,26 @@ events:
     source: control_plane
     required: [id, by, reason]
     note: "ADR 0046。台帳を閉じた"
+  fincident.reviewed:
+    source: control_plane
+    required: [week, job_id, summary, viewpoints, findings, opened, updated, outboxed, issues_proposed, rejected]
+    note: "ADR 0046 の順番 3・4。調査委員会の週次の見回り（kind=incident_review）の結果。1 週 1 件（dedupe は ISO 週）。rejected は検査か査読で落ちた下書きと理由"
+  fincident.outboxed:
+    source: control_plane
+    required: [id, week, job_id, title, resource, mechanism, severity, yaml]
+    note: "ADR 0046 の 9。検査と査読を通った FIR の下書きを送り出し口に置いた（yaml は全文、製品の情報は抜いてある）。Gen1 は人が factoryctl incident-record outbox で取り出し、将来はメタ工場が吸い上げる"
+  fincident.taken:
+    source: control_plane
+    required: [id, by]
+    note: "ADR 0046 の 9。送り出し口の下書きを取り出した印"
+  fincident.issue_proposed:
+    source: control_plane
+    required: [fir, week, title, body]
+    note: "ADR 0046 の 6。週次の見回りが出した Engine の改善 Issue の案（製品の情報は抜いてある）。supervisor が起票する"
+  fincident.issue_filed:
+    source: control_plane
+    required: [fir, issue, duplicate]
+    note: "ADR 0046 の 6。Engine の改善 Issue を起票した（同じ題が開いていれば duplicate で、それを指す）"
   incident.budget_exceeded:
     source: control_plane
     required: [repo, severity, count, allowed, period_days, since]
@@ -578,6 +598,10 @@ events:
     source: control_plane
     required: [repo, week, issue, job_id]
     note: "ADR 0024。supervisor が週 1 回、製品ごとに知見の委員会の定例のジョブ（kind=committee_weekly）を固定 Issue（factory:knowledge-committee）に積んだ。dedupe は repo と ISO 週"
+  supervisor.incident_review_enqueued:
+    source: control_plane
+    required: [week, job_id, corr, signs, cases]
+    note: "ADR 0046 の順番 3。supervisor が週 1 回、事故の調査委員会の週次の見回りのジョブ（kind=incident_review、governance の枠）を積んだ。dedupe は ISO 週"
   committee.weekly_reviewed:
     source: control_plane
     required: [repo, week, facts, report]

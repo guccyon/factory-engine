@@ -221,10 +221,15 @@ def incident_view(conn, now: datetime | None = None) -> dict | None:
             cur.execute("select o.payload from events o where o.name='fincident.opened' and not exists "
                         "(select 1 from events c where c.name='fincident.closed' and c.correlation_id=o.correlation_id) order by o.id")
             open_cases = [x[0] for x in cur.fetchall()]
+            cur.execute("select payload from events where name='fincident.reviewed' and occurred_at >= %s order by id desc limit 1", (since,))
+            w = cur.fetchone()
+            cur.execute("select count(*) from events o where o.name='fincident.outboxed' and not exists "
+                        "(select 1 from events t where t.name='fincident.taken' and t.payload->>'id' = o.payload->>'id')")
+            outbox = cur.fetchone()[0]
     except Exception as e:  # noqa: BLE001
         print("[status-report] 事故の見回りを数えられない:", repr(e), file=sys.stderr)
         return None
-    return {"patrolled": r[0] if r else None, "signs": signs, "open": open_cases}
+    return {"patrolled": r[0] if r else None, "signs": signs, "open": open_cases, "weekly": w[0] if w else None, "outbox": int(outbox or 0)}
 
 
 def fmt_incident(iv: dict | None) -> list[str]:
@@ -242,6 +247,14 @@ def fmt_incident(iv: dict | None) -> list[str]:
         out.append("- 外部サービスの API: まだ測っていない")
     for c in iv.get("open") or []:
         out.append(f"- 台帳で開いている: {c.get('id')} [{c.get('severity')}] {c.get('title')}")
+    w = iv.get("weekly")
+    if w:   # 週次の見回り（調査委員会）を回した翌朝だけ出す
+        out.append(f"- 週次の見回り（{w.get('week')}）: 所見 {w.get('findings', 0)} 件・うち事故 {w.get('incidents', 0)} 件・台帳に開いた {len(w.get('opened') or [])} 件・"
+                   f"下書きを送り出し口へ {len(w.get('outboxed') or [])} 件・検査か査読で落ちた {len(w.get('rejected') or [])} 件・Engine の Issue の案 {len(w.get('issues_proposed') or [])} 件")
+        if w.get("summary"):
+            out.append(f"  - {w['summary']}")
+    if iv.get("outbox"):
+        out.append(f"- **送り出し口に公開待ちの事故記録の下書き {iv['outbox']} 件**（`factoryctl incident-record outbox`。公開はオーナーの承認）")
     return out
 
 
