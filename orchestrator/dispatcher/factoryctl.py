@@ -100,6 +100,10 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl incident-record outbox take <FIR-...>     # 送り出し口から取り出した印を付ける
   factoryctl incident-record checks                    # 専用のチェックの棚卸し（場所・関係する記録・見直しの期日。definitions/incident.yaml）
 
+工場の中での一次調査（ADR 0048。窓口の依頼から。特定できなかった件は引き継ぎ資料 INV-YYYY-NNNN にして外の調査に回す）:
+  factoryctl investigation list                       # 引き継ぎ資料の一覧（止めた理由・起票した Issue）
+  factoryctl investigation show <INV-...>             # 引き継ぎ資料の本体（二次の調査はここから始める。依頼者の問いはそのまま入っている）
+
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
   factoryctl desk token list                               # トークンの一覧（名前・役割・対象の製品。トークンそのものは出ない）
@@ -167,6 +171,7 @@ import drain
 import ephemeral
 import incident
 import factory_incident
+import desk_investigate
 import line
 import usage
 import ghapp
@@ -879,6 +884,24 @@ def hold_report(cur) -> None:
         print(f"  差し止めの間も流すもの: {' '.join(st['allowed'])} と p0 のチケット")
 
 
+def investigation_cmd(cur, argv) -> int:
+    """factoryctl investigation list|show（ADR 0048、dispatcher/desk_investigate.py）"""
+    sub = argv[2] if len(argv) > 2 else "list"
+    if sub == "list":
+        hs = desk_investigate.handoffs(cur)
+        if not hs:
+            print("引き継ぎ資料はない"); return 0
+        for h in hs:
+            print(f"{h['id']} {h['at'][:16]} 会話 {h['conversation_id']} 止めた理由 {h.get('stop_reason')} {h.get('issue') or '（未起票）'}")
+        return 0
+    if sub == "show" and len(argv) > 3:
+        h = desk_investigate.get_handoff(cur, argv[3])
+        if not h:
+            print(f"{argv[3]} はない"); return 1
+        print(json.dumps(h, ensure_ascii=False, indent=2, default=str)); return 0
+    print("factoryctl investigation list|show <INV-...>"); return 2
+
+
 def incident_record_cmd(cur, argv) -> int:
     """factoryctl incident-record list|show|open|note|close|patrol|weekly|outbox|checks（ADR 0046、dispatcher/factory_incident.py）"""
     sub = argv[2] if len(argv) > 2 else "list"
@@ -1427,6 +1450,8 @@ def main(argv):
         return incident_cmd(cur, argv)
     elif cmd == "incident-record":
         return incident_record_cmd(cur, argv)
+    elif cmd == "investigation":
+        return investigation_cmd(cur, argv)
     elif cmd == "swap":
         return swap_cmd(cur, argv)
     elif cmd == "desk":

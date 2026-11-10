@@ -123,6 +123,50 @@ events:
     source: control_plane
     required: [key, week, issue, duplicate]
     note: "ADR 0046 の 6。Engine の改善 Issue を起票した（同じ題が開いていれば duplicate で、それを指す）"
+  investigate.enqueued:
+    source: control_plane
+    required: [conversation_id, round, job_id]
+    note: "ADR 0048 の順番 4。窓口の依頼の一次調査のジョブ（kind=investigate、governance の枠）を積んだ。1 回の振り分けに 1 本"
+  investigate.deferred:
+    source: control_plane
+    required: [conversation_id, round, spent_usd, per_day_usd, day]
+    note: "ADR 0048 の決定 4。1 日の調査の費用の上限に達したので、積まずに次の予算の日に回した（会話に 1 日 1 回知らせる）"
+  investigate.skipped:
+    source: control_plane
+    required: [conversation_id, round, reason]
+    note: "ADR 0048。この工場が受け持たない製品なので調べなかった"
+  investigate.finished:
+    source: control_plane
+    required: [conversation_id, round, artifact_id, outcome, fix_target, issue_held, has_handoff, money_loss, cost_usd]
+    note: "ADR 0048 の順番 4。調査役の結果を成果物 InvestigationResult に残した"
+  investigate.failed:
+    source: control_plane
+    required: [conversation_id, round, error]
+    note: "ADR 0048。調査役のジョブが失敗した（失敗も会話に提出する）"
+  investigate.issue_proposed:
+    source: control_plane
+    required: [conversation_id, round, artifact_id, key, title, body]
+    note: "ADR 0048 の順番 5。Engine の改善 Issue の案（調査役の検査と dispatcher の 2 段目の検査を通ったもの）。supervisor が起票する"
+  investigate.issue_held:
+    source: control_plane
+    required: [conversation_id, round, artifact_id, key, errors]
+    note: "ADR 0048 の決定 5 の 3。顧客の情報が残ったので起票を保留した（建設者の受信トレイに積む。errors は引っかかった種類だけで中身は書かない）"
+  investigate.issue_filed:
+    source: control_plane
+    required: [conversation_id, round, key, issue, duplicate]
+    note: "ADR 0048。Engine の改善 Issue を起票した（ラベル factory:investigation。同じ題が開いていれば duplicate で、そこに事実が増えたことを書く）"
+  investigate.handoff:
+    source: control_plane
+    required: [conversation_id, round, artifact_id, id, stop_reason, dossier]
+    note: "ADR 0048 の決定 6。引き継ぎ資料（id は INV-YYYY-NNNN）。本体はここ（工場の中）にだけ置く。factoryctl investigation show で見る"
+  investigate.handoff_filed:
+    source: control_plane
+    required: [conversation_id, round, id, issue]
+    note: "ADR 0048 の決定 6。提供元の口（Gen1 は Engine の Issue、ラベル factory:investigation-handoff）に要約と id だけを書いた"
+  investigate.case_failed:
+    source: control_plane
+    required: [conversation_id, round, error]
+    note: "ADR 0048。お金の損の疑いで事故の台帳に案件を開けなかった（提出は止めない）"
   incident.budget_exceeded:
     source: control_plane
     required: [repo, severity, count, allowed, period_days, since]

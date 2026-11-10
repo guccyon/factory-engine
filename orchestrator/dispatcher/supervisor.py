@@ -52,6 +52,7 @@ import case
 import committee
 import continuation
 import design
+import desk_investigate
 import drain
 import ephemeral
 import factory_incident
@@ -1192,6 +1193,9 @@ def incident_review_step(cur, now: datetime | None = None):
         filed = factory_incident.file_issues(cur, gh, ENGINE_REPO, PROCESS_LABEL)
         if filed:
             log("incident issues filed", filed)
+        filed = desk_investigate.file_issues(cur, gh, ENGINE_REPO, version.engine_version(ENV))   # 窓口の一次調査の改善 Issue と引き継ぎ（ADR 0048）
+        if filed:
+            log("investigation issues filed", filed)
     except Exception as e:  # noqa: BLE001  見回りの失敗で周回を止めない
         log("incident review step failed", repr(e)[:300])
 
