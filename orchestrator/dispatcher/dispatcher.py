@@ -157,6 +157,13 @@ def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
         gh("POST", f"repos/{repo}/issues/{issue}/labels", {"labels": add})
 
 
+# 始めるときに Issue のラベルを替えない種類（ADR 0004 / 0006 / 0022 / 0024 / 0025 / 0030 / 0048）。issue_number は PR か固定 Issue の番号か、
+# Issue のない仮の負の数（窓口の会話・一次調査とその評価セット）。仮の番号のラベルを替えると GitHub が 404 を返してジョブが落ちる（2026-11-10）
+NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
+                  "ui_design_review", "desk_consult", "desk_answer", "investigate")
+ISSUELESS_KINDS = ("desk_consult", "desk_answer", "investigate")   # issue_number が仮の負の数の種類
+
+
 def image_for(repo: str, issue: int) -> str:
     """ワーカーのイメージを決める。Issue に `factory:image:<名前>` のラベルがあれば factory-worker:<名前>、
     なければリポジトリごとの WORKER_IMAGES、それもなければ WORKER_IMAGE。名前は英小文字・数字・ハイフンだけ許す"""
@@ -412,7 +419,7 @@ def run_job(job: dict, reattaching: bool = False):
                 cur.execute("select payload from events where name='job.started' and job_id=%s order by id desc limit 1", (job_id,))
                 prov = ((cur.fetchone() or {}).get("payload") or {}).get("provenance") or {}
                 image = prov.get("worker_image") or WORKER_IMAGE
-            elif kind in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design_review", "desk_consult", "desk_answer"):   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける
+            elif kind in NO_LABEL_KINDS:   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける。窓口と一次調査（ADR 0048）は Issue がない（issue_number は仮の負の数）
                 image = WORKER_IMAGE
             elif kind == "plan":   # プランナー（ADR 0025・0026）。読むだけなので製品によらず基本のイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])

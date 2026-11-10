@@ -108,3 +108,17 @@ def test_bench_jobs_do_not_count_toward_daily_cap(cur):
     got = ib.enqueue(cur, ib.load_cases(CASES), run="r1", only=["inv-roi-crash"])
     finish(cur, got["jobs"]["inv-roi-crash"], {"ok": True, "outcome": "unidentified", "cost_usd": 50.0})
     assert di.spent_today(cur, datetime.now(timezone.utc)) == 0.0
+
+
+def test_issueless_kinds_never_swap_labels():
+    """Issue のない種類（issue_number が仮の負の数）を始めるときにラベルを替えない（2026-11-10、評価の 6 件が 404 で落ちた）"""
+    import ast
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "dispatcher.py").read_text(encoding="utf-8"))
+    consts = {t.id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name) and t.id in ("NO_LABEL_KINDS", "ISSUELESS_KINDS")}
+    assert set(consts["ISSUELESS_KINDS"]) <= set(consts["NO_LABEL_KINDS"])
+    import desk_answer
+    import desk_investigate
+    import desk_line
+    for k in (desk_line.KIND, desk_answer.KIND, desk_investigate.KIND):
+        assert k in consts["ISSUELESS_KINDS"]
