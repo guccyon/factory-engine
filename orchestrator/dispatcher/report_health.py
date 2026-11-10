@@ -6,11 +6,12 @@
 """
 from __future__ import annotations
 
+import re
 import statistics
 from datetime import datetime, timedelta
 
 import stage_roi
-from report import Report, Section, entry, metric, note
+from report import Report, Section, console_link, entry, finding, link, metric, note
 
 KIND = "report.factory_health"
 TITLE = "工場の操業レポート"
@@ -62,7 +63,7 @@ def _merge(spans: list[tuple[datetime, datetime]]) -> float:
 
 
 def line(cur, start: datetime, end: datetime):
-    cur.execute("select key, category, started_at, ended_at, what from stoppages where started_at < %s and coalesce(ended_at, %s) > %s",
+    cur.execute("select key, category, started_at, ended_at, what, correlation_id from stoppages where started_at < %s and coalesce(ended_at, %s) > %s",
                 (end, end, start))
     rows = cur.fetchall()
     down = _merge([(max(r["started_at"], start), min(r["ended_at"] or end, end)) for r in rows if r["key"].startswith(DOWN)])
@@ -80,8 +81,20 @@ def line(cur, start: datetime, end: datetime):
              metric("期間の終わりに開いていた停止", len(open_), "件")]
     for r in open_[:OPEN_MAX]:
         hours = round((end - r["started_at"]).total_seconds() / 3600, 1)
-        items.append(entry(f"開いている停止: {r['what'] or r['key']}", f"{r['category']}、{hours} 時間"))
+        items.append(entry(f"開いている停止: {r['what'] or r['key']}", f"{r['category']}、{hours} 時間", _stoppage_url(r)))
     return items
+
+
+def _stoppage_url(r: dict) -> str:
+    """停止の対象へのリンク: 鍵に入っている URL（judge:・ci:・sendback: の PR など）か、チケット（github:owner/repo#n）の Issue"""
+    try:
+        m = re.search(r"https://\S+", r.get("key") or "")
+        if m:
+            return m.group(0)
+        m = re.fullmatch(r"github:([^/#\s]+/[^/#\s]+)#(\d+)", r.get("correlation_id") or "")
+        return f"https://github.com/{m.group(1)}/issues/{m.group(2)}" if m else ""
+    except Exception:  # noqa: BLE001  リンクが作れなくても停止は載せる
+        return ""
 
 
 def _open_hours(state: str) -> float | None:
@@ -223,20 +236,23 @@ def assess(rep: Report) -> Report:
     val = lambda sid, label: getattr(items.get((sid, label)), "value", None)   # noqa: E731
     found: list[dict] = []
 
-    def flag(sid, label, level, text, action):
+    def flag(sid, label, level, text, action, links=None):
         if not level:
             return
         if (sid, label) in items:
             items[(sid, label)].level = level
-        found.append({"level": level, "text": text, "action": action})
+        found.append(finding(level, text, action, links))
+
+    line_page = lambda: console_link("操業コンソールのライン", "/line")   # noqa: E731
+    inbox_page = lambda: console_link("受信トレイ", "/inbox")             # noqa: E731
 
     up = val("line", "ラインが動いていた割合")
     flag("line", "ラインが動いていた割合", _lvl(up, *THRESHOLDS["uptime"], below=True), f"ラインが動いていたのは {up}% だけ",
-         "止まっていた理由（ラインが空か、一時停止か）を確かめる。空なら次に流すチケットを積み、一時停止なら再開を忘れていないか見る")
+         "止まっていた理由（ラインが空か、一時停止か）を確かめる。空なら次に流すチケットを積み、一時停止なら再開を忘れていないか見る", line_page)
     n, rate = val("jobs", "終わったジョブ"), val("jobs", "失敗の割合")
     if isinstance(n, int) and n >= MIN_JOBS:
         flag("jobs", "失敗の割合", _lvl(rate, *THRESHOLDS["fail_rate"]), f"ジョブの {rate}% が失敗している",
-             "操業コンソールの失敗の一覧で原因を確かめる。同じ原因が続くなら工場の不具合として建設者に回す")
+             "操業コンソールの失敗の一覧で原因を確かめる。同じ原因が続くなら工場の不具合として建設者に回す", line_page)
     inc = val("jobs", "途中終了したジョブ（ターンの上限など）")
     flag("jobs", "途中終了したジョブ（ターンの上限など）", _lvl(inc, *THRESHOLDS["incomplete"]), f"途中終了したジョブが {inc} 件",
          "大きすぎるチケットの見込み。プランナーで切り直す（factoryctl plan resplit）か、チケットを分ける")
@@ -251,13 +267,15 @@ def assess(rep: Report) -> Report:
             lv = _lvl(h, *THRESHOLDS["open_hours"])
             if lv:
                 i.level = lv
-                found.append({"level": lv, "text": f"停止「{i.label.replace('開いている停止: ', '')}」が {h} 時間開いたまま",
-                              "action": "受信トレイかコンソールの停止の一覧で、誰の対応待ちかを確かめて先に片付ける"})
+                name = i.label.replace("開いている停止: ", "")
+                found.append(finding(lv, f"停止「{name}」が {h} 時間開いたまま",
+                                     "受信トレイかコンソールの停止の一覧で、誰の対応待ちかを確かめて先に片付ける",
+                                     (lambda n=name, u=i.url: [link(n, u)] if u else console_link("操業コンソールのライン", "/line"))))
     left, wait = val("inbox", "期間の終わりに残っていた件"), val("inbox", "判断までの待ち時間（中央値）")
     flag("inbox", "期間の終わりに残っていた件", _lvl(left, *THRESHOLDS["inbox_left"]), f"人の判断待ちが {left} 件残っている",
-         "受信トレイの判断を片付ける。滞りが続くなら、代わりに判断する人（INBOX_PROXY）を決める")
+         "受信トレイの判断を片付ける。滞りが続くなら、代わりに判断する人（INBOX_PROXY）を決める", inbox_page)
     flag("inbox", "判断までの待ち時間（中央値）", _lvl(wait, *THRESHOLDS["inbox_wait"]), f"判断までに中央値で {wait} 分かかっている",
-         "通知が届いているか（宛先・夜の時間）を確かめ、判断の担当を決める")
+         "通知が届いているか（宛先・夜の時間）を確かめ、判断の担当を決める", inbox_page)
     cost = items.get(("cost", "消費（API 単価に換算）"))
     if cost and isinstance(cost.value, (int, float)):
         prev = [x for x in cost.series[-8:-1] if isinstance(x, (int, float))]

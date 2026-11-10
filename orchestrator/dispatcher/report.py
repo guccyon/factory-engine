@@ -54,6 +54,56 @@ def note(text: str) -> Item:
     return Item("note", text=text)
 
 
+# ------------------------------------------------------------------ 兆候の対象へのリンク（2026-11-10 オーナー）
+# 人の対応が要る兆候には、何をどう対応すればよいかを判断できるよう、対象（チケット・PR・コンソールの頁）へのリンクを付ける。
+# 対象が決まる兆候（needs_link）でリンクが置けないのは、台帳に実態のない記録の見込みなので、そう書く。
+# リンクを作るのに失敗してもレポートは送る（リンクを付けないだけ）。
+LINK_MAX = 5   # 1 つの兆候に載せるリンクはここまで。残りは件数だけ
+NO_LINK = "対象のリンクが置けない（台帳に実態のない記録の見込み。工場の不具合として建設者に回す）"
+CONSOLE_URL = ENV.get("CONSOLE_URL", "").rstrip("/")   # 操業コンソールの頁へのリンクの前半。空ならコンソールへのリンクは付けない
+
+
+def link(label: str, url: str | None) -> dict:
+    return {"label": label or "(題なし)", "url": url or ""}
+
+
+def console_link(label: str, path: str) -> list[dict]:
+    """操業コンソールの頁（/inbox・/line など）へのリンク。CONSOLE_URL がなければ付けない"""
+    return [link(label, CONSOLE_URL + path)] if CONSOLE_URL else []
+
+
+def finding(level: str, text: str, action: str, links=None, *, needs_link: bool = False) -> dict:
+    """兆候と打ち手 1 件。links は [{"label", "url"}] か、それを返す関数（失敗しても兆候は出す）"""
+    try:
+        got = links() if callable(links) else list(links or [])
+        got = [x for x in got if isinstance(x, dict)]
+    except Exception as e:  # noqa: BLE001  リンクが作れなくてもレポートは止めない
+        notify._log("report link failed", text[:80], repr(e)[:200])
+        got = []
+    return {"level": level, "text": text, "action": action, "links": got, "needs_link": needs_link}
+
+
+def finding_links(f: dict) -> tuple[list[dict], int, bool]:
+    """兆候に載せるリンク（URL のあるもの、LINK_MAX まで）・載せきれなかった件数・リンクが置けないか"""
+    try:
+        got = [x for x in f.get("links") or [] if str(x.get("url") or "").startswith(("https://", "http://"))]
+        missing = bool(f.get("needs_link")) and len(got) < len(f.get("links") or [None])
+        return got[:LINK_MAX], max(len(got) - LINK_MAX, 0), missing
+    except Exception:  # noqa: BLE001  古い形の記録でも文面は作る
+        return [], 0, False
+
+
+def link_line(f: dict, slack: bool) -> str:
+    """兆候の対象の 1 行（リンクがなく、置けないとも言えなければ空）"""
+    got, more, missing = finding_links(f)
+    parts = [(f"<{x['url']}|{x['label']}>" if slack else f"[{x['label']}]({x['url']})") for x in got]
+    if more:
+        parts.append(f"ほか {more} 件")
+    if missing:
+        parts.append(NO_LINK)
+    return "、".join(parts)
+
+
 @dataclass
 class Section:
     id: str
@@ -73,7 +123,7 @@ class Report:
     built_at: datetime | None = None
     summary: list[str] = field(default_factory=list)   # ひとことの所感（数行）。見立て（assess）が詰める。Slack の投稿の本文になる（report_page）
     level: str = ""                 # 全体の見立て: ok（順調）/ warn（注意）/ bad（危険）
-    findings: list[dict] = field(default_factory=list)   # 兆候と打ち手 [{"level", "text", "action"}]。重い順
+    findings: list[dict] = field(default_factory=list)   # 兆候と打ち手 [{"level", "text", "action", "links", "needs_link"}]。重い順（finding()）
     days: list[str] = field(default_factory=list)        # 推移の日付（YYYY-MM-DD、古い順）
     charts: list[dict] = field(default_factory=list)     # 大きく描く推移 [{"section", "label", "title"}]
 
@@ -123,6 +173,9 @@ def render(report: Report, via: str, party: str = "provider", factory: str = "")
         f"{report.start.astimezone(TZ):%m/%d}〜{(report.end - timedelta(seconds=1)).astimezone(TZ):%m/%d}"
     head = f"{f'[{factory}] ' if factory and party == 'provider' else ''}{report.title}（{period}）"
     lines = [b(head)] + [f"• {t}" for t in report.summary[:3]]
+    targets = [(f["text"], link_line(f, slack)) for f in report.findings]
+    if any(x for _, x in targets):
+        lines += ["", b("対応が要るもの")] + [f"• {t}: {x}" for t, x in targets if x]
     if report.provisional:
         lines.append("中身は仮置きです（決まりしだい変わります）")
     for s in visible(report, party):
