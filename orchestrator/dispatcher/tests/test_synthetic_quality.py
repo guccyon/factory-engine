@@ -38,7 +38,7 @@ def test_defs_copies_match_definitions():
     assert tuple(s["id"] for s in ld["stages"] if not s["before_merge"]) == quality_learn.AFTER_MERGE
     names = yaml.safe_load((ROOT / "definitions" / "events.yaml").read_text(encoding="utf-8"))
     for n in ("qa.synthetic", "supervisor.synthetic_users_enqueued", "opportunity.proposed", "quality.learned", "qa.focus_updated",
-              "qa.scenario_added", "quality.proposal_drafted", "quality.proposal_filed"):
+              "qa.scenario_added", "quality.proposal_drafted", "quality.proposal_filed", "opportunity.ticket_requested", "opportunity.ticket_filed"):
         assert n in str(names), n
 
 
@@ -148,6 +148,40 @@ def test_planted_proposal_is_labelled_and_leaves_the_real_key_free(cur):
     assert {p["opportunity_id"] for p in real["proposed"]}.isdisjoint(p["opportunity_id"] for p in planted["proposed"])
     items = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
     assert len(items) == 2 and not any("仕込み" in i["title"] for i in items)
+
+
+def test_opportunity_can_be_filed_to_the_planner_from_the_inbox(cur):
+    import opportunity
+    gh = FakeGH()
+    res = {"mode": "synthetic", "env": "staging", "release_id": "r9", "model": "m", "synthetic": SY}
+    first = qa_line.enqueue_synthetic(cur, gh, REPO, friction=PLANTED, week="2026-W45")
+    qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, first["issue"], first["corr"], first["job_id"], res)
+    planted = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert all(i["answer"]["type"] == "ack" and [o["id"] for o in i["answer"]["options"]] == ["seen"] for i in planted)   # 仕込みは「見た」だけ
+    assert opportunity.request_ticket(cur, planted[0]["key"].split(":", 1)[1], "t")[0] is False
+    for i in planted:
+        assert inbox.resolve(cur, i["key"].split(":", 1)[1], "t")
+    cur.execute("update jobs set state='succeeded' where id=%s", (first["job_id"],))
+    second = qa_line.enqueue_synthetic(cur, gh, REPO, friction={}, week="2026-W46")
+    qa_line.record_synthetic(cur, gh, lambda *a: None, REPO, second["issue"], second["corr"], second["job_id"], res)
+    items = [i for i in inbox.items(cur) if i.get("task_kind") == "opportunity"]
+    assert [o["id"] for o in items[0]["answer"]["options"]] == ["file", "seen"]
+    got, msg = inbox.answer(cur, items[0]["key"], "file", "console:owner", "console", note="まず 1 本")
+    assert got == "answered" and "プランナー" in msg
+    assert inbox.answer(cur, items[0]["key"], "file", "console:owner", "console")[0] == "already"
+    # 次の周期に supervisor がプランナー宛ての Issue を作る（1 回だけ）
+    gh2 = FakeGH()
+    urls = opportunity.file_requested(cur, gh2)
+    assert len(urls) == 1 and opportunity.file_requested(cur, gh2) == []
+    (method, path, body), = gh2.calls
+    assert method == "POST" and path == f"repos/{REPO}/issues" and body["labels"] == ["factory:plan"]
+    assert "kpi_forecast" in body["body"] and "まず 1 本" in body["body"]
+    cur.execute("select correlation_id, payload from events where name='opportunity.ticket_filed'")
+    r = cur.fetchone()
+    assert r["correlation_id"] == f"github:{REPO}#101" and r["payload"]["issue"] == urls[0]
+    # 見ただけで閉じたものは起票しない
+    got, _ = inbox.answer(cur, items[1]["key"], "seen", "console:owner", "console")
+    assert got == "answered" and opportunity.file_requested(cur, gh2) == []
 
 
 def test_supervisor_synthetic_users_weekly(cur, monkeypatch):

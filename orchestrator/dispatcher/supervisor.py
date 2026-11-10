@@ -61,6 +61,7 @@ import ticket_sync
 import learn
 import version
 import ops
+import opportunity
 import plan_outcome
 import process_learn
 import qa_line
@@ -1251,6 +1252,16 @@ def kpi_weekly_step(cur, now: datetime | None = None):
         log("kpi weekly step error", repr(e)[:300])
 
 
+def opportunity_ticket_step(cur):
+    """受信トレイで「起票する」と答えた改善の提案を、プランナー宛ての Issue にする（受信トレイの入口は GitHub のトークンを持たない）"""
+    if DRY_RUN:
+        return
+    try:
+        opportunity.file_requested(cur, gh, log=log)
+    except Exception as e:  # noqa: BLE001  起票の失敗でラインを止めない。次の周回でやり直す
+        log("opportunity ticket step error", repr(e)[:300])
+
+
 def _qa_defs() -> dict:
     """definitions/qa.yaml の explore と synthetic（なければ qa_line の写し）"""
     try:
@@ -1362,6 +1373,7 @@ def tick():
         ephemeral_step(cur)
         nightly_explore_step(cur)
         kpi_weekly_step(cur)
+        opportunity_ticket_step(cur)
 
 
         synthetic_users_step(cur)

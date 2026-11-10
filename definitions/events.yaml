@@ -662,6 +662,14 @@ events:
     source: control_plane
     required: [repo, source, key, theme, title, problem, expected_effect, opportunity_id]
     note: "ADR 0043 の O4（O2 の Report ラインも同じ口の想定）。改善の提案（artifacts の Opportunity）を残し、受信トレイにプロダクトオーナーの依頼（kind opportunity）を 1 件積んだ。起票はしない（人かプランナーが拾う）。theme は definitions/learning_taxonomy.yaml の themes（1 利用者の体験・2 信頼性と性能）。合成の利用者から出したものは planted_hit（仕込みのどれに当たったか。roadmap の synthetic_users_loop が数える）と signal を持つ。dedupe は opportunity.proposed:<source>:<repo>:<key>"
+  opportunity.ticket_requested:
+    source: control_plane
+    required: [opportunity_id, repo, title, by]
+    note: "受信トレイで改善の提案（kind opportunity）に「起票する」と答えた（2026-11-10 オーナー。ADR 0043 の O2・O4 の追記）。受信トレイの入口は GitHub のトークンを持たないので頼みだけを残し、supervisor が次の周期に Issue を作る。仕込みに当たった提案は断る。dedupe は opportunity.ticket_requested:<opportunity_id>"
+  opportunity.ticket_filed:
+    source: control_plane
+    required: [opportunity_id, repo, issue]
+    note: "起票を頼まれた提案を、プランナー宛ての Issue（factory:plan）にした。correlation_id はその Issue。要否と経路はプランナーが決める。dedupe は opportunity.ticket_filed:<opportunity_id>"
   quality.learned:
     source: control_plane
     required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
