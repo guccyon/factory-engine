@@ -68,6 +68,13 @@ steps:
     tier: tier-judge
   incident.review:            # 事故の調査委員会の査読役（同上。書いた役とは別の呼び出し。割り出せないか・一般か・重複かを見る）
     tier: tier-judge
+  investigate:                # 工場の中での一次調査の調査役（core-gates/investigate.py。dispatcher の中継の道具と Engine の定義・文書を読むだけ。ADR 0048）
+    tier: tier-judge
+    mode: agentic
+    tools: [Read, Grep, Glob]   # シェルは渡さない（definitions/investigate.yaml の sources.factory_state）
+  investigate.fix_issue:      # 一次調査の Engine の改善 Issue の書き直し（顧客の情報の形を抜く。1 回だけ。ADR 0048 の決定 5）
+    tier: tier-light
+    tools: none
   qa:                         # QA 役（core-gates/qa.py。触れる環境にユーザーストーリーを流し、ストーリーごとに Verdict を返す。製品は読むだけ。ADR 0028 の決定 2）
     tier: tier-judge
     mode: agentic

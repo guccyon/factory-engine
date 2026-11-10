@@ -45,4 +45,6 @@ COPY --chown=worker:worker committee_review.sh /usr/local/bin/committee_review.s
 COPY --chown=worker:worker committee_weekly.sh /usr/local/bin/committee_weekly.sh
 # 事故の調査委員会の週次の見回り（ADR 0046）
 COPY --chown=worker:worker incident_review.sh /usr/local/bin/incident_review.sh
+# 工場の中での一次調査（ADR 0048）。道具は dispatcher の中継で受ける
+COPY --chown=worker:worker investigate.sh /usr/local/bin/investigate.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -72,6 +72,7 @@ nodes:
   govern.health:              { ja: 工場の健康を報告する, domain: cross, artifacts: [FactoryHealthReport] }
   govern.patrol:              { ja: 工場の費用を見回る, domain: cross, note: "ADR 0046。事故の調査委員会。事故記録（FIR）はこの業務と下の調査にだけ渡す" }
   govern.incident_review:     { ja: 事故を調べて記録する, domain: cross, note: "ADR 0046。記録と査読" }
+  govern.investigate:         { ja: 工場の問題を一次調査する, domain: cross, note: "ADR 0048。窓口の依頼から、工場の記録を読んで調べる。Engine のソースは読まない" }
 
   learn:                      { ja: Learn（学ぶ）, domain: cross }
   learn.case:                 { ja: 出来事を分析する, domain: cross, artifacts: [CaseAnalysis] }
@@ -125,6 +126,8 @@ from_agent_steps:             # agents.yaml の steps（ワークフローの外
   incident.patrol: [govern.patrol]
   incident.record: [govern.incident_review]
   incident.review: [govern.incident_review]
+  investigate: [govern.investigate]
+  investigate.fix_issue: [govern.investigate]
   qa: [ops.qa]
   pairwise: null              # 判定器の評価
 

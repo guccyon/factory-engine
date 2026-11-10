@@ -69,7 +69,7 @@ WORK_NODES = (
     "dev.build", "dev.describe", "dev.ci", "dev.review", "dev.review.inspect", "dev.review.judge", "dev.review.design",
     "ops", "ops.qa", "ops.diagnose", "ops.release", "ops.runtime", "ops.incident", "ops.operate",
     "desk", "desk.converse",
-    "govern", "govern.design_review", "govern.health", "govern.patrol", "govern.incident_review",
+    "govern", "govern.design_review", "govern.health", "govern.patrol", "govern.incident_review", "govern.investigate",
     "learn", "learn.case", "learn.committee",
 )
 MAX_STATEMENT = 400
