@@ -53,17 +53,6 @@ def knowledge_section() -> str:
 """
 
 
-def heading_fixed(add: str) -> str:
-    """追記の頭を「## 」の見出しにそろえる。モデルが見出しの段を違えたり付け忘れたりしても、呼んだ分を捨てない
-    （11-10: 見出しの検査で落ちたジョブが 6 件。LLM を呼んだ費用は記録されないまま、停止が開いたまま残った）"""
-    if not add or add.startswith("## "):
-        return add
-    m = re.match(r"#{1,6}\s+", add)
-    if m:
-        return "## " + add[m.end():]
-    return "## 検査の指摘への追記\n\n" + add
-
-
 def main() -> int:
     inp = json.loads(sys.stdin.read())
     m = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)$", inp["pr_url"])
@@ -90,9 +79,9 @@ def main() -> int:
 {knowledge_section()}"""
     r = agent_runner.run("body_fix", prompt, schema=SCHEMA)
     res = r.output
-    add = heading_fixed((res.get("append_markdown") or "").strip())[:MAX_APPEND]
-    if not add:
-        raise SystemExit("append_markdown is empty")
+    add = (res.get("append_markdown") or "").strip()[:MAX_APPEND]
+    if not add.startswith("## "):
+        raise SystemExit("append_markdown must start with a level-2 heading")
     new_body = body.rstrip() + "\n\n" + add + "\n\n（この節は検査の指摘を受けて工場が本文に追記した）\n"
     sh("gh", "pr", "edit", number, "-R", repo, "--body-file", "-", input=new_body)
     print(json.dumps({"pr_url": inp["pr_url"], "chars": len(add), "summary": res.get("summary"), "model": r.model,
