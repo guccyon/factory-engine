@@ -1,0 +1,74 @@
+# factory-engine 自身のテスト（pytest）。PR と main への push で回す。
+# DB を使うテストは TEST_DATABASE_URL が無いと skip されて「通ったように見える」ので、
+# Postgres をサービスで立て、orchestrator/postgres/init/*.sql を当ててから全部流す（本番の compose と同じ版）。
+# テストの置き場ごとに同じ名前のファイルがあるので（__init__.py が無い）、置き場ごとに別の pytest で回す。
+# action は commit の SHA で固定する（タグは付け替えられるため）。
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: factory
+          POSTGRES_DB: factory_test
+          # テストが作る利用者（restricted_probe など）がパスワードなしで繋ぐため。CI の使い捨ての DB だけの設定
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U factory -d factory_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://factory:factory@localhost:5432/factory_test
+      PGPASSWORD: factory
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"   # dispatcher の Dockerfile と同じ
+          cache: pip
+          cache-dependency-path: orchestrator/dispatcher/requirements.txt
+      - name: 依存を入れる
+        run: pip install -r orchestrator/dispatcher/requirements.txt pytest==9.2.0 lizard==1.25.1
+      - name: DB にスキーマを当てる（orchestrator/postgres/init を番号順に）
+        id: setup
+        run: |
+          for f in orchestrator/postgres/init/*.sql; do
+            echo "::group::$f"
+            psql -v ON_ERROR_STOP=1 -h localhost -U factory -d factory_test -f "$f"
+            echo "::endgroup::"
+          done
+      - name: dispatcher
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}   # 1 つの置き場が落ちても残りは回す
+        run: pytest -q -rs orchestrator/dispatcher/tests
+      - name: core-gates
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}   # 1 つの置き場が落ちても残りは回す
+        run: pytest -q -rs core-gates/tests
+      - name: health
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}   # 1 つの置き場が落ちても残りは回す
+        run: pytest -q -rs health
+      - name: macrunner
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}   # 1 つの置き場が落ちても残りは回す
+        run: pytest -q -rs orchestrator/macrunner/tests
+      - name: desk-mcp
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}   # 1 つの置き場が落ちても残りは回す
+        run: pytest -q -rs orchestrator/desk-mcp

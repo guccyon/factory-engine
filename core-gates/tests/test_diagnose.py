@@ -143,8 +143,9 @@ def test_pipe_in_message_does_not_break_table(tmp_path, capsys):
 
 
 def test_engine_workflow_is_the_template():
-    """factory-engine 自身の CI は テンプレートそのもの（ENGINE_REF: self）"""
+    """factory-engine 自身の CI は テンプレートそのもの（engine.lock が無いので ENGINE_REF=self で自分の木の版を使う。ADR 0041 の決定 4）"""
     tpl = (ENGINE / "templates/ci/diagnose.yml").read_text(encoding="utf-8")
     own = (ENGINE / ".github/workflows/diagnose.yml").read_text(encoding="utf-8")
     assert own == tpl
-    assert re.search(r"^  ENGINE_REF: self$", tpl, re.M)
+    assert re.search(r'echo "ENGINE_REF=self" >> "\$GITHUB_ENV"', tpl)
+    assert not (ENGINE / ".factory-config/engine.lock").exists()
