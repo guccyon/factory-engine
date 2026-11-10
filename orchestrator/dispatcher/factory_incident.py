@@ -408,15 +408,26 @@ def record_weekly(cur, job_id: int, week: str, result: dict) -> dict:
             if cid:
                 update_case(cur, cid, by, fir=d["id"])
         if d.get("issue") and d["issue"].get("title"):
-            if _record(cur, "fincident.issue_proposed", {"fir": d["id"], "case": cid, "week": week, "title": d["issue"]["title"][:200],
+            if _record(cur, "fincident.issue_proposed", {"key": d["id"], "fir": d["id"], "case": cid, "week": week, "title": d["issue"]["title"][:200],
                                                          "body": d["issue"].get("body") or ""}, f"fincident.issue_proposed:{d['id']}"):
                 proposed.append(d["id"])
+    checks = []
+    for r in rep.get("check_reviews") or []:   # 専用のチェックの見直し（ADR 0046 の 5 の 3）。要らないものは外す Issue の案に
+        checks.append({"name": r.get("name"), "keep": bool(r.get("keep")), "why": r.get("why") or ""})
+        if r.get("keep") is False:
+            key = f"check:{r.get('name')}"
+            body = (f"事故の調査委員会が、見直しの期日（{r.get('review_by')}）の来た専用のチェックを外してよいと判断しました。\n\n"
+                    f"- チェック: {r.get('name')}\n- 場所: {', '.join(r.get('where') or [])}\n- 関係する事故記録: {r.get('fir') or 'なし'}\n- 理由: {r.get('why') or ''}\n\n"
+                    "外すときは、同じ PR で definitions/incident.yaml の dedicated_checks と事故記録の mitigation.dedicated_checks からも外す。")
+            if _record(cur, "fincident.issue_proposed", {"key": key, "fir": r.get("fir"), "case": None, "week": week,
+                                                         "title": f"専用のチェックを外す: {r.get('name')}"[:200], "body": body}, f"fincident.issue_proposed:{key}:{week}"):
+                proposed.append(key)
     summary = {"week": week, "job_id": job_id, "summary": rep.get("summary") or "", "viewpoints": (result.get("facts") or {}).get("viewpoints") or [],
                "findings": len(rep.get("findings") or []), "incidents": sum(1 for f in rep.get("findings") or [] if f.get("is_incident")),
                "opened": opened, "updated": updated, "outboxed": outboxed, "issues_proposed": proposed,
                "rejected": [{"id": d.get("id"), "title": d.get("title"), "check": d.get("check") or [], "review": (d.get("review") or {}).get("problems") or []}
                             for d in result.get("drafts") or [] if not d.get("ok")],
-               "new_viewpoints": rep.get("new_viewpoints") or [], "cost_usd": result.get("cost_usd")}
+               "new_viewpoints": rep.get("new_viewpoints") or [], "check_reviews": checks, "cost_usd": result.get("cost_usd")}
     _record(cur, "fincident.reviewed", summary, f"fincident.reviewed:{week}", corr=f"fincident:weekly:{week}")
     return summary
 
@@ -424,7 +435,8 @@ def record_weekly(cur, job_id: int, week: str, result: dict) -> dict:
 def pending_issues(cur, limit: int = 2) -> list[dict]:
     """起票を待つ Engine の改善 Issue の案（supervisor が起票する）"""
     cur.execute("select p.payload from events p where p.name='fincident.issue_proposed' and not exists "
-                "(select 1 from events f where f.name='fincident.issue_filed' and f.payload->>'fir' = p.payload->>'fir') order by p.id limit %s", (limit,))
+                "(select 1 from events f where f.name='fincident.issue_filed' and f.payload->>'key' = p.payload->>'key' "
+                "and f.payload->>'week' is not distinct from p.payload->>'week') order by p.id limit %s", (limit,))
     return [r["payload"] for r in cur.fetchall()]
 
 
@@ -439,9 +451,11 @@ def file_issues(cur, gh, engine_repo: str, label: str, limit: int = 2) -> list[s
         url = open_titles.get(p["title"])
         dup = bool(url)
         if not url:
-            body = p["body"] + f"\n\n---\n事故の調査委員会の週次の見回り（ADR 0046）が起票。事故記録の下書き {p['fir']}（送り出し口）。直すのは建設者。"
+            src = f"事故記録の下書き {p['fir']}（送り出し口）" if p["key"] == p.get("fir") else "専用のチェックの見直し"
+            body = p["body"] + f"\n\n---\n事故の調査委員会の週次の見回り（ADR 0046）が起票。{src}。直すのは建設者。"
             url = (gh("POST", f"repos/{engine_repo}/issues", {"title": p["title"], "body": body, "labels": [label]}) or {}).get("html_url")
-        _record(cur, "fincident.issue_filed", {"fir": p["fir"], "case": p.get("case"), "issue": url, "duplicate": dup}, f"fincident.issue_filed:{p['fir']}")
+        _record(cur, "fincident.issue_filed", {"key": p["key"], "fir": p.get("fir"), "week": p.get("week"), "case": p.get("case"), "issue": url, "duplicate": dup},
+                f"fincident.issue_filed:{p['key']}:{p.get('week')}")
         if p.get("case") and url:
             update_case(cur, p["case"], "committee.weekly", engine_issue=url)
         filed.append(url)

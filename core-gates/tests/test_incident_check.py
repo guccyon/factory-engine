@@ -160,3 +160,33 @@ def test_engine_records_pass():
     for _, r in records:
         for vp in (r.get("detection") or {}).get("viewpoints") or []:
             assert vp in ids
+
+
+# ------------------------------------------------------------------ 専用のチェックの棚卸し（ADR 0046 の 5 の 3）
+from datetime import date as _date  # noqa: E402
+
+_ENGINE = Path(__file__).resolve().parents[2]
+_INV = yaml.safe_load((_ENGINE / "definitions" / "incident.yaml").read_text(encoding="utf-8"))["dedicated_checks"]
+
+
+def test_engine_inventory_matches_code_and_records():
+    errs, records = ic.run(_ENGINE / "incidents", [])
+    assert ic.check_inventory(_ENGINE, _INV, records) == []
+    assert ic.main(["--root", str(_ENGINE / "incidents")]) == 0
+
+
+def test_inventory_finds_removed_code_and_missing_entries():
+    _, records = ic.run(_ENGINE / "incidents", [])
+    gone = [{**_INV[0], "where": ["orchestrator/worker/entrypoint.sh:もう無い印"]}, *_INV[1:]]
+    assert any("もう無い印" in e for e in ic.check_inventory(_ENGINE, gone, records))
+    assert any("definitions/incident.yaml の dedicated_checks にない" in e for e in ic.check_inventory(_ENGINE, _INV[1:], records))
+    later = [{**_INV[0], "review_by": "2027-05-01"}, *_INV[1:]]
+    assert any("review_by が違う" in e for e in ic.check_inventory(_ENGINE, later, records))
+    assert any("added がない" in e for e in ic.check_inventory(_ENGINE, [{k: v for k, v in _INV[0].items() if k != "added"}, *_INV[1:]], records))
+
+
+def test_due_checks():
+    assert ic.due_checks(_INV, _date(2026, 11, 10)) == []
+    due = ic.due_checks(_INV, _date(2027, 1, 20))
+    assert [d["fir"] for d in due] == ["FIR-2026-0001"] and due[0]["overdue"] is False
+    assert all(d["overdue"] for d in ic.due_checks(_INV, _date(2027, 3, 1)))

@@ -78,7 +78,7 @@ def fake_runner(monkeypatch, record_outputs, review_ok=True, patrol=None):
         calls.append((step, here, prompt))
         if step == "incident.patrol":
             out = patrol or {"summary": "費用の週", "findings": [dict(FINDING), {**FINDING, "title": "ふだんの範囲", "is_incident": False, "record": False, "case": "IC-X"}],
-                             "new_viewpoints": []}
+                             "new_viewpoints": [], "check_reviews": []}
         elif step == "incident.record":
             out = record_outputs.pop(0)
         else:
@@ -134,3 +134,16 @@ def test_quiet_week_skips_agents(tmp_path, monkeypatch):
 def test_bad_input_exits_2(tmp_path):
     (tmp_path / "in.json").write_text("{}", encoding="utf-8")
     assert ir.main(["--input", str(tmp_path / "in.json"), "--out", str(tmp_path / "o.json"), "--engine-dir", str(ENGINE)]) == 2
+
+
+def test_due_dedicated_checks_go_to_patrol(tmp_path, monkeypatch):
+    name = DEFS["dedicated_checks"][0]["name"]
+    calls = fake_runner(monkeypatch, [], patrol={"summary": "s", "findings": [], "new_viewpoints": [],
+                                                "check_reviews": [{"name": name, "keep": False, "why": "断片化の後の PR だけになった"},
+                                                                  {"name": "知らない", "keep": False, "why": "x"}]})
+    r = run_main(tmp_path, week(spent_usd=0, signs=[], cases=[], to="2027-01-20T12:00:00+09:00"))
+    assert name in calls[0][2] and r["facts"]["checks_due"] == [name]
+    assert [c["name"] for c in r["result"]["check_reviews"]] == [name] and r["result"]["check_reviews"][0]["fir"] == "FIR-2026-0001"
+    calls = fake_runner(monkeypatch, [{"yaml": GOOD, "issue_title": "", "issue_body": ""}])
+    run_main(tmp_path, week(to="2026-11-15T12:00:00+09:00"))
+    assert "（なし）" in calls[0][2]

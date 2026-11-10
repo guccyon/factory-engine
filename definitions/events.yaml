@@ -117,11 +117,11 @@ events:
     note: "ADR 0046 の 9。送り出し口の下書きを取り出した印"
   fincident.issue_proposed:
     source: control_plane
-    required: [fir, week, title, body]
-    note: "ADR 0046 の 6。週次の見回りが出した Engine の改善 Issue の案（製品の情報は抜いてある）。supervisor が起票する"
+    required: [key, week, title, body]
+    note: "ADR 0046 の 6。週次の見回りが出した Engine の改善 Issue の案（製品の情報は抜いてある）。key は FIR の下書きの id か、外してよいと決めた専用のチェック（check:<名前>）。supervisor が起票する"
   fincident.issue_filed:
     source: control_plane
-    required: [fir, issue, duplicate]
+    required: [key, week, issue, duplicate]
     note: "ADR 0046 の 6。Engine の改善 Issue を起票した（同じ題が開いていれば duplicate で、それを指す）"
   incident.budget_exceeded:
     source: control_plane
