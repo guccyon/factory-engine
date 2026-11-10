@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 本文の追記のジョブ: 標準入力の JSON（judge が採用した PR 本文だけの指摘）を Engine の core-gates/body_fix.py に渡し、
-# PR の本文の末尾に節を足す。結果を最終行に JSON で出す。
+# 本文の直しのジョブ: 標準入力の JSON（judge が採用した PR 本文だけの指摘）を Engine の core-gates/body_fix.py に渡し、
+# PR の本文の説明の部分を作り直す（守る節はそのまま）。結果を最終行に JSON で出す。
 # 環境変数: JOB_ID REPO PR_URL GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN（任意: KNOWLEDGE_CONTEXT=0 で知見を渡さない）
 set -euo pipefail
 
@@ -38,8 +38,12 @@ RC=$?
 set -e
 sed 's/^/[out.err] /' /work/out.err | tail -20 || true
 if [ "${RC}" -ne 0 ] || [ ! -s /work/out.json ]; then
-  echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg rc "${RC}" '{kind:"body_fix", pr_url:$pr, ok:false, exit:($rc|tonumber)}')"
+  # モデルを呼んだあとの失敗は body_fix.py が費用を out.json に残す。失敗でも費用を帳簿に載せる（2026-11-10）
+  FAIL_EXTRA='{}'
+  if [ -s /work/out.json ]; then FAIL_EXTRA=$(jq -c '{cost_usd:(.cost_usd // null), usage:(.usage // {}), model:(.model // null), error:(.error // null)}' /work/out.json 2>/dev/null || echo '{}'); fi
+  [ -z "${FAIL_EXTRA}" ] && FAIL_EXTRA='{}'
+  echo "FACTORY_RESULT:$(jq -nc --arg pr "${PR_URL}" --arg rc "${RC}" --argjson x "${FAIL_EXTRA}" '{kind:"body_fix", pr_url:$pr, ok:false, exit:($rc|tonumber)} + $x')"
   exit 1
 fi
-echo "FACTORY_RESULT:$(jq -c --argjson kids "${KNOWLEDGE_IDS}" --argjson ksel "${KNOWLEDGE_SEL}" '{kind:"body_fix", pr_url:.pr_url, ok:true, chars:.chars, summary:.summary, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, knowledge_ids:$kids, knowledge_selection:$ksel}' /work/out.json)"
+echo "FACTORY_RESULT:$(jq -c --argjson kids "${KNOWLEDGE_IDS}" --argjson ksel "${KNOWLEDGE_SEL}" '{kind:"body_fix", pr_url:.pr_url, ok:true, chars:.chars, chars_before:.chars_before, chars_after:.chars_after, skipped:(.skipped // null), summary:.summary, cost_usd:(.cost_usd // 0), usage:(.usage // {}), model:.model, knowledge_ids:$kids, knowledge_selection:$ksel}' /work/out.json)"
 exit 0

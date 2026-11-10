@@ -19,7 +19,7 @@ tiers:
   tier-large: {runner: claude-code, model: claude-opus-5-5}
   tier-judge: {runner: claude-code, model: claude-opus-5-5}
   tier-small: {runner: claude-code, model: claude-sonnet-5-5}
-  tier-light: {runner: claude-code, model: claude-haiku-5-5}   # 型の決まった短い書き足し（本文の追記など）。2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」
+  tier-light: {runner: claude-code, model: claude-haiku-5-5}   # 型の決まった短い書き物（本文の直しなど）。2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」
 
 steps:
   implement:                  # 実装（ツールあり、リポジトリを書き換える）。dispatcher の MODEL_TIER が tier を上書きする
@@ -37,7 +37,7 @@ steps:
   judge:                      # 出口の裁き（core-gates/judge.py）
     tier: tier-judge
     tools: none
-  body_fix:                   # PR 本文への追記（core-gates/body_fix.py）。2026-11-08 に Sonnet から Haiku へ（確信度の高い工程から試す）
+  body_fix:                   # PR 本文の説明の作り直し（core-gates/body_fix.py。2026-11-10 に追記から作り直しへ）。2026-11-08 に Sonnet から Haiku へ（確信度の高い工程から試す）
     tier: tier-light
     tools: none
   design_review:              # 週 1 回の設計の診断（core-gates/design_review.py。製品を読むだけ。ADR 0022）

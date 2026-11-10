@@ -493,7 +493,11 @@ events:
   pr.body_amended:
     source: control_plane
     required: [pr_url, defects, chars]
-    note: "PR 本文だけの指摘を本文の追記で直した（body_fix のジョブ）。差し戻しの回数に数えない"
+    note: "PR 本文だけの指摘を、本文の説明の部分を作り直して直した（body_fix のジョブ。2026-11-10 に追記から作り直しへ）。差し戻しの回数に数えない。skipped（body_unchanged）は前回の作り直しから説明が変わっていないので直さずに終えた回で、上限の回数に数えない。chars_before・chars_after は本文全体の字数"
+  pr.body_fix_capped:
+    source: control_plane
+    required: [pr_url, done, cap]
+    note: "1 本の PR の本文を直した回数が上限（BODY_FIX_MAX_PER_PR、既定 2）に達したので、judge が採用した本文の指摘で body_fix を積まなかった（2026-11-10。rally #635 は同じ PR に 20 回積んで本文が 132KB になった）。rubric_ids を添える"
   learn.retrospected:
     source: control_plane
     required: [day, signals, clusters, rubric_candidates]
