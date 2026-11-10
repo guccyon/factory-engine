@@ -122,3 +122,26 @@ def test_issueless_kinds_never_swap_labels():
     import desk_line
     for k in (desk_line.KIND, desk_answer.KIND, desk_investigate.KIND):
         assert k in consts["ISSUELESS_KINDS"]
+
+
+def test_relay_kinds_get_no_job_db():
+    """中継の道具を使う種類にはジョブの DB を作らない（--network が 2 回付いて docker run が 125 で落ちた。2026-11-10）"""
+    import ast
+    import runner_relay
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "dispatcher.py").read_text(encoding="utf-8"))
+    consts = {t.id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name) and t.id == "NO_JOB_DB_KINDS"}
+    assert set(runner_relay.KIND_TOOLS) <= set(consts["NO_JOB_DB_KINDS"])
+
+
+def test_investigate_is_wired_through_run_job():
+    """一次調査のジョブが run_job のどの分かれ道でも漏れていないこと（ラベル・ジョブの DB・標準入力・成功の判定。2026-11-10 に順に漏れが見つかった）"""
+    import ast
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "dispatcher.py").read_text(encoding="utf-8"))
+    names = ("NO_LABEL_KINDS", "NO_JOB_DB_KINDS", "PIPED_KINDS", "OK_RESULT_KINDS")
+    consts = {t.id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name) and t.id in names}
+    for n in names:
+        assert "investigate" in consts[n], n
+    for k in ("desk_consult", "desk_answer", "qa"):   # 入力を標準入力で受け、PR を作らない種類は成功の判定にも入る
+        assert k in consts["PIPED_KINDS"] and k in consts["OK_RESULT_KINDS"]

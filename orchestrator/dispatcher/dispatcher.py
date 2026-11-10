@@ -161,6 +161,16 @@ def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
 # Issue のない仮の負の数（窓口の会話・一次調査とその評価セット）。仮の番号のラベルを替えると GitHub が 404 を返してジョブが落ちる（2026-11-10）
 NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
                   "ui_design_review", "desk_consult", "desk_answer", "investigate")
+# ジョブ専用の空の DB を作らない種類（製品のテストを流さない）。一次調査は制御プレーンを調査用の接続（INVESTIGATE_DATABASE_URL）で読むだけ。
+# 中継（relay_env）を使う種類は --network を中継の側で付けるので、ここに入れないと --network が 2 回付いて docker run が 125 で落ちる（2026-11-10）
+NO_JOB_DB_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
+                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa", "investigate")
+# 入力（job.enqueued の input）を標準入力で渡す種類。ワーカーの入口が最初に標準入力を読む
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan",
+               "design_system", "desk_consult", "desk_answer", "qa", "investigate")
+# PR を作らない種類で、終了コード 0 と結果の ok で成功とみなすもの
+OK_RESULT_KINDS = ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan",
+                   "design_system", "desk_consult", "desk_answer", "qa", "investigate")
 ISSUELESS_KINDS = ("desk_consult", "desk_answer", "investigate")   # issue_number が仮の負の数の種類
 
 
@@ -439,7 +449,7 @@ def run_job(job: dict, reattaching: bool = False):
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
             job_db_url = None
-            if JOB_DB_ENABLED and kind not in ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") and not reattaching:
+            if JOB_DB_ENABLED and kind not in NO_JOB_DB_KINDS and not reattaching:
                 dbname = f"job_{job_id}"
                 jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
                 jobdb.create(cur, dbname, JOB_DB_USER)
@@ -482,7 +492,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa", "investigate") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in PIPED_KINDS or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -509,7 +519,7 @@ def run_job(job: dict, reattaching: bool = False):
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
-                piped = kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") or signaled
+                piped = kind in PIPED_KINDS or signaled
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if piped else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if piped:
                     proc.stdin.write(json.dumps(judge_inp, ensure_ascii=False))
@@ -558,7 +568,7 @@ def run_job(job: dict, reattaching: bool = False):
                 state, err = "failed", "timeout"
             elif proc.returncode == 0 and result and result.get("pr_url"):
                 state, err = "succeeded", None
-            elif proc.returncode == 0 and result and result.get("kind") in ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") and result.get("ok"):
+            elif proc.returncode == 0 and result and result.get("kind") in OK_RESULT_KINDS and result.get("ok"):
                 state, err = "succeeded", None
             elif proc.returncode == 0 and result and result.get("kind") == "clarify":
                 state, err = ("succeeded", None) if result.get("status") == "clarified" else ("failed", "unresolved_after_max_rounds")
