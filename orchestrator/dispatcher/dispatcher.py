@@ -449,7 +449,7 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
-                   "-e", f"GH_TOKEN={ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）
+                   "-e", f"GH_TOKEN={'' if kind == 'investigate' else ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）。一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）
                     "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
                    *(["-e", f"CONTINUE_BRANCH={cont['branch']}", "-e", f"CONTINUE_PR={cont['pr_number']}", "-e", f"CONTINUE_REASON={cont['reason']}"] if cont else []),
                    *(["--entrypoint", "/usr/local/bin/clarify.sh"] if kind == "clarify" else []),
@@ -467,12 +467,13 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
+                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh"] if kind == "investigate" else []),   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
                    *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
                    image]
             judge_inp = None
-            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
+            if kind in ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa", "investigate") or signaled:   # 入力は supervisor / dispatcher が job.enqueued に残したもの（制御プレーンの記録だけで組み立てた JSON）
                 cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
                 ev = cur.fetchone()
                 judge_inp = (ev["payload"] if ev else {}).get("input") or {}
@@ -1506,6 +1507,10 @@ def _relay_record(job_id: int, payload: dict):
 def _relay_local(tool: str, arguments: dict, grant: dict) -> dict:
     """工場の側の道具（runner_relay.LOCAL_TOOLS）。env_restart はそのジョブの製品の、QA を積んだときの環境を再起動して時計を進める
     （ADR 0028 の scenario_time）。手を動かすのは shipper で、ここは依頼を書いて終わるまで待つだけ"""
+    if tool in runner_relay.INVESTIGATE_TOOLS:   # 工場の中での一次調査の道具（ADR 0048）。読むだけ
+        import investigate_tools
+        return investigate_tools.handle(tool, arguments, grant, blob_key_of=_job_blob_key, store_get=store_get,
+                                        gh_get=lambda path: ghapi.request("GET", path))
     import touch
     if tool != "env_restart" or not grant.get("repo"):
         raise RuntimeError(f"知らない道具か、製品の分からないジョブ: {tool}")
@@ -1519,6 +1524,13 @@ def _relay_local(tool: str, arguments: dict, grant: dict) -> dict:
         ok, msg, _ = touch.restart(cur, grant["repo"], env, advance_hours=float(hours), reset_clock=bool(arguments.get("reset_clock")),
                                    by=f"qa:{grant['job_id']}", via="runner_relay", timeout=480, log=lambda m: None)
     return {"content": [{"type": "text", "text": msg}], "isError": not ok}
+
+
+def _job_blob_key(job_id: int) -> str | None:
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("select payload->>'blob_key' as k from events where name='job.finished' and job_id=%s order by id desc limit 1", (job_id,))
+        r = cur.fetchone()
+    return (r or {}).get("k")
 
 
 def relay_env(job_id: int, kind: str, repo: str | None = None) -> list[str]:

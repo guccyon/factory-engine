@@ -62,8 +62,22 @@ LOCAL_TOOLS = {t["name"]: t for t in [
           {"advance_hours": {"type": "number", "minimum": 0, "maximum": 168, "description": "進める時間（0〜168）。0 なら再起動だけ"},
            "reset_clock": {"type": "boolean", "description": "進めた時計を 0 に戻して再起動する（advance_hours とは一緒に使わない）"}}),
 ]}
-# ジョブの種類ごとに通す道具（definitions/qa.yaml の runner_tools と env_tools と同じ）
-KIND_TOOLS = {"qa": tuple(TOOLS) + tuple(LOCAL_TOOLS)}
+# 工場の中での一次調査の道具（ADR 0048 の決定 2・3、definitions/investigate.yaml の sources）。読むだけ。中身は investigate_tools.py
+INVESTIGATE_TOOLS = {t["name"]: t for t in [
+    _tool("inv_sql", "制御プレーンの記録を SQL で読む。読めるのは investigate スキーマのビュー（jobs・events・stoppages・tickets・judgments・"
+          "desk_conversations・costs・line_declarations）だけ。1 文・SELECT か WITH だけ、10 秒・500 行まで",
+          {"sql": {"type": "string", "maxLength": 8000, "description": "1 文の SELECT（例 select kind, state, cost_usd from investigate.costs order by finished_at desc limit 20）"}},
+          ["sql"]),
+    _tool("inv_job_log", "ジョブのログの末尾を読む（秘密情報の形は伏せてある）",
+          {"job_id": {"type": "integer", "minimum": 1}, "tail": {"type": "integer", "minimum": 1, "maximum": 400, "description": "末尾の行数（既定 200）"}},
+          ["job_id"]),
+    _tool("inv_github", "調査の対象の製品の GitHub を読む（GET だけ）。path は issues・pulls・actions/runs・commits の下（例 pulls/123、issues/45/comments、"
+          "pulls/123/reviews、actions/runs?branch=main&per_page=5）",
+          {"path": {"type": "string", "maxLength": 300}}, ["path"]),
+]}
+LOCAL_TOOLS.update(INVESTIGATE_TOOLS)
+# ジョブの種類ごとに通す道具（definitions/qa.yaml の runner_tools と env_tools、definitions/investigate.yaml の sources と同じ）
+KIND_TOOLS = {"qa": tuple(TOOLS) + ("env_restart",), "investigate": tuple(INVESTIGATE_TOOLS)}
 CALL_TIMEOUT = {"app_build": 60, "build_status": 30}   # ビルドは build_status で待つので、呼び出し自体は短い
 
 
@@ -115,7 +129,7 @@ class Relay:
         if method == "initialize":
             return 200, _ok(mid, {"protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
                                   "capabilities": {"tools": {"listChanged": False}},
-                                  "serverInfo": {"name": "factory-macrunner-relay", "version": "0.1"}})
+                                  "serverInfo": {"name": "factory-relay", "version": "0.2"}})
         if method == "ping":
             return 200, _ok(mid, {})
         if method == "tools/list":

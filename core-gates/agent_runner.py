@@ -46,7 +46,7 @@ class Agent:
     runner: str
     model: str
     mode: str = "oneshot"   # oneshot（ツールなしで 1 回答える）／ agentic（ツールありで作業する）
-    tools: str = "default"  # default ／ none（ツールを渡さない）
+    tools: object = "default"  # default ／ none（ツールを渡さない）／ 組み込みの道具の名前の list（それだけを渡す。例 [Read, Grep, Glob]）
 
 
 @dataclass
@@ -107,11 +107,19 @@ def _retry(cmd: list[str], *, input: str | None, retries: int, cwd: str | None =
 
 # --- runner: claude-code -------------------------------------------------------------------------------
 
+def _tools_args(a: Agent) -> list[str]:
+    """組み込みの道具の渡し方。none は何も渡さない、list はその名前だけ、default は runner の既定のまま"""
+    if a.tools == "none":
+        return ["--tools", ""]
+    if isinstance(a.tools, list):
+        return ["--tools", ",".join(str(t) for t in a.tools)]
+    return []
+
+
 def _claude_oneshot(a: Agent, prompt: str, schema: dict | None, max_turns: int, retries: int) -> Result:
     # プロンプトは標準入力で渡す。引数に載せると、長い差分を含む judge などで OS の上限（Argument list too long）に当たる
     cmd = ["claude", "-p", "--model", a.model, "--output-format", "json", "--max-turns", str(max_turns)]
-    if a.tools == "none":
-        cmd += ["--tools", ""]
+    cmd += _tools_args(a)
     if schema is not None:
         cmd += ["--json-schema", json.dumps(schema)]
     # --bare はキーチェーンの認証を読まないので使わない（Mac で動かす shadow_review・pairwise_judge）
@@ -239,7 +247,8 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
     # ワーカーの中だけで使う（使い捨てのコンテナなので権限の確認を省く）。stderr はそのまま流す
     state = Path(state_dir) / "claude-code" if state_dir else None
     base = ["claude", "-p", "--model", a.model, "--max-turns", str(max_turns), "--output-format", "json", "--dangerously-skip-permissions",
-            *(["--mcp-config", mcp_config, "--strict-mcp-config"] if mcp_config else [])]   # 渡した MCP の道具だけ（Mac ランナーの中継。ADR 0028 の one_orchestrator）
+            *(["--mcp-config", mcp_config, "--strict-mcp-config"] if mcp_config else []),   # 渡した MCP の道具だけ（Mac ランナーの中継。ADR 0028 の one_orchestrator）
+            *_tools_args(a)]   # 組み込みの道具を絞る（一次調査は読むだけ。ADR 0048）
     sid, prior_cost = _claude_restore(state)
     resumed = bool(sid)
     with _Heartbeat():

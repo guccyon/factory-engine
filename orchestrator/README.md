@@ -595,8 +595,14 @@ docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted 
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/008_investigate.sql   # 既存の DB に利用者とビューを足す（冪等、expand だけ）
-docker compose exec postgres psql -U factory -c "alter role factory_investigate login password '...'"   # 管理者が有効にするとき。dispatcher への渡し方（INVESTIGATE_DATABASE_URL）は順番 3 で
+docker compose exec postgres psql -U factory -c "alter role factory_investigate login password '...'"   # 管理者が有効にするとき
+# .env に INVESTIGATE_DATABASE_URL=postgresql://factory_investigate:<合言葉>@postgres:5432/factory を書いて dispatcher を作り直す（dispatcher だけが使う）
 ```
+
+調査役のジョブ（順番 3、kind `investigate`、`worker/investigate.sh`・`core-gates/investigate.py`）: 道具は dispatcher の中継（`runner_relay` の `inv_sql`・`inv_job_log`・`inv_github`、中身は `dispatcher/investigate_tools.py`）で受ける。
+ワーカーには GitHub のトークンも DB の接続情報も渡さず、Engine は `definitions/`・`docs/` と調査に要る道具だけを取る（ソースの本体は取らない）。組み込みの道具は Read・Grep・Glob だけ（`definitions/agents.yaml` の `investigate`）。
+GitHub は製品のリポジトリの issues・pulls・actions/runs・commits の下への GET だけ、ログは末尾 400 行までで秘密情報の形を伏せる。
+結果（報告・直す先・Engine の改善 Issue・引き継ぎ資料）は最終行の JSON で返し、Issue は顧客の情報の形の検査を通らなければ `issue_held` にする。ジョブを積む口（窓口の振り分け）と結果の記録・起票は順番 4・5。
 
 ## 建設状況の日次レポート（ADR 0008）
 
