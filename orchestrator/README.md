@@ -587,6 +587,17 @@ docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted 
 docker compose exec -e RESTRICTED_DATABASE_URL dispatcher factoryctl restricted retire R-0001 --reason "保管の期限"   # 中身を消し、id と記録は残す
 ```
 
+## 工場の中での一次調査の DB（ADR 0048 の順番 2）
+
+調査役（ワーカー）は DB の接続情報を持たない。調査役の SELECT は dispatcher（`dispatcher/investigate_db.py`）が受け取り、調査用の利用者 `factory_investigate` で別に繋いだ接続の、読み取り専用のトランザクションで流す。
+`factory_investigate` が読めるのは `investigate` スキーマのビュー（jobs・events・stoppages・tickets・judgments・desk_conversations・costs・line_declarations）だけで、`restricted`・`desk_tokens`・events の `restricted.*` は入れていない。既定で読み取り専用・1 文 10 秒、行は dispatcher が 500 行で切る。
+管理者の接続で SET ROLE して流す形にしないのは、SELECT の中の `set_config('role', ...)` で管理者の権限に戻れてしまうため。`factory_investigate` は最初は NOLOGIN で、有効にするまで SQL の道具は「DB は使えない」と返す。
+
+```bash
+docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/008_investigate.sql   # 既存の DB に利用者とビューを足す（冪等、expand だけ）
+docker compose exec postgres psql -U factory -c "alter role factory_investigate login password '...'"   # 管理者が有効にするとき。dispatcher への渡し方（INVESTIGATE_DATABASE_URL）は順番 3 で
+```
+
 ## 建設状況の日次レポート（ADR 0008）
 
 supervisor が JST の 5 時（`DAILY_REPORT_HOUR`）を過ぎたら 1 日 1 回 `health/daily/status_report.py` を走らせ、factory-engine の固定 Issue（`factory:construction`）の本文をダッシュボードに書き換え、日次レポートをコメントで足す。LLM は使わない。
