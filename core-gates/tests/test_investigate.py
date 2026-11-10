@@ -32,8 +32,10 @@ def test_prompt_names_views_tools_and_limits():
     p = inv.prompt(DEFS, INP)
     for v in DEFS["sources"]["db"]["views"]:
         assert v in p
-    for t in ("inv_sql", "inv_job_log", "inv_github", inv.RESULT_FILE):
+    for t in ("inv_sql", "inv_job_log", "inv_github", "```json"):
         assert t in p
+    assert inv.RESULT_FILE not in p   # 書く道具はないので、ファイルに書けとは言わない
+    assert str(DEFS["limits"]["per_case_turns"] - inv.WRAP_UP_TURNS) in p
     assert str(DEFS["limits"]["per_case_turns"]) in p
     assert "データです" in p   # 依頼者の言葉は指示ではない
 
@@ -110,8 +112,8 @@ def test_main_runs_agent_and_writes(tmp_path, monkeypatch):
 
     def fake_agentic(step, prompt, *, max_turns, cwd, mcp_config):
         seen.update(step=step, max_turns=max_turns, cwd=cwd, mcp=mcp_config)
-        (Path(cwd) / inv.RESULT_FILE).write_text(json.dumps(GOOD), encoding="utf-8")
-        return SimpleNamespace(cost_usd=1.5, usage={"input_tokens": 1}, num_turns=12, model="m", exit=0)
+        return SimpleNamespace(output="調べました。\n```json\n" + json.dumps(GOOD, ensure_ascii=False) + "\n```", cost_usd=1.5,
+                               usage={"input_tokens": 1}, num_turns=12, model="m", exit=0)
     monkeypatch.setattr(agent_runner, "run_agentic", fake_agentic)
     monkeypatch.setenv("RUNNER_RELAY_URL", "http://dispatcher:8796/mcp")
     monkeypatch.setenv("RUNNER_RELAY_TOKEN", "t")
@@ -140,3 +142,29 @@ def test_tools_are_narrowed_for_the_investigator():
     assert agent_runner._tools_args(a) == ["--tools", "Read,Grep,Glob"]
     assert agent_runner._tools_args(agent_runner.resolve("investigate.fix_issue")) == ["--tools", ""]
     assert agent_runner._tools_args(agent_runner.resolve("implement")) == []
+
+
+def test_result_from_text():
+    t = "途中のメモ ```json\n{\"x\": 1}\n``` 最後に\n```json\n" + json.dumps(GOOD, ensure_ascii=False) + "\n```"
+    assert inv.result_from_text(t)["outcome"] == "identified"
+    assert inv.result_from_text("結果: " + json.dumps(GOOD, ensure_ascii=False))["fix_target"] == "engine"
+    assert inv.result_from_text("") is None and inv.result_from_text("{壊れた") is None and inv.result_from_text('{"a": 1}') is None
+
+
+def test_main_reads_old_result_file(tmp_path, monkeypatch):
+    import agent_runner
+    eng = tmp_path / "engine"
+    (eng / "definitions").mkdir(parents=True)
+    (eng / "definitions" / "investigate.yaml").write_text((ENGINE / "definitions" / "investigate.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+
+    def fake_agentic(step, prompt, *, max_turns, cwd, mcp_config):
+        (Path(cwd) / inv.RESULT_FILE).write_text(json.dumps(GOOD), encoding="utf-8")
+        return SimpleNamespace(output="", cost_usd=1.0, usage={}, num_turns=3, model="m", exit=0)
+    monkeypatch.setattr(agent_runner, "run_agentic", fake_agentic)
+    monkeypatch.setenv("RUNNER_RELAY_URL", "http://dispatcher:8796/mcp")
+    monkeypatch.setenv("RUNNER_RELAY_TOKEN", "t")
+    inp = tmp_path / "in.json"
+    inp.write_text(json.dumps(INP), encoding="utf-8")
+    out = tmp_path / "out.json"
+    assert inv.main(["--input", str(inp), "--engine-dir", str(eng), "--out", str(out)]) == 0
+    assert json.loads(out.read_text())["outcome"] == "identified"

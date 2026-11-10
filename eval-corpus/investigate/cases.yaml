@@ -3,68 +3,68 @@ schema_version: '0.1'
 product: guccyon/rally
 cases:
 - id: inv-danger-precision
-  title: 操業レポートの「危険」が無害な古い停止で埋まり、本当に遅れていた製品の作業が出なかった
-  question: 今朝の操業レポートが「危険」になっているけれど、実際に遅れていた rally の #1031 がレポートに出ていない。なぜ？
+  title: '操業レポートの「危険」が無害な古い停止で埋まり、本当に遅れていた製品の作業が出なかった'
+  question: '今朝の操業レポートが「危険」になっているけれど、実際に遅れていた rally の #1031 がレポートに出ていない。なぜ？'
   window: ['2026-11-08T00:00:00+09:00', '2026-11-10T09:00:00+09:00']
   engine_ref: 03318950c6ad8722db35559ae1a598a0c3c7b84e
   fixed_in: 31e076e
   expected:
     outcome: identified
     fix_target: engine
-    cause: 危険の欄は停止を上限の件数までしか出さず、工場の内部のジョブ（委員会・事例の分析）の失敗の古い停止で埋まって、製品の作業の停止が押し出されていた
+    cause: '危険の欄は停止を上限の件数までしか出さず、工場の内部のジョブ（委員会・事例の分析）の失敗の古い停止で埋まって、製品の作業の停止が押し出されていた'
     must_mention: [[停止], [内部, 委員会, committee_review, case_review], [上限, 件数, 押し出, 埋ま]]
   confirmed: false
 - id: inv-conflict-loop
-  title: 全 PR が共有の追記ファイルを書き換え、衝突の解消が止まらず 1 日の予算を大きく超えた（FIR-2026-0001）
-  question: 10/31 から 11/2 にかけて 1 日の予算を大きく超えて使っている。何にそんなに使われたのか
+  title: '全 PR が共有の追記ファイルを書き換え、衝突の解消が止まらず 1 日の予算を大きく超えた（FIR-2026-0001）'
+  question: '10/31 から 11/2 にかけて 1 日の予算を大きく超えて使っている。何にそんなに使われたのか'
   window: ['2026-10-31T00:00:00+09:00', '2026-11-02T23:59:59+09:00']
   engine_ref: 4b91fe760036fdd66d8f1d6d21282d4413560b48
   fixed_in: 7cb1fd7
   expected:
     outcome: identified
     fix_target: engine
-    cause: どの PR も同じ変更履歴のファイルに追記するので、1 本マージされるたびに残りがすべて衝突し、上限のない衝突の解消のジョブが繰り返された
+    cause: 'どの PR も同じ変更履歴のファイルに追記するので、1 本マージされるたびに残りがすべて衝突し、上限のない衝突の解消のジョブが繰り返された'
     must_mention: [[衝突, conflict], [CHANGELOG, 変更履歴, 追記], [繰り返, 上限, 止まら]]
   confirmed: false
 - id: inv-enforce-repeat
-  title: 知見の担保の PR が同じ担保の起票を呼び戻し、閉じた後も同じ題の起票と PR が繰り返された（FIR-2026-0002）
-  question: rally で担保の PR が 2 日で 88 本もマージされている。なぜこんなに多いのか
+  title: '知見の担保の PR が同じ担保の起票を呼び戻し、閉じた後も同じ題の起票と PR が繰り返された（FIR-2026-0002）'
+  question: 'rally で担保の PR が 2 日で 88 本もマージされている。なぜこんなに多いのか'
   window: ['2026-11-08T00:00:00+09:00', '2026-11-09T23:59:59+09:00']
   engine_ref: 4bdfddcb314c9feb56202b3db9f724dacb6b8174
   fixed_in: a32fe9c
   expected:
     outcome: identified
     fix_target: engine
-    cause: 担保の PR が知見の enforcement を書き足すので委員会にかかり、元の Issue が閉じていたので重複と見なさず、同じ担保をまた起票していた
+    cause: '担保の PR が知見の enforcement を書き足すので委員会にかかり、元の Issue が閉じていたので重複と見なさず、同じ担保をまた起票していた'
     must_mention: [[担保, enforcement], [委員会, committee], [閉じ, 重複, 同じ題, 繰り返]]
   confirmed: false
 - id: inv-sendback-loop
-  title: 差し戻しの Issue を直しに回しても、元の PR の停止が開いたままで着手されなかった
-  question: rally の差し戻しの Issue（#1228 と #1251）が、直しに回したのにいつまでも着手されない
+  title: '差し戻しの Issue を直しに回しても、元の PR の停止が開いたままで着手されなかった'
+  question: 'rally の差し戻しの Issue（#1228 と #1251）が、直しに回したのにいつまでも着手されない'
   window: ['2026-11-08T00:00:00+09:00', '2026-11-09T23:59:59+09:00']
   engine_ref: f90ddc33924c03701299d77a8d853953743133fa
   fixed_in: 20ba3df
   expected:
     outcome: identified
     fix_target: engine
-    cause: ラベルを替えても元の PR の差し戻しの停止が開いたままなので、元の PR の衝突を解かず、差し戻しの Issue は元の PR のマージを待って循環していた
+    cause: 'ラベルを替えても元の PR の差し戻しの停止が開いたままなので、元の PR の衝突を解かず、差し戻しの Issue は元の PR のマージを待って循環していた'
     must_mention: [[差し戻し, sendback], [停止], [衝突, マージ, 元の PR, 待]]
   confirmed: false
 - id: inv-body-fix-repeat
-  title: PR 本文の直しが追記しかできず、同じ PR に何度も走って本文が増え続けた
-  question: PR の説明の直し（body_fix）が同じ PR に何度も走って費用がかかっている。止まらないのはなぜか
+  title: 'PR 本文の直しが追記しかできず、同じ PR に何度も走って本文が増え続けた'
+  question: 'PR の説明の直し（body_fix）が同じ PR に何度も走って費用がかかっている。止まらないのはなぜか'
   window: ['2026-11-01T00:00:00+09:00', '2026-11-10T09:00:00+09:00']
   engine_ref: 31e076ec71f0ebbd4d001135cfc3a58ccf881152
   fixed_in: c020fab
   expected:
     outcome: identified
     fix_target: engine
-    cause: 本文の直しは追記しかできず、不要な見出しを削ることを求める検査を満たせないので、直すたびに検査に落ちて同じ PR にまた積まれ、本文が増え続けた
+    cause: '本文の直しは追記しかできず、不要な見出しを削ることを求める検査を満たせないので、直すたびに検査に落ちて同じ PR にまた積まれ、本文が増え続けた'
     must_mention: [[追記, 書き足], [見出し, PR-002, 削], [繰り返, 増え, 回数, 何度]]
   confirmed: false
 - id: inv-roi-crash
-  title: 工程の ROI の読み込みがコンテナで落ち、朝の報告と建設状況の集計が止まった（ソースを読まないと分からない件）
-  question: 11/9 の朝の報告が Slack に来ていない。建設状況の集計も止まっているようだ
+  title: '工程の ROI の読み込みがコンテナで落ち、朝の報告と建設状況の集計が止まった（ソースを読まないと分からない件）'
+  question: '11/9 の朝の報告が Slack に来ていない。建設状況の集計も止まっているようだ'
   window: ['2026-11-08T18:00:00+09:00', '2026-11-09T09:30:00+09:00']
   engine_ref: 9f5f0befb700bce198eb25585bd2d1d9fd176555
   fixed_in: eb598b5
@@ -72,6 +72,6 @@ cases:
     outcome: unidentified
     fix_target: none
     stop_reason: [needs_code, needs_host]
-    cause: 報告の部品が読み込みの時点でコンテナのパスの深さを前提にして落ちていた。記録には残らず、ソースかホストのログを見ないと分からないので、外に引き継ぐのが正しい
+    cause: '報告の部品が読み込みの時点でコンテナのパスの深さを前提にして落ちていた。記録には残らず、ソースかホストのログを見ないと分からないので、外に引き継ぐのが正しい'
     must_mention: []
   confirmed: false

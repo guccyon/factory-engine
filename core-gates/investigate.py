@@ -4,7 +4,8 @@
 dispatcher が組み立てた調査の依頼（問い・製品・時間帯・手がかりの参照・上限）を受け、調査役のエージェントに工場の記録を読ませる。
   - 読む道具は dispatcher の中継（inv_sql・inv_job_log・inv_github）と、入っている版の Engine の definitions/ と docs/ だけ。
     組み込みの道具は Read・Grep・Glob（シェルは渡さない。definitions/agents.yaml の investigate）
-  - エージェントは結果を作業ディレクトリの investigation.json に書く（途中でも書き足す。上限で止まっても、そこまでを引き継げるように）
+  - エージェントは最後の返答に結果を JSON で書く（書く道具は渡さないので、ファイルには書けない。2026-11-10 の評価で、
+    ファイルに書けと指示して道具がなく、全件が「結果なし」になった）。上限の手前で調べるのを止めて返答させる
   - 結果を決定論で検査する: 引き継ぎ資料の形（investigate_check.check_handoff）、Engine の改善 Issue に顧客の情報の形がないこと
     （investigate_check.check_issue）。Issue が引っかかったら書き直しを 1 回だけ頼み、それでも残れば issue_held にして起票させない
   - 何も書かない・変えない。起票・操作の提案・事故の台帳・引き継ぎ資料の id の採番は、結果を見て dispatcher が行う（順番 5）
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -30,7 +32,9 @@ import investigate_check as ivc  # noqa: E402
 
 OUTCOMES = ["identified", "outside", "unidentified"]
 FIX_TARGETS = ["engine", "operation", "product", "none"]
-RESULT_FILE = "investigation.json"
+RESULT_FILE = "investigation.json"   # 古い指示の名残。あれば読む（最後の返答の JSON が先）
+WRAP_UP_TURNS = 6                     # 上限のこれだけ手前で調べるのを止めて返答させる
+JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 PLACEHOLDER_ID = "INV-0000-0000"   # 採番は dispatcher。形の検査のときだけ仮に入れる
 
 
@@ -76,9 +80,10 @@ def prompt(defs: dict, inp: dict) -> str:
 1. 依頼の問いを 1 文にし、見る時間帯と手がかり（ジョブ・チケット・停止）を決める
 2. 事実を集める。事実には必ず参照を付ける（job:<id>・ticket:<id>・event:<id>・stoppage:<key>・judgment:<event id>・desk:<id>・pr:<番号>・issue:<番号>・doc:<パス>）
 3. 仮説を立て、確かめるか打ち消す。打ち消したものも、何で打ち消したかを残す
-4. 上限は {lim['per_case_turns']} ターン。早めに {RESULT_FILE} を書き、分かるたびに書き足す（上限で止まっても、そこまでを引き継げるように）
+4. 上限は {lim['per_case_turns']} ターン。{lim['per_case_turns'] - WRAP_UP_TURNS} ターンを使ったら、分かっていなくても調べるのを止めて結果を返す（上限に当たると返答が残らず、調べたことが全部失われる）
+5. ファイルには書かない（書く道具はない）。最後の返答に、下の形の JSON を ```json のブロックで 1 つだけ書く
 
-## 結果（{RESULT_FILE} に JSON で書く）
+## 結果（最後の返答に ```json のブロックで書く）
 {{
   "outcome": "identified（特定できた）| outside（原因が工場の外）| unidentified（特定できなかった）",
   "report": "依頼者への報告。事業主の言葉で、工場の内部の部品名や SQL を使わずに。何が起きたか・なぜか・どうするとよいか",
@@ -105,6 +110,25 @@ def prompt(defs: dict, inp: dict) -> str:
 {stops}
 秘密情報・権限・決済・DB の破壊的な変更に関わりそうなら、調べるのを止めて stop_reason を sensitive にする。
 """
+
+
+def result_from_text(text: str) -> dict | None:
+    """最後の返答から結果の JSON を取り出す。```json のブロックの最後のものを先に、なければ文全体の最初の { から最後の } まで"""
+    for m in reversed(JSON_BLOCK.findall(text or "")):
+        try:
+            v = json.loads(m)
+            if isinstance(v, dict) and "outcome" in v:
+                return v
+        except ValueError:
+            continue
+    a, b = (text or "").find("{"), (text or "").rfind("}")
+    if 0 <= a < b:
+        try:
+            v = json.loads(text[a:b + 1])
+            return v if isinstance(v, dict) and "outcome" in v else None
+        except ValueError:
+            return None
+    return None
 
 
 def fix_issue_prompt(issue: dict, errors: list[str]) -> str:
@@ -201,10 +225,12 @@ def main(argv: list[str] | None = None) -> int:
     import agent_runner  # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
     (engine / RESULT_FILE).unlink(missing_ok=True)
     res = agent_runner.run_agentic("investigate", prompt(defs, inp), max_turns=max_turns, cwd=str(engine), mcp_config=mcp_config(engine))
-    try:
-        raw = json.loads((engine / RESULT_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raw = None
+    raw = result_from_text(res.output if isinstance(res.output, str) else "")
+    if raw is None:
+        try:
+            raw = json.loads((engine / RESULT_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = None
 
     def fixer(issue: dict, errors: list[str]):
         try:
