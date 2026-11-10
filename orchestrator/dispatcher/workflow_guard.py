@@ -93,3 +93,38 @@ def waiting(cur, corr: str) -> bool:
 def capped(cur, corr: str) -> dict | None:
     """衝突の上限に当たり、もう解かない（人への停止の文に使う）"""
     return _enforced(cur, corr, "conflict_human") if "conflict" in ENFORCE else None
+
+
+# ------------------------------------------------------------------ プランナーを通す（ADR 0038 の追記、2026-11-06 オーナー）
+# 複数の役のワークフローを経由して成果を出すタスクは、必ずプランナーを通して、ステップ・厚み・モデル・上限を決める。
+# 特定の職能への定型の単発の依頼（決定論の取りまとめ、1 つの役だけの依頼）は通さなくてよい。
+# 工場の内部の起票（知見の担保・分析役・差し戻しの直しなど）は factory:planned を直接付けてきたので、指示役が投入の直前に
+# Plan のないチケットを factory:plan に回す。起票する側を全部直さなくても、この 1 か所で必ず通る。
+PLAN_GATE = os.environ.get("PLAN_GATE", "1") == "1"
+PLANNER_LABEL = "factory:plan"   # プランナーの入口（planner.py の TRIGGER_LABEL）
+DIRECT_LABELS = {"factory:changelog", "factory:direct"}   # 単発の依頼の印。changelog は決定論の取りまとめ、direct は 1 つの役への定型の依頼
+
+
+def planned_by(cur, repo: str, issue: int) -> str | None:
+    """このチケットがプランナーの判断の下にあるか。あればその根拠（plan・split_child）、なければ None"""
+    corr = f"github:{repo}#{issue}"
+    cur.execute("select 1 from artifacts where type='Plan' and correlation_id=%s limit 1", (corr,))
+    if cur.fetchone():
+        return "plan"
+    cur.execute("select 1 from events where name='plan.split' and payload->>'repo'=%s and (payload->>'child'=%s or payload->'children' @> %s::jsonb) limit 1",
+                (repo, str(issue), f"[{int(issue)}]"))
+    return "split_child" if cur.fetchone() else None
+
+
+def needs_planner(cur, repo: str, issue: int, labels: list[str]) -> bool:
+    """投入の前にプランナーへ回すべきか（Plan がなく、単発の印もない）"""
+    if not PLAN_GATE or DIRECT_LABELS & set(labels):
+        return False
+    return planned_by(cur, repo, issue) is None
+
+
+def record_rerouted(cur, repo: str, issue: int, labels: list[str]) -> bool:
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.rerouted',%s,%s,%s) "
+                "on conflict (dedupe_key) do nothing returning id",
+                (f"github:{repo}#{issue}", Jsonb({"repo": repo, "issue": issue, "labels": sorted(labels)}), f"plan.rerouted:{repo}#{issue}"))
+    return cur.fetchone() is not None

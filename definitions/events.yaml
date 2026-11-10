@@ -782,6 +782,10 @@ events:
     source: control_plane
     required: [kind, pr_url, cap, conflicts]
     note: "ADR 0038 の順番 2。supervisor がワークフローの上限を守らせた（WORKFLOW_ENFORCE、既定 conflict）。kind=conflict_wait は衝突の解消がチケットの合計で上限（宣言か既定の 3 回）に当たり、最後に衝突したファイル（files）に触る流れているチケット（behind）が終わるまで解かずに待たせた。conflict_retry は待ちが明けた（触るチケットがなければすぐ）ので 1 回だけ解いた。conflict_human は待ちの後の 1 回でも衝突したので、もう解かない（ci_failure_step が人への停止 ci: を開く）。待っている間は ci: を開かない。dedupe は workflow.enforced:<wait|retry|human>:<チケット>。default は宣言のないチケットで既定値を当てたか"
+  plan.rerouted:
+    source: control_plane
+    required: [repo, issue, labels]
+    note: "ADR 0038 の追記（2026-11-10 オーナー）。複数の役のワークフローを経由するタスクは必ずプランナーを通す。supervisor が投入の直前に、Plan がなく（プランナーが切った子でもなく）単発の印（factory:changelog・factory:direct）もない factory:planned のチケットを、実装に回さず factory:plan に付け替えた。工場の内部の起票（知見の担保・分析役・差し戻しの直しなど）が対象。PLAN_GATE=0 で止める。dedupe は plan.rerouted:<repo>#<issue>"
   plan.asked:
     source: control_plane
     required: [plan_id, repo, issue, round, questions]

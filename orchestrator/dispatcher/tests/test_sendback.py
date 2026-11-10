@@ -33,6 +33,13 @@ CORR = f"github:{REPO}#{ORIGIN_ISSUE}"
 KEY = f"sendback:{PR_URL}"
 
 
+@pytest.fixture(autouse=True)
+def _no_plan_gate(monkeypatch):
+    """ここで見るのは差し戻し・並べ方の流れ。プランナーを通す関所（ADR 0038 の追記）は test_workflow_guard と下の 1 本で見る"""
+    if URL:
+        monkeypatch.setattr(supervisor.workflow_guard, "PLAN_GATE", False)
+
+
 @pytest.fixture()
 def cur():
     conn = psycopg.connect(URL, row_factory=dict_row, autocommit=True)

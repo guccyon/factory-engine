@@ -694,6 +694,19 @@ def enqueue_step(cur, open_prs: set):
         for it in issues:
             if "pull_request" in it:
                 continue
+            labels = [l.get("name", "") for l in it.get("labels") or []]
+            if workflow_guard.needs_planner(cur, repo, it["number"], labels):
+                # 複数の役を通るタスクは必ずプランナーを通す（ADR 0038 の追記）。Plan のないチケットは実装に回さず、プランナーの入口へ
+                if workflow_guard.record_rerouted(cur, repo, it["number"], labels):
+                    log("rerouted to planner", repo, it["number"])
+                if not DRY_RUN:
+                    try:
+                        gh("DELETE", f"repos/{repo}/issues/{it['number']}/labels/{urllib.parse.quote(PLANNED_LABEL, safe='')}")
+                    except urllib.error.HTTPError as e:
+                        if e.code != 404:
+                            raise
+                    gh("POST", f"repos/{repo}/issues/{it['number']}/labels", {"labels": [workflow_guard.PLANNER_LABEL]})
+                continue
             deps = [int(x) for m in DEP_RE.finditer(it.get("body") or "") for x in re.findall(r"#(\d+)", m.group(1))]
             waiting = [n for n in deps if issue_state(repo, n) != "closed"]
             # 投入待ちのチケットも工場の台帳に写す（操業コンソールの「依存待ち・順番待ち」。ADR 0009）
