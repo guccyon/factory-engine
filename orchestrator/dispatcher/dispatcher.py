@@ -44,6 +44,7 @@ import runner_relay
 import design_system_line
 import desk_answer
 import desk_investigate
+import investigate_bench
 import desk_line
 import planner
 import version
@@ -468,7 +469,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
-                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh"] if kind == "investigate" else []),   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
+                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh", "-e", f"ENGINE_REF={_investigate_ref(cur, job_id)}"] if kind == "investigate" else []),   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
                    *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
@@ -683,7 +684,10 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind == "investigate":
                 # 工場の中での一次調査（ADR 0048）: 結果を成果物に残し、報告を会話に提出する。失敗も提出する
                 try:
-                    desk_investigate.record(cur, job, result, state, err)
+                    if (job["correlation_id"] or "").startswith(investigate_bench.PREFIX):   # 評価セットの再生（ADR 0048 の決定 8）は採点だけ
+                        investigate_bench.record(cur, job, result, state, err)
+                    else:
+                        desk_investigate.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
                     log("investigate record failed", job_id, repr(e))
             elif kind == "desk_answer":
@@ -1543,6 +1547,14 @@ def _job_blob_key(job_id: int) -> str | None:
         cur.execute("select payload->>'blob_key' as k from events where name='job.finished' and job_id=%s order by id desc limit 1", (job_id,))
         r = cur.fetchone()
     return (r or {}).get("k")
+
+
+def _investigate_ref(cur, job_id: int) -> str:
+    """調査役が読む Engine の版（ADR 0048）。窓口の依頼は入っている版、評価セットの再生は直す前の版。形が違えば main"""
+    cur.execute("select payload->'input'->>'engine_ref' as ref from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
+    r = cur.fetchone()
+    ref = (r or {}).get("ref") or ""
+    return ref if investigate_bench.REF.match(ref) else "main"
 
 
 def relay_env(job_id: int, kind: str, repo: str | None = None) -> list[str]:

@@ -163,6 +163,18 @@ events:
     source: control_plane
     required: [conversation_id, round, id, issue]
     note: "ADR 0048 の決定 6。提供元の口（Gen1 は Engine の Issue、ラベル factory:investigation-handoff）に要約と id だけを書いた"
+  investigate.bench_enqueued:
+    source: control_plane
+    required: [run, case, job_id, expected, of]
+    note: "ADR 0048 の決定 8。評価セット（eval-corpus/investigate/cases.yaml）の 1 件を再生するジョブを積んだ（correlation_id は invbench:<回>:<件>。1 日の上限には数えない）"
+  investigate.bench_scored:
+    source: control_plane
+    required: [run, case, pass, reasons]
+    note: "ADR 0048 の決定 8。再生の結果を決定論で採点した（結果・直す先・止めた理由・原因の要素）"
+  investigate.bench_finished:
+    source: control_plane
+    required: [run, of, passed, rate, pass_rate]
+    note: "ADR 0048 の決定 8。回の全件がそろった。rate が pass_rate に届くまで窓口の報告に「試行中」と添える"
   investigate.case_failed:
     source: control_plane
     required: [conversation_id, round, error]

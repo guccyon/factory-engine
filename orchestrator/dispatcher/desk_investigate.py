@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 import desk
 import factory_incident
 import inbox
+import investigate_bench
 import usage
 
 KIND = "investigate"
@@ -92,7 +93,7 @@ def spent_today(cur, now: datetime) -> float:
     day = usage.budget_day(now)
     start = datetime(day.year, day.month, day.day, usage.DAY_START_HOUR, tzinfo=usage.JST)
     cur.execute("select coalesce(sum(nullif(result->>'cost_usd','')::numeric), 0) as usd from jobs "
-                "where kind=%s and finished_at >= %s", (KIND, start))
+                "where kind=%s and finished_at >= %s and correlation_id not like %s", (KIND, start, investigate_bench.PREFIX + "%"))   # 評価セットの再生は数えない
     return float(cur.fetchone()["usd"] or 0)
 
 
@@ -238,7 +239,12 @@ def record(cur, job: dict, result: dict | None, state: str, err: str | None) -> 
            job_id=job["id"])
     sub = submit(cur, c, n, job["id"], aid, keep)
     stop = (keep.get("handoff") or {}).get("stop_reason")
-    out = {"ok": keep["outcome"] != "unidentified", "summary": report_text(res) + (f"\n\n引き継ぎ資料: {sub['handoff']}" if sub.get("handoff") else "")}
+    tr = investigate_bench.trial(cur)
+    note = ("\n\n（この調査は試行中です。過去の件で原因に着いた割合が "
+            + (f"{tr['rate']:.0%}" if tr["rate"] is not None else "まだ測っていない状態")
+            + f"で、目安の {tr['pass_rate']:.0%} に届いていません。結果は確かめてから使ってください）") if tr else ""
+    out = {"ok": keep["outcome"] != "unidentified",
+           "summary": report_text(res) + (f"\n\n引き継ぎ資料: {sub['handoff']}" if sub.get("handoff") else "") + note}
     if stop == "budget":
         out["cap_hit"] = "費用・ターン"
         out["remaining"] = "まだ見ていない所: " + "、".join((keep["handoff"] or {}).get("not_looked_at") or ["（記録なし）"])
