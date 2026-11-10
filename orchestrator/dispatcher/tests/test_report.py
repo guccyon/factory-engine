@@ -329,3 +329,40 @@ def test_health_stages_section_and_assessment(cur):
     assert any("Opus より一発で通る割合が 50.0 pt 低い" in t for t in texts)
     assert all("事業主" not in t for t in texts)
     assert sec not in report.visible(rep, "business_owner")   # 提供元の中の話なので事業主には出さない
+
+
+def test_health_open_stoppages_rank_by_impact(cur):
+    """11-10: 工場の内部の作業（委員会・振り返り・本文の追記）の古い失敗で「危険」が埋まり、製品の実装の時間切れ（rally #1031）が
+    5 件の上限で押し出されて見えなかった。製品の作業を止めているものを先に載せ、内部のものは長くても注意まで"""
+    h = lambda x: START + timedelta(hours=x)   # noqa: E731
+    for i in range(6):   # 内部の失敗 6 件（どれも 50 時間前から）
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values (%s,'o/r',%s,'committee_review','failed') returning id",
+                    (f"c{i}", 100 + i))
+        jid = cur.fetchone()["id"]
+        stoppage.open_stoppage(cur, f"job:{jid}", "factory-bug", "ジョブが失敗した", started_at=h(-26), job_id=jid, quiet=True)
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('github:o/r#7','o/r',7,'implement','failed') returning id")
+    impl = cur.fetchone()["id"]
+    stoppage.open_stoppage(cur, f"job:{impl}", "budget", "時間の上限で打ち切られた", started_at=h(-1), job_id=impl, correlation_id="github:o/r#7", quiet=True)
+    stoppage.open_stoppage(cur, "idle:x", "idle", "ラインが空", started_at=h(-30), quiet=True)
+    rep = report_health.build(cur, START, END)
+    got = {(s.id, i.label): i.value for s in rep.sections for i in s.items if i.kind == "metric"}
+    assert got[("line", "期間の終わりに開いていた停止")] == 8 and got[("line", "うち製品の作業を止めているもの")] == 1
+    ents = [i for s in rep.sections for i in s.items if i.kind == "entry"]
+    assert len(ents) == report_health.OPEN_MAX and "implement" in ents[0].label and ents[0].url == "https://github.com/o/r/issues/7"
+    report_health.assess(rep)
+    texts = [f["text"] for f in rep.findings]
+    prod = [f for f in rep.findings if f["text"].startswith("製品の作業が止まっている: 停止「時間の上限で打ち切られた（implement）」が 25.0 時間")]
+    assert len(prod) == 1 and prod[0]["level"] == "bad" and prod[0]["links"][0]["url"] == "https://github.com/o/r/issues/7"
+    inner = [f for f in rep.findings if "工場の内部の作業" in f["text"]]
+    assert inner and all(f["level"] == "warn" for f in inner)
+    assert not any("ラインが空" in t for t in texts)   # ラインの空きは稼働の割合で見る
+
+
+def test_health_internal_only_is_not_danger(cur):
+    h = lambda x: START + timedelta(hours=x)   # noqa: E731
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('c','o/r',1,'case_review','failed') returning id")
+    jid = cur.fetchone()["id"]
+    stoppage.open_stoppage(cur, f"job:{jid}", "factory-bug", "ジョブが失敗した", started_at=h(-30), job_id=jid, quiet=True)
+    rep = report_health.assess(report_health.build(cur, START, END))
+    lv = [f["level"] for f in rep.findings if "停止" in f["text"]]
+    assert lv == ["warn"]

@@ -1097,6 +1097,41 @@ def classify_failure(p: dict) -> tuple[str, str, str] | None:
     return "factory-bug", "ジョブが失敗した（未分類。人が分類を直す）", "原因の調査と rerun"
 
 
+# PR を対象にするジョブ（issue_number が PR の番号）。対象の PR が片付くか、同じ PR の同じ種類のジョブが後で通れば、失敗を待つものはない
+PR_TARGET_KINDS = ("inspect", "judge", "body_fix", "design_review", "committee_review", "ui_design_review")
+
+
+def job_failure_settled(cur, job_id: int) -> str | None:
+    """失敗したジョブの停止（job:<id>）を閉じてよいか。閉じてよいなら手当ての文、まだなら None。
+    11-10: チケットに紐づかないジョブ（委員会のレビュー・本文の追記など）の失敗は、対象の PR がマージされても開いたまま残り、
+    操業レポートが 40 時間を超える「危険」を出し続けた（rally #1116・#1301 など）"""
+    cur.execute("select j2.id from jobs j1 join jobs j2 on j2.correlation_id=j1.correlation_id and j2.id>j1.id and j2.started_at is not null "
+                "where j1.id=%s order by j2.id limit 1", (job_id,))
+    nxt = cur.fetchone()
+    if nxt:
+        return f"再実行された（job {nxt['id']}）"
+    # チケットが閉じた（PR がマージされた・人が閉じた）なら、失敗した作業を待つものはもうない（11-08。閉じたチケットの失敗が開いたまま残り、アラートが減らなかった）
+    cur.execute("select t.source_ref from jobs j join tickets t on t.id=j.ticket_id where j.id=%s and t.state='closed'", (job_id,))
+    done = cur.fetchone()
+    if done:
+        return f"チケット {done['source_ref']} が閉じた"
+    cur.execute("select repo, issue_number, kind from jobs where id=%s", (job_id,))
+    j = cur.fetchone()
+    if not j or j["kind"] not in PR_TARGET_KINDS:
+        return None
+    pr_url = f"https://github.com/{j['repo']}/pull/{j['issue_number']}"
+    cur.execute("select name from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s order by id limit 1", (pr_url,))
+    r = cur.fetchone()
+    if r:
+        return "対象の PR が" + ("マージされた" if r["name"] == "pr.merged" else "閉じられた") + "（失敗した作業を待つものはない）"
+    cur.execute("select id from jobs where repo=%s and issue_number=%s and kind=%s and id>%s and state='succeeded' order by id limit 1",
+                (j["repo"], j["issue_number"], j["kind"], job_id))
+    later = cur.fetchone()
+    if later:
+        return f"同じ PR の {j['kind']} が後で通った（job {later['id']}）"
+    return None
+
+
 def budget_paused(cur) -> dict | None:
     """supervisor が枠の予算の使い切りで投入を止めているか。止めた記録（supervisor.budget_paused）がその後の投入より新しく、
     枠の長さ（最大 5 時間）を過ぎていなければ止めている。枠の設定は supervisor の側にあるので、記録だけから判断する"""
@@ -1204,17 +1239,9 @@ def watch_once():
                 stoppage.open_stoppage(cur, f"job:{e['job_id']}", c[0], c[1], waiting_for=c[2], cause=e["payload"].get("error") or "",
                                        started_at=e["occurred_at"], correlation_id=e["correlation_id"], job_id=e["job_id"])
         for k in stoppage.open_keys(cur, "job:"):
-            cur.execute("select j2.id from jobs j1 join jobs j2 on j2.correlation_id=j1.correlation_id and j2.id>j1.id and j2.started_at is not null "
-                        "where j1.id=%s order by j2.id limit 1", (int(k.split(":", 1)[1]),))
-            nxt = cur.fetchone()
-            if nxt:
-                stoppage.close_stoppage(cur, k, remedy=f"再実行された（job {nxt['id']}）")
-                continue
-            # チケットが閉じた（PR がマージされた・人が閉じた）なら、失敗した作業を待つものはもうない（11-08。閉じたチケットの失敗が開いたまま残り、アラートが減らなかった）
-            cur.execute("select t.source_ref from jobs j join tickets t on t.id=j.ticket_id where j.id=%s and t.state='closed'", (int(k.split(":", 1)[1]),))
-            done = cur.fetchone()
-            if done:
-                stoppage.close_stoppage(cur, k, remedy=f"チケット {done['source_ref']} が閉じた")
+            remedy = job_failure_settled(cur, int(k.split(":", 1)[1]))
+            if remedy:
+                stoppage.close_stoppage(cur, k, remedy=remedy)
 
         # 4) 打ち切りの時刻を過ぎても running のまま（dispatcher の不具合）
         cur.execute("select id, correlation_id, started_at from jobs where state='running' and started_at < now() - make_interval(secs => %s)",

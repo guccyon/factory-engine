@@ -25,7 +25,11 @@ SECTIONS = {
     "stages": ("工程と ROI", ("provider",)),
 }
 DOWN = ("idle:", "drain:")   # ラインが動いていない時間に数える停止（ラインが空・一時停止）
-OPEN_MAX = 5                 # 開いている停止は長い順にここまで載せる
+OPEN_MAX = 5                 # 開いている停止はここまで載せる（製品の作業を止めているものを先に、その中で長い順）
+# 失敗しても製品の作業を止めないジョブ（工場の振り返り・委員会・記録の体裁）。停止が長く開いていても「危険」にはしない（2026-11-10 オーナー:
+# 無害な古い停止で「危険」が埋まると、本当に危険なものへの対処が遅れる。rally #1031 の実装の時間切れが 5 件の上限で押し出されて見えなかった）
+INTERNAL_KINDS = ("case_review", "committee_review", "committee_weekly", "incident_review", "body_fix")
+IMPACT_PRODUCT, IMPACT_INTERNAL = "製品の作業が止まっている", "工場の内部の作業"
 # 見立ての閾値（仮置き）。注意（warn）と危険（bad）
 THRESHOLDS = {
     "uptime": (80.0, 50.0),          # ラインが動いていた割合（%）がこれを下回る
@@ -63,7 +67,8 @@ def _merge(spans: list[tuple[datetime, datetime]]) -> float:
 
 
 def line(cur, start: datetime, end: datetime):
-    cur.execute("select key, category, started_at, ended_at, what, correlation_id from stoppages where started_at < %s and coalesce(ended_at, %s) > %s",
+    cur.execute("select s.key, s.category, s.started_at, s.ended_at, s.what, s.correlation_id, j.kind as job_kind from stoppages s "
+                "left join jobs j on j.id = s.job_id where s.started_at < %s and coalesce(s.ended_at, %s) > %s",
                 (end, end, start))
     rows = cur.fetchall()
     down = _merge([(max(r["started_at"], start), min(r["ended_at"] or end, end)) for r in rows if r["key"].startswith(DOWN)])
@@ -71,18 +76,29 @@ def line(cur, start: datetime, end: datetime):
     started = [r for r in rows if start <= r["started_at"] < end and not r["key"].startswith(DOWN)]
     ended = [r for r in rows if r["ended_at"] and start <= r["ended_at"] < end and not r["key"].startswith(DOWN)]
     recover = statistics.median([(r["ended_at"] - r["started_at"]).total_seconds() / 60 for r in ended]) if ended else None
-    open_ = sorted([r for r in rows if r["ended_at"] is None or r["ended_at"] >= end], key=lambda r: r["started_at"])
+    open_ = sorted([r for r in rows if r["ended_at"] is None or r["ended_at"] >= end], key=lambda r: (_impact(r) != IMPACT_PRODUCT, r["started_at"]))
     human = _merge([(max(r["started_at"], start), min(r["ended_at"] or end, end)) for r in rows
                     if r["category"] == "human" and not r["key"].startswith(DOWN)])
     items = [metric("ラインが動いていた割合", round(100 * (1 - down / span), 1) if span else None, "%"),
              metric("止まった回数（ラインが空・一時停止を除く）", len(started), "件"),
              metric("止まってから戻るまで（中央値）", round(recover) if recover is not None else None, "分"),
              metric("人の対応待ちで止まっていた時間", round(human / 60), "分"),
-             metric("期間の終わりに開いていた停止", len(open_), "件")]
+             metric("期間の終わりに開いていた停止", len(open_), "件"),
+             metric("うち製品の作業を止めているもの", sum(1 for r in open_ if _impact(r) == IMPACT_PRODUCT), "件")]
     for r in open_[:OPEN_MAX]:
         hours = round((end - r["started_at"]).total_seconds() / 3600, 1)
-        items.append(entry(f"開いている停止: {r['what'] or r['key']}", f"{r['category']}、{hours} 時間", _stoppage_url(r)))
+        what = r["what"] or r["key"]
+        if r.get("job_kind"):
+            what = f"{what}（{r['job_kind']}）"
+        items.append(entry(f"開いている停止: {what}", f"{r['category']}、{_impact(r)}、{hours} 時間", _stoppage_url(r)))
     return items
+
+
+def _impact(r: dict) -> str:
+    """停止が何を止めているか。ラインが空・一時停止は稼働の割合で見るので別にする。分からないものは製品の作業とみなす（見落とさない側に倒す）"""
+    if (r.get("key") or "").startswith(DOWN):
+        return "ラインの空き"
+    return IMPACT_INTERNAL if r.get("job_kind") in INTERNAL_KINDS else IMPACT_PRODUCT
 
 
 def _stoppage_url(r: dict) -> str:
@@ -263,13 +279,19 @@ def assess(rep: Report) -> Report:
         if s.id != "line":
             continue
         for i in s.items:
-            h = _open_hours(i.state) if i.kind == "entry" else None
-            lv = _lvl(h, *THRESHOLDS["open_hours"])
+            if i.kind != "entry" or "ラインの空き" in i.state:   # ラインが空・一時停止は稼働の割合の兆候で見る
+                continue
+            h = _open_hours(i.state)
+            internal = IMPACT_INTERNAL in i.state
+            # 工場の内部の作業の失敗は、製品の作業を止めないので長くても注意まで（閾値は危険の線から数え始める）
+            lv = ("warn" if _lvl(h, *THRESHOLDS["open_hours"]) == "bad" else "") if internal else _lvl(h, *THRESHOLDS["open_hours"])
             if lv:
                 i.level = lv
                 name = i.label.replace("開いている停止: ", "")
-                found.append(finding(lv, f"停止「{name}」が {h} 時間開いたまま",
-                                     "受信トレイかコンソールの停止の一覧で、誰の対応待ちかを確かめて先に片付ける",
+                text = f"工場の内部の作業の停止「{name}」が {h} 時間開いたまま" if internal else f"製品の作業が止まっている: 停止「{name}」が {h} 時間開いたまま"
+                action = ("製品には影響しない。対象が片付いていれば閉じ（factoryctl stoppage close）、同じ失敗が続くなら工場の不具合として建設者に回す" if internal
+                          else "対象のチケットか PR を開き、再実行（factoryctl rerun）か切り直し（factoryctl plan resplit）か、閉じてよいかを決める")
+                found.append(finding(lv, text, action,
                                      (lambda n=name, u=i.url: [link(n, u)] if u else console_link("操業コンソールのライン", "/line"))))
     left, wait = val("inbox", "期間の終わりに残っていた件"), val("inbox", "判断までの待ち時間（中央値）")
     flag("inbox", "期間の終わりに残っていた件", _lvl(left, *THRESHOLDS["inbox_left"]), f"人の判断待ちが {left} 件残っている",
