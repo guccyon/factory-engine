@@ -28,22 +28,10 @@ def test_section_is_capped(monkeypatch, tmp_path):
     assert body_fix.knowledge_section().count("x") == body_fix.MAX_KNOWLEDGE
 
 
-
-def test_rewrite_keeps_preamble_and_one_mark():
-    """11-10: 追記をやめて書き直す。帰属の印（最初の見出しより前）は残し、古い追記の印は外し、印は 1 つだけ"""
-    orig = "<!-- attribution -->\n_Requested by X_\n\n## 概要\n古い\n\n## 概要\n言い直し\n\n（この節は検査の指摘を受けて工場が本文に追記した）\n"
-    out = body_fix.finalize(orig, "## 概要\nまとめた\n\n（この節は検査の指摘を受けて工場が本文に追記した）")
-    assert out.startswith("<!-- attribution -->\n_Requested by X_\n\n## 概要\nまとめた")
-    assert "追記した" not in out and out.count(body_fix.MARK) == 1
-    again = body_fix.finalize(out, out)   # 2 回目に書き直しても、頭と印は重ならない
-    assert again.count("<!-- attribution -->") == 1 and again.count(body_fix.MARK) == 1
-
-
-def test_rewrite_empty_and_long_preamble():
-    assert body_fix.finalize("## a\nb", "  ") == ""
-    long_head = "x" * (body_fix.PREAMBLE_MAX + 1) + "\n## a"
-    assert body_fix.preamble(long_head) == "" and body_fix.preamble("見出しなし") == ""
-
-
-def test_body_sha_ignores_crlf_and_edges():
-    assert body_fix.body_sha("a\r\nb\n") == body_fix.body_sha("a\nb")
+def test_heading_is_normalized_not_rejected():
+    """11-10: 見出しの段違い・付け忘れで落とすと、呼んだ分の費用を捨てて停止が残る。そろえて追記する"""
+    assert body_fix.heading_fixed("## 背景\n本文") == "## 背景\n本文"
+    assert body_fix.heading_fixed("### 背景\n本文") == "## 背景\n本文"
+    assert body_fix.heading_fixed("# 背景\n本文") == "## 背景\n本文"
+    assert body_fix.heading_fixed("背景の説明") == "## 検査の指摘への追記\n\n背景の説明"
+    assert body_fix.heading_fixed("") == ""

@@ -115,8 +115,6 @@ PUSH_TRANSIENT_REASONS = ("(failed)", "(missing necessary objects)")
 NET_RETRY_MAX = int(ENV.get("NET_RETRY_MAX", "3"))   # 同じチケットで 30 分のうちに自動でやり直す上限
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
-# 1 本の PR で本文を書き直すのはここまで（2026-11-10 オーナー。追記が次の指摘を呼び、rally #635 は 20 回・本文 132KB に膨らんだ）
-BODY_FIX_MAX = int(ENV.get("BODY_FIX_MAX", "2"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
 LOW_CONFIDENCE = float(ENV.get("LOW_CONFIDENCE", "0.6"))
 REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した指摘を、差し戻しの Issue でなく同じ担当の続きのジョブで直す（ADR 0017）。0 で従来の差し戻し
@@ -960,35 +958,7 @@ def is_body_only(d: dict) -> bool:
     return re.match(r"(?i)^pr\s*(#\d+\s*)?(本文|body)", loc) is not None
 
 
-def body_sha(body: str | None) -> str:
-    """本文の指紋（core-gates/body_fix.py の body_sha と同じ式）"""
-    return hashlib.sha256((body or "").replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
-
-
-def body_fix_skip_reason(cur, repo: str, pr_number: int, current_body: str | None) -> str | None:
-    """本文の書き直しを積まない理由。上限に達した（limit）か、工場が書き直した本文から誰も変えていない（unchanged）。積んでよいなら None。
-    PR の中身が変わるたびに judge は本文まで裁き直すので、同じ本文に同じ指摘を出し続けないようにする（2026-11-10。再発 53%）"""
-    cur.execute("select result->>'body_sha' as sha from jobs where repo=%s and issue_number=%s and kind='body_fix' and state='succeeded' order by id",
-                (repo, pr_number))
-    done = cur.fetchall()
-    if len(done) >= BODY_FIX_MAX:
-        return "limit"
-    if current_body is not None and any(r["sha"] and r["sha"] == body_sha(current_body) for r in done):
-        return "unchanged"
-    return None
-
-
 def enqueue_body_fix(cur, repo: str, corr: str, pr_url: str, pr_number: int, defects: list[dict]):
-    try:
-        current = gh("GET", f"repos/{repo}/pulls/{pr_number}").get("body")
-    except Exception as e:  # noqa: BLE001  本文が取れなくても上限は見る
-        log("body_fix body fetch failed", pr_url, repr(e))
-        current = None
-    why = body_fix_skip_reason(cur, repo, pr_number, current)
-    if why:
-        record_event(cur, "pr.body_fix_skipped", corr, None, {"pr_url": pr_url, "reason": why, "defects": len(defects), "max": BODY_FIX_MAX})
-        log("body_fix skipped", why, pr_url)
-        return
     try:
         cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-light','body_fix') returning id",
                     (corr, repo, pr_number))

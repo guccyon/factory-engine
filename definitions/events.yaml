@@ -493,11 +493,7 @@ events:
   pr.body_amended:
     source: control_plane
     required: [pr_url, defects, chars]
-    note: "PR 本文だけの指摘を本文の書き直しで直した（body_fix のジョブ。2026-11-10 までは末尾への追記）。差し戻しの回数に数えない"
-  pr.body_fix_skipped:
-    source: control_plane
-    required: [pr_url, reason, defects, max]
-    note: "2026-11-10。judge が本文の指摘を採用したが、本文の書き直しを積まなかった。reason は limit（1 本の PR で BODY_FIX_MAX 回まで）か unchanged（工場が書き直した本文から誰も変えていない。PR の中身が変わっても同じ本文は直し直さない）"
+    note: "PR 本文だけの指摘を本文の追記で直した（body_fix のジョブ）。差し戻しの回数に数えない"
   learn.retrospected:
     source: control_plane
     required: [day, signals, clusters, rubric_candidates]
