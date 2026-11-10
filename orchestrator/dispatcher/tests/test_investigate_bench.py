@@ -27,6 +27,11 @@ def test_cases_are_well_formed():
         assert len(c["window"]) == 2 and c["fixed_in"] and len(c["engine_ref"]) == 40   # 直す前の版で読ませる
         assert e["outcome"] == "unidentified" or e["must_mention"]
     assert any(c["expected"]["outcome"] == "unidentified" for c in cases)   # 引き継ぐのが正しい件も入れる
+    by = {c["id"]: c for c in cases}
+    assert "#1031" in by["inv-danger-precision"]["question"] and "#1251" in by["inv-sendback-loop"]["question"]   # 「 #」から後ろが YAML のコメントとして落ちていた（2026-11-10）
+    for line in CASES.splitlines():
+        if line.strip().startswith(("question:", "title:", "cause:")) and " #" in line:
+            assert line.split(":", 1)[1].strip()[:1] in "'\"", line   # 「 #」を含む文は引用符で囲む
 
 
 def test_pass_rate_matches_definition():
