@@ -31,7 +31,7 @@ ENDED = ("closed", "accepted", "handed_off")   # 終わった会話。書き込�
 LOOP_BUSY = ("routed", "awaiting_confirm", "running", "delivered")   # 振り分けた後。依頼者の言い足しは記録だけ
 # 閉じる理由（決定 2・4）。完了にできるのは依頼者だけ（accepted・declined・superseded・withdrawn）。handed_off はチケット化で渡したとき
 CLOSE_REASONS = ("accepted", "declined", "superseded", "withdrawn", "handed_off")
-PATHS = ("ticket", "direct_line", "operate", "quick", "analysis")   # 対応の種類（ADR 0037 の道。definitions/workflow.yaml の paths と同じ）
+PATHS = ("ticket", "direct_line", "operate", "quick", "analysis", "investigate")   # 対応の種類（ADR 0037 の道。definitions/workflow.yaml の paths と同じ）
 # 状態を進めてよい向き（決定 2 の図）。進めるのは dispatcher だけ（advance）。依頼者の取り下げ（close_conversation）はどこからでも
 TRANSITIONS = {
     "open": ("waiting_requester", "drafted", "answered", "routed"),
@@ -47,8 +47,8 @@ TRANSITIONS = {
 # 単発の依頼のループの値（definitions/desk.yaml の loop を写す。食い違いはテストで見る。仮置き。運用パラメータとして工場が調整してよい）
 LOOP = {
     "targets": {"ack": 60,
-                "route": {"default": 300, "direct_line": 300, "operate": 300, "quick": 300, "analysis": 900},
-                "deliver": {"operate": 300, "quick": 900, "analysis": 7200}},
+                "route": {"default": 300, "direct_line": 300, "operate": 300, "quick": 300, "analysis": 900, "investigate": 300},
+                "deliver": {"operate": 300, "quick": 900, "analysis": 7200, "investigate": 3600}},
     "progress_at": 0.8,
     "max_follow_ups": 5,
     "remind_after_days": [3, 7],

@@ -33,6 +33,7 @@ paths:                               # 道（ADR 0037）ごとのひな形。プ
   operate:     [confirm, execute, respond]
   quick:       [execute, respond]
   analysis:    [execute, reconcile, respond]
+  investigate: [execute, respond]       # 工場の中での一次調査（ADR 0048）。読むだけなので確認を飛ばす
 
 mandatory:                           # 飛ばせないステップ（決定 3）。always は常に、when は条件に当たるとき。プランナーの宣言で飛ばしても run: true に戻す
   checks:    {always: true, min_effort: standard}

@@ -42,8 +42,8 @@ loop:
   #            direct_line は優先度を変えた時点（ラインに入ったことを返す）なので目安を置かない
   targets:
     ack: 60
-    route:   { default: 300, direct_line: 300, operate: 300, quick: 300, analysis: 900 }
-    deliver: { operate: 300, quick: 900, analysis: 7200 }
+    route:   { default: 300, direct_line: 300, operate: 300, quick: 300, analysis: 900, investigate: 300 }
+    deliver: { operate: 300, quick: 900, analysis: 7200, investigate: 3600 }   # investigate は工場の中での一次調査（ADR 0048）
   progress_at: 0.8        # 目安のこの割合を過ぎたら、超える前に「今どこまで・あとどれくらい」を会話に書く（黙って遅れない）
   max_follow_ups: 5       # 続きの上限（決定 5）。超えたら新しい会話にしてもらう
   # 依頼者の答え（確認・受取確認・断り）を待つ間の知らせ直し（決定 4・5。日）。工場は勝手に完了にしない
