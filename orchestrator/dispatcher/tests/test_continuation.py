@@ -254,3 +254,32 @@ def test_merge_waits_for_body_fix(cur):
     cur.execute("update jobs set state='succeeded', finished_at=now() where id=%s", (jid,))
     ok, _ = supervisor.inspector_approved(cur, P["url"], sha)
     assert ok
+
+
+def test_body_fix_capped_per_pr(cur, monkeypatch):
+    """1 本の PR の本文を直すのは上限まで。直さずに終えた（skipped）回は数えない（2026-11-10。rally #635 は同じ PR に 20 回積んだ）"""
+    monkeypatch.setattr(dispatcher, "BODY_FIX_MAX_PER_PR", 2)
+    d = [{"rubric_id": "PR-002", "location": "PR 本文", "evidence": "e"}]
+
+    def body_fix_jobs():
+        cur.execute("select count(*) as n from jobs where kind='body_fix'")
+        return cur.fetchone()["n"]
+
+    def amended(skipped=None):
+        cur.execute("insert into events(name, correlation_id, payload) values ('pr.body_amended',%s,%s)",
+                    (P["corr"], Jsonb({"pr_url": P["url"], "skipped": skipped})))
+
+    dispatcher.enqueue_body_fix(cur, REPO, P["corr"], P["url"], P["number"], d)
+    assert body_fix_jobs() == 1
+    finish_all(cur, "succeeded")
+    amended()
+    amended(skipped="body_unchanged")
+    dispatcher.enqueue_body_fix(cur, REPO, P["corr"], P["url"], P["number"], d)
+    assert body_fix_jobs() == 2
+    finish_all(cur, "succeeded")
+    amended()
+    dispatcher.enqueue_body_fix(cur, REPO, P["corr"], P["url"], P["number"], d)
+    assert body_fix_jobs() == 2
+    cur.execute("select payload from events where name='pr.body_fix_capped'")
+    p = cur.fetchone()["payload"]
+    assert p["done"] == 2 and p["cap"] == 2 and p["rubric_ids"] == ["PR-002"]

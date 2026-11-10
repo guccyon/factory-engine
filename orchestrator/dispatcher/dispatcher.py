@@ -79,6 +79,7 @@ TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "�
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
+BODY_FIX_MAX_PER_PR = int(ENV.get("BODY_FIX_MAX_PER_PR", "2"))   # 1 本の PR の本文を直す回数の上限（2026-11-10）
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))   # ラインのワーカーの数の既定。宣言（factoryctl line scale）があればそちら（ADR 0028）
 JOB_TIMEOUT = int(ENV.get("JOB_TIMEOUT_SEC", "2400"))
 TOKEN_BUDGET = int(ENV.get("TOKEN_BUDGET_PER_JOB", "2000000"))
@@ -599,7 +600,9 @@ def run_job(job: dict, reattaching: bool = False):
                 pass   # 一時的なネットワークの失敗。同じジョブを積み直した（人の調査に回さない）
             elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
-                             {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars")})
+                             {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars"),
+                              "chars_before": (result or {}).get("chars_before"), "chars_after": (result or {}).get("chars_after"),
+                              "skipped": (result or {}).get("skipped"), "error": (result or {}).get("error")})
                 if state == "succeeded" and result:
                     record_knowledge_used(cur, corr, job_id, repo, issue, result, None, role="body_fix")
             elif kind == "judge":
@@ -958,7 +961,22 @@ def is_body_only(d: dict) -> bool:
     return re.match(r"(?i)^pr\s*(#\d+\s*)?(本文|body)", loc) is not None
 
 
+def body_fix_done(cur, pr_url: str) -> int:
+    """その PR の本文を直した回数（直さずに終えた skipped は数えない）"""
+    cur.execute("select count(*) as n from events where name='pr.body_amended' and payload->>'pr_url'=%s and coalesce(payload->>'skipped','')=''",
+                (pr_url,))
+    return int(cur.fetchone()["n"])
+
+
 def enqueue_body_fix(cur, repo: str, corr: str, pr_url: str, pr_number: int, defects: list[dict]):
+    # 1 本の PR の本文を直すのは BODY_FIX_MAX_PER_PR 回まで。衝突の解消で PR の中身が変わるたびに本文まで裁き直し、
+    # 同じ PR に 20 回直しを積んだ（2026-11-02 rally #635）。上限を超えた指摘は judge の記録に残すだけにする
+    done = body_fix_done(cur, pr_url)
+    if done >= BODY_FIX_MAX_PER_PR:
+        record_event(cur, "pr.body_fix_capped", corr, None, {"pr_url": pr_url, "done": done, "cap": BODY_FIX_MAX_PER_PR,
+                                                            "rubric_ids": sorted({str(d.get("rubric_id")) for d in defects})})
+        log("body_fix skipped (cap)", pr_url, done)
+        return
     try:
         cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'judge','tier-light','body_fix') returning id",
                     (corr, repo, pr_number))
@@ -991,7 +1009,7 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
         log("judge label failed", pr_url, repr(e))
     # overlay の shadow のルールの指摘は、judge が裁いた記録（的中率の材料）だけ残し、差し戻さない（ADR 0013）
     live = [d for d in summary["adopted_defects"] if not d.get("shadow")]
-    # PR 本文だけの指摘は Issue を切らず、本文の追記で直す（2026-10-27 オーナー）。差し戻しの回数にも数えない
+    # PR 本文だけの指摘は Issue を切らず、本文の説明の作り直しで直す（2026-10-27 オーナー、2026-11-10 に追記から作り直しへ）。差し戻しの回数にも数えない
     body_only = [d for d in live if is_body_only(d)]
     if body_only:
         enqueue_body_fix(cur, repo, corr, pr_url, pr_number, body_only)
