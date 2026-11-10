@@ -15,9 +15,18 @@ ENGINE_REF="${ENGINE_REF:-main}"
 cat > /work/input.json
 echo "[investigate] job=${JOB_ID} engine=${ENGINE_REPO}@${ENGINE_REF} input_bytes=$(wc -c < /work/input.json)"
 # Engine は定義・文書と、この調査を動かす道具だけを取る（ソースコードの本体は取らない）
-git clone --quiet --depth 1 --filter=blob:none --sparse --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+# ENGINE_REF は入っている版（窓口の依頼）か、直す前の版（評価セットの再生）のコミット。短いハッシュでも取れるよう履歴は取り、中身は要るときだけ取る
+git clone --quiet --filter=blob:none --no-checkout --sparse "https://github.com/${ENGINE_REPO}.git" /work/engine
 git -C /work/engine sparse-checkout set --no-cone /definitions/ /docs/ \
   /core-gates/investigate.py /core-gates/investigate_check.py /core-gates/incident_check.py /core-gates/agent_runner.py
+if ! git -C /work/engine checkout --quiet "${ENGINE_REF}" 2>/dev/null; then
+  echo "[investigate] engine_ref ${ENGINE_REF} が取れないので main で読む"
+  git -C /work/engine checkout --quiet main
+fi
+# 調査役の道具（investigate.py など）は版によらず今の main のものを使う（直す前の版には調査役がない）
+if [ "${ENGINE_REF}" != "main" ]; then
+  git -C /work/engine checkout --quiet main -- core-gates/investigate.py core-gates/investigate_check.py core-gates/incident_check.py core-gates/agent_runner.py definitions/investigate.yaml definitions/agents.yaml 2>/dev/null || true
+fi
 set +e
 python3 /work/engine/core-gates/investigate.py --input /work/input.json --engine-dir /work/engine --out /work/out.json 2>/work/investigate.err
 RC=$?

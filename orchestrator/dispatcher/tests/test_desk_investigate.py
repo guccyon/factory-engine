@@ -309,3 +309,26 @@ def test_unidentified_gets_inv_id_and_handoff_issue(cur):
     body = gh.calls[-1][2]
     assert body["labels"] == [di.HANDOFF_LABEL] and "なぜ止まった" not in body["body"] and "job:1" not in body["body"]
     assert di.handoffs(cur)[0]["issue"] and di.file_issues(cur, gh, "x/engine") == []
+
+
+@needs_db
+def test_report_says_trial_until_bench_passes(cur):
+    _, cid = open_request(cur)
+    consult_route(cur, {"path": "investigate", "question": "q", "why": ""})
+    finish(cur, di.enqueue(cur, [REPO])[0], GOOD, cost=1.0)
+    assert "試行中" in delivered(cur, cid) and "まだ測っていない" in delivered(cur, cid)
+    cur.execute("insert into events(name, payload) values ('investigate.bench_finished', %s)", (Jsonb({"run": "r", "rate": 0.6}),))
+    cur.execute("update desk_conversations set state='closed' where id=%s", (cid,))
+    cid2 = call("POST", "/api/desk/conversations", desk.create_token(cur, "cs-2", "requester", [REPO], "test"),
+                {"kind": "request", "product": REPO, "body": "もう 1 件"})[1]["conversation"]["id"]
+    consult_route(cur, {"path": "investigate", "question": "q2", "why": ""})
+    finish(cur, di.enqueue(cur, [REPO])[0], GOOD, cost=1.0)
+    assert "試行中" not in delivered(cur, cid2)
+
+
+def test_engine_ref_for_worker():
+    import investigate_bench as ib
+    for ok in ("main", "abc1234", "03318950c6ad8722db35559ae1a598a0c3c7b84e"):
+        assert ib.REF.match(ok)
+    for bad in ("", "v1.0", "main;id", "ABC1234", "--upload-pack=x"):
+        assert not ib.REF.match(bad)

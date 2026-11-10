@@ -103,6 +103,8 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
 工場の中での一次調査（ADR 0048。窓口の依頼から。特定できなかった件は引き継ぎ資料 INV-YYYY-NNNN にして外の調査に回す）:
   factoryctl investigation list                       # 引き継ぎ資料の一覧（止めた理由・起票した Issue）
   factoryctl investigation show <INV-...>             # 引き継ぎ資料の本体（二次の調査はここから始める。依頼者の問いはそのまま入っている）
+  factoryctl investigation bench [--only id,..] < eval-corpus/investigate/cases.yaml   # 評価セットを再生する（1 件 $3 まで。docker exec -i で標準入力に渡す）
+  factoryctl investigation bench-status [<回>]        # 評価の回の進みと採点（外れた理由）。特定率が合格線に届くまで窓口の報告に「試行中」と添える
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -172,6 +174,7 @@ import ephemeral
 import incident
 import factory_incident
 import desk_investigate
+import investigate_bench
 import line
 import usage
 import ghapp
@@ -899,7 +902,28 @@ def investigation_cmd(cur, argv) -> int:
         if not h:
             print(f"{argv[3]} はない"); return 1
         print(json.dumps(h, ensure_ascii=False, indent=2, default=str)); return 0
-    print("factoryctl investigation list|show <INV-...>"); return 2
+    if sub == "bench":
+        try:
+            cases = investigate_bench.load_cases(sys.stdin.read())
+            only = [x for x in (opt(argv, "--only", "") or "").split(",") if x]
+            got = investigate_bench.enqueue(cur, cases, only=only)
+        except ValueError as e:
+            print(f"積めなかった: {e}"); return 1
+        print(f"評価の回 {got['run']} に {len(got['jobs'])} 件を積んだ（governance の枠で順に動く。費用の上限は 1 件 $3、合わせて ${3 * len(got['jobs'])} まで）")
+        for k, v in got["jobs"].items():
+            print(f"  {k}: job {v}")
+        return 0
+    if sub == "bench-status":
+        st = investigate_bench.status(cur, argv[3] if len(argv) > 3 else None)
+        if not st["run"]:
+            print("評価の回はまだない"); return 0
+        rate = "—" if st["rate"] is None else f"{st['rate']:.0%}"
+        print(f"回 {st['run']}: {st['done']}/{st['of']} 件済み、合格 {st['passed']} 件、特定率 {rate}（合格線 {investigate_bench.PASS_RATE:.0%}）、費用 ${st['cost_usd']}")
+        for c in st["cases"]:
+            mark = "…" if c.get("pass") is None else ("○" if c["pass"] else "×")
+            print(f"  {mark} {c['case']}" + (f": {'／'.join(c.get('reasons') or [])}" if c.get("pass") is False else ""))
+        return 0
+    print("factoryctl investigation list|show <INV-...>|bench|bench-status"); return 2
 
 
 def incident_record_cmd(cur, argv) -> int:
