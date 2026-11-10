@@ -210,12 +210,54 @@ def test_product_build_reads_tickets_and_merges(cur):
     assert [(i.label, i.state) for i in sec["next"]] == [("D4: 次", "1 件の完了待ち")]   # 保留は次に流すものに出さない
     assert [i.label for i in sec["releases"]] == ["版 0.8.0"]
     assert m["残り（進めている＋投入待ち）"] == 3 and m["消化のペース（直近 7 日の 1 日あたり）"] == 0.3
-    assert m["進めているもののうち最も長く動いていない"] == 0.6 and m["期間に増えたチケット"] == 0
+    assert m["着手したもののうち最も長く動いていない"] is None and m["期間に増えたチケット"] == 0   # D3 はジョブがまだ始まっていない（着手前）
     report_product.assess(rep)
     assert rep.level == "warn" and rep.findings[0]["text"] == "次に流すものがすべて、ほかのチケットの完了待ち"
     assert rep.summary[0].startswith("注意が 1 点あります。進み具合 40.0%、残り 3件") and sec["next"][0].level == "warn"
     text = report.render(rep, "slack_webhook", "business_owner")
     assert "<https://github.com/o/p/issues/2|D2: きのう済んだ>" in text and "別の製品" not in text
+
+
+def test_product_stale_counts_only_started_work_left(cur):
+    """滞り（2026-11-10 オーナー「着手までに日数がかかるのは普通。危険にしなくてよい」）: 着手前・保留・やることが残っていないものは数えない。
+    動いた時刻はそのチケットの最も新しいイベント"""
+    from psycopg.types.json import Jsonb
+    d = lambda x: END - timedelta(days=x)   # noqa: E731
+    t = "insert into tickets(source, source_ref, repo, title, url, state, held, created_at, updated_at) " \
+        "values ('github', %s, 'o/p', %s, %s, 'active', %s, %s, %s)"
+    j = "insert into jobs(correlation_id, repo, issue_number, kind, state, enqueued_at, started_at) values (%s, 'o/p', %s, 'implement', %s, %s, %s)"
+    # 1: 積まれたが一度も始まっていない（着手前）
+    cur.execute(t, ("o/p#1", "着手前", "", False, d(20), d(20)))
+    cur.execute(j, ("github:o/p#1", 1, "queued", d(20), None))
+    # 2: 窓口の確認だけで終わり、やることが残っていない（台帳に active のまま残る）
+    cur.execute(t, ("o/p#2", "確認だけ", "", False, d(9), d(9)))
+    cur.execute(j, ("github:o/p#2", 2, "succeeded", d(9), d(9)))
+    # 3: PR をマージせずに閉じた
+    cur.execute(t, ("o/p#3", "閉じた PR", "", False, d(9), d(9)))
+    cur.execute(j, ("github:o/p#3", 3, "succeeded", d(9), d(9)))
+    cur.execute("insert into artifacts(correlation_id, type, payload) values ('github:o/p#3', 'PR', %s)", (Jsonb({"pr_url": "https://github.com/o/p/pull/30"}),))
+    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.closed_unmerged', 'github:o/p#3', %s, %s)",
+                (Jsonb({"pr_url": "https://github.com/o/p/pull/30"}), d(8)))
+    # 4: 保留中
+    cur.execute(t, ("o/p#4", "保留", "", True, d(9), d(9)))
+    cur.execute(j, ("github:o/p#4", 4, "succeeded", d(9), d(9)))
+    cur.execute("insert into artifacts(correlation_id, type, payload) values ('github:o/p#4', 'PR', %s)", (Jsonb({"pr_url": "https://github.com/o/p/pull/40"}),))
+    rep = report_product.build(cur, START, END, "o/p")
+    m = {i.label: i.value for s in rep.sections for i in s.items if i.kind == "metric"}
+    assert m["着手したもののうち最も長く動いていない"] is None
+    # 5: PR が開いたまま。台帳の更新は 9 日前でも、PR のイベントが 4 日前にあれば 4 日
+    cur.execute(t, ("o/p#5", "D5: 開いた PR", "https://github.com/o/p/issues/5", False, d(9), d(9)))
+    cur.execute(j, ("github:o/p#5", 5, "succeeded", d(9), d(9)))
+    cur.execute("insert into artifacts(correlation_id, type, payload) values ('github:o/p#5', 'PR', %s)", (Jsonb({"pr_url": "https://github.com/o/p/pull/50"}),))
+    cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('pr.ci_failed', 'github:o/p#5', %s, %s)", (Jsonb({}), d(4)))
+    rep = report_product.build(cur, START, END, "o/p")
+    m = {i.label: i.value for s in rep.sections for i in s.items if i.kind == "metric"}
+    assert m["着手したもののうち最も長く動いていない"] == 4.0
+    pace = [i for s in rep.sections if s.id == "pace" for i in s.items if i.kind == "entry"]
+    assert [(i.label, i.state, i.url) for i in pace] == [("最も長く動いていない: D5: 開いた PR", "4.0 日", "https://github.com/o/p/issues/5")]
+    report_product.assess(rep)
+    f = [x for x in rep.findings if "動いていない" in x["text"]]
+    assert f == [{"level": "warn", "text": "着手したチケット「D5: 開いた PR」が 4.0 日動いていない", "action": f[0]["action"]}]
 
 
 def test_send_now_does_not_count_for_the_morning(cur):

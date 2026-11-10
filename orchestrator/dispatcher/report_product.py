@@ -30,7 +30,7 @@ ANOMALY_JA = {"range": "目安の外", "prev": "前回より悪化", "forecast":
 LIST_MAX = 8   # 一覧はここまで。残りは件数だけ
 PACE_DAYS = 7  # 消化のペースを測る期間（日）
 THRESHOLDS = {
-    "stale_days": (3.0, 7.0),        # 進めているチケットのうち、いちばん長く動いていないもの（日）
+    "stale_days": (3.0, 7.0),        # 着手したチケットのうち、いちばん長く動いていないもの（日）。着手前・保留・やることが残っていないものは数えない（STALEST）
     "forecast_days": (30.0, 60.0),   # 残りをいまのペースで終えるまでの見込み（日）
     "held": (3, 6),                  # 保留中のチケット（件）
 }
@@ -72,16 +72,45 @@ def pace(cur, repo: str, start: datetime, end: datetime):
     per_day = int(r["n"] or 0) / PACE_DAYS
     cur.execute("select count(*) as n from tickets where repo = %s and created_at < %s and (state <> 'closed' or updated_at >= %s)", (repo, end, end))
     left = int(cur.fetchone()["n"] or 0)
-    cur.execute("select max(extract(epoch from %s - updated_at) / 86400) as stale from tickets where repo = %s and state = 'active'", (end, repo))
-    stale = cur.fetchone()["stale"]
+    st = _stalest(cur, repo, end)
+    stale = st["stale"] if st else None
     cur.execute("select count(*) as n from tickets where repo = %s and created_at >= %s and created_at < %s", (repo, start, end))
     added = int(cur.fetchone()["n"] or 0)
     return [metric(f"消化のペース（直近 {PACE_DAYS} 日の 1 日あたり）", round(per_day, 1), "件"),
             metric("残り（進めている＋投入待ち）", left, "件"),
             metric("残りを今のペースで終えるまでの見込み", round(left / per_day, 1) if per_day else None, "日"),
             metric("チケットのリードタイム（作成から済みまで、中央値）", round(float(r["lead"]), 1) if r["lead"] is not None else None, "日"),
-            metric("進めているもののうち最も長く動いていない", round(float(stale), 1) if stale is not None else None, "日"),
-            metric("期間に増えたチケット", added, "件")]
+            metric("着手したもののうち最も長く動いていない", round(float(stale), 1) if stale is not None else None, "日"),
+            metric("期間に増えたチケット", added, "件")] + \
+        ([entry(f"最も長く動いていない: {st['title'] or '(題なし)'}", f"{round(float(stale), 1)} 日", st["url"] or "")] if st else [])
+
+
+# 「進めている」の滞りに数えるチケット（2026-11-10 オーナー「着手までに日数がかかるのは普通。危険にしなくてよい」）。
+# 台帳の active はジョブに渡した時点で付き、PR がマージされるまで外れない。なので次は数えない:
+#   着手前（ジョブがまだ一度も始まっていない）・保留中・やることが残っていない（動いているジョブも開いた PR もない。
+#   窓口の確認だけのジョブや、マージせずに閉じた PR のチケットがここに残る）。
+# 動いた時刻は、台帳の更新とそのチケットのイベント（ジョブ・PR・judge など）のうち最も新しいもの
+STALEST = """
+select t.title, t.url,
+       extract(epoch from %(end)s - greatest(t.updated_at, coalesce(
+         (select max(e.occurred_at) from events e where e.correlation_id = 'github:' || t.source_ref and e.occurred_at < %(end)s),
+         t.updated_at))) / 86400 as stale
+  from tickets t
+ where t.repo = %(repo)s and t.state = 'active' and not t.held
+   and exists (select 1 from jobs j where j.correlation_id = 'github:' || t.source_ref and j.started_at < %(end)s)
+   and (exists (select 1 from jobs j where j.correlation_id = 'github:' || t.source_ref and j.state in ('queued', 'running'))
+        or exists (select 1 from artifacts a where a.type = 'PR' and a.correlation_id = 'github:' || t.source_ref
+                     and not exists (select 1 from events e where e.name in ('pr.merged', 'pr.closed_unmerged')
+                                       and e.payload->>'pr_url' = a.payload->>'pr_url' and e.occurred_at < %(end)s)))
+ order by stale desc
+ limit 1
+"""
+
+
+def _stalest(cur, repo: str, end: datetime) -> dict | None:
+    """着手済みで、まだやることが残っているチケットのうち、いちばん長く動いていないもの（題・URL・日数）"""
+    cur.execute(STALEST, {"repo": repo, "end": end})
+    return cur.fetchone()
 
 
 def doing(cur, repo: str, start: datetime, end: datetime):
@@ -166,8 +195,11 @@ def assess(rep: Report) -> Report:
     fc = val("pace", "残りを今のペースで終えるまでの見込み")
     flag("pace", "残りを今のペースで終えるまでの見込み", _lvl(fc, *THRESHOLDS["forecast_days"]), f"残りを終えるまで今のペースで {fc} 日かかる見込み",
          "期日に間に合うかを確かめる。間に合わないなら、範囲を絞る（優先度の低いものを保留）か、流量を上げる（factoryctl line scale）")
-    stale = val("pace", "進めているもののうち最も長く動いていない")
-    flag("pace", "進めているもののうち最も長く動いていない", _lvl(stale, *THRESHOLDS["stale_days"]), f"進めているチケットが {stale} 日動いていない",
+    stale = val("pace", "着手したもののうち最も長く動いていない")
+    who = next((i.label.split(": ", 1)[1] for s in rep.sections if s.id == "pace" for i in s.items
+                if i.kind == "entry" and i.label.startswith("最も長く動いていない: ")), "")
+    flag("pace", "着手したもののうち最も長く動いていない", _lvl(stale, *THRESHOLDS["stale_days"]),
+         f"着手したチケット{f'「{who}」' if who else ''}が {stale} 日動いていない",
          "そのチケットが何を待っているか（判断・CI・衝突）を確かめる。大きすぎるならプランナーで切り直す")
     held = val("roadmap", "保留中")
     flag("roadmap", "保留中", _lvl(held, *THRESHOLDS["held"]), f"保留中のチケットが {held} 件ある",
