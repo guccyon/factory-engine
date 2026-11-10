@@ -11,6 +11,8 @@
 - 観点の選び方は決定論（select_viewpoints）。その週の兆し・開いている台帳・既存の FIR の型を重く、残りは定義の順
 - 材料は一時ディレクトリに写してから読ませる。Engine のチェックアウトには触らせない
 - 委員会は直さない。台帳の更新・送り出し口への下書き・Engine の改善 Issue の起票は、dispatcher と supervisor が結果を見て行う
+- 専用のチェックの見直し（ADR 0046 の 5 の 3）: definitions/incident.yaml の dedicated_checks のうち、見直しの期日が来た（14 日以内に来る）ものを
+  見回り役に渡し、まだ要るか（keep）を決めさせる。要らないものは dispatcher が外す Issue の案にする
 - 予算は definitions/incident.yaml の committee.patrol.weekly.budget_usd と investigate.budget_usd の和まで。超えたら下書きを作らない
 
 使い方:
@@ -27,6 +29,7 @@ import re
 import shutil
 import sys
 import tempfile
+from datetime import date, datetime
 from pathlib import Path
 
 import incident_check as ic
@@ -94,8 +97,10 @@ def patrol_schema(defs: dict) -> dict:
             "record": {"type": "boolean"}},
             "required": ["viewpoint", "title", "resource", "mechanism", "severity", "is_incident", "case", "overlaps", "why", "evidence", "engine_fix", "record"]}},
         "new_viewpoints": {"type": "array", "maxItems": 2, "items": {"type": "object", "properties": {
-            "resource": s, "mechanism": s, "question": s, "why": s}, "required": ["resource", "mechanism", "question", "why"]}}},
-        "required": ["summary", "findings", "new_viewpoints"]}
+            "resource": s, "mechanism": s, "question": s, "why": s}, "required": ["resource", "mechanism", "question", "why"]}},
+        "check_reviews": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {
+            "name": s, "keep": {"type": "boolean"}, "why": s}, "required": ["name", "keep", "why"]}}},
+        "required": ["summary", "findings", "new_viewpoints", "check_reviews"]}
 
 
 RECORD_SCHEMA = {"type": "object", "properties": {
@@ -111,11 +116,12 @@ REVIEW_SCHEMA = {"type": "object", "properties": {
 
 
 # ------------------------------------------------------------------ プロンプト
-def patrol_prompt(defs: dict, vps: list[dict], free_share: float) -> str:
+def patrol_prompt(defs: dict, vps: list[dict], free_share: float, due: list[dict] | None = None) -> str:
     res = "\n".join(f"- {k}（{v['ja']}）: 見る数字は {'・'.join(v.get('look_at') or [])}" for k, v in defs["resources"].items())
     mech = "\n".join(f"- {k}（{v['ja']}）: {v['how']}" for k, v in defs["mechanisms"].items())
     sev = "\n".join(f"- {k}: {'、'.join(v)}" for k, v in defs["severity"].items())
     vp = "\n".join(f"- {v['id']}（{v['resource']} × {v['mechanism']}）: {v['question']}" for v in vps)
+    chk = "\n".join(f"- {d['name']}（場所 {', '.join(d.get('where') or [])}、記録 {d.get('fir') or 'なし'}、期日 {d['review_by']}）: {d.get('why') or ''}" for d in due or [])
     return f"""あなたは工場の事故の調査委員会の見回り役と調査役です。工場の費用の記録を事業所（製品）を横断して読み、お金の損の兆しを挙げ、なぜなぜで掘ります。
 
 事故＝工場の振る舞いが原因で、事業主に実際のお金がかかった出来事。ラインの停止・人への承認依頼の積み上がり・静かな停止のような可用性の問題は事故にしません
@@ -155,6 +161,11 @@ def patrol_prompt(defs: dict, vps: list[dict], free_share: float) -> str:
   - engine_fix: Engine の直し方の案（原因の直し。専用のチェックではなく原因を直す。一般の歯止めで足りるならそう書く）。なければ空
   - record: 新しい FIR の下書きにするか（事故で、帯が medium 以上で、overlaps が空のとき true）
 - new_viewpoints: 自由な探索で見つけた、まだ観点にない型（資源 × 仕組み）と問い。なければ空
+- check_reviews: 下の「見直しの期日が来た専用のチェック」ごとに、まだ要るか（keep）と理由。原因の直しが効いていて、
+  week.json にその型の兆しがなければ keep は false（工場を太らせない）。迷うときは true にして理由を書く（人が期日を延ばす）。なければ空
+
+見直しの期日が来た専用のチェック:
+{chk or '（なし）'}
 
 決まり:
 - 推測で数字を作らない。week.json にない数字は「測っていない」と書く
@@ -298,13 +309,15 @@ def review_week(week: dict, defs: dict, engine: Path) -> dict:
     max_drafts = int((weekly.get("weekly") or {}).get("max_drafts", MAX_DRAFTS))
     firs = load_firs(engine)
     vps = select_viewpoints(defs, week.get("signs") or [], week.get("cases") or [], firs, limit)
-    facts = {"viewpoints": [v["id"] for v in vps], "firs": len(firs), "budget_usd": cap,
+    today = datetime.fromisoformat(week["to"]).date() if week.get("to") else date.today()
+    due = ic.due_checks(defs.get("dedicated_checks") or [], today)
+    facts = {"viewpoints": [v["id"] for v in vps], "firs": len(firs), "budget_usd": cap, "checks_due": [d["name"] for d in due],
              "spent_usd": week.get("spent_usd"), "signs": len(week.get("signs") or []), "cases": len(week.get("cases") or [])}
-    if not week.get("spent_usd") and not week.get("signs") and not week.get("cases"):
-        return {"facts": facts, "result": {"summary": "この週は工場の費用の記録がない", "findings": [], "new_viewpoints": []},
+    if not week.get("spent_usd") and not week.get("signs") and not week.get("cases") and not due:
+        return {"facts": facts, "result": {"summary": "この週は工場の費用の記録がない", "findings": [], "new_viewpoints": [], "check_reviews": []},
                 "drafts": [], "cost_usd": 0, "usage": {}, "model": None}
     meter = Meter(cap)
-    found = meter.add(_call("incident.patrol", patrol_prompt(defs, vps, free_share), patrol_schema(defs), PATROL_TURNS, engine, {"week.json": week}))
+    found = meter.add(_call("incident.patrol", patrol_prompt(defs, vps, free_share, due), patrol_schema(defs), PATROL_TURNS, engine, {"week.json": week}))
     findings = found.get("findings") or []
     known_cases = {c.get("id") for c in week.get("cases") or []}
     known_firs = {f.get("id") for f in firs}
@@ -325,7 +338,11 @@ def review_week(week: dict, defs: dict, engine: Path) -> dict:
             continue
         fid = next_id(year, firs, taken + [d["id"] for d in drafts if d.get("id")])
         drafts.append(draft_one(f, fid, week, list(week.get("deny") or []), defs, engine, meter))
-    return {"facts": facts, "result": {"summary": found.get("summary") or "", "findings": findings, "new_viewpoints": found.get("new_viewpoints") or []},
+    by_name = {d["name"]: d for d in due}
+    reviews = [{**r, "where": by_name[r["name"]].get("where"), "fir": by_name[r["name"]].get("fir"), "review_by": by_name[r["name"]]["review_by"]}
+               for r in found.get("check_reviews") or [] if r.get("name") in by_name]   # 期日の来ていない・知らない名前は捨てる
+    return {"facts": facts, "result": {"summary": found.get("summary") or "", "findings": findings, "new_viewpoints": found.get("new_viewpoints") or [],
+                                       "check_reviews": reviews},
             "drafts": drafts, "cost_usd": round(meter.cost, 4), "usage": meter.usage, "model": meter.model}
 
 

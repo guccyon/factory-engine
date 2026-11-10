@@ -29,7 +29,9 @@ mitigation:
   fixed_in: a32fe9cf1d10288086051919cf155ab28f6ebd3f
   root_fix: 同じ知見 × 同じ解決策の種類を一度起票していれば、閉じた後でも起票せずに記録だけを残す
   generic_guards: [same_purpose_once]
-  dedicated_checks: []
+  dedicated_checks:
+    - name: 知見の担保を、閉じた後でも同じ知見 × 同じ解決策の種類では二度起票しない判定
+      review_by: 2027-02-08
   workaround: 委員会の担保の起票を止め、開いている重複の Issue を閉じる
 related:
   adr: ["0024"]

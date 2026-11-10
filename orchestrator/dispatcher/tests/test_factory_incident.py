@@ -230,3 +230,19 @@ def test_daily_report_shows_weekly_and_outbox(cur):
         lines = status_report.fmt_incident(status_report.incident_view(conn, datetime.now(timezone.utc)))
     assert any(x.startswith("- 週次の見回り（2026-W46）: 所見 2 件・うち事故 1 件") for x in lines)
     assert any("送り出し口に公開待ちの事故記録の下書き 1 件" in x for x in lines)
+
+
+def test_check_review_becomes_removal_issue(cur):
+    r = json.loads(json.dumps(RESULT))
+    r["drafts"] = []
+    r["report"]["check_reviews"] = [{"name": "古い処理", "keep": False, "why": "原因を直した", "where": ["a.py:def x"], "fir": "FIR-2026-0001", "review_by": "2027-02-01"},
+                                    {"name": "まだ要る処理", "keep": True, "why": "兆しがある"}]
+    s = fi.record_weekly(cur, 99, "2027-W05", r)
+    assert s["issues_proposed"] == ["check:古い処理"] and [c["keep"] for c in s["check_reviews"]] == [False, True]
+    posted = []
+    gh = lambda m, p, b=None: [] if m == "GET" else (posted.append(b) or {"html_url": "https://github.com/e/engine/issues/9"})
+    assert fi.file_issues(cur, gh, "e/engine", "l") == ["https://github.com/e/engine/issues/9"]
+    assert posted[0]["title"] == "専用のチェックを外す: 古い処理" and "専用のチェックの見直し" in posted[0]["body"]
+    # 次の週にまた外すと決めたら、また案にする（人が期日を延ばしたのに、まだ要らないと出たとき）
+    fi.record_weekly(cur, 100, "2027-W06", r)
+    assert len(fi.pending_issues(cur)) == 1

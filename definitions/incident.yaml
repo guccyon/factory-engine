@@ -56,6 +56,25 @@ mitigation:
     same_purpose_once: "同じ目的の仕事を同時に流さない（ADR 0044）"
   dedicated_review_days: 90        # 専用のチェックは原則足さない。足したら review_by（既定 90 日）で要るかを見直す
 
+# 専用のチェックの棚卸し（ADR 0046 の 5 の 3、順番 5）。ひとつの事故のために足した検出・処理を、場所と見直しの期日つきで並べる。
+# 足したら同じ PR でここに載せる。FIR の mitigation.dedicated_checks と name・review_by をそろえる（core-gates/incident_check.py が見る）。
+# 期日が来たら、調査委員会の週次の見回りが要るかを見て、要らなければ外す Engine の改善 Issue を起票する。要るなら人が期日を延ばす。
+# 載せないもの（2026-11-10 の棚卸しで外した）: 一般の歯止め（上の generic_guards）、よく衝突するファイルに触るタスクを並べて流す処理（ADR 0027 の 2。
+# 取り合いの型をまとめて止める仕組み）、GitHub の API の条件付き GET（外部 API の呼び方の作法）、QA の Defect を同じ歩で 1 本にまとめる処理（お金の事故ではなく起票の作法）
+dedicated_checks:
+  - name: 変更履歴ファイルだけの衝突を機械で解く処理（断片を使わない古い PR のための移行措置）
+    where: ["orchestrator/worker/entrypoint.sh:CHANGELOG.md の追記どうしの衝突"]
+    fir: FIR-2026-0001
+    added: 2026-11
+    review_by: 2027-02-01
+    why: "変更履歴の断片化（ADR 0027 の 1）の前に作った PR が残っている間だけ要る。断片化の後の PR は変更履歴ファイルに追記しない"
+  - name: 知見の担保を、閉じた後でも同じ知見 × 同じ解決策の種類では二度起票しない判定
+    where: ["orchestrator/dispatcher/committee.py:def filed_before"]
+    fir: FIR-2026-0002
+    added: 2026-11
+    review_by: 2027-02-08
+    why: "担保の PR が委員会にかからない形（担保の PR を知見の変更として審査しない）に直れば要らない。今は輪を切る唯一の場所"
+
 # 製品の情報を取り除く決まり（ADR 0046 の 8）。検査は core-gates/incident_check.py
 deidentify:
   forbid:
