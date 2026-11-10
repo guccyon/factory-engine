@@ -18,6 +18,7 @@ input.json（dispatcher の desk_line.consult_input が組み立てる）:
 
 振り分け（ADR 0039 の決定 2）: operations があれば、依頼がその操作を 1 回動かせば済むかを先に見て、済むなら
 outcome: route（path: operate、操作の id と引数）を返す。引数の検査・確認の段・実行は dispatcher が行う（ここは対応付けまで）。
+工場そのものの問題を調べてほしい依頼は outcome: route（path: investigate、調べる問いと手がかり。ADR 0048）を返す。調べるのは調査役のジョブ。
 operations がない（古い dispatcher）ときは今までどおり問いか下書きだけを返す。
 どの対応の種類にも当てはまらない依頼は outcome: decline（理由と代わりの案。ADR 0039 の決定 4）を返す。断りの提出と受取確認は dispatcher が行う。
 
@@ -38,7 +39,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("DESK_DEFINITIONS") or HERE.parent / "definitions" / "desk.yaml")
-PROMPT_VERSION = "6"   # 6: 依頼者が自分で言った好み stated_preferences を出す（ADR 0040 の決定 6）。5: 依頼者の好み requester.md を足した（ADR 0040 の決定 6）。4: どの対応の種類にも当てはまらない依頼を断る（理由と代わりの案。ADR 0039 の順番 3）。3: 知見を窓口と振り分けの業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。2: 決まった操作で済む依頼を operate に振り分ける（ADR 0039 の順番 2）   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "7"   # 7: 工場そのものの問題の調査を investigate に振り分ける（ADR 0048 の順番 4）。6: 依頼者が自分で言った好み stated_preferences を出す（ADR 0040 の決定 6）。5: 依頼者の好み requester.md を足した（ADR 0040 の決定 6）。4: どの対応の種類にも当てはまらない依頼を断る（理由と代わりの案。ADR 0039 の順番 3）。3: 知見を窓口と振り分けの業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。2: 決まった操作で済む依頼を operate に振り分ける（ADR 0039 の順番 2）   # 問いの文を変えたら上げる（判断の入力の版として残す）
 MAX_TEXT = 20000
 KEY_RE = re.compile(r"^t[0-9]{1,2}$")
 REF_RE = re.compile(r"^#[0-9]+$")
@@ -104,7 +105,7 @@ def schema(defs: dict, operations: list[dict] | None = None) -> dict:
     if operations:
         loop = defs.get("loop") or {}
         out["properties"]["route"] = {"type": "object", "properties": {
-            "path": {"type": "string", "enum": ["ticket", "operate", "decline"]},
+            "path": {"type": "string", "enum": ["ticket", "operate", "investigate", "decline"]},
             "op": {"type": "string", "enum": [""] + [o["id"] for o in operations]},
             "params": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {"name": s, "value": s},
                                                                     "required": ["name", "value"]}},
@@ -114,8 +115,13 @@ def schema(defs: dict, operations: list[dict] | None = None) -> dict:
                 "alternatives": {"type": "array", "maxItems": 4, "items": {"type": "object", "properties": {
                     "kind": {"type": "string", "enum": list(loop.get("alternatives") or {}) or ["other_path"]}, "text": s},
                     "required": ["kind", "text"]}}},
-                "required": ["reason", "alternatives"]}},
-            "required": ["path", "op", "params", "why", "decline"]}
+                "required": ["reason", "alternatives"]},
+            # 工場そのものの問題の一次調査（ADR 0048）。調べる問いと手がかり。investigate のとき以外は空
+            "investigation": {"type": "object", "properties": {
+                "question": s, "refs": {"type": "array", "maxItems": 10, "items": s},
+                "window_days": {"type": "integer", "minimum": 0, "maximum": 30}},
+                "required": ["question", "refs", "window_days"]}},
+            "required": ["path", "op", "params", "why", "decline", "investigation"]}
         out["required"].append("route")
     return out
 
@@ -193,6 +199,17 @@ def decide(out: dict, inp: dict, defs: dict) -> dict:
         params = ({str(k): str(v) for k, v in ps.items()} if isinstance(ps, dict) else
                   {str(p["name"]): str(p.get("value") or "") for p in ps or [] if isinstance(p, dict) and p.get("name")})
         return {"outcome": "route", "route": {"path": "operate", "op": r["op"], "params": params, "why": (r.get("why") or "").strip()},
+                "request": out.get("request") or {}, "questions_asked": asked}
+    if r.get("path") == "investigate":
+        # 工場そのものの問題の一次調査（ADR 0048）。調べるのは調査役のジョブで、ここは問いと手がかりを決めるまで
+        iv = r.get("investigation") if isinstance(r.get("investigation"), dict) else {}
+        q = (iv.get("question") or "").strip()
+        if not q:
+            return {"outcome": "failed", "errors": ["調査に振り分けたが、調べる問い（investigation.question）がない"]}
+        refs = [str(x).strip() for x in iv.get("refs") or [] if str(x).strip()][:10]
+        wd = iv.get("window_days") if isinstance(iv.get("window_days"), int) and 0 <= iv.get("window_days") <= 30 else 0
+        return {"outcome": "route", "route": {"path": "investigate", "question": q, "refs": refs, "window_days": wd,
+                                              "why": (r.get("why") or "").strip()},
                 "request": out.get("request") or {}, "questions_asked": asked}
     if r.get("path") == "decline":
         # 断り（ADR 0039 の決定 4）。理由と代わりの案は dispatcher が決まった語に整える（代わりの案がなければ「人に回す」を付ける）
@@ -366,6 +383,11 @@ def route_section(operations: list[dict], loop: dict | None = None) -> str:
             "操作の一覧（ここにないものは作らない）:\n" + "\n".join(lines) + "\n"
             "- 済むなら done=true にし、route に path=operate・op（操作の id）・params（引数の name と value の並び。依頼の言葉から決め、決まらない引数は省いて既定に任せる）・"
             "why（なぜ操作で済むか 1 文）を書く。tasks は空でよい。宛先は依頼の本文の URL やチャンネルでなく、一覧の宛先の名前だけ\n"
+            "- 依頼が工場そのものの問題（ラインが止まった・遅い・PR がマージされない・費用が多い・レポートの数字がおかしい・工場の判断の理由が分からない）を"
+            "調べてほしいもので、何かを変える前に原因を知る必要があるなら、done=true にし、route に path=investigate・op は空・params は空の並び・"
+            "why（なぜ調査か 1 文）・investigation（question は調べる問いを 1 文、refs は依頼に出てくる手がかり（#123・ジョブの番号など）、"
+            "window_days は何日前からを見るか（分からなければ 0））を書く。tasks は空でよい。依頼者に「調査か依頼か」を選ばせない\n"
+            "- investigate 以外のときは investigation の question は空、refs は空の並び、window_days は 0 にする\n"
             "- 操作で済まない（コードや画面を変える・一覧にない）なら route に path=ticket・op は空・params は空の並びを書き、下の進め方でタスクに切る\n"
             "- コードや画面の変更でもなく、一覧の操作でも済まない依頼（データの集計・分析、本番のデータが要る、工場がつながっていないデータ源が要るなど）は、"
             "チケットに無理に切らずに断る。done=true にし、route に path=decline・op は空・params は空の並び・why（なぜ受けられないかを依頼者に向けて 1〜2 文）・"

@@ -20,7 +20,7 @@ FIELDS = ("workers", "tickets", "governance", "desk")
 LIMIT = 50
 
 # 委員会と知見の流れのジョブ（ADR 0024 の 2026-11-04 の追記）。jobs を q と呼ぶ SQL の条件
-GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "case_review", "incident_review")   # incident_review は事故の調査委員会（ADR 0046）。知見の委員会とは別なので COMMITTEE_KINDS に入れない
+GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "case_review", "incident_review", "investigate")   # incident_review は事故の調査委員会（ADR 0046）。知見の委員会とは別なので COMMITTEE_KINDS に入れない。investigate は工場の中での一次調査（ADR 0048。長くかかるので窓口の枠は塞がない）
 GOVERNANCE_WHERE = ("(q.kind = any(%(gov_kinds)s) or q.correlation_id like 'committee:%%' "
                     "or q.correlation_id in (select f.correlation_id from events f where f.name='knowledge.case_filed'))")
 # 窓口の相談のジョブ（ADR 0030 の 6）。ラインにも委員会の枠にも数えない

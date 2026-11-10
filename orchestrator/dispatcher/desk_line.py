@@ -23,6 +23,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 import desk
+import desk_investigate
 import inbox
 import operations
 import ops
@@ -104,7 +105,7 @@ def enqueue(cur, model_tier: str, repos: list[str]) -> list[int]:
                 desk.factory_message(cur, c["id"], "factory", f"{c['product']} はこの工場が受け持つ製品ではありません。運用主に確かめてください。",
                                      kind="error", state="waiting_requester")
             continue
-        if float(c["cost_usd"] or 0) >= MAX_USD:
+        if float(c["cost_usd"] or 0) - desk_investigate.spent_on(cur, c["id"]) >= MAX_USD:   # 調査の費用は数えない（ADR 0048）
             if _event(cur, "desk.consult_skipped", corr, {"conversation_id": c["id"], "reason": "cost_limit", "cost_usd": float(c["cost_usd"])},
                       f"desk.consult_skipped:{c['id']}:{c['last_msg']}"):
                 has_draft = desk.latest_draft(cur, c["id"]) is not None
@@ -443,6 +444,9 @@ def route(cur, cid: int, job: dict, res: dict) -> None:
     c = cur.fetchone()
     if not c or c["state"] not in ("open", "waiting_requester"):
         return   # 相談役が動いている間に取り下げられた・終わった会話は振り分けない
+    if r.get("path") == "investigate":   # 工場の中での一次調査（ADR 0048）。読むだけなので確認を飛ばす
+        desk_investigate.route(cur, cid, job, res, _round(cur, cid) + 1)
+        return
     cfg = notify.cached(cur)
     params, errors = operations.check(r.get("op"), r.get("params"), destinations=sorted(cfg.destinations), role="requester")
     if errors:

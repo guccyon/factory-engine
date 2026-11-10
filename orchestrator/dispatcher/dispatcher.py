@@ -43,6 +43,7 @@ import defect
 import runner_relay
 import design_system_line
 import desk_answer
+import desk_investigate
 import desk_line
 import planner
 import version
@@ -679,6 +680,12 @@ def run_job(job: dict, reattaching: bool = False):
                     desk_line.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
                     log("desk consult record failed", job_id, repr(e))
+            elif kind == "investigate":
+                # 工場の中での一次調査（ADR 0048）: 結果を成果物に残し、報告を会話に提出する。失敗も提出する
+                try:
+                    desk_investigate.record(cur, job, result, state, err)
+                except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
+                    log("investigate record failed", job_id, repr(e))
             elif kind == "desk_answer":
                 # 窓口の回答役（ADR 0030 の 4）: 問い返しか根拠つきの回答を会話に書く。失敗も会話で依頼者に知らせる
                 if state == "succeeded" and result:
@@ -934,6 +941,11 @@ def desk_loop():
                 log(f"enqueued desk answer job {jid}")
         except Exception as e:  # noqa: BLE001
             log("desk answer enqueue failed", repr(e))
+        try:   # 工場の中での一次調査（ADR 0048）。積むのは窓口の周回、取り出すのは governance の枠
+            for jid in desk_investigate.enqueue(cur, REPOS, engine_ref=version.engine_version(ENV)):
+                log(f"enqueued investigate job {jid}")
+        except Exception as e:  # noqa: BLE001
+            log("investigate enqueue failed", repr(e))
         return line.claim_desk(cur)
     _claim_loop("desk", claim)
 
