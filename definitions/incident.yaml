@@ -1,0 +1,120 @@
+# 工場の事故の記録と調査委員会（ADR 0046）。全工場で共通の形・型・帯・抽象化の決まり・見回りの観点。
+# 事故＝工場の振る舞いが原因で、事業主に実際のお金がかかった出来事。ラインの停止や人への承認依頼（可用性）は事故にしない。
+# 生の事実は工場ごとの台帳（制御プレーン）、抽象化した事故記録（FIR）は incidents/ に 1 件 1 ファイル。
+# 決定は 2026-11-10 オーナー（ADR 0046）。数値は仮置き。
+
+schema_version: "0.1"
+status: adopted
+
+layout:
+  root: incidents
+  record: "FIR-YYYY-NNNN.yaml"     # 1 件 1 ファイル。年は最初に記録した年。番号は年をまたいで通し
+  index: "INDEX.md"                # 自動生成（core-gates/incident_check.py --index）。手で編集しない
+
+record:
+  required: [id, title, status, resource, mechanism_class, severity, affects, symptom, mechanism, impact, mitigation]
+  required_unless_draft: [published]
+  id: "^FIR-\\d{4}-\\d{4,}$"
+  status:
+    draft: "下書き。査読とオーナーの承認の前"
+    published: "公開済み。配る対象"
+    revised: "公開した後に直した（直した月を revised_at に）"
+    withdrawn: "取り下げた。ファイルと id は残し、再利用しない"
+  published: "^\\d{4}-\\d{2}$"     # 月まで（日付から製品を割り出されないように）
+
+# 型は資源 × 仕組み。増やすのは調査委員会の議決とオーナーの承認
+resources:
+  llm_tokens:    { ja: トークン, look_at: ["1 日の消費 ÷ 予算の枠", "1 マージあたりの費用", "ジョブの種類ごとの費用の偏り"] }
+  external_api:  { ja: 外部サービスの API, look_at: ["呼び出しの回数と残りの枠", "Rate Limit の応答（429 など）の回数"] }
+  cloud_metered: { ja: クラウドの従量課金, look_at: ["立っている環境の数と時間", "閉じた PR の環境が残っていないか", "外向きの転送量の急な増え"] }
+  plan_quota:    { ja: 契約の枠, look_at: ["週の上限に対する消費の進み（曜日で割った線との差）"] }
+
+mechanisms:
+  unbounded_repeat: { ja: 暴走, how: "同じ処理の繰り返しに上限がない" }
+  self_feedback:    { ja: 自己帰還, how: "工程の出力が同じ工程の入力に戻り、増え続ける" }
+  contention:       { ja: 取り合い, how: "並列の仕事が同じファイル・番号を奪い合い、やり直しが増える" }
+  double_pay:       { ja: 二重払い, how: "やり直しや作り直しで、前の成果を捨てて同じ費用をもう一度払う" }
+  leak:             { ja: 置き忘れ, how: "立てたもの（環境・接続・定期の処理）を止め忘れ、課金が続く" }
+
+# 影響の帯。お金の大きさを比で決める（事業の規模によらない）。medium 以上を FIR にし、low は台帳だけ
+severity:
+  critical: ["1 日の予算の枠の 3 倍以上", "契約の枠を超えて追加の料金", "本番の製品が Rate Limit で利用者に失敗を返した"]
+  high:     ["1 日の予算の枠を超えた（消費 ÷ 枠 ≥ 1.0）"]
+  medium:   ["枠の 30% 以上を事故の処理が使った", "1 件の費用が同じ種類の中央値の 5 倍以上"]
+  low:      ["上に届かないが、人が気づいて手で止めた"]
+record_from: medium
+
+impact_keys: [cost_vs_daily_budget, share_of_spend, wasted_vs_median, noticed_by]   # 比と帯だけ。生の金額・トークン数・件数は書かない
+noticed_by: [factory, builder, owner]
+
+mitigation:
+  keys: [fixed_in, root_fix, generic_guards, dedicated_checks, workaround]
+  fixed_in: "直した Engine の commit（40 桁）。受け取った工場は、自分の engine.lock の版がこの commit を含むか（git merge-base --is-ancestor）で当たるかを決定論で判定する"
+  generic_guards:                  # ひとつの型をまとめて止める一般の歯止め。新しく足すのは ADR でオーナーの承認
+    daily_budget: "1 日の予算の枠（ADR 0029）"
+    ticket_ceilings: "チケットごとのターン・費用・繰り返しの上限（ADR 0038）"
+    same_purpose_once: "同じ目的の仕事を同時に流さない（ADR 0044）"
+  dedicated_review_days: 90        # 専用のチェックは原則足さない。足したら review_by（既定 90 日）で要るかを見直す
+
+# 製品の情報を取り除く決まり（ADR 0046 の 8）。検査は core-gates/incident_check.py
+deidentify:
+  forbid:
+    - "製品・リポジトリ・会社・事業主の名前と事業の固有の言葉（役で言い換える）"
+    - "人の名前・アカウント・メール・ホスト名・IP・個人のパス"
+    - "Issue・PR・ジョブの番号と URL・コミットのハッシュ"
+    - "利用者のデータと秘密情報"
+    - "生の金額・トークン数・件数（比と帯にする）"
+    - "日付（月まで）"
+  keep: ["Engine の部品の名前と版", "ADR の番号", "業界で共通の規約の名前（「〜など」を付ける）", "仕組み・型・観点・直し方"]
+  deny_names: "工場が知っている製品名・リポジトリ名・事業主名。検査に --deny で渡す（制御プレーンの FACTORY_REPOS などから作る）"
+  local_ref: "台帳の id。incidents/ では必ず空にする"
+
+# 調査委員会（ADR 0046 の 6）。役・予算・記録・送り出し口は委員会の中で閉じる（将来 PSIRT のような部門の下へ移せるように）
+committee:
+  roles:
+    patrol_investigate: "見回り＋調査（1 つのジョブ）"
+    record_review: "記録＋査読（別の 2 つのエージェント。書いた役は査読しない）"
+  slot: governance                 # ADR 0024 の追記の専用の枠（GOVERNANCE_PARALLEL）。ラインを止めても動く
+  implements: false                # 直さない。Engine の直しは改善 Issue（建設者が直す）
+  patrol:
+    daily:  { llm: false, hour_jst: 4, note: "決定論の集計だけ（資源ごとの消費と枠の比・費用の外れ値・Rate Limit・残っている環境）。兆しを events に残す" }
+    weekly: { llm: true, weekday: sunday, hour_jst: 12, budget_usd: 10, viewpoints: 8, free_share: 0.3 }
+    investigate: { budget_usd: 5 }
+    weekly_cap_usd: 25
+  publish: owner_approval          # Gen1 は FIR の公開を 1 件ずつオーナーが承認（配ると戻せない）
+  outbox: "検査と査読を通った FIR の下書きを置く送り出し口（制御プレーン）。Gen1 は人が集め、将来はメタ工場が吸い上げる"
+
+# 見回りの観点。データで増やし、コードでは増やさない。型（資源 × 仕組み）の数で増え、事故の件数では増えない
+viewpoints:
+  - id: PV-tokens-repeat
+    resource: llm_tokens
+    mechanism: unbounded_repeat
+    question: "1 チケットあたりのジョブ数・繰り返しの回数の上位に、上限に当たらずに伸び続けているものはないか"
+  - id: PV-tokens-contention
+    resource: llm_tokens
+    mechanism: contention
+    question: "衝突の解消・やり直しの費用が、特定のファイルや番号に偏っていないか。消費に占める割合が増えていないか"
+  - id: PV-tokens-self-feedback
+    resource: llm_tokens
+    mechanism: self_feedback
+    question: "工場自身の出力から生まれた起票が、閉じた後にまた同じ題・同じ種類で出ていないか"
+  - id: PV-tokens-double-pay
+    resource: llm_tokens
+    mechanism: double_pay
+    question: "やり直しのジョブで前の成果が使われず、同じ費用がもう一度払われていないか"
+  - id: PV-api-repeat
+    resource: external_api
+    mechanism: unbounded_repeat
+    question: "Rate Limit の応答の後に、待たずに呼び直していないか。残りの枠が日ごとに減っていないか"
+  - id: PV-cloud-leak
+    resource: cloud_metered
+    mechanism: leak
+    question: "閉じた PR の使い捨て環境や、使っていない環境が立ったままになっていないか"
+  - id: PV-cloud-repeat
+    resource: cloud_metered
+    mechanism: unbounded_repeat
+    question: "合成の利用者や探索の外向きの転送量が急に増えていないか"
+  - id: PV-quota-contention
+    resource: plan_quota
+    mechanism: contention
+    question: "週の上限に対する消費の進みが、曜日で割った線より速くないか"

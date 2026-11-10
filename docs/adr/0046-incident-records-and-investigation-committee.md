@@ -129,3 +129,14 @@ ADR 0040 の業務のツリーに `govern.patrol`（見回り）と `govern.inci
 - **見回りを決定論だけにする**: 既知の型しか見つからない。未知の事故を探す自由な探索の分を残す
 - **可用性（停止・人への承認依頼）も事故に入れる**: 監視と判断の基準・頻度を上げれば直る話で、混ぜると「お金の損」の観点がぼやける
 - **ADR 0024 の 4 役の委員会をそのまま使う**: 製品の知見の審査と工場の事故の調査は、見るもの・置き場・配り先が違う。役も重い
+
+## 追記（2026-11-10）: 順番 1・2 と、日次の見回りを入れた形
+
+- **形と検査**（順番 1）: `definitions/incident.yaml`（形・資源と仕組み・帯・抽象化の決まり・見回りの観点 8 つ）、`core-gates/incident_check.py`（形、帯 low を FIR にしない、`fixed_in` は Engine の commit 40 桁、専用のチェックの `review_by`、製品の情報の形と `--deny` の名前）、`incidents/` に最初の記録 2 件（draft）。
+  「最初の記録」の表の FIR-2026-0003（途中終了の作り直し）は帯が low なので、決定 3 に従って FIR にせず台帳の側に置く
+- **`affects` の版**: Engine に版番号がないので、`mitigation.fixed_in` に直した Engine の commit を書く。受け取った工場は自分の `engine.lock` の版がその commit を含むか（`git merge-base --is-ancestor`）で当たるかを決める
+- **台帳は events に置く**（順番 2）: 新しい表は作らず、`fincident.opened` / `fincident.updated` / `fincident.closed`（correlation_id は `fincident:<IC-...>`）で重ねる。`dispatcher/factory_incident.py` と `factoryctl incident-record list|show|open|note|close|patrol`
+- **日次の見回りは決定論だけ**（見回りの体制の整理の P4 に合わせた）: supervisor の `incident_patrol_step` が JST 4 時（日報の前）を過ぎたら 1 日 1 回、今の予算の日の費用を集計し、兆し（`fincident.sign`）を残す。
+  見るのはトークン（その日の消費 ÷ 枠、ジョブの種類ごとの費用、チケットごとの費用の外れ値）、契約の枠（週の上限の進み、使用量上限）、クラウド（壊す時期を過ぎた使い捨て環境）。外部サービスの API は記録の口がまだないので「測っていない」と残す。
+  medium 以上の兆しは台帳に開く。日報に「事故の見回り（お金の損）」の節を足した
+- **残り**: 週次の見回り（LLM）・調査・記録と査読・送り出し口（順番 3・4）は次の PR。送り出し口は、検査を通せるワーカー側（Engine の checkout がある）で作る

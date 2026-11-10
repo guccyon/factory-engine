@@ -87,6 +87,14 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
       # S1 の演習: staging に仕込み（ship.yaml の touch.drills）、仕込めたら QA 役の探索を 1 回積む（一時停止中も流す）。終えるまでの Incident は演習の印
   factoryctl incident drill-end <repo> [--reason ..]   # 演習を終える: 演習の Incident を閉じ、staging を合成シードから入れ直して仕込みを消す
 
+工場の事故の台帳（ADR 0046。事業主にお金がかかった工場の失敗。製品の障害 incident とは別）:
+  factoryctl incident-record list [--all]              # 台帳（開いているもの。--all で閉じたものも）
+  factoryctl incident-record show <IC-...>             # 台帳の 1 件（生の事実と、足した記録）
+  factoryctl incident-record open --title "..." --resource <資源> --severity <帯> [--mechanism <仕組み>] [--note "..."]   # 人が気づいた事故を台帳に開く（low もここで）。資源・仕組み・帯は definitions/incident.yaml
+  factoryctl incident-record note <IC-...> [--mechanism ..] [--severity ..] [--engine-issue URL] [--fir FIR-YYYY-NNNN] [--note "..."]   # 調べた結果を台帳に足す
+  factoryctl incident-record close <IC-...> --reason "..."   # 台帳を閉じる
+  factoryctl incident-record patrol                    # 日次の見回りを今の記録で 1 回試す（何も残さない）
+
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
   factoryctl desk token list                               # トークンの一覧（名前・役割・対象の製品。トークンそのものは出ない）
@@ -153,6 +161,7 @@ import design_line
 import drain
 import ephemeral
 import incident
+import factory_incident
 import line
 import usage
 import ghapp
@@ -865,6 +874,48 @@ def hold_report(cur) -> None:
         print(f"  差し止めの間も流すもの: {' '.join(st['allowed'])} と p0 のチケット")
 
 
+def incident_record_cmd(cur, argv) -> int:
+    """factoryctl incident-record list|show|open|note|close|patrol（ADR 0046、dispatcher/factory_incident.py）"""
+    sub = argv[2] if len(argv) > 2 else "list"
+    arg = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None
+    by = f"factoryctl:{opt(argv, '--by', 'human')}"
+    try:
+        if sub == "list":
+            cases = factory_incident.list_cases(cur, "all" if "--all" in argv else "open")
+            if not cases:
+                print("台帳に開いているものはない"); return 0
+            for c in cases:
+                print(f"{c['id']} [{c['status']}] {c['severity']} {c['resource']}{'×' + c['mechanism'] if c.get('mechanism') else ''}: {c['title']}")
+            return 0
+        if sub == "show" and arg:
+            c = factory_incident.get_case(cur, arg)
+            if not c:
+                print(f"{arg} は台帳にない"); return 1
+            print(json.dumps(c, ensure_ascii=False, indent=2, default=str)); return 0
+        if sub == "open":
+            title, resource, severity = opt(argv, "--title"), opt(argv, "--resource"), opt(argv, "--severity")
+            if not (title and resource and severity):
+                print("--title・--resource・--severity が要る"); return 2
+            cid = factory_incident.open_case(cur, by, title, resource, severity, mechanism=opt(argv, "--mechanism"), note=opt(argv, "--note", "") or "")
+            print(f"台帳に開いた: {cid}"); return 0
+        if sub == "note" and arg:
+            ok = factory_incident.update_case(cur, arg, by, mechanism=opt(argv, "--mechanism"), severity=opt(argv, "--severity"),
+                                              engine_issue=opt(argv, "--engine-issue"), fir=opt(argv, "--fir"), note=opt(argv, "--note"))
+            print("足した" if ok else f"{arg} は台帳にない"); return 0 if ok else 1
+        if sub == "close" and arg:
+            reason = opt(argv, "--reason")
+            if not reason:
+                print("--reason が要る"); return 2
+            ok = factory_incident.close_case(cur, arg, by, reason)
+            print("閉じた" if ok else f"{arg} は台帳にないか、もう閉じている"); return 0 if ok else 1
+        if sub == "patrol":
+            snap = factory_incident.patrol(cur)
+            print(json.dumps(snap, ensure_ascii=False, indent=2, default=str)); return 0
+    except ValueError as e:
+        print(str(e)); return 2
+    print("factoryctl incident-record list|show|open|note|close|patrol ..."); return 2
+
+
 def incident_cmd(cur, argv) -> int:
     """factoryctl incident list|budget|close|drill|drill-end（ADR 0043 の O5）"""
     sub = argv[2] if len(argv) > 2 else "list"
@@ -1339,6 +1390,8 @@ def main(argv):
         return qa_cmd(cur, argv)
     elif cmd == "incident":
         return incident_cmd(cur, argv)
+    elif cmd == "incident-record":
+        return incident_record_cmd(cur, argv)
     elif cmd == "swap":
         return swap_cmd(cur, argv)
     elif cmd == "desk":

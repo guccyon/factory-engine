@@ -83,6 +83,26 @@ events:
     source: control_plane
     required: [incident_id, by]
     note: "直った・演習を終えた（factoryctl incident close / drill-end）"
+  fincident.patrolled:
+    source: control_plane
+    required: [at, day, llm_tokens, plan_quota, cloud_metered, external_api, signs, opened]
+    note: "ADR 0046。工場の事故の日次の見回り（dispatcher/factory_incident.py の daily_step、LLM なし）が見た結果。1 日 1 件（dedupe は JST の日付）。製品の障害（incident.*）とは別"
+  fincident.sign:
+    source: control_plane
+    required: [key, resource, viewpoints, severity, title, facts, day, by]
+    note: "ADR 0046。見回りが見つけた兆し。dedupe は予算の日と key。severity は definitions/incident.yaml の帯の見込み"
+  fincident.opened:
+    source: control_plane
+    required: [id, by, title, resource, severity, facts]
+    note: "ADR 0046。工場の事故の台帳に 1 件開いた（id は IC-YYYYMMDD-N、correlation_id は fincident:<id>）。工場の中だけの生の事実で、配る事故記録（incidents/FIR-*）とは別。見回りが medium 以上の兆しで開くか、factoryctl incident-record open"
+  fincident.updated:
+    source: control_plane
+    required: [id, by]
+    note: "ADR 0046。台帳に調べた結果（仕組み・帯・メモ・Engine の Issue・FIR の id）を足した。消さずに重ねる"
+  fincident.closed:
+    source: control_plane
+    required: [id, by, reason]
+    note: "ADR 0046。台帳を閉じた"
   incident.budget_exceeded:
     source: control_plane
     required: [repo, severity, count, allowed, period_days, since]
