@@ -175,13 +175,14 @@ def test_tool_list_is_fixed():
     """道具の一覧は PROTOCOL.md と SCOPE.md の約束。足すときはこのテストと文書を同じ変更で直し、オーナーの承認を通す。"""
     assert sorted(runner.TOOL_NAMES) == sorted([
         "sim_devices", "sim_boot", "sim_shutdown", "sim_erase", "app_build", "build_status", "app_install", "app_launch",
-        "app_terminate", "screenshot", "open_url", "push", "logs", "ui_describe", "ui_tap", "ui_swipe", "ui_text", "ui_key"])
+        "app_terminate", "screenshot", "open_url", "push", "logs", "ui_describe", "ui_tap", "ui_swipe", "ui_text", "ui_key",
+        "preview_distribute"])
 
 
 def test_hello_declares_scope(tmp_path, monkeypatch, calls):
     monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path))
     info = runner.hello_info(runner.config())
-    assert "しない: 署名" in info["scope"] and info["version"] == runner.VERSION and info["devices"] == "1"
+    assert "しない: 鍵を工場に渡すこと" in info["scope"] and info["version"] == runner.VERSION and info["devices"] == "1"
 
 
 def test_gate_url_must_be_https():
@@ -197,3 +198,124 @@ def test_child_env_ignores_owner_git_config(monkeypatch):
     assert e["PATH"] == os.environ["PATH"]
     out = runner.run([sys.executable, "-c", "import os; print(os.environ['GIT_CONFIG_GLOBAL'])"])
     assert out.decode().strip() == os.devnull
+
+
+# ---- 審査前の配布（ADR 0043 の O8・ADR 0047） ----
+
+APP = "guccyon/rally:apps/student-app"
+FB_APP = "1:123456789:android:0123abcd"
+
+
+@pytest.fixture
+def dist(tmp_path, monkeypatch):
+    """配布先 firebase_android を開いた設定。run は差し替え、ビルドの成果物は呼ばれた argv に合わせて作る。"""
+    monkeypatch.setenv("MAC_RUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("MAC_RUNNER_FIREBASE_APP_ID", FB_APP)
+    ks = tmp_path / "upload.jks"
+    ks.write_bytes(b"keystore")
+    monkeypatch.setenv("MAC_RUNNER_ANDROID_KEYSTORE", str(ks))
+    monkeypatch.setenv("MAC_RUNNER_APKSIGNER", "/sdk/apksigner")
+    os.makedirs(tmp_path / "home" / "repos" / "guccyon__rally" / ".git")
+    seen = types.SimpleNamespace(argv=[], env={}, answer="button returned:配布する, gave up:false", merged=True)
+
+    def fake_run(argv, timeout=120, input_bytes=None, cwd=None, env_extra=None):
+        seen.argv.append(argv)
+        if env_extra:
+            seen.env[argv[0]] = env_extra
+        if "symbolic-ref" in argv:
+            return b"origin/main\n"
+        if "rev-parse" in argv:
+            return b"abc123def4567890\n"
+        if "merge-base" in argv and not seen.merged:
+            raise runner.ToolError("not ancestor")
+        if argv[0] == "osascript":
+            if seen.answer is None:
+                raise runner.ToolError("osascript が失敗した（1）: execution error: User canceled. (-128)")
+            return seen.answer.encode()
+        if "worktree" in argv and "add" in argv:
+            os.makedirs(os.path.join(argv[argv.index("--detach") + 1], "apps", "student-app"), exist_ok=True)
+        if argv[:3] == ["flutter", "build", "apk"]:
+            out = os.path.join(cwd, "build", "app", "outputs", "flutter-apk")
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "app-release.apk"), "wb").write(b"apk")
+        if argv[0] == "/sdk/apksigner":
+            open(argv[argv.index("--out") + 1], "wb").write(b"signed apk")
+        return b"ok"
+    monkeypatch.setattr(runner, "run", fake_run)
+    monkeypatch.setattr(runner, "keychain_password", lambda service: "s3cret-pass")
+    cfg = runner.config()
+    return types.SimpleNamespace(cfg=cfg, seen=seen, b=runner.Builds(cfg))
+
+
+def start_item(d, notes="直したところ"):
+    bid = "b-000000000001"
+    d.b.items[bid] = {"build_id": bid, "app": APP, "kind": "distribute", "channel": "firebase_android", "release_notes": notes}
+    return bid, d.cfg["apps"][APP]
+
+
+def test_distribute_closed_until_mac_is_set_up(server):
+    """配布先は、人が Mac で Firebase のアプリと署名の鍵を入れるまで閉じている。"""
+    s, _ = server
+    res = call(s, "preview_distribute", {"app": APP, "channel": "firebase_android"})
+    assert res["isError"] and "開いていない" in res["content"][0]["text"]
+    res = call(s, "preview_distribute", {"app": APP, "channel": "testflight_ios"})
+    assert res["isError"] and "testflight_ios という配布先はない" in res["content"][0]["text"]
+
+
+def test_distribute_signs_with_keychain_and_uploads(dist):
+    """人が押したら、作業場で android/ を作り、release でビルドし、キーチェーンのパスワードで署名して Firebase に上げる。"""
+    bid, app = start_item(dist)
+    out = dist.b._distribute(bid, app, "main", {"RALLY_API_URL": "https://staging.example"})
+    names = [a[0] if a[0] != "flutter" else " ".join(a[:3]) for a in dist.seen.argv]
+    assert names.index("osascript") < names.index("flutter create --platforms=android")   # 人の合図より前に作業場を作らない
+    build = next(a for a in dist.seen.argv if a[:3] == ["flutter", "build", "apk"])
+    assert "--release" in build and "--dart-define=RALLY_API_URL=https://staging.example" in build
+    sign = next(a for a in dist.seen.argv if a[0] == "/sdk/apksigner")
+    assert sign[sign.index("--ks-pass") + 1] == "env:FACTORY_KS_PASS"
+    assert dist.seen.env["/sdk/apksigner"] == {"FACTORY_KS_PASS": "s3cret-pass"}
+    assert not any("s3cret-pass" in x for a in dist.seen.argv for x in a)   # パスワードは argv に出さない
+    up = next(a for a in dist.seen.argv if a[0] == "firebase")
+    assert up[1] == "appdistribution:distribute" and up[up.index("--app") + 1] == FB_APP
+    assert up[up.index("--groups") + 1] == "testers" and up[up.index("--release-notes") + 1] == "直したところ"
+    assert up[2].endswith("app-release-signed.apk")
+    assert out["sha"] == "abc123def4567890" and out["channel"] == "firebase_android" and len(out["sha256"]) == 64
+    assert "s3cret-pass" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("answer,msg", [
+    (None, "やめた"),
+    ("button returned:, gave up:true", "押されなかった"),
+])
+def test_distribute_needs_a_human_at_the_mac(dist, answer, msg):
+    """Mac の前で押されなければ（やめた・時間切れ）、ビルドも署名も上げることもしない。"""
+    dist.seen.answer = answer
+    bid, app = start_item(dist)
+    with pytest.raises(runner.ToolError, match=msg):
+        dist.b._distribute(bid, app, "main", {})
+    assert not any(a[0] in ("flutter", "/sdk/apksigner", "firebase") or "worktree" in a for a in dist.seen.argv)
+    assert dist.b.items[bid]["stage"] == "attend"
+
+
+def test_distribute_refuses_unmerged_commit_before_asking(dist):
+    dist.seen.merged = False
+    bid, app = start_item(dist)
+    with pytest.raises(runner.ToolError, match="マージ済みのコミットだけ"):
+        dist.b._distribute(bid, app, "feature/x", {})
+    assert not any(a[0] == "osascript" for a in dist.seen.argv)
+
+
+def test_dialog_text_is_passed_as_argv():
+    """確かめの窓の文言は argv で渡し、AppleScript に埋めない（文言に引用符があってもスクリプトにならない）。"""
+    seen = []
+    orig = runner.run
+    runner.run = lambda argv, **kw: seen.append(argv) or "button returned:配布する, gave up:false".encode()
+    try:
+        runner.attend('x" & do shell script "id', 60)
+    finally:
+        runner.run = orig
+    assert seen[0][-2:] == ['x" & do shell script "id', "60"]
+    assert all('do shell script' not in line for line in runner.ATTEND_SCRIPT)
+
+
+def test_release_notes_redacted_in_log():
+    assert runner.redact("preview_distribute", {"release_notes": "abc", "dart_defines": {"A": "1"}}) == {"release_notes": "<3 文字>", "dart_defines": ["A"]}

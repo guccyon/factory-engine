@@ -72,6 +72,7 @@ ADR 0028 の決定 6 のとおり、配布は出荷側のアダプタ。署名�
 
 - 済の条件: TestFlight に 1 本配った（オーナーの操作は Mac での承認 1 回）
 - これはオーナーの手が要る唯一の項目。日時を合わせて 1 回で済ませる
+- 2026-11-09 オーナー: 今回は Android を Firebase App Distribution で配って方式とインターフェースを確立し、TestFlight は Gen2 で作る（ADR 0047）。済の条件は「Firebase App Distribution で Android に 1 本（Mac での承認 1 回）」に読み替える
 
 ### O9. 品質の Learn（`quality_learn`）
 

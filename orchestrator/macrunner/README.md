@@ -45,8 +45,21 @@ docker compose exec dispatcher factoryctl runner check   # 工場の側で
 | `screenshot` | 画面を PNG で返す（MCP の image） |
 | `open_url` / `push` / `logs` | ディープリンク・プッシュ通知・アプリのプロセスのログ |
 | `ui_describe` / `ui_tap` / `ui_swipe` / `ui_text` / `ui_key` | 画面のアクセシビリティの木と操作（idb） |
+| `preview_distribute` → `build_status` | 審査前の配布（ADR 0047）。許したアプリをマージ済みのコミットから release でビルドし、Mac の鍵で署名して Firebase App Distribution（Android）に上げる。**Mac の画面で人が「配布する」を押したときだけ進む**。工場からは `factoryctl distribute` で呼ぶ（ジョブのワーカーには通さない） |
 
-製品に `ios/` がまだなければ（rally の生徒アプリは今ない）、ビルドの作業場の中だけで `flutter create --platforms=ios` を走らせる。製品のリポジトリには書かない。署名の設定と配布は出荷側のアダプタ（P5b の `preview_distribution`）。
+製品に `ios/` がまだなければ（rally の生徒アプリは今ない）、ビルドの作業場の中だけで `flutter create --platforms=ios` を走らせる。製品のリポジトリには書かない。配布の `android/` も同じ。
+
+## 審査前の配布を開く（ADR 0047。人が Mac で 1 回）
+
+配布は、次の準備を人が Mac で済ませるまで閉じている（`preview_distribute` は「開いていない」と断る）。
+
+1. Android Studio を入れ、Android SDK を入れる（`flutter doctor` の Android の行が緑になるまで）
+2. Firebase のプロジェクトを作り、Android アプリを足す（パッケージ名は作業場で作る applicationId。rally の生徒アプリは `jp.rally.rally_student_app`）。App Distribution の「テスター」でグループ（例 `testers`）を作り、自分のメールを足す
+3. Firebase CLI を入れてログインする: `npm install -g firebase-tools && firebase login`
+4. 署名の鍵を作る: `scripts/macrunner.sh android-key`（鍵は `~/.config/factory/android-upload.jks`、パスワードはキーチェーン。鍵はバックアップする）
+5. 宛先を入れて install し直す: `MAC_RUNNER_FIREBASE_APP_ID=1:…:android:… scripts/macrunner.sh install`（グループが `testers` でなければ `MAC_RUNNER_FIREBASE_GROUPS` も）
+
+配るとき（工場の側）: `docker exec factory-dispatcher-1 factoryctl distribute --notes "変更点"`。Mac の画面に確かめの窓が出るので「配布する」を押す（5 分押さなければ何もせずにやめる）。数分〜十数分で、テスターにメールが届く。結果は `factoryctl distribute list`。
 
 ## できることの範囲
 
@@ -66,7 +79,7 @@ docker compose exec dispatcher factoryctl runner check   # 工場の側で
 - **ビルドと操作ができるアプリは許したものだけ**（`MAC_RUNNER_APPS=<owner/repo>:<パス>:<bundle id>` のカンマ区切り）。起動・停止・プッシュ通知もそのアプリだけで、端末の標準のアプリやほかのアプリには触らない
 - **開ける URL は許したものだけ**（`MAC_RUNNER_URL_HOSTS` の http(s) と `MAC_RUNNER_URL_SCHEMES` のスキーム）
 - **待ち受けない**。ランナーから工場の窓口へ TLS で取りに行く。相手はペアリングのときに覚えた証明書の指紋だけ、呼び出しはランナーごとの鍵（HMAC）で署名する（`~/.config/factory/macrunner.json`、0600）。窓口から来るのは道具の呼び出しと外す依頼だけ
-- **署名の鍵は扱わない**。debug・署名なし（`--no-codesign`）だけ。署名と TestFlight は日中に人の Mac のキーチェーンで通す（ADR 0028 の決定 3）
+- **署名は人が Mac の前にいるときだけ**。シミュレーター向けは debug・署名なし（`--no-codesign`）。審査前の配布だけが署名し、Mac の画面で人が押したときだけ進む。鍵のパスワードは Mac のキーチェーンから読んで署名の道具に環境変数で渡し、返り値・記録・工場には出さない（ADR 0028 の決定 3、ADR 0047）
 - **呼ばれた道具はすべて記録**（`~/Library/Logs/factory-macrunner/calls.jsonl`。打った文字と通知の中身は長さだけ）
 
 ## 設定（環境変数。`scripts/macrunner.sh install` が plist に書く）
@@ -79,6 +92,10 @@ docker compose exec dispatcher factoryctl runner check   # 工場の側で
 | `MAC_RUNNER_URL_SCHEMES` | 空 | open_url で開けるアプリのスキーム（ディープリンク） |
 | `MAC_RUNNER_HOME` | `~/Library/Application Support/factory-macrunner` | リポジトリの写しとビルドの作業場（新しい 3 本だけ残す） |
 | `MAC_RUNNER_BUILD_TIMEOUT_SEC` | 1800 | |
+| `MAC_RUNNER_FIREBASE_APP_ID` | 空（配布は閉じている） | 審査前の配布の宛先（Firebase の Android アプリの ID） |
+| `MAC_RUNNER_FIREBASE_GROUPS` | testers | 配る相手（Firebase のテスターのグループ、カンマ区切り） |
+| `MAC_RUNNER_ANDROID_KEYSTORE` / `MAC_RUNNER_ANDROID_KEY_ALIAS` | `~/.config/factory/android-upload.jks` / upload | 署名の鍵（パスワードはキーチェーンの `factory-macrunner-android-keystore`） |
+| `MAC_RUNNER_ATTEND_TIMEOUT_SEC` | 300 | 確かめの窓で人を待つ秒 |
 
 ## テスト
 
