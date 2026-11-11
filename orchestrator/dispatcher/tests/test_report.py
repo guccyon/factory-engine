@@ -358,9 +358,10 @@ def test_health_open_stoppages_rank_by_impact(cur):
     assert not any("ラインが空" in t for t in texts)   # ラインの空きは稼働の割合で見る
 
 
-def test_health_internal_only_is_not_danger(cur):
+@pytest.mark.parametrize("kind", ["case_review", "investigate"])
+def test_health_internal_only_is_not_danger(cur, kind):
     h = lambda x: START + timedelta(hours=x)   # noqa: E731
-    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('c','o/r',1,'case_review','failed') returning id")
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('c','o/r',1,%s,'failed') returning id", (kind,))
     jid = cur.fetchone()["id"]
     stoppage.open_stoppage(cur, f"job:{jid}", "factory-bug", "ジョブが失敗した", started_at=h(-30), job_id=jid, quiet=True)
     rep = report_health.assess(report_health.build(cur, START, END))

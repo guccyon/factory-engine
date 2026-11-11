@@ -11,6 +11,7 @@
   pr.ci_failed      その head の CI が落ちた（failure / timed_out / cancelled のチェック名つき）
   pr.ci_passed      その head の CI がすべて通った
   pr.conflicted     その head が base と衝突している（mergeable_state=dirty）
+  pr.ci_unstarted   その head のワークフローが起動に失敗した（ジョブが 0 本のまま失敗）。再実行は supervisor の ci_rerun_step
   pr.review_submitted  レビューが付いた（approved / changes_requested / commented）
 
 ADR 0050 で、内ループの処理が GitHub に直接聞かずに済むよう、次の 2 つも同じポーリングで見て記録する:
@@ -90,11 +91,35 @@ def snapshot(repo: str, number: int) -> dict:
     pr = gh("GET", f"repos/{repo}/pulls/{number}")
     sha = pr["head"]["sha"]
     runs = (gh("GET", f"repos/{repo}/commits/{sha}/check-runs?per_page=100") or {}).get("check_runs", [])
+    wf = (gh("GET", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100") or {}).get("workflow_runs", [])
     reviews = gh("GET", f"repos/{repo}/pulls/{number}/reviews?per_page=100") or []
     return {"state": pr["state"], "draft": bool(pr.get("draft")), "head_sha": sha, "mergeable_state": pr.get("mergeable_state"),
-            "runs": [{"name": r["name"], "status": r.get("status"), "conclusion": r.get("conclusion")} for r in runs],
+            "runs": [{"name": r["name"], "status": r.get("status"), "conclusion": r.get("conclusion"),
+                      "suite": (r.get("check_suite") or {}).get("id")} for r in runs],
+            "workflows": [{"id": w["id"], "name": w.get("name"), "status": w.get("status"), "conclusion": w.get("conclusion"),
+                           "attempt": w.get("run_attempt") or 1, "suite": w.get("check_suite_id")} for w in wf],
             "reviews": [{"id": r["id"], "state": (r.get("state") or "").lower(), "author": (r.get("user") or {}).get("login"),
                          "submitted_at": r.get("submitted_at"), "commit_id": r.get("commit_id")} for r in reviews]}
+
+
+def unstarted_step(cur, p: dict, s: dict, base: dict, out: list) -> tuple[set, bool]:
+    """起動に失敗したワークフロー（ジョブが 0 本のまま失敗。GitHub 側の一過性のことがある）はチェックが付かないので、チェックだけ見ると
+    「全部通った」に見える。けれど必須のチェックがそろわず PR は clean にならず、検査も judge も積まれないまま黙って止まる
+    （2026-11-10 rally #1358、本体の CI 8 本が起動せず約 24 時間チケットの枠を塞いだ）。
+    見張りは見た事実を pr.ci_unstarted に記録するだけ。再実行は内ループの処理（supervisor の ci_rerun_step）が記録を読んで頼む（ADR 0050 の決定 2）。
+    再実行（試行 2 回目以降）でも起動しなければ落ちた扱い。返り値は（落ちた扱いのチェックの名前、CI が通ったとまだ言えないか）"""
+    url, sha = p["url"], s["head_sha"]
+    suites = {r["suite"] for r in s["runs"] if r.get("suite")}
+    workflows = s.get("workflows") or []
+    unstarted = [w for w in workflows if w["status"] == "completed" and w["conclusion"] in FAILED and w["suite"] not in suites]
+    extra: set = set()
+    for w in unstarted:
+        if emit(cur, "pr.ci_unstarted", p["corr"], {**base, "workflow": w["name"], "run_id": w["id"], "attempt": w["attempt"]},
+                f"pr.ci_unstarted:{url}@{sha}:{w['id']}#{w['attempt']}"):
+            out.append("pr.ci_unstarted")
+        if w["attempt"] > 1:
+            extra.add(f"{w['name']}（起動できなかった）")
+    return extra, bool(unstarted) or any(w["status"] != "completed" for w in workflows)
 
 
 def observe(cur, p: dict, source: str) -> list[str]:
@@ -108,13 +133,15 @@ def observe(cur, p: dict, source: str) -> list[str]:
         out.append("pr.head_updated")
     runs = s["runs"]
     failed = sorted({r["name"] for r in runs if r["conclusion"] in FAILED})
+    extra, waiting = unstarted_step(cur, p, s, base, out)
+    failed = sorted(set(failed) | extra)
     if failed:
         if emit(cur, "pr.ci_failed", p["corr"], {**base, "failed": failed}, f"pr.ci_failed:{url}@{sha}"):
             out.append("pr.ci_failed")
-            for name in failed:   # CI で見つけた Defect（ADR 0028 の決定 5）。PR とチェックごとに 1 件（同じチェックが head ごとに落ちても 1 件）
+            for name in [n for n in failed if not n.endswith("（起動できなかった）")]:   # CI で見つけた Defect（ADR 0028 の決定 5）。PR とチェックごとに 1 件。起動の失敗は実装の Defect ではない
                 defect.safe_record(cur, "ci", f"{url}:{name}", "pr_events", log=log, correlation_id=p["corr"], repo=p["repo"],
                                    change=url, caused_in="implement", viewpoint=f"ci:{name}")
-    elif runs and all(r["status"] == "completed" for r in runs):
+    elif runs and all(r["status"] == "completed" for r in runs) and not waiting:
         if emit(cur, "pr.ci_passed", p["corr"], {**base, "checks": sorted({r["name"] for r in runs})}, f"pr.ci_passed:{url}@{sha}"):
             out.append("pr.ci_passed")
     if s["mergeable_state"] == "dirty":

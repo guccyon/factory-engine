@@ -10,6 +10,7 @@ import re
 import statistics
 from datetime import datetime, timedelta
 
+import line
 import patrol_watch
 import stage_roi
 from report import Report, Section, console_link, entry, finding, link, metric, note
@@ -30,7 +31,9 @@ DOWN = ("idle:", "drain:")   # ラインが動いていない時間に数える�
 OPEN_MAX = 5                 # 開いている停止はここまで載せる（製品の作業を止めているものを先に、その中で長い順）
 # 失敗しても製品の作業を止めないジョブ（工場の振り返り・委員会・記録の体裁）。停止が長く開いていても「危険」にはしない（2026-11-10 オーナー:
 # 無害な古い停止で「危険」が埋まると、本当に危険なものへの対処が遅れる。rally #1031 の実装の時間切れが 5 件の上限で押し出されて見えなかった）
-INTERNAL_KINDS = ("case_review", "committee_review", "committee_weekly", "incident_review", "body_fix")
+# 委員会・事例・事故の調査・工場の中での一次調査（ラインの外の枠のジョブ）と、PR の説明の体裁の直し。
+# 枠の種類（line.GOVERNANCE_KINDS）から作るので、枠に種類を足せばここにも入る（investigate が漏れて一次調査の評価の失敗が「危険」に出た。11/11）
+INTERNAL_KINDS = tuple(line.GOVERNANCE_KINDS) + ("body_fix",)
 INTERNAL_KEYS = (patrol_watch.PREFIX,)   # 見回りが止まった停止（ADR 0050）も製品の作業は止めない
 IMPACT_PRODUCT, IMPACT_INTERNAL = "製品の作業が止まっている", "工場の内部の作業"
 # 見立ての閾値（仮置き）。注意（warn）と危険（bad）

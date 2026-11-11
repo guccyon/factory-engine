@@ -353,6 +353,33 @@ def conflict_step(cur, p: dict, pr: dict):
         log("conflict fix enqueued", p["url"], "job", jid)
 
 
+def ci_rerun_step(cur, p: dict, sha: str) -> list[str]:
+    """PR の見張りが記録した「起動に失敗したワークフロー」（pr.ci_unstarted、試行 1 回目）を 1 回だけ再実行する（ADR 0050 の決定 2 の形:
+    見張りが記録し、内ループの処理が記録を読んで動く）。GitHub の一過性の起動の失敗で、検査も judge も積まれずに黙って止まらないように
+    （2026-11-10 rally #1358）。再実行でも起動しなければ、見張りが CI 落ちとして記録し、CI 落ちの流れ（続きのジョブ → 人）に乗る。
+    返り値は再実行を頼んだワークフローの名前"""
+    cur.execute("select payload from events u where u.name='pr.ci_unstarted' and u.payload->>'pr_url'=%s and u.payload->>'head_sha'=%s "
+                "and (u.payload->>'attempt')::int = 1 and not exists (select 1 from events r where r.dedupe_key = "
+                "'pr.ci_rerun:' || (u.payload->>'pr_url') || '@' || (u.payload->>'head_sha') || ':' || (u.payload->>'run_id')) order by u.id",
+                (p["url"], sha))
+    done = []
+    for r in cur.fetchall():
+        u = r["payload"]
+        if DRY_RUN:
+            continue
+        try:
+            gh("POST", f"repos/{p['repo']}/actions/runs/{u['run_id']}/rerun")
+        except Exception as e:  # noqa: BLE001  頼めなければ次の周回でもう一度試す（記録は頼めたときだけ残す）
+            log("ci rerun failed", p["url"], u.get("workflow"), repr(e))
+            continue
+        record(cur, "pr.ci_rerun", p["corr"], {"pr_url": p["url"], "head_sha": sha, "workflow": u.get("workflow"), "run_id": u["run_id"]},
+               f"pr.ci_rerun:{p['url']}@{sha}:{u['run_id']}")
+        done.append(u.get("workflow"))
+    if done:
+        log("ci rerun", p["url"], ", ".join(str(d) for d in done))
+    return done
+
+
 def ci_fix_step(cur, p: dict, pr: dict):
     """工場の PR の CI が落ちたら（PR の見張りの pr.ci_failed）、同じ担当の続きのジョブを積んで直させる（ADR 0017）。
     同じ PR で CONTINUE_MAX 回まで。超えたら ci_failure_step が停止を開いて人へ回す"""
@@ -435,6 +462,7 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             if pr.get("mergeable_state") == "dirty":
                 conflict_step(cur, p, pr)
             else:
+                ci_rerun_step(cur, p, pr["head"]["sha"])
                 ci_fix_step(cur, p, pr)
             ci_failure_step(cur, p, pr["head"]["sha"], pr.get("mergeable_state"), pr)
             human_fix_step(cur, p, pr)
