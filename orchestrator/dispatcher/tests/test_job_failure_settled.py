@@ -69,3 +69,22 @@ def test_rerun_still_closes(cur):
     a = job(cur, "implement", 16, corr="c1")
     job(cur, "implement", 16, state="running", corr="c1")
     assert "再実行された" in dispatcher.job_failure_settled(cur, a)
+
+
+def test_rerun_with_changed_correlation_closes(cur):
+    """rerun が相関を付け替えても、再実行の記録（previous）から辿って閉じる（11-11 rally の case_review job 5514 → 7311）"""
+    from psycopg.types.json import Jsonb
+    a = job(cur, "case_review", 0, corr="case:process:x@2026-11-07")
+    b = job(cur, "case_review", 0, state="succeeded", corr="github:o/r#0")
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', 'github:o/r#0', %s, %s)",
+                (b, Jsonb({"by": "rerun", "previous": a, "attempt": 2})))
+    assert f"job {b}" in dispatcher.job_failure_settled(cur, a)
+
+
+def test_rerun_not_started_does_not_close(cur):
+    from psycopg.types.json import Jsonb
+    a = job(cur, "case_review", 0, corr="case:y")
+    b = job(cur, "case_review", 0, state="queued", corr="github:o/r#0", started=False)
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', 'github:o/r#0', %s, %s)",
+                (b, Jsonb({"by": "rerun", "previous": a, "attempt": 2})))
+    assert dispatcher.job_failure_settled(cur, a) is None
