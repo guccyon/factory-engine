@@ -1163,6 +1163,13 @@ def job_failure_settled(cur, job_id: int) -> str | None:
     nxt = cur.fetchone()
     if nxt:
         return f"再実行された（job {nxt['id']}）"
+    # rerun は相関を github:{repo}#{issue} に付け替えるので、チケットのないジョブ（case_review の case:… など）は上で見つからない。
+    # 再実行の記録（job.enqueued の previous）からも辿る（11-11: case_review の job 5514 が 7311 で通ったあとも開いたまま残った）
+    cur.execute("select e.job_id as id from events e join jobs j on j.id=e.job_id and j.started_at is not null "
+                "where e.name='job.enqueued' and e.payload->>'by'='rerun' and e.payload->>'previous'=%s order by e.job_id limit 1", (str(job_id),))
+    nxt = cur.fetchone()
+    if nxt:
+        return f"再実行された（job {nxt['id']}）"
     # チケットが閉じた（PR がマージされた・人が閉じた）なら、失敗した作業を待つものはもうない（11-08。閉じたチケットの失敗が開いたまま残り、アラートが減らなかった）
     cur.execute("select t.source_ref from jobs j join tickets t on t.id=j.ticket_id where j.id=%s and t.state='closed'", (job_id,))
     done = cur.fetchone()
