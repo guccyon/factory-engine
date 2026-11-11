@@ -106,6 +106,40 @@ def test_ready_waits_for_running_jobs_and_shipping(cur):
     assert st["shipping"] == [{"name": "release.ship_requested", "release_id": "o/r@0.3.0"}] and not st["ready"]
 
 
+def test_ready_waits_for_jobs_that_flow_through_pause(cur):
+    """一時停止の間も取り出す順番待ち（委員会・窓口・drain allow）が残るうちは「更新してよい」にしない（#269: 直後に委員会が動き出した）"""
+    import line
+    drain.set_drain(cur, True, "t")
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values "
+                "('committee:https://github.com/o/r/pull/13','o/r',13,'t','committee_review'), ('desk:1','o/r',0,'t','desk_answer'), "
+                "('github:o/r#5','o/r',5,'t','implement')")
+    st = drain.status(cur)
+    assert sorted(j["kind"] for j in st["queued"]) == ["committee_review", "desk_answer"] and not st["ready"]
+    line.scale(cur, "t", governance=0, desk=0)   # 枠が 0 なら取り出されないので待たない
+    assert drain.status(cur)["ready"]
+    drain.allow(cur, ["github:o/r#5"], "t")      # drain allow で足したラインのジョブは待つ
+    st = drain.status(cur)
+    assert [j["issue_number"] for j in st["queued"]] == [5] and not st["ready"]
+    cur.execute("update jobs set state='succeeded' where issue_number=5")
+    assert drain.status(cur)["ready"]
+
+
+def test_drain_wait_without_seconds_waits(cur, monkeypatch, capsys):
+    """秒を省いた --wait でも待つ（#269: 待たずに終了コード 3 で終わっていた）"""
+    import factoryctl
+    jid = job(cur, "o/r#1", state="running")
+    clock = {"t": 0.0}
+    monkeypatch.setattr(factoryctl.time, "time", lambda: clock["t"])
+
+    def sleep(sec):
+        clock["t"] += sec
+        if clock["t"] >= 60:
+            cur.execute("update jobs set state='succeeded', finished_at=now() where id=%s", (jid,))
+    monkeypatch.setattr(factoryctl.time, "sleep", sleep)
+    assert factoryctl.main(["factoryctl", "drain", "--reason", "更新", "--wait"]) == 0
+    assert clock["t"] >= 60
+
+
 def test_no_preemption_while_draining(cur):
     low = job(cur, "o/r#1", state="running", priority=50)
     job(cur, "o/r#2", priority=100)

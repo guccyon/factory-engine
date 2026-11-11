@@ -14,7 +14,7 @@
   factoryctl resume <ticket>
 
 工場の更新（ADR 0020）。ラインの一時停止の間は順番待ちを取り出さない（実行中のジョブは最後まで流す）。操業コンソールと同じ操作:
-  factoryctl drain [--reason ..] [--wait 秒]       # 一時停止にする。--wait は更新してよくなる（実行中 0・出荷の処理なし）まで待つ。なれば終了コード 0、待ち切れなければ 3
+  factoryctl drain [--reason ..] [--wait [秒]]     # 一時停止にする。--wait は更新してよくなる（実行中 0・出荷の処理なし・一時停止でも流れる順番待ちなし）まで待つ（秒を省くと 1800）。なれば終了コード 0、待ち切れなければ 3
   factoryctl drain status                          # 一時停止か、更新してよいか、何を待っているか。更新してよければ終了コード 0
   factoryctl line [status]                         # ラインの流量の宣言と今の数（ワーカー・同時に流すチケット・委員会の枠。ADR 0028）
   factoryctl line scale [--workers N] [--tickets N] [--governance N] [--desk N] [--reason ..]   # 宣言を変える。上げ直さずに次の周回から効く
@@ -323,6 +323,9 @@ def design_cmd(cur, argv) -> int:
     return 0
 
 
+DRAIN_WAIT_DEFAULT_SEC = 1800
+
+
 def opt(argv, name, default=None):
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
 
@@ -557,6 +560,8 @@ def drain_report(cur) -> int:
         print(f"  実行中のジョブ {j['id']} {j['kind']} {j['repo']}#{j['issue_number']}（{j['elapsed_sec'] // 60} 分）")
     for e in st["shipping"]:
         print(f"  処理中の出荷 {e['name']} {e['release_id']}")
+    for j in st.get("queued") or []:
+        print(f"  一時停止の間も流れる順番待ち {j['id']} {j['kind']} {j['repo']}#{j['issue_number']}")
     if st["allowed"]:
         print(f"  一時停止のまま流すもの: {' '.join(st['allowed'])}")
     if st.get("allowed_min_priority") is not None:
@@ -910,10 +915,11 @@ def main(argv):
             return drain_report(cur)
         changed = drain.set_drain(cur, True, "factoryctl", opt(argv, "--reason", ""))
         print("ラインを一時停止にした（順番待ちを取り出さない）" if changed else "すでに一時停止中")
-        wait = opt(argv, "--wait")
-        if wait is None:
+        if "--wait" not in argv:
             return drain_report(cur)
-        until = time.time() + int(wait)
+        wait = opt(argv, "--wait")
+        # 秒を省いた --wait（後ろに何もない・次がオプション）は既定の秒数だけ待つ。前は待たずに終わっていた（#269）
+        until = time.time() + (int(wait) if wait and wait.isdigit() else DRAIN_WAIT_DEFAULT_SEC)
         while not drain.status(cur)["ready"] and time.time() < until:
             time.sleep(5)
         return drain_report(cur)

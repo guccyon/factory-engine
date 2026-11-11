@@ -2,7 +2,8 @@
 
 dispatcher・factoryctl・操業コンソール・番人が同じ関数を通る。状態の正本は events（最後の factory.drain_requested / factory.drain_released）。
 一時停止の間、dispatcher は順番待ちのジョブを取り出さず、割り込みもしない。実行中のジョブは最後まで流す。
-「更新してよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でないとき。
+「更新してよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でなく、一時停止の間も取り出す順番待ち
+（委員会と知見の流れ・窓口の相談・drain allow で足したもの）が残っていないとき。残っていると「更新してよい」の直後に動き出す（#269）。
 """
 from __future__ import annotations
 
@@ -100,14 +101,40 @@ def claim_governance(cur) -> dict | None:
     return line.claim_governance(cur)
 
 
+def through_pause(cur) -> list[dict]:
+    """一時停止の間も取り出される順番待ちのジョブ（#269）。委員会と知見の流れ・窓口の相談は枠が 1 以上のとき、
+    drain allow で足したものはラインの枠が 1 以上のとき。これが残っていると、実行中 0 になってもすぐ次が動き出す"""
+    if not active(cur):
+        return []
+    sp = line.spec(cur)
+    corrs, minp = allowed(cur), allowed_min_priority(cur)
+    conds = []
+    if sp["governance"] > 0:
+        conds.append(line.GOVERNANCE_WHERE)
+    if sp["desk"] > 0:
+        conds.append(line.DESK_WHERE)
+    if sp["workers"] > 0 and (corrs or minp is not None):
+        picks = (["q.correlation_id = any(%(corrs)s)"] if corrs else []) + ([line.MIN_PRIORITY_WHERE] if minp is not None else [])
+        conds.append(f"({line.LINE_WHERE} and ({' or '.join(picks)}))")
+    if not conds:
+        return []
+    cur.execute(f"""select q.id, q.kind, q.repo, q.issue_number from jobs q where q.state='queued' and not q.cancel_requested
+                      and ({' or '.join(conds)})
+                      and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held) order by q.id""",
+                {**line.ARGS, "corrs": corrs, "minp": minp})
+    return [dict(r) for r in cur.fetchall()]
+
+
 def status(cur) -> dict:
-    """更新してよいか。running はつなぎ直しを含む実行中のジョブ、shipping は処理中の出荷の依頼"""
+    """更新してよいか。running はつなぎ直しを含む実行中のジョブ、shipping は処理中の出荷の依頼、
+    queued は一時停止の間も取り出される順番待ち（through_pause）"""
     st = state(cur)
     cur.execute("select id, kind, repo, issue_number, extract(epoch from now() - started_at)::int as elapsed_sec "
                 "from jobs where state='running' order by id")
     running = [dict(r) for r in cur.fetchall()]
     shipping = [{"name": e["name"], "release_id": e["payload"].get("release_id") or e["payload"].get("repo")} for e in ship.pending(cur)]
+    queued = through_pause(cur)
     return {"draining": st is not None, "since": st["since"].isoformat() if st else None, "by": st["by"] if st else None,
-            "reason": st["reason"] if st else "", "running": running, "shipping": shipping, "allowed": allowed(cur),
+            "reason": st["reason"] if st else "", "running": running, "shipping": shipping, "queued": queued, "allowed": allowed(cur),
             "allowed_min_priority": allowed_min_priority(cur),
-            "ready": st is not None and not running and not shipping}
+            "ready": st is not None and not running and not shipping and not queued}

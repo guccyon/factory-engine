@@ -285,7 +285,7 @@ class Swapper:
             if st["ready"]:
                 return
             if self.clock() > until:
-                raise Stop(f"{wait // 60} 分待っても更新してよい状態にならない（実行中 {len(st['running'])} 件・出荷 {len(st['shipping'])} 件）",
+                raise Stop(f"{wait // 60} 分待っても更新してよい状態にならない（実行中 {len(st['running'])} 件・出荷 {len(st['shipping'])} 件・一時停止でも流れる順番待ち {len(st.get('queued') or [])} 件）",
                            escalate="human", waiting_for="実行中のジョブを確かめてから依頼し直す")
             self.sleep(10)
 
