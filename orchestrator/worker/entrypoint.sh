@@ -150,12 +150,13 @@ else
 fi
 
 ISSUE_JSON=$(gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json title,body,labels)
-# CHANGELOG の取りまとめ（ADR 0027 の 1）: エージェントを使わず、断片を CHANGELOG.md に移す。断片がなければ変更なしで終わる
+# 共有ファイルの取りまとめ（ADR 0027 の 1、ADR 0051 の 2）: エージェントを使わず、宣言したファイル（既定は CHANGELOG.md）に断片を移す。
+# 断片がなければ変更なしで終わる。ラベルは今までの factory:changelog のまま
 if [ -z "${CONTINUE_BRANCH}" ] && jq -e '.labels[]? | select(.name == "factory:changelog")' <<<"${ISSUE_JSON}" >/dev/null; then
   CL_RC=0
-  python3 /work/engine/core-gates/changelog_compile.py . || CL_RC=$?
-  echo "[worker] changelog compile rc=${CL_RC}"
-  MECHANICAL="changelog.d の断片を CHANGELOG.md の [Unreleased] に取りまとめました（エージェントは使っていません。core-gates/changelog_compile.py）。"
+  python3 /work/engine/core-gates/aggregate_compile.py . || CL_RC=$?
+  echo "[worker] aggregate compile rc=${CL_RC}"
+  MECHANICAL="宣言した共有ファイル（.factory-config/aggregates.yaml。なければ CHANGELOG.md）に断片を取りまとめました（エージェントは使っていません。core-gates/aggregate_compile.py）。"
 fi
 TITLE=$(jq -r .title <<<"${ISSUE_JSON}")
 BODY=$(jq -r '.body // ""' <<<"${ISSUE_JSON}")
@@ -231,6 +232,19 @@ ${CONTEXT}/knowledge.md に、知見の委員会が採用したこの製品の�
   fi
 fi
 
+# 宣言した共有ファイル（ADR 0051 の 3）: 直接書き換えず、断片の置き場に書く。生成物は正本を直して生成し直す
+AGGREGATE_NOTE=""
+if [ -z "${MECHANICAL:-}" ] && [ -f .factory-config/aggregates.yaml ]; then
+  AGGREGATE_NOTE=$(python3 /work/engine/core-gates/aggregate_compile.py . --list 2>/dev/null | jq -r --arg n "${ISSUE_NUMBER}" '.[] |
+    if .compile == "generate" then "- \(.path) は生成物。手で書き換えず、正本を直して \(.command) で作り直す"
+    else "- \(.path) は直接書き換えない。足す内容は \(.fragments)\($n).md に書く（取りまとめは工場が別の PR で行う）" end' 2>/dev/null || true)
+  [ -n "${AGGREGATE_NOTE}" ] && AGGREGATE_NOTE="
+# 共有ファイル（.factory-config/aggregates.yaml）
+同時に流れる PR が同じ箇所に足して衝突しないよう、次のファイルは断片で更新する。
+${AGGREGATE_NOTE}
+"
+fi
+
 PROMPT=$(cat <<EOF
 ${CONTINUE_NOTE}
 あなたは工場のヘッドレスワーカーです。このリポジトリで GitHub Issue #${ISSUE_NUMBER} を実装してください。
@@ -238,7 +252,7 @@ ${CONTINUE_NOTE}
 # Issue: ${TITLE}
 
 ${BODY}
-${KNOWLEDGE_NOTE}
+${KNOWLEDGE_NOTE}${AGGREGATE_NOTE}
 # 約束
 - 先に README と specs/（あれば specs/README.md と、そこで最初に読むよう指示されたファイル）と docs/ を読み、用語・境界・不変条件をそれに合わせる。手元の推測で定義を作らない
 - リポジトリの CLAUDE.md や README の規約に従う。コード・テスト・文書は同じ変更に含める（三位一体）

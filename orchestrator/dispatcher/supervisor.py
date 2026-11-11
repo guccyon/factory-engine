@@ -122,6 +122,8 @@ PROCESS_ISSUES = ENV.get("PROCESS_ISSUES", "1") == "1"   # 工程の信号の束
 PROCESS_ISSUES_PER_DAY = int(ENV.get("PROCESS_ISSUES_PER_DAY", "1"))   # 束の分析は 1 日 1 件なので、起票も 1 件まで
 ENGINE_REPO = ENV.get("ENGINE_REPO", "guccyon/factory-engine")   # 工場自体のリポジトリ（改善案の起票先）
 PROCESS_LABEL = "factory:process-proposal"
+AGGREGATE_ISSUES = ENV.get("AGGREGATE_ISSUES", "1") == "1"   # 共有ファイルの取りまとめの候補を製品の改善チケットにする（ADR 0051 の 4）。0 で止める
+AGGREGATE_LABEL = "factory:aggregate"   # 起票した改善チケットの印（同じファイルの起票が開いていれば足さない）
 # 夜間の探索（ADR 0028 の nightly_explore）。探索する製品（触れる環境を持つもの）。既定は出荷の列車の製品。空で止める
 NIGHTLY_EXPLORE = [r.strip() for r in ENV.get("NIGHTLY_EXPLORE", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
 # 週次の KPI の Report ライン（ADR 0043 の O2）を回す製品。既定は出荷の列車の製品（staging と ship.yaml を持つもの）。空で止める
@@ -882,37 +884,59 @@ def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:
     return n >= CHANGELOG_COMPILE_EVERY or (now_jst.hour >= RELEASE_TRAIN_HOUR - 1 and not compiled_today)
 
 
+def aggregate_fragments(repo: str) -> dict[str, int]:
+    """製品が宣言した共有ファイルごとの、まだ取りまとめていない断片の数（ADR 0051 の 2）。宣言がなければ CHANGELOG.md（changelog.d/）だけ。
+    断片の置き場がない（404）・読めないファイルは 0。宣言が読めなければ既定"""
+    decl = [{"path": "CHANGELOG.md", "fragments": "changelog.d/", "compile": "changelog"}]
+    try:
+        c = gh("GET", f"repos/{repo}/contents/.factory-config/aggregates.yaml")
+        decl = [a for a in (yaml.safe_load(base64.b64decode(c["content"])) or {}).get("aggregates") or [] if isinstance(a, dict)]
+    except Exception:  # noqa: BLE001, S110  宣言がない製品（404）は今までの CHANGELOG だけ
+        pass
+    out = {}
+    for a in decl:
+        if a.get("compile") == "generate" or not a.get("fragments") or not a.get("path"):
+            continue
+        try:
+            items = gh("GET", f"repos/{repo}/contents/{a['fragments'].rstrip('/')}")
+        except Exception:  # noqa: BLE001  断片の置き場がまだない
+            items = []
+        out[a["path"]] = sum(1 for x in items or [] if x.get("type") == "file" and x.get("name", "").endswith(".md") and x.get("name") != "README.md")
+    return out
+
+
 def changelog_step(cur, now: datetime | None = None):
-    """CHANGELOG の断片（changelog.d/）の取りまとめの Issue を起こす（ADR 0027 の 1）。1 時間に 1 回、製品ごとに見る。
-    取りまとめはワーカーが core-gates/changelog_compile.py で決定的に行う（factory:changelog のラベル）"""
+    """共有ファイルの断片の取りまとめの Issue を起こす（ADR 0027 の 1、ADR 0051 の 2）。1 時間に 1 回、製品ごとに見る。
+    宣言したファイル（.factory-config/aggregates.yaml、なければ CHANGELOG.md）の断片が合わせて CHANGELOG_COMPILE_EVERY 件たまったか、
+    出荷の列車の前に断片があれば、製品ごとに 1 本の Issue にする。取りまとめはワーカーが core-gates/aggregate_compile.py で決定的に行う
+    （factory:changelog のラベル。名前は今までのまま）"""
     if DRY_RUN:
         return
     now = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=9)))
     for repo in REPOS:
         if not record(cur, "changelog.checked", None, {"repo": repo}, f"changelog.checked:{repo}:{now:%Y-%m-%dT%H}"):
             continue
-        try:
-            items = gh("GET", f"repos/{repo}/contents/changelog.d")
-        except Exception:  # noqa: BLE001  断片の置き場がない製品（404）や一時的な失敗は次の周回で
-            continue
-        n = sum(1 for x in items or [] if x.get("type") == "file" and x.get("name", "").endswith(".md") and x.get("name") != "README.md")
+        counts = {k: v for k, v in aggregate_fragments(repo).items() if v}
+        n = sum(counts.values())
         cur.execute("select 1 from events where name='changelog.compile_filed' and payload->>'repo'=%s and payload->>'day'=%s",
                     (repo, f"{now:%Y-%m-%d}"))
-        if not changelog_due(n, now, cur.fetchone() is not None):
+        compiled_today = cur.fetchone() is not None
+        if not changelog_due(n, now, compiled_today):
             continue
         try:
             if gh("GET", f"repos/{repo}/issues?labels=factory:changelog&state=open&per_page=1"):
                 continue   # 取りまとめの Issue がまだ開いている
+            what = "、".join(f"{k}（{v} 件）" for k, v in counts.items())
             issue = gh("POST", f"repos/{repo}/issues", {
-                "title": f"CHANGELOG の取りまとめ（断片 {n} 件）",
-                "body": "changelog.d/ の断片を CHANGELOG.md の [Unreleased] に移し、移した断片を消す（ADR 0027 の 1）。"
-                        "ワーカーがエージェントを使わずに core-gates/changelog_compile.py で行う。",
+                "title": (f"CHANGELOG の取りまとめ（断片 {n} 件）" if list(counts) == ["CHANGELOG.md"] else f"共有ファイルの取りまとめ（断片 {n} 件）"),
+                "body": f"宣言した共有ファイルに断片を取りまとめ、取りまとめた断片を消す（ADR 0027 の 1、ADR 0051 の 2）。対象: {what}。"
+                        "ワーカーがエージェントを使わずに core-gates/aggregate_compile.py で行う。",
                 "labels": ["factory:planned", "factory:changelog"]})
         except Exception as e:  # noqa: BLE001
             log("changelog issue failed", repo, repr(e))
             continue
-        record(cur, "changelog.compile_filed", f"github:{repo}#{issue['number']}", {"repo": repo, "fragments": n, "day": f"{now:%Y-%m-%d}",
-                                                                                   "issue": issue["html_url"]})
+        record(cur, "changelog.compile_filed", f"github:{repo}#{issue['number']}", {"repo": repo, "fragments": n, "files": counts,
+                                                                                   "day": f"{now:%Y-%m-%d}", "issue": issue["html_url"]})
         log("changelog compile filed", repo, n, issue["html_url"])
 
 
@@ -1098,6 +1122,67 @@ def knowledge_issue_step(cur, now: datetime | None = None):
                {"incident": a["incident"], "analysis_event": a["event_id"], "themes": sorted({x["theme"] for x in a["learnings"]}),
                 "learnings": len(a["learnings"]), "issue": issue["html_url"], "day": day}, f"knowledge.case_filed:{a['incident']}")
         log("knowledge issue filed", a["incident"], issue["html_url"])
+
+
+def aggregate_issue_body(c: dict) -> tuple[str, str]:
+    """取りまとめの候補（hotfile.aggregate_candidate）から、製品の改善チケットの題と本文"""
+    f = c["file"]
+    if c.get("shape") == "generated":
+        how = (f"- `{f}` を生成物として `.factory-config/aggregates.yaml` に `compile: generate` で宣言し、作り直すコマンドを `command` に書く\n"
+               "- CI で生成し直して差分が出ないことを確かめる（手で書き換えた PR を落とす）")
+    else:
+        stem = f.rsplit("/", 1)[0] + "/" if "/" in f else ""
+        how = (f"- `{f}` を `.factory-config/aggregates.yaml` に宣言する（`compile` は節に足す一覧なら `append_section`、並べる id の一覧なら `sorted_list`）\n"
+               f"- 断片の置き場（例: `{stem}{f.rsplit('/', 1)[-1].split('.')[0].lower()}.d/`）に書き方の README.md を置く\n"
+               "- `sorted_list` なら一覧の前後に `<!-- aggregate:start -->` と `<!-- aggregate:end -->` の印を置く\n"
+               "- このファイルの一覧を照らすテストや検査があれば、`aggregate_compile.py --view` の中身（まだ取りまとめていない断片を含む）で照らす")
+    title = f"共有ファイル {f} を断片で更新する形にする"
+    body = (f"工場の見回り（ADR 0051 の 1）が、`{f}` を取りまとめの候補に挙げました。\n\n"
+            f"- 形: {c.get('shape_ja') or c.get('shape')}\n- {c.get('why')}\n" + (f"- 衝突の解消: {c['conflicts']} 回\n" if c.get("conflicts") else "") +
+            "\n同時に流れる PR が同じ箇所に足すので、衝突の解消とやり直しが起きやすい。CHANGELOG と同じく断片にためて、"
+            "取りまとめの PR で更新する形にする（ADR 0027 の 1、ADR 0051 の 2）。\n\n## やること\n" + how +
+            "\n\n## やらないこと\n- ファイルの中身（一覧の項目）を変えること\n")
+    return title, body
+
+
+def aggregate_issue_step(cur, now: datetime | None = None):
+    """取りまとめの候補を、製品の改善チケット（プランナーの入口）にする（ADR 0051 の 4）。1 日 1 件まで。
+    宣言済みのファイルと、同じファイルの改善チケットが開いている（または一度起票した）ファイルは足さない"""
+    if not AGGREGATE_ISSUES or DRY_RUN:
+        return
+    now = now or datetime.now(timezone.utc)
+    day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
+    cur.execute("select 1 from events where name='aggregate.issue_filed' and payload->>'day'=%s", (day,))
+    if cur.fetchone():
+        return
+    for c in hot_marks.aggregate_candidates_latest(cur):
+        repo = c.get("repo")
+        if repo not in REPOS:
+            continue
+        cur.execute("select 1 from events where name='aggregate.issue_filed' and payload->>'repo'=%s and payload->>'file'=%s", (repo, c["file"]))
+        if cur.fetchone():
+            continue   # 一度起票したファイル（閉じられたら人の判断を尊重して足し直さない）
+        if c["file"] in aggregate_declared(repo):
+            continue
+        title, body = aggregate_issue_body(c)
+        try:
+            issue = gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": [workflow_guard.PLANNER_LABEL, AGGREGATE_LABEL]})
+        except Exception as e:  # noqa: BLE001  次の周回でやり直す
+            log("aggregate issue failed", repo, c["file"], repr(e))
+            return
+        record(cur, "aggregate.issue_filed", f"github:{repo}#{issue['number']}",
+               {"repo": repo, "file": c["file"], "shape": c.get("shape"), "issue": issue["html_url"], "day": day}, f"aggregate.issue_filed:{repo}:{c['file']}")
+        log("aggregate issue filed", repo, c["file"], issue["html_url"])
+        return
+
+
+def aggregate_declared(repo: str) -> set[str]:
+    """製品が宣言した共有ファイル（.factory-config/aggregates.yaml）。読めなければ CHANGELOG.md だけ"""
+    try:
+        c = gh("GET", f"repos/{repo}/contents/.factory-config/aggregates.yaml")
+        return {a["path"] for a in (yaml.safe_load(base64.b64decode(c["content"])) or {}).get("aggregates") or [] if isinstance(a, dict) and a.get("path")}
+    except Exception:  # noqa: BLE001
+        return {"CHANGELOG.md"}
 
 
 def process_issue_step(cur, now: datetime | None = None):
@@ -1539,6 +1624,7 @@ def tick():
         case_review_step(cur)
         knowledge_issue_step(cur)
         process_issue_step(cur)
+        aggregate_issue_step(cur)
         design_review_step(cur)
         committee_weekly_step(cur)
         incident_review_step(cur)

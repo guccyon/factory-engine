@@ -94,3 +94,11 @@ aggregates:
 - 衝突が起きる前、PR が重なり始めた時点で候補に気づける。並べて流す（ADR 0038 の追記）のは、取りまとめにできない登録の箇所が主になり、流量が戻る
 - 製品の書き方が増える（宣言したファイルは断片に書く）。取りまとめの PR が増えるが、検査と judge を飛ばすので費用はほぼ CI だけ
 - 登録の箇所（コード）は、この ADR だけではなくならない。分割の改善チケットとして別に進める
+
+## 実施の記録
+
+- 2026-11-12 順番 1（#396）: `hot_marks.py` が `pr.files` に差分の行数を残し、形（`append`・`generated`・`registry`・`content`）と同時に開いた PR の数を数える。取りまとめの候補は `hotfile.aggregate_candidate`。建設日報に「共有ファイル」の節
+- 2026-11-12 順番 2〜4:
+  - 2: `core-gates/aggregate_compile.py`（`changelog`・`append_section`・`sorted_list`・`generate`、`--view`・`--list`）。宣言がなければ CHANGELOG.md だけで、今の動きは変わらない。ワーカーは `factory:changelog` のラベルのチケットでこれを呼ぶ。supervisor の `changelog_step` は宣言したファイルの断片を合わせて数え、製品ごとに 1 本の取りまとめの Issue を起こす（題は CHANGELOG だけなら今までどおり）。断片がいちばん古いものの経過時間での取りまとめは、今までの「出荷の前」と件数で足りるので入れていない
+  - 3: `core-gates/aggregate_guard.py` と CI のテンプレート（`templates/ci/README.md`）。ワーカーの指示に、宣言したファイルは断片に書く（生成物は作り直す）旨を宣言から作って足す。検査のルーブリック DOC-002 も宣言に広げた。製品のワークフローに足すのは特権のライン
+  - 4: supervisor の `aggregate_issue_step`。直近の候補のうち宣言していないファイルを、1 日 1 件、プランナーの入口（`factory:plan`、`factory:aggregate`）の改善チケットにする。一度起票したファイルは足し直さない（閉じたら人の判断を尊重）。`AGGREGATE_ISSUES=0` で止める。登録の箇所（コード）は候補にしないので、ここからは起票しない（ADR 0027 の 2 の並べ方とプランナーの分割の提案に任せる）
