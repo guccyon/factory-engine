@@ -1,7 +1,7 @@
 # ADR 0028: QA と実行環境のケイパビリティと、P5 の 2 段への分割
 
 - 状態: 承認（2026-11-04 オーナー。P5 を 2 段に分ける案をカードで選択。アーキテクチャに触れる点は本文で承認、実装は各 PR）
-- 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ。段階に置き換えた: ADR 0012 の追記 2026-11-05）
+- 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ。段階に置き換えた: ADR 0012 の追記 2026-11-05）、ADR 0049（決定 2 の「ship の手前で動作確認」を出荷のレーンに配線する。2026-11-11 提案）
 - 検討の記録: 50_build-work/strategy/qa-and-runtime-2026-11-04.md（発散）、strategy/qa-model/、strategy/capability-model/、strategy/roadmap-qa-runtime/（図）、capability-model-knowledge-2026-11-04.md（知見）
 
 ## 文脈
