@@ -5,10 +5,10 @@ GitHub App が設定されていれば（GH_APP_ID と GH_APP_PRIVATE_KEY_B64）
 
 - token(): 常駐のプロセス（dispatcher・supervisor・pr_events・出荷・通知・factoryctl）が使う。インストールの全権限・全リポジトリ。
   期限（1 時間）の 10 分前に作り直す
-- job_token(repo, grant): ワーカーのジョブに渡す。そのジョブのリポジトリと、役の段（grant）の権限だけに絞る。
+- job_token(repo, grant): ワーカーのジョブに渡す。そのジョブのリポジトリと、役の区分（grant）の権限だけに絞る。
   毎回新しく発行する（ジョブの打ち切り JOB_TIMEOUT_SEC より長く持つように。トークンは 1 時間で切れる）
 
-段（grant）ごとの権限は GRANTS。順番 2 では全ジョブに「作る」（今の PAT と同じ権限）を渡し、段の絞り込みは順番 3 で行う。
+区分（grant）ごとの権限は GRANTS。順番 2 では全ジョブに「作る」（今の PAT と同じ権限）を渡し、区分ごとの絞り込みは順番 3 で行う。
 秘密鍵は環境変数（base64）で受け、署名のときだけ 0600 の一時ファイルに書いて openssl に渡し、すぐ消す。
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from datetime import datetime
 API = "https://api.github.com"
 REFRESH_MARGIN_SEC = 600   # 期限のこれだけ前に作り直す
 
-# 役の段（ADR 0041 の決定 1）→ インストールトークンの権限。metadata: read は GitHub が必ず付ける
+# 役の区分（ADR 0041 の決定 1）→ インストールトークンの権限。metadata: read は GitHub が必ず付ける
 GRANTS: dict[str, dict[str, str]] = {
     # 見る: 読むのとコメント・ラベルだけ（順番 3 で使う）
     "observe": {"contents": "read", "pull_requests": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read"},
@@ -145,7 +145,7 @@ def token(repo: str | None = None) -> str:
 
 
 def job_token(repo: str | None, grant: str = "build") -> str:
-    """ワーカーのジョブのトークン。そのジョブのリポジトリと段の権限だけ。App が無ければ GH_TOKEN（PAT は絞れない）"""
+    """ワーカーのジョブのトークン。そのジョブのリポジトリと区分の権限だけ。App が無ければ GH_TOKEN（PAT は絞れない）"""
     if not enabled():
         return os.environ.get("GH_TOKEN", "")
     perms = GRANTS[grant]

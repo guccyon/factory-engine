@@ -17,7 +17,7 @@ input.json（dispatcher の desk_line.consult_input が組み立てる）:
    operations?: [{id, ja, does, examples, params, tier}]}
 
 振り分け（ADR 0039 の決定 2）: operations があれば、依頼がその操作を 1 回動かせば済むかを先に見て、済むなら
-outcome: route（path: operate、操作の id と引数）を返す。引数の検査・確認の段・実行は dispatcher が行う（ここは対応付けまで）。
+outcome: route（path: operate、操作の id と引数）を返す。引数の検査・確認のレベル・実行は dispatcher が行う（ここは対応付けまで）。
 工場そのものの問題を調べてほしい依頼は outcome: route（path: investigate、調べる問いと手がかり。ADR 0048）を返す。調べるのは調査役のジョブ。
 operations がない（古い dispatcher）ときは今までどおり問いか下書きだけを返す。
 どの対応の種類にも当てはまらない依頼は outcome: decline（理由と代わりの案。ADR 0039 の決定 4）を返す。断りの提出と受取確認は dispatcher が行う。
@@ -127,7 +127,7 @@ def schema(defs: dict, operations: list[dict] | None = None) -> dict:
 
 
 def order(tasks: list[dict]) -> list[str] | None:
-    """依存の順（トポロジカル順。同じ段は書かれた順）。輪があれば None"""
+    """依存の順（トポロジカル順。同じ深さは書かれた順）。輪があれば None"""
     keys = [t["key"] for t in tasks]
     deps = {t["key"]: [d for d in t.get("depends_on") or [] if d in keys] for t in tasks}
     out: list[str] = []
@@ -346,7 +346,7 @@ request には依頼者が言ったことだけを書き、言い方は言い換
 
 # タスクの切り方（tasks。{c['max_tasks']} 件まで）
 - 1 つのタスクは 1 つの PR で終わる大きさ。要件 → 画面 → 契約 → 実装 の順に並べ、前のタスクの成果を使うものは depends_on に前のキーを書く
-- 要らない段は作らない（画面のない変更に画面のタスクは要らない。小さな変更は実装 1 つでよい）
+- 要らないタスクは作らない（画面のない変更に画面のタスクは要らない。小さな変更は実装 1 つでよい）
 - key は t1, t2, … 。kind は次から:
 {kinds}
 - effort: {efforts}

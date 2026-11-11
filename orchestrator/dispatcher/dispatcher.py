@@ -109,7 +109,7 @@ MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマー�
 INSPECT_WAIT_MIN = int(ENV.get("WATCH_INSPECT_WAIT_MIN", "30"))  # マージを判定した最新の head に検査がないまま、この分数たったら停止（rally #976）
 INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"        # supervisor と同じ値（検査を止めていれば見ない）
 DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
-LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちの段（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
+LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちのタスク（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 一時的なネットワークの失敗（名前解決・接続）。ワーカーの最初の git clone で落ちることが多い（11-01 job 1350、1640 ほか）
 NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "connection timed out", "temporary failure in name resolution")
@@ -277,7 +277,7 @@ def enqueue(repo: str, issue: int, by: str, attempt: int = 1, kind: str = "imple
                         "values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id",
                         (corr, repo, issue, attempt, by, tier, kind, ticket["id"], ticket["priority"]))
         except psycopg.errors.UniqueViolation:
-            return None   # すでに queued / running（二重実行の抑止 1 段目）
+            return None   # すでに queued / running（二重実行の抑止の 1 つ目）
         job_id = cur.fetchone()["id"]
         record_event(cur, "job.enqueued", corr, job_id, {"repo": repo, "issue": issue, "by": by, "attempt": attempt, "kind": kind,
                                                          "ticket_id": ticket["id"], "priority": ticket["priority"]})
@@ -345,7 +345,7 @@ def poll_loop():
                     desk_line.send_notices(cur)
             except Exception as e:  # noqa: BLE001
                 log("desk filing failed", repr(e))
-            try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の段を積む（ADR 0025・0026）
+            try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の工程を積む（ADR 0025・0026）
                 with db() as conn, conn.cursor() as cur:
                     design_system_line.apply_choices(cur, swap_label, comment)
             except Exception as e:  # noqa: BLE001
@@ -409,7 +409,7 @@ def run_job(job: dict, reattaching: bool = False):
     lock_key = f"{repo}#{issue}"
     with db() as conn, conn.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (lock_key,))
-        if not cur.fetchone()["ok"]:   # 二重実行の抑止 2 段目
+        if not cur.fetchone()["ok"]:   # 二重実行の抑止の 2 つ目
             waits = waits_for_lock(cur, job)
             if waits and lock_waited_sec(cur, job_id) < LOCK_WAIT_MAX_SEC:
                 time.sleep(LOCK_RETRY_SEC)
@@ -1194,7 +1194,7 @@ def budget_paused(cur) -> dict | None:
 
 
 def line_supply(cur) -> dict:
-    """ラインの段の残り。投入待ち（planned で保留でない）と、そのうち依存が片付いてすぐ流せる数"""
+    """ラインの投入待ちのタスクの残り。投入待ち（planned で保留でない）と、そのうち依存が片付いてすぐ流せる数"""
     cur.execute("select count(*) as planned, count(*) filter (where cardinality(waiting_on) = 0) as ready "
                 "from tickets where state='planned' and not held")
     r = cur.fetchone()
@@ -1203,8 +1203,8 @@ def line_supply(cur) -> dict:
 
 
 def line_low_step(cur, draining) -> None:
-    """段の残りが少なくなったら 1 度だけ知らせ、積み足されたら戻ったと記録する。停止ではない（ラインはまだ流れている）ので
-    stoppages には開かない。プランナー（P4）ができるまで、建設者が段を積む合図にする（2026-10-31）"""
+    """投入待ちのタスクが少なくなったら 1 度だけ知らせ、積み足されたら戻ったと記録する。停止ではない（ラインはまだ流れている）ので
+    stoppages には開かない。プランナー（P4）ができるまで、建設者がタスクを積む合図にする（2026-10-31）"""
     if draining:
         return
     sup = line_supply(cur)
@@ -1213,8 +1213,8 @@ def line_low_step(cur, draining) -> None:
     is_low = bool(last and last["name"] == "watcher.line_low")
     if sup["low"] and not is_low:
         record_event(cur, "watcher.line_low", None, None, {"planned": sup["planned"], "ready": sup["ready"], "low_below": LINE_LOW_BELOW})
-        stoppage.post_notice(f"**段の残りが少なくなりました**: 投入待ち {sup['planned']} 件（{LINE_LOW_BELOW} 件を切った）。"
-                             "次の段を `factory:planned` で積んでください。積まないとラインが空になります。", cur)
+        stoppage.post_notice(f"**投入待ちのタスクが少なくなりました**: 投入待ち {sup['planned']} 件（{LINE_LOW_BELOW} 件を切った）。"
+                             "次のタスクを `factory:planned` で積んでください。積まないとラインが空になります。", cur)
     elif not sup["low"] and is_low:
         record_event(cur, "watcher.line_ok", None, None, {"planned": sup["planned"], "ready": sup["ready"]})
 
@@ -1243,7 +1243,7 @@ def watch_once():
                 if not budget_open and not draining:
                     p = paused["payload"]
                     stoppage.open_stoppage(cur, f"budget:{p.get('window_start')}", "budget",
-                                           f"使用量の枠の予算を使い切ったので新しい段を投入していない（{p.get('spent_usd')} / ${p.get('budget_usd')}）",
+                                           f"使用量の枠の予算を使い切ったので新しいタスクを投入していない（{p.get('spent_usd')} / ${p.get('budget_usd')}）",
                                            waiting_for="次の使用量の枠の始まり（supervisor が自分で投入を再開する）", started_at=paused["occurred_at"])
             elif not idle_open and not draining and j["last"] and j["long_idle"]:   # 一時停止中は drain: で知らせる
                 stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "idle", "ラインが空（実行中・投入可能のジョブがない）",
@@ -1266,7 +1266,7 @@ def watch_once():
             for k in drain_open:
                 stoppage.close_stoppage(cur, k, remedy="ラインを再開した")
 
-        # 1c) 段の残りが少ない（停止の手前の知らせ）
+        # 1c) 投入待ちのタスクが少ない（停止の手前の知らせ）
         line_low_step(cur, draining)
 
         # 2) supervisor の heartbeat（1 度でも来てから有効）

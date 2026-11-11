@@ -1,6 +1,6 @@
 # 工場の中での一次調査（ADR 0048）。窓口の対応の種類 investigate の範囲・上限・二次への引き継ぎ・Issue の検査。
 # 依頼者は種類を選ばない。依頼の中身からプランナーが調査にするか・どの体制で進めるかを決め、ここの値を天井に厚みを宣言する（ADR 0038）。
-# 調査役は「見る」の段（ADR 0041）。何も変えない。起票・操作・事故の台帳への記録は、結果を見て dispatcher が決まった道で行う。
+# 調査役は「見る」の区分（ADR 0041）。何も変えない。起票・操作・事故の台帳への記録は、結果を見て dispatcher が決まった道で行う。
 # 決定は 2026-11-10 オーナー（ADR 0048）。数値は仮置きで、運用パラメータとして工場が調整してよい。
 # 検査は core-gates/investigate_check.py（値の食い違いは core-gates/tests/test_investigate_check.py で見る）。
 
@@ -57,7 +57,7 @@ money_loss: incident_case          # お金の損があれば、上のどれか�
 # 直す先ごとの出し方
 fix_targets:
   engine:    { ja: Engine,       does: "改善 Issue を提供元の口に起票（起票まで。直すのは建設者）。issue_check を通す" }
-  operation: { ja: 運用の値,     does: "操作の提案（流量・予算・宣言。change の段なので承認ボタン）" }
+  operation: { ja: 運用の値,     does: "操作の提案（流量・予算・宣言。change のレベルなので承認ボタン）" }
   product:   { ja: 製品,         does: "窓口の依頼の下書き（依頼者の確認でチケット）" }
 
 # 二次（外からの調査）に回す理由（ADR 0048 の決定 6）

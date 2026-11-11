@@ -5,7 +5,7 @@
 #   建設者の自己申告より軽くは判定しない（申告と判定の重い方）
 # - escalate: 当たったら進めずに人に回す（決定 7）。DB の変更は kinds の db で人に回す（決定 8。承認ボタンは順番 5）
 # - diff_pattern は足した行だけを見る。# で始まる行（.env.example の説明・compose のコメント）は数えない。コメントを外して効かせる変更は、そのとき足した行として当たる
-# - glob: ** は任意の深さ（0 段を含む）、* は / を含まない（change_type_rules.yaml と同じ）
+# - glob: ** は任意の深さ（0 階層を含む）、* は / を含まない（change_type_rules.yaml と同じ）
 
 schema_version: "0.1"
 

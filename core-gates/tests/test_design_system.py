@@ -1,4 +1,4 @@
-"""デザインシステムのデザイナー役（core-gates/design_system.py、ADR 0025・0026）: 段の決め方、案と正本の形の検査、プロンプト、会話と撮影"""
+"""デザインシステムのデザイナー役（core-gates/design_system.py、ADR 0025・0026）工程の決め方、案と正本の形の検査、プロンプト、会話と撮影"""
 import json
 import os
 import sys

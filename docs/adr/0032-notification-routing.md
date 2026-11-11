@@ -17,7 +17,7 @@
 
 今の通知の経路は、どれも工場全体で 1 つに固定されている。
 
-- 停止の始まり・終わりと、停止ではない知らせ（段の残りが少ないなど）: `stoppage.notify` / `stoppage.post_notice`。`NOTIFIER`（`github-issue` / `log`）で工場状況 Issue へ
+- 停止の始まり・終わりと、停止ではない知らせ（投入待ちのタスクが少ないなど）: `stoppage.notify` / `stoppage.post_notice`。`NOTIFIER`（`github-issue` / `log`）で工場状況 Issue へ
 - 受信トレイの人の出番: `notify_inbox.tick`。`INBOX_NOTIFY`（`log` / `github-issue` / `slack`）と `SLACK_WEBHOOK_URL` 1 つ、`INBOX_QUIET`・`INBOX_SLACK_MENTIONS` も工場に 1 つ
 - 建設状況の日次レポート: supervisor が `report.daily` を作り `factory:construction` の Issue に書く。claude.ai のページ（建設日報）はクラウドが描く。Slack には届かない
 - 朝の報告（プロダクト開発・操業）: 工場の外（クラウドの定期タスク）が組み立てる。Slack には届かない
@@ -86,9 +86,9 @@ destinations:               # 宛先。通知の割り当てはこの名前で�
 | `request.inbox` | 受信トレイの人の出番（選択・出荷の承認・停止の判断・依頼） | 事業主（決定 5） | 出たとき・知らせ直し・代理への切り替え | 今の通知を載せ替える |
 | `done.task` | 窓口の依頼の完了報告 | 依頼した人の組織 | 終わったとき | 後で |
 
-- リリースして運用の段に入ると定期レポートは増える見込み（未定）。足すときは `report.*` に 1 行と文面の関数を 1 つ足す
+- リリースして運用に入ると定期レポートは増える見込み（未定）。足すときは `report.*` に 1 行と文面の関数を 1 つ足す
 - 工場の建設の進捗は工場の通知に載せない。建設は工場の外（建設者）の仕事で、建設日報は今どおり建設者が出す（R6）
-- 停止の始まり・終わりと停止ではない知らせ（段の残りが少ないなど）は、どの系統にも入れない。人の判断が要る停止は受信トレイに出るので `request.inbox` で届く。それ以外は今どおり工場状況 Issue に書き、件数と時間は `report.factory_health` に載せる
+- 停止の始まり・終わりと停止ではない知らせ（投入待ちのタスクが少ないなど）は、どの系統にも入れない。人の判断が要る停止は受信トレイに出るので `request.inbox` で届く。それ以外は今どおり工場状況 Issue に書き、件数と時間は `report.factory_health` に載せる
 
 ### 3. 事業主の宛先に工場の内部の情報を混ぜない
 
@@ -220,4 +220,4 @@ routes:                      # 書かない種類は operated_by から決まる
 - 提供元は工場を建てるときに `.factory-config/notifications.yaml` を 1 つ書けば、通知の出し先を決められる。操業中も書き換えてマージすれば変わる。実際の製品のリポジトリと工場は private で運用する（rally は見本のため public）
 - 今の工場は `notifications.yaml` を置かなければ今と同じに動く
 - 事業主の宛先に何を出したかは `notify.sent` で後から確かめられる
-- 種類を足すとき（運用の段の定期レポート、完了報告）は `definitions/notifications.yaml` に 1 行と、文面の関数を 1 つ足す。連携に Slack 以外（メール、Teams など）を足すときは `via` を 1 つ足す
+- 種類を足すとき（運用に入ってからの定期レポート、完了報告）は `definitions/notifications.yaml` に 1 行と、文面の関数を 1 つ足す。連携に Slack 以外（メール、Teams など）を足すときは `via` を 1 つ足す

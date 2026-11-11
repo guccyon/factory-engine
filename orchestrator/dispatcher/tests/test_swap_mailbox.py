@@ -108,7 +108,7 @@ def test_request_from_an_allowed_labeler_is_confirmed_now_and_reported(cur):
     swap.record(cur, s["id"], "swap.launched", {"container": "x"})
     swap.record(cur, s["id"], "swap.completed", {"target_sha": "bbbbbbb", "prev": "aaaaaaa", "kind": "code", "kind_declared": "code", "stopped_sec": None})
     poll(cur, gh)
-    poll(cur, gh)   # 段ごとに 1 回だけ
+    poll(cur, gh)   # ステップごとに 1 回だけ
     texts = [t for _, t in gh.comments]
     assert len(texts) == 3 and "更新役起動済" in texts[1] and "反映済" in texts[2] and "`aaaaaaa` → `bbbbbbb`" in texts[2]
     assert gh.issues[5]["state"] == "closed" and (5, ("factory:swapping",), ("factory:swapped",)) in gh.labels

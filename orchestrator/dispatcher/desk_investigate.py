@@ -43,7 +43,7 @@ HANDOFF_ALWAYS = ("sensitive", "asked")   # 特定できても外に回す止め
 STOP_JA = {"budget": "上限に当たった、または仮説が残らない・確信度が低いまま", "needs_code": "確かめるにはコードを読むしかない",
            "needs_host": "試しの実行やホストの中を見る必要がある", "sensitive": "秘密情報・権限・決済・DB の破壊的な変更に関わりそう",
            "asked": "依頼者が外でも調べてと言った"}
-# 起票の前の 2 段目の検査（1 段目は調査役のジョブの core-gates/investigate_check.py。dispatcher には core-gates がないので、漏れやすい形だけを写す）
+# 起票の前の 2 つ目の検査（1 つ目は調査役のジョブの core-gates/investigate_check.py。dispatcher には core-gates がないので、漏れやすい形だけを写す）
 LEAK = [("URL", re.compile(r"https?://")), ("番号の参照", re.compile(r"#\d+\b")), ("メールアドレス", re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")),
         ("記録の参照", re.compile(r"\b(job|ticket|event|stoppage|judgment|desk|pr|issue):\S+"))]   # 製品・依頼者の名前は deny で見る
 FIX_JA = {"engine": "工場の仕組みの直しが要ります。工場の提供元に改善の依頼として渡します。",
@@ -64,7 +64,7 @@ def rounds(cur, cid: int) -> int:
 
 
 def route(cur, cid: int, job: dict, res: dict, round_: int) -> None:
-    """相談役の振り分け（path: investigate）を記録して、確認を飛ばして動かす（調査は読むだけ。definitions/operations.yaml の read の段と同じ扱い）"""
+    """相談役の振り分け（path: investigate）を記録して、確認を飛ばして動かす（調査は読むだけ。definitions/operations.yaml の read のレベルと同じ扱い）"""
     r = res.get("route") or {}
     q = (r.get("question") or "").strip()
     if not q:
@@ -129,7 +129,7 @@ def deny_for(c: dict) -> list[str]:
 
 
 def leaks(text: str, deny: list[str]) -> list[str]:
-    """起票の前の 2 段目の検査。引っかかった種類を返す（中身は返さない。ログや受信トレイに名前を写さないため）"""
+    """起票の前の 2 つ目の検査。引っかかった種類を返す（中身は返さない。ログや受信トレイに名前を写さないため）"""
     low = (text or "").lower()
     out = [name for name, rx in LEAK if rx.search(text or "")]
     if any(d and d.lower() in low for d in deny):

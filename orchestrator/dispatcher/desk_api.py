@@ -17,7 +17,7 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
                                                        チケットは dispatcher が次の周回で起票し、会話に「チケットを作った」の発言が付く。
                                                        決まった操作に振り分けた依頼は {"answer": "run"|"cancel", "note"?} で、動かしてよいかに答える（ADR 0039）
   POST /api/desk/conversations/<id>/close              {"reason"?}
-  GET  /api/desk/tickets/<id か owner/repo#123>         チケットの状態（段・優先度・順番・作業中のジョブ・PR）
+  GET  /api/desk/tickets/<id か owner/repo#123>         チケットの状態（進み具合・優先度・順番・作業中のジョブ・PR）
   POST /api/desk/tickets/<id か ref>/priority          {"level" か "priority", "reason"?, "conversation_id"?} 明確な指示（「#812 を先に」）は壁打ちを通さずここで即時に通す
   POST /api/desk/tickets/<id か ref>/hold | resume     {"reason"?}
   GET  /api/desk/inbox?all=1                           受信トレイのうち、トークンの役割と製品で答えてよい件（ADR 0034 の順番 2）。all=1 で答え済みで反映待ちの件も

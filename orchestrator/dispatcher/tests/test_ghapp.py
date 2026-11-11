@@ -99,7 +99,7 @@ def test_process_token_is_cached_and_job_token_is_scoped(monkeypatch, key):
     method, path, body, _ = calls[-1]
     assert (method, path) == ("POST", "app/installations/42/access_tokens")
     assert body == {"repositories": ["r"], "permissions": ghapp.GRANTS["build"]}
-    assert "workflows" not in body["permissions"]   # 作る段はワークフローを変えられない
+    assert "workflows" not in body["permissions"]   # 「作る」の区分はワークフローを変えられない
 
 
 @needs_openssl

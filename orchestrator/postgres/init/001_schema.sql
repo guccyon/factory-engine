@@ -21,7 +21,7 @@ create table if not exists jobs (
   enqueued_by     text        not null default 'poll'      -- poll | webhook | rerun
 );
 
--- 二重実行の抑止（1 段目）: 同じ repo#issue で queued / running は 1 件だけ
+-- 二重実行の抑止（1 つ目）: 同じ repo#issue で queued / running は 1 件だけ
 create unique index if not exists jobs_one_active_per_issue
   on jobs (repo, issue_number) where state in ('queued','running');
 create index if not exists jobs_state_idx on jobs (state, enqueued_at);
