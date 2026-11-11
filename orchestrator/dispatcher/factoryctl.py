@@ -1174,7 +1174,8 @@ def qa_cmd(cur, argv) -> int:
         nights = qa_line.explore_nights(cur, repo, 5)
         for r in nights:
             filed = [d["issue"] for d in r.get("defects") or [] if d.get("issue")]
-            print(f"{r['at']:%m-%d %H:%M} job {r['job_id']} 探索 {r.get('night')} の夜 {r.get('charter')}{'' if r.get('unattended') else '（人が積んだ）'}: "
+            what = f"出荷の関門 {r['gate']}" if r.get("gate") else f"{r.get('night')} の夜" + ("" if r.get("unattended") else "（人が積んだ）")
+            print(f"{r['at']:%m-%d %H:%M} job {r['job_id']} 探索 {what} {r.get('charter')}: "
                   f"試した {r.get('tried')}・見つけた {r.get('findings')}・印 {len(r.get('flags') or [])}" + (f"（{' '.join(filed)}）" if filed else ""))
         return 0 if rows or nights else 1
     level = opt(argv, "--priority", "p1")
