@@ -901,7 +901,11 @@ def record_snapshot(conn, snap: dict, force: bool):
         return
     from psycopg.types.json import Jsonb
     summary = {"date": snap["date"], "overall": snap["progress"]["overall"],
-               "phases": [{"id": p["id"], "progress": p["progress"]} for p in snap["progress"]["phases"]],
+               # 項目ごとの現在値も残す。窓口の回答役が「P5a の残りは何か」に、項目の数と値を数え直さずに答えるため（#321）
+               "phases": [{"id": p["id"], "ja": p.get("ja"), "progress": p["progress"], "item_count": len(p.get("items") or []),
+                           "items": [{"id": i["id"], "ja": i.get("ja"), "progress": round(float(i.get("progress") or 0), 3), "value": i.get("value"),
+                                      **({"unknown": True} if i.get("unknown") else {})} for i in p.get("items") or []]}
+                          for p in snap["progress"]["phases"]],
                "cost_usd": sum(v["cost_usd"] for v in snap["activity"].get("jobs", {}).values())}
     with conn.cursor() as cur:
         if force:

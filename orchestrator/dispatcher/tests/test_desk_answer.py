@@ -15,6 +15,7 @@ REPO = "guccyon/rally"
 if URL:
     import psycopg
     from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
 
     import desk
     import desk_answer
@@ -109,6 +110,26 @@ def test_input_carries_records_with_ids(cur):
     assert ref["jobs"][0]["id"] == f"job:{job_id}" and ref["jobs"][0]["error"] == "exit=1"
     assert ref["open_stoppages"][0]["id"] == "stoppage:ci:rally#12"
     assert any(e["name"] == "stoppage.opened" and e["id"].startswith("event:") for e in ref["events"])
+
+
+def test_input_carries_roadmap_values_from_the_daily_report(cur):
+    """ロードマップの各項目の現在値と項目の数は、最新の建設日報（report.daily）から渡す（#321）"""
+    who = requester(cur)
+    desk.open_conversation(cur, who, "inquiry", REPO, "P5a の残りは？")
+    [jid] = desk_answer.enqueue(cur, "tier-small", [REPO])
+    assert job_input(cur, jid)["records"]["roadmap"] is None                     # 日報がなければ None
+    cur.execute("update jobs set state='succeeded' where id=%s", (jid,))
+    for day, v in (("2026-11-09", "0 / 3"), ("2026-11-10", "1 / 3")):
+        cur.execute("insert into events(name, payload, dedupe_key) values ('report.daily', %s, %s)",
+                    (Jsonb({"date": day, "overall": 0.8, "phases": [{"id": "P5a", "ja": "実行環境と QA", "progress": 0.6, "item_count": 2,
+                                                                      "items": [{"id": "mac_runner", "ja": "Mac ランナー", "progress": 1.0, "value": "5 / 5"},
+                                                                                {"id": "nightly_explore", "ja": "夜間の探索", "progress": 0.333, "value": v}]}]}),
+                     f"report.daily:{day}"))
+    c2 = desk.open_conversation(cur, who, "inquiry", REPO, "P5a の残りは？（2 回目）")
+    jid2 = [j for j in desk_answer.enqueue(cur, "tier-small", [REPO])][0]
+    rm = job_input(cur, jid2)["records"]["roadmap"]
+    assert c2 and rm["id"] == "roadmap:2026-11-10" and rm["phases"][0]["item_count"] == 2
+    assert [i["value"] for i in rm["phases"][0]["items"]] == ["5 / 5", "1 / 3"]
 
 
 def test_question_then_answer_then_follow_up(cur):

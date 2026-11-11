@@ -96,6 +96,21 @@ def ticket_detail(cur, ref: str) -> dict:
     return {"ref": ref, "ticket": ticket_record(t) if t else None, "jobs": jobs, "events": list(reversed(evs)), "open_stoppages": stops}
 
 
+def roadmap_progress(cur) -> dict | None:
+    """工場の建設のロードマップの各項目の現在値（最新の建設日報 report.daily が measure を評価した値）。#321:
+    定義（factory/roadmap.yaml）だけでは「実測値がない」と答え、項目の数も数え違えたので、数と値はここで渡す。日報は 1 日 1 回なので as_of を添える"""
+    cur.execute("select id, occurred_at, payload from events where name='report.daily' order by occurred_at desc limit 1")
+    r = cur.fetchone()
+    if not r:
+        return None
+    p = r["payload"] or {}
+    phases = [{"id": ph.get("id"), "ja": ph.get("ja"), "progress": ph.get("progress"), "item_count": ph.get("item_count"),
+               "items": ph.get("items")} for ph in p.get("phases") or []]
+    return {"id": f"roadmap:{p.get('date') or r['id']}", "as_of": _iso(r["occurred_at"]), "date": p.get("date"),
+            "overall": p.get("overall"), "phases": phases,
+            "note": "項目の数は item_count、各項目の現在値は items[].value（日報が measure を評価した値）。items が null の日報は項目の値を残していない"}
+
+
 def records(cur, product: str, refs: list[str]) -> dict:
     """回答役に渡す工場の記録。どれも参照の id を持つ（答えの根拠に書かせる）"""
     cur.execute("select * from tickets where repo=%s and state in ('planned','active') order by priority desc, created_at limit 120", (product,))
@@ -127,7 +142,7 @@ def records(cur, product: str, refs: list[str]) -> dict:
         report = {"id": f"report:{rep['id']}", "kind": rep["payload"].get("kind"), "start": rep["payload"].get("start"),
                   "built_at": _iso(rep["occurred_at"]), "report_json": body[:MAX_REPORT_CHARS],
                   "truncated": len(body) > MAX_REPORT_CHARS}
-    return {"line": {"id": "line:status", **line.status(cur)}, "tickets": flowing, "recently_closed": closed,
+    return {"line": {"id": "line:status", **line.status(cur)}, "roadmap": roadmap_progress(cur), "tickets": flowing, "recently_closed": closed,
             "open_stoppages": open_stops, "recent_stoppages": closed_stops,
             "activity_7d": {"id": "activity:7d", "jobs_by_day": jobs_by_day, "merged_by_day": merged_by_day},
             "latest_report": report, "referenced": [ticket_detail(cur, r) for r in refs]}

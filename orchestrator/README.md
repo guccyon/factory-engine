@@ -110,7 +110,7 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
   ```
 
 - 一時停止の間、dispatcher は順番待ちを取り出さず、割り込みもしない。ラベルでの投入、supervisor の判定・マージは続く。一時停止は上げ直しをまたいで残り、再開は明示の操作だけ
-- 「更新してよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でないとき（`factoryctl drain status`）
+- 「更新してよい」は、一時停止中で、実行中のジョブが 0 件で、出荷の依頼が処理中でなく、一時停止の間も流れる順番待ち（委員会と知見の流れ・窓口の相談・`drain allow` で足したもの）が残っていないとき（`factoryctl drain status`）。`--wait` の秒を省くと 1800 秒待つ
 - 操業コンソールの上の「ライン」のトグルでも同じ操作ができる（API は `POST /api/factory/drain`・`/api/factory/resume`、状態は `GET /api/state` の `factory.line`）
 - 再開を忘れたら、番人が `WATCH_DRAIN_MIN` 分（既定 30）で停止 `drain:` を開く（分類 human）。再開すると閉じる
 
