@@ -106,6 +106,12 @@ details ul { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 2px }
 .outlook { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px }
 @media (max-width: 760px) { .outlook { grid-template-columns: minmax(0, 1fr) } }
 .outlook td.state { white-space: nowrap }
+.outlook .wide { grid-column: 1 / -1 }
+.outlook .cond-note { display: block; font-size: 12px; color: var(--muted); margin-top: 2px }
+.outlook .how { display: block; font-size: 12px; color: var(--muted) }
+.mstate { font-size: 11px; padding: 0 6px; border: 1px solid var(--rule); color: var(--muted) }
+.mstate.measured { border-color: var(--steel); color: var(--steel) }
+.mstate.partial { border-color: var(--amber); color: var(--amber) }
 .tag { font-size: 11px; padding: 0 6px; margin-right: 6px; background: var(--steel-soft); color: var(--ink) }
 .tag.builder { background: var(--rule) }
 footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 10px }
@@ -135,9 +141,10 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
       <table class="reasons"><thead><tr><th>フェーズ</th><th style="text-align:right">進捗</th><th style="text-align:right" id="fc-a"></th><th style="text-align:right" id="fc-b"></th></tr></thead><tbody id="forecast"></tbody></table>
       <div class="sub-note">P6 を終えると Gen1 の完了。項目を書き直すと割合が段差で動く</div>
     </div>
-    <div class="card table-wrap">
-      <h2>商品化の条件（Gen1 の先。測り方が決まるまで日付は出さない）</h2>
-      <table class="reasons"><thead><tr><th>条件</th><th>中身</th><th style="white-space:nowrap">測り方</th></tr></thead><tbody id="commercial"></tbody></table>
+    <div class="card table-wrap wide">
+      <h2>商品化の条件（Gen1 の先。合格線が決まるまで日付は出さない）</h2>
+      <table class="reasons"><thead><tr><th>条件</th><th>観点</th><th style="white-space:nowrap">いま</th></tr></thead><tbody id="commercial"></tbody></table>
+      <div class="sub-note" id="commercial-note"></div>
     </div>
   </section>
 
@@ -327,9 +334,25 @@ function render() {
       $("forecast").append(tr);
     });
   }
+  const MSTATE = { measured: "測れる", partial: "一部", none: "未計測" };
   (S.progress.commercial || []).forEach((c) => {
-    const tr = el("tr"); tr.append(el("td", null, c.ja), el("td", null, c.note || ""), el("td", "state", c.measure ? "あり" : "未定義")); $("commercial").append(tr);
+    const views = c.views && c.views.length ? c.views : [null];
+    views.forEach((v, i) => {
+      const tr = el("tr");
+      if (i === 0) {
+        const td = el("td", null, c.ja); td.rowSpan = views.length;
+        if (c.note) td.append(el("span", "cond-note", c.note));
+        tr.append(td);
+      }
+      if (v) {
+        const tv = el("td", null, v.ja); if (v.how) tv.append(el("span", "how", v.how));
+        const ts = el("td", "state"); ts.append(el("span", `mstate ${v.state || "none"}`, MSTATE[v.state] || "未計測"));
+        tr.append(tv, ts);
+      } else tr.append(el("td", null, "観点が未定義"), el("td", "state", "—"));
+      $("commercial").append(tr);
+    });
   });
+  $("commercial-note").textContent = ["観点ごとの合格線はまだ決めていない。", S.progress.commercial_note || ""].join("");
   if (!FC.length && !(S.progress.commercial || []).length) document.querySelector("section.outlook").hidden = true;
 
   // 頼みたいこと
