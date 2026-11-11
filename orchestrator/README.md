@@ -230,7 +230,7 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
   - `stall:<id>` 実行中のジョブの出力が 15 分（`WATCH_STALL_MIN`）止まっている。出力が再開するかジョブが終われば閉じる（完了まで毎周期見る）
   - `merge:<PR>` supervisor が工場はマージしない（execute=false）と記録した PR が、30 分（`WATCH_MERGE_WAIT_MIN`）マージも閉じもされない。分類は human。マージか閉じられたら閉じる
   - `inspect:<PR>` マージを判定した最新の head に検査が積まれないまま 30 分（`WATCH_INSPECT_WAIT_MIN`）。分類は factory-bug（検査がないと検査役が承認せず、PR が同時に流す枠を塞ぐ）。検査が積まれる、head が動く、PR がマージか閉じられたら閉じる
-  - `patrol:<見回りの id>` 見回りの見回り（ADR 0050）。supervisor が heartbeat の `patrols` で有効と宣言した見回り（夜間の探索・設計の診断・委員会の定例・事故の見回り・日報など 12 個。表は `dispatcher/patrol_watch.py`）の最後の記録が期限（1 日のものは 36 時間、週 1 のものは 8 日）より古い。分類は factory-bug。新しい記録が付いたら閉じる。一時停止中・予算の枠の使い切り中・heartbeat の途絶え中は開かない
+  - `patrol:<見回りの id>` 見回りの見回り（ADR 0050。実施は `patrol.ran` に残し、回数・費用・可用性は操業レポートの節「見回り」に出る）。supervisor が heartbeat の `patrols` で有効と宣言した見回り（夜間の探索・設計の診断・委員会の定例・事故の見回り・日報など 12 個。表は `dispatcher/patrol_watch.py`）の最後の記録が期限（1 日のものは 36 時間、週 1 のものは 8 日）より古い。分類は factory-bug。新しい記録が付いたら閉じる。一時停止中・予算の枠の使い切り中・heartbeat の途絶え中は開かない
 - 停止ではない知らせ: 投入待ちの段（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「着手待ちのチケット」も下限を切ると赤くなる
 - 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする

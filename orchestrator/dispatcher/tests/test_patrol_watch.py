@@ -108,3 +108,37 @@ def test_pr_watch_records_closed_pr_once(cur, monkeypatch):
     cur.execute("select payload from events where name='github.pr_closed'")
     p = cur.fetchone()["payload"]
     assert (p["pr_url"], p["merged"]) == ("https://github.com/o/app/pull/7", False)
+
+
+def test_runs_cost_and_availability_per_patrol(cur):
+    """見回りの id ごとに実施を記録し、期間の回数・費用（積んだジョブの消費）・可用性（停止が開いていなかった割合）を数える"""
+    from psycopg.types.json import Jsonb
+    start, end = NOW - timedelta(days=1), NOW
+    ev(cur, "patrol_watch.started", NOW - timedelta(days=10), key=patrol_watch.STARTED)
+    heartbeat(cur, ["nightly_explore", "design_review"], NOW)
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('qa:x', 'o/app', 1, 'qa', 'succeeded') returning id")
+    jid = cur.fetchone()["id"]
+    ev(cur, "supervisor.nightly_explore_enqueued", NOW - timedelta(hours=6), {"job_id": jid})
+    cur.execute("insert into events(name, job_id, payload, occurred_at) values ('job.finished', %s, %s, %s)",
+                (jid, Jsonb({"state": "succeeded", "cost_usd": 1.25}), NOW - timedelta(hours=5)))
+    ev(cur, "supervisor.design_review_enqueued", NOW - timedelta(days=8, hours=18))   # 設計の診断は 18 時間前に期限（8 日）を過ぎた
+    patrol_watch.step(cur, paused=False, heartbeat_stale=False, now=NOW)
+    assert patrol_watch.record_runs(cur, NOW) == 0   # 実施の記録は 1 回だけ
+    cur.execute("select payload from events where name='patrol.ran' order by id")
+    assert sorted(r["payload"]["id"] for r in cur.fetchall()) == ["design_review", "nightly_explore"]
+    got = {r["id"]: r for r in patrol_watch.summary(cur, start, end)}
+    assert (got["nightly_explore"]["runs"], got["nightly_explore"]["cost_usd"], got["nightly_explore"]["availability"]) == (1, 1.25, 100.0)
+    assert got["design_review"]["runs"] == 0 and got["design_review"]["availability"] == 25.0   # 24 時間のうち 18 時間止まっていた
+
+
+def test_health_report_has_patrol_section(cur):
+    import report_health
+    ev(cur, "patrol_watch.started", NOW - timedelta(days=10), key=patrol_watch.STARTED)
+    heartbeat(cur, ["kpi_weekly"], NOW)
+    stoppage.open_stoppage(cur, "patrol:kpi_weekly", "factory-bug", "週次の KPI が動いていない", started_at=NOW - timedelta(hours=12))
+    rep = report_health.assess(report_health.build(cur, NOW - timedelta(days=1), NOW))
+    sec = next(s for s in rep.sections if s.id == "patrols")
+    vals = {i.label: i.value for i in sec.items if i.kind == "metric"}
+    assert vals["見回りの可用性（平均）"] == 50.0 and vals["止まっていた見回り"] == 1
+    line = next(s for s in rep.sections if s.id == "line")
+    assert any(i.kind == "entry" and report_health.IMPACT_INTERNAL in i.state for i in line.items)   # 製品の作業は止めていない扱い

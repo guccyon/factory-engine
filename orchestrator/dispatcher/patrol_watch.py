@@ -7,6 +7,8 @@
 - 最後に動いた記録（events）が期限より古ければ開き、新しい記録が付いたら閉じる。記録が 1 度もないものは、
   見回りの見回りが動き始めた時刻（patrol_watch.started）から数える
 - ラインの一時停止中と、予算の枠を使い切っている間は新しく開かない（意図して止めている）。開いている停止は記録が付くまで残す
+- 実施の記録: 動いた記録ごとに見回りの id つきの patrol.ran を残す（record_runs）。期間の実施の回数・費用・可用性は summary で数え、
+  操業レポートの節「見回り」と操業コンソールのホームの推移に出す（2026-11-11 オーナー。台帳は Gen1.5）
 """
 from __future__ import annotations
 
@@ -80,6 +82,7 @@ def step(cur, *, paused: bool, heartbeat_stale: bool, now: datetime | None = Non
     """停止を開け閉めする。paused: 一時停止中か予算の枠を使い切っている。heartbeat_stale: supervisor の heartbeat が途絶えている。
     返り値 {opened: [...], closed: [...]}"""
     opened, closed = [], []
+    record_runs(cur, now)   # 実施の記録（見回りの id つき）。止まっていても動いた分は残す
     if heartbeat_stale:
         return {"opened": opened, "closed": closed}   # supervisor ごと止まっている。heartbeat: の停止に任せる
     late = overdue(cur, now)
@@ -99,3 +102,52 @@ def step(cur, *, paused: bool, heartbeat_stale: bool, now: datetime | None = Non
                                   started_at=x["since"] + timedelta(hours=x["hours"])):
             opened.append(pid)
     return {"opened": opened, "closed": closed}
+
+
+# ------------------------------------------------------------------ 実施の記録と費用・可用性（Tetsuro 2026-11-11: 見回りごとに id を振り、実施を記録し、費用と可用性を数で見る）
+RUN = "patrol.ran"
+BACKFILL_DAYS = 14   # 実施の記録を初めて付けるとき、遡って拾う日数
+
+
+def record_runs(cur, now: datetime | None = None) -> int:
+    """見回りの動いた記録（表の events）ごとに、見回りの id つきの実施の記録 patrol.ran を 1 つ残す（dedupe は元の記録の id）。
+    payload に元の記録の名前と id、積んだジョブ（job_id）を持つ。費用はそのジョブの job.finished から読む（summary）"""
+    now = now or datetime.now(timezone.utc)
+    n = 0
+    for pid, _name, names, _hours in TARGETS:
+        cur.execute(f"""insert into events(name, correlation_id, payload, dedupe_key, occurred_at)
+                        select '{RUN}', e.correlation_id,
+                               jsonb_build_object('id', %s::text, 'evidence', e.name, 'evidence_id', e.id,
+                                                  'job_id', coalesce(e.job_id::text, e.payload->>'job_id')),
+                               '{RUN}:' || e.id, e.occurred_at
+                        from events e where e.name = any(%s) and e.occurred_at > %s
+                        on conflict (dedupe_key) do nothing""",
+                    (pid, list(names), now - timedelta(days=BACKFILL_DAYS)))
+        n += cur.rowcount or 0
+    return n
+
+
+def summary(cur, start: datetime, end: datetime) -> list[dict]:
+    """期間の見回りごとの数: 実施の回数、費用（積んだジョブの消費、API 単価に換算）、可用性（期間のうち停止 patrol:<id> が開いていなかった割合）。
+    宣言（heartbeat の patrols）に載っているものだけ。表の順"""
+    declared = _declared(cur) or []
+    span = (end - start).total_seconds()
+    out = []
+    for pid, name, _names, hours in TARGETS:
+        if pid not in declared:
+            continue
+        cur.execute("select count(*) as runs, max(occurred_at) as last, "
+                    "coalesce(sum((select sum(coalesce((f.payload->>'cost_usd')::numeric, 0)) from events f "
+                    "  where f.name = 'job.finished' and f.job_id = (r.payload->>'job_id')::bigint)), 0) as usd "
+                    "from events r where r.name = %s and r.payload->>'id' = %s and r.occurred_at >= %s and r.occurred_at < %s",
+                    (RUN, pid, start, end))
+        r = cur.fetchone()
+        cur.execute("select started_at, ended_at from stoppages where key = %s and started_at < %s and coalesce(ended_at, %s) > %s",
+                    (f"{PREFIX}{pid}", end, end, start))
+        down = 0.0
+        for s in cur.fetchall():
+            a, b = max(s["started_at"], start), min(s["ended_at"] or end, end)
+            down += max((b - a).total_seconds(), 0.0)
+        out.append({"id": pid, "name": name, "runs": int(r["runs"] or 0), "last": r["last"], "cost_usd": round(float(r["usd"] or 0), 2),
+                    "availability": round(100 * (1 - min(down, span) / span), 1) if span else None, "limit_hours": hours})
+    return out

@@ -152,7 +152,7 @@ def test_compose_adds_trend_and_page_draws_it(cur):
     assert i.series[-3:] == [1, 0, 1] and i.delta == 1                                    # 前の期間との差は推移から
     assert rep.level in ("ok", "warn", "bad") and rep.summary
     page = report_page.render_html(rep, "business_owner")
-    assert page.count('class="chart"') == len(report_health.CHARTS) and 'class="b last"' in page and "<title>2026-11-02: 1件</title>" in page
+    assert page.count('class="chart"') == sum(1 for c in report_health.CHARTS if "business_owner" in report_health.SECTIONS[c[0]][1]) and 'class="b last"' in page and "<title>2026-11-02: 1件</title>" in page
 
 
 def test_daily_step_builds_once_and_delivers_per_destination(cur):

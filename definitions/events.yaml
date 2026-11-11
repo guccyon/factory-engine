@@ -223,6 +223,10 @@ events:
     source: control_plane
     required: []
     note: "ADR 0050。見回りの見回りが動き始めた時刻（1 回だけ。dedupe は patrol_watch.started:v1）。記録が 1 度もない見回りはここから期限を数える。停止は stoppage.opened の key patrol:<見回りの id>"
+  patrol.ran:
+    source: control_plane
+    required: [id, evidence, evidence_id]
+    note: "ADR 0050 の決定 4。見回りの実施の記録。番人が、見回りの動いた記録（patrol_watch.TARGETS）ごとに見回りの id をつけて 1 つ残す（dedupe は patrol.ran:<元の記録の id>、occurred_at は元の記録の時刻）。job_id は見回りが積んだジョブで、費用はその job.finished から読む"
   github.pr_closed:
     source: pr_events
     required: [pr_url, repo, pr, merged, closed_at]
