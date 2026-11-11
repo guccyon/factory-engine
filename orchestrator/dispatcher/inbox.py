@@ -123,15 +123,24 @@ def _open_task_keys(cur, key: str | None = None) -> set[str]:
 # ------------------------------------------------------------------ 集める
 # 更新の再開と差し戻しの扱い、ほかの PR を待つ保留（hold:）は建設者。マージ・judge の判断はオーナー
 # （hold は人の判断が済んだあとの順番待ちで、オーナーのすることはない。11-02 rally #589 が「オーナーの出番」と出ていた）
-STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder"}
+STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder", "ci": "builder"}
 
 
 def _stoppages(cur, now) -> list[dict]:
     import alerts
-    cur.execute("select key, category, what, waiting_for, cause, started_at, correlation_id, job_id from stoppages where ended_at is null and category='human' order by started_at")
+    import workflow_guard
+    # 人の停止に加えて、衝突の解消の上限に当たり工場がもう解かないと決めた PR（ci: の停止で conflict_human の記録があるもの）も拾う。
+    # 種類が ticket なので載らず、建設日報でしか気づけなかった（11-11 rally #1117 が 39 時間止まっていた）
+    cur.execute("select key, category, what, waiting_for, cause, started_at, correlation_id, job_id from stoppages "
+                "where ended_at is null and (category='human' or key like 'ci:%') order by started_at")
     out = []
     for s in cur.fetchall():
         prefix, _, rest = s["key"].partition(":")
+        cap = None
+        if s["category"] != "human":
+            cap = workflow_guard.capped(cur, s["correlation_id"]) if s["correlation_id"] else None
+            if not cap:
+                continue   # 工場がまだ自分で直す CI 落ち・衝突は人に回さない
         url = rest if rest.startswith("https://") else ""
         if prefix == "merge" and s["correlation_id"]:
             cur.execute("select payload->>'pr_url' as u from events where name='supervisor.merge_decided' and correlation_id=%s order by id desc limit 1",
@@ -156,6 +165,9 @@ def _stoppages(cur, now) -> list[dict]:
             ans = _sendback_answer(cur, url, who)
         # 題と「すること」は停止のアラートと同じ読む文（alerts.py。記録の文は工場の内側の言葉で、事業主には読めない。11-08）
         al = alerts.describe(cur, s)
+        if cap:
+            al["todo"] = (f"工場は衝突の解消を上限（{cap.get('cap')} 回）まで試してやめた（計 {cap.get('conflicts')} 回）。"
+                          "最新の main から作り直す・差し戻す・閉じるのどれかを決める。よく変わる同じファイルを触る PR どうしなら、そのファイルの直しも検討する")
         fixing = _sendback_fixing(cur, url) if prefix == "sendback" and url else None
         out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "fixing": fixing, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
                     "action": al["todo"] or "判断して止まりを解く", "detail": al["detail"], "url": url, "since": s["started_at"],

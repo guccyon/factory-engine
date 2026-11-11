@@ -119,6 +119,21 @@ def test_collects_stoppages_and_choices(cur):
     assert all("announced" not in i for i in v["items"])
 
 
+def test_collects_conflict_capped_ci_stoppages_only(cur):
+    """衝突の解消の上限に当たり工場がもう解かない PR（conflict_human）だけ、種類が ticket の ci: の停止でも拾う（11-11 rally #1117）"""
+    from psycopg.types.json import Jsonb
+    stoppage.open_stoppage(cur, "ci:https://github.com/o/r/pull/20", "ticket", "工場の PR が main と衝突している。検査と judge に進めない",
+                           correlation_id="github:o/r#8", quiet=True)
+    stoppage.open_stoppage(cur, "ci:https://github.com/o/r/pull/21", "ticket", "工場の PR の CI が落ちた（test）。検査と judge に進めない",
+                           correlation_id="github:o/r#9", quiet=True)   # 工場がまだ直す CI 落ちは載せない
+    assert inbox.items(cur) == []
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('workflow.enforced','github:o/r#8',%s,'workflow.enforced:human:github:o/r#8')",
+                (Jsonb({"kind": "conflict_human", "cap": 3, "conflicts": 13, "pr_url": "https://github.com/o/r/pull/20"}),))
+    [i] = inbox.items(cur)
+    assert i["key"] == "stoppage:ci:https://github.com/o/r/pull/20" and i["who"] == "builder"
+    assert i["url"] == "https://github.com/o/r/pull/20" and "上限（3 回）" in i["action"] and "計 13 回" in i["action"]
+
+
 def test_tick_notifies_once_then_clears(cur):
     sent = []
     T = datetime.now(timezone.utc)
