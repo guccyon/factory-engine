@@ -38,7 +38,7 @@ TOOLS = {t["name"]: t for t in [
            "ref": {"type": "string", "description": "コミットかブランチ（既定 main）"},
            "dart_defines": {"type": "object", "description": "--dart-define に渡す値（例 {\"RALLY_API_URL\": \"http://127.0.0.1:8080\"}）", "additionalProperties": {"type": "string"}}},
           ["app"]),
-    _tool("build_status", "ビルドの状態（queued / building / built / failed）と、終わっていれば bundle id とコミット", {"build_id": {"type": "string"}}, ["build_id"]),
+    _tool("build_status", "ビルドの状態（queued / waiting_for_human / building / built / distributed / failed。配布は stage も）と、終わっていれば bundle id とコミット", {"build_id": {"type": "string"}}, ["build_id"]),
     _tool("app_install", "ビルドしたアプリを起動中のシミュレーターに入れる", {"udid": S_UDID, "build_id": {"type": "string"}}, ["udid", "build_id"]),
     _tool("app_launch", "アプリを起動する（起動中なら前面に出す）", {"udid": S_UDID, "bundle_id": {"type": "string"}}, ["udid", "bundle_id"]),
     _tool("app_terminate", "アプリを止める", {"udid": S_UDID, "bundle_id": {"type": "string"}}, ["udid", "bundle_id"]),
