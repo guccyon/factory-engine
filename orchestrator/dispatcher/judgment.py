@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
@@ -136,6 +137,44 @@ def current_mode(cur, default: str = "attended", schedule: str = "", tz: str = "
             if mode.strip() in MODES and window and _in_window(hm, window.strip()):
                 return mode.strip(), "schedule"
     return (default if default in MODES else "attended"), "default"
+
+
+MODE_JA = {"attended": "並走モード", "unattended": "全自動モード", "schedule": "時間帯の設定に従う"}
+MODE_BASIS_JA = {"factoryctl": "切り替え", "schedule": "時間帯の設定", "default": "既定"}
+
+
+def set_mode(cur, mode: str, by: str, until: str | None = None, reason: str = "") -> None:
+    """モードを切り替える（factoryctl mode set と操業コンソールの設定の共通の口）。
+    mode が schedule なら切り替えを外し、時間帯の設定（MODE_SCHEDULE）と既定に戻す。until（ISO 8601）までの切り替えにもできる"""
+    if mode not in MODES + ("schedule",):
+        raise ValueError("mode は attended・unattended・schedule のどれか")
+    if until and mode == "schedule":
+        raise ValueError("時間帯の設定に戻すときは期限を付けない")
+    if until:
+        try:
+            t = datetime.fromisoformat(until)
+        except ValueError:
+            raise ValueError("期限は ISO 8601 の日時（例 2026-11-12T08:00+09:00）") from None
+        if t.tzinfo is None:
+            raise ValueError("期限には時差を付ける（例 2026-11-12T08:00+09:00）")
+        if t <= datetime.now(timezone.utc):
+            raise ValueError("期限は今より後の時刻にする")
+        until = t.isoformat()
+    cur.execute("insert into events(name, payload) values ('factory.mode_set', %s)",
+                (Jsonb({"mode": mode, "until": until or None, "by": by[:80], "reason": reason[:200]}),))
+
+
+def mode_spec(cur, default: str = "attended", schedule: str = "") -> dict:
+    """いまのモードと、決め手・切り替えの記録（期限内のもの）・時間帯の設定。操業コンソールの設定に出す"""
+    mode, basis = current_mode(cur, default, schedule)
+    cur.execute("select payload, occurred_at from events where name='factory.mode_set' order by id desc limit 1")
+    r = cur.fetchone()
+    override = None
+    if r and basis == "factoryctl":
+        p = r["payload"]
+        override = {"mode": p.get("mode"), "until": p.get("until"), "by": p.get("by"), "reason": p.get("reason") or "",
+                    "at": r["occurred_at"].isoformat() if r["occurred_at"] else None}
+    return {"mode": mode, "basis": basis, "override": override, "schedule": schedule, "default": default if default in MODES else "attended"}
 
 
 def delegated_verdict(category: str, verdict: str | None, confidence=None, precedent: str | None = None,
