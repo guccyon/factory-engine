@@ -74,3 +74,55 @@ def test_step_marks_then_unmarks_after_quiet_days():
     res = hm.step(cur, gh, ["o/r"], now=t0 + timedelta(days=10))
     assert res["marked"] == []   # 外した後に新しい衝突がなければ付け直さない
     conn.close()
+
+
+def test_shape_by_kind_and_append_ratio():
+    assert hm.shape("apps/backend/README.md", 90, 10, False) == "append"
+    assert hm.shape("specs/contracts/api/admin-web/openapi.yaml", 50, 40, False) == "content"
+    assert hm.shape("apps/admin-web/screenshots/screens.ts", 100, 0, False) == "registry"   # コードは断片にしにくい
+    assert hm.shape("apps/admin-web/src/api/schema.ts", 10, 10, True) == "generated"
+    assert hm.shape("x.md", 0, 0, False) == "unknown"
+
+
+def test_concurrency_counts_overlapping_open_prs():
+    t = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    h = lambda n: t + timedelta(hours=n)  # noqa: E731
+    assert hm.concurrency([(h(0), h(3)), (h(1), h(4)), (h(2), h(5)), (h(6), h(7))]) == 3
+    assert hm.concurrency([(h(0), h(1)), (h(1), h(2))]) == 1   # 閉じた時刻に開いたものは重ならない
+    assert hm.concurrency([]) == 0
+
+
+def test_aggregate_candidates_before_conflicts():
+    """衝突がなくても、同時に開いた PR が多い追記型は候補。登録の箇所と中身は候補にしない"""
+    changes = Counter({"README.md": 10, "screens.ts": 12, "openapi.yaml": 11, "CHANGELOG.md": 30, "quiet.md": 9})
+    prof = {"README.md": {"concurrent": 4}, "screens.ts": {"concurrent": 5}, "openapi.yaml": {"concurrent": 5},
+            "CHANGELOG.md": {"concurrent": 9}, "quiet.md": {"concurrent": 1}}
+    shapes = {"README.md": "append", "screens.ts": "registry", "openapi.yaml": "content", "quiet.md": "append"}
+    got = hm.aggregate_candidates(changes, prof, shapes, set())
+    assert list(got) == ["README.md"] and got["README.md"]["shape"] == "append" and got["README.md"]["concurrent"] == 4
+    assert list(hm.aggregate_candidates(changes, prof, shapes, {"quiet.md"})) == ["README.md", "quiet.md"]   # 印のある追記型は同時数を問わない
+
+
+@pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL がない")
+def test_step_records_aggregate_candidates_and_stats():
+    conn = psycopg.connect(URL, row_factory=dict_row, autocommit=True)
+    cur = conn.cursor()
+    cur.execute("truncate events, artifacts, jobs, tickets restart identity cascade")
+    t0 = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    LIST = "tools/knowledge-enforcement-check/README.md"
+
+    def gh(method, path, body=None):
+        if "/pulls?" in path:
+            return [{"number": i, "created_at": (t0 + timedelta(minutes=10 * i)).isoformat(),
+                     "merged_at": (t0 + timedelta(hours=2, minutes=i)).isoformat()} for i in range(1, 5)] if path.endswith("&page=1") else []
+        if path.endswith("files?per_page=100&page=1"):
+            return [{"filename": LIST, "additions": 1, "deletions": 0}, {"filename": "x.ts", "additions": 3, "deletions": 3}]
+        return {}
+
+    res = hm.step(cur, gh, ["o/r"], now=t0 + timedelta(days=1))
+    assert res["candidates"] == [f"o/r:{LIST}"] and res["marked"] == []
+    [c] = hm.aggregate_candidates_latest(cur, "o/r")
+    assert c["file"] == LIST and c["shape"] == "append" and c["concurrent"] == 4 and c["shape_ja"] == "追記型"
+    cur.execute("select payload from events where name='pr.files' order by id limit 1")
+    assert cur.fetchone()["payload"]["stats"][LIST] == [1, 0]   # 行数も pr.files に残す
+    conn.close()

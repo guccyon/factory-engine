@@ -161,6 +161,11 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--rule)
     <div class="card" id="explore"></div>
   </section>
 
+  <section aria-label="共有ファイル" id="hot-sec" hidden>
+    <h2 style="margin-bottom:12px">共有ファイル（よく変わる・衝突しやすい）</h2>
+    <div class="card" id="hot"></div>
+  </section>
+
   <section aria-label="工程ごとの ROI" id="roi-sec" hidden>
     <h2 style="margin-bottom:12px">工程ごとの ROI（直近 <span id="roi-days"></span> 日）</h2>
     <div class="card" id="roi-bn"></div>
@@ -419,6 +424,16 @@ function render() {
     });
     X.skipped.forEach((x) => { const d = el("div", null, `${x.repo.split("/")[1]}: 昨夜は回らなかった（${SK[x.reason] || x.reason}）`); d.style.fontWeight = "700"; box.append(d); });
     box.append(el("div", "sub-note", `無人で回った夜の累計 ${X.nights}（P5a の nightly_explore の目標 3）。印は人が採点して Golden Set に入れる材料`));
+  }
+
+  // 共有ファイル（ADR 0051 の 1）: 断片にできる取りまとめの候補と、並べて流している衝突しやすいファイルの印
+  const H = S.hotfiles, SH = { append: "追記型", generated: "生成物", registry: "登録の箇所", content: "中身", unknown: "形不明" };
+  if (H && (H.candidates.length || H.marked.length)) {
+    $("hot-sec").hidden = false;
+    const ul = el("ul");
+    H.candidates.forEach((c) => ul.append(el("li", null, `取りまとめの候補（${SH[c.shape] || c.shape}）: ${c.repo.split("/")[1]} ${c.file} — 直近 ${c.prs} PR で ${c.changes} 回、同時に ${c.concurrent} 本${c.conflicts ? `、衝突 ${c.conflicts} 回` : ""}`)));
+    H.marked.forEach((m) => ul.append(el("li", "muted", `衝突しやすい（${SH[m.shape] || "形不明"}、並べて流している）: ${m.repo.split("/")[1]} ${m.file} — ${m.why}`)));
+    $("hot").append(ul, el("div", "sub-note", "追記型・生成物は断片にためて取りまとめの PR で更新できる（ADR 0051）。登録の箇所は分割の改善チケットの候補"));
   }
 
   // 品質（Defect。ADR 0028 の決定 5）。流出防止率・発見工程の分布・出やすい観点・紐付け率
