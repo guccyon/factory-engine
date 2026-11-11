@@ -14,6 +14,7 @@ pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL がない")
 
 if URL:
     import psycopg
+    from psycopg.types.json import Jsonb
     from psycopg.rows import dict_row
 
     import ephemeral
@@ -114,11 +115,15 @@ def test_due_down_on_pr_closed_or_ttl(cur, docker):
     ephemeral.request_up(cur, REPO, 5, "b", "t")
     run_pending(cur)
     now = datetime.now(timezone.utc)
-    assert ephemeral.due_down(cur, lambda r, n: False, now) == []
-    assert ephemeral.due_down(cur, lambda r, n: n == 4, now) == [(REPO, 4, "pr_closed")]
-    assert ephemeral.due_down(cur, lambda r, n: False, now + timedelta(hours=ephemeral.TTL_HOURS + 1)) == [(REPO, 4, "ttl"), (REPO, 5, "ttl")]
+    assert ephemeral.due_down(cur, now) == []
+    assert ephemeral.watched(cur) == [(REPO, 4), (REPO, 5)]
+    # PR の見張りが閉じたのを記録する（GitHub は見ない。ADR 0050）
+    cur.execute("insert into events(name, payload) values ('github.pr_closed', %s)", (Jsonb({"pr_url": f"https://github.com/{REPO}/pull/4"}),))
+    assert ephemeral.due_down(cur, now) == [(REPO, 4, "pr_closed")]
+    assert ephemeral.watched(cur) == [(REPO, 5)]
+    assert ephemeral.due_down(cur, now + timedelta(hours=ephemeral.TTL_HOURS + 1)) == [(REPO, 4, "pr_closed"), (REPO, 5, "ttl")]
     ephemeral.request_down(cur, REPO, 4, "b", "t", "pr_closed")
-    assert ephemeral.due_down(cur, lambda r, n: True, now) == [(REPO, 5, "pr_closed")]   # 依頼済みは重ねない
+    assert ephemeral.due_down(cur, now, closed=lambda c, r, n: True) == [(REPO, 5, "pr_closed")]   # 依頼済みは重ねない
 
 
 def test_product_without_ephemeral_is_refused(cur, docker, monkeypatch):

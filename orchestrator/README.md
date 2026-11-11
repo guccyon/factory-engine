@@ -230,6 +230,7 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
   - `stall:<id>` 実行中のジョブの出力が 15 分（`WATCH_STALL_MIN`）止まっている。出力が再開するかジョブが終われば閉じる（完了まで毎周期見る）
   - `merge:<PR>` supervisor が工場はマージしない（execute=false）と記録した PR が、30 分（`WATCH_MERGE_WAIT_MIN`）マージも閉じもされない。分類は human。マージか閉じられたら閉じる
   - `inspect:<PR>` マージを判定した最新の head に検査が積まれないまま 30 分（`WATCH_INSPECT_WAIT_MIN`）。分類は factory-bug（検査がないと検査役が承認せず、PR が同時に流す枠を塞ぐ）。検査が積まれる、head が動く、PR がマージか閉じられたら閉じる
+  - `patrol:<見回りの id>` 見回りの見回り（ADR 0050。実施は `patrol.ran` に残し、回数・費用・可用性は操業レポートの節「見回り」に出る）。supervisor が heartbeat の `patrols` で有効と宣言した見回り（夜間の探索・設計の診断・委員会の定例・事故の見回り・日報など 12 個。表は `dispatcher/patrol_watch.py`）の最後の記録が期限（1 日のものは 36 時間、週 1 のものは 8 日）より古い。分類は factory-bug。新しい記録が付いたら閉じる。一時停止中・予算の枠の使い切り中・heartbeat の途絶え中は開かない
 - 停止ではない知らせ: 投入待ちのタスク（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「着手待ちのチケット」も下限を切ると赤くなる
 - 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
@@ -460,7 +461,7 @@ docker compose exec dispatcher factoryctl env pr-touch guccyon/rally 1234 --note
 docker compose exec dispatcher factoryctl env pr-down guccyon/rally 1234  # 開いたままでも壊す
 ```
 
-PR が閉じたら（マージでも閉じただけでも）、supervisor が壊す依頼を書き、shipper が `docker compose down -v` とイメージ・ソースの片付けをして `env.ephemeral_down`（触った印つき）を残す。
+PR が閉じたら（マージでも閉じただけでも）、supervisor が壊す依頼を書き（閉じたかは PR の見張りが残す `github.pr_closed` などの記録で見る。ADR 0050）、shipper が `docker compose down -v` とイメージ・ソースの片付けをして `env.ephemeral_down`（触った印つき）を残す。
 PR が開いたままでも `EPHEMERAL_TTL_HOURS`（既定 48）を過ぎたら壊す。
 ## QA 役（ADR 0028 の決定 2。P5a の qa_verdict）
 
@@ -556,7 +557,7 @@ docker compose exec dispatcher factoryctl incident drill-end guccyon/rally
 supervisor が 1 日 1 回（日報の後）、直近 30 日の教師信号を制御プレーンの記録から集め、signature（`rubric:<id>`、`judgment:<類型>`）で束ねて artifacts の `Retrospective` と events の `learn.retrospected` に残す。LLM は使わない。
 教師信号は今のところ judge が採用した検査の指摘、judge が差し替えた仮決め、人が judge に同意しなかった採点の 3 つ。束ごとに eval ケースの元（元 PR と差し戻しの修正 PR の組）と、Stage 2（rubric）の候補か（3 件以上・2 チケット以上）を出す。
 束ねた日に、Stage 2 の候補で負例の元がある束を 1 つ選び、製品に「ルール化」の Issue（`factory:planned`・`factory:learn`）を起票する（1 日 1 本まで、`LEARN_RULE_ISSUES=0` で止める）。通常の implement ジョブがルール変更 PR を書き、CI の rule-eval が緑なら factory_rule として自動でマージされる。
-検査は製品の overlay の shadow・adopted のルールもルーブリックに足し、shadow のルールの指摘は judge が裁くだけで差し戻さない。成績（発火・的中率）は report learning に出る。adopted への昇格とカナリアの戻しは、supervisor が 1 時間に 1 回判定して `state` を書き換える Issue を起票する（`LEARN_RULE_TRANSITIONS=0` で止める。閾値は `definitions/learning.yaml`）。
+検査は製品の overlay の shadow・adopted のルールもルーブリックに足し、shadow のルールの指摘は judge が裁くだけで差し戻さない。成績（発火・的中率）は report learning に出る。adopted への昇格とカナリアの戻しは、supervisor が JST の 1 日 1 回判定して（ADR 0050） `state` を書き換える Issue を起票する（`LEARN_RULE_TRANSITIONS=0` で止める。閾値は `definitions/learning.yaml`）。
 
 事例型の分析役（ADR 0023）: supervisor が 1 日に数件（`definitions/learning_taxonomy.yaml` の per_day）、差し戻し（後片付けが会話の記録を保存した後）と 60 分以上の停止（予算・一時停止を除く）を選び、`case_review` のジョブを積む。dispatcher は起こすときに後片付けのアーカイブからセッションの抜粋（エージェントの文とツールの名前だけ。秘密情報に見える文字列は伏せる）を入力に足す。結果（観点ごとのなぜなぜ・真因・テーマごとの学びの候補）は events の `case.analyzed` と artifacts の `CaseAnalysis` に残すだけ。`CASE_REVIEW=0` で止める。
 

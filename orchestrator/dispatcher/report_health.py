@@ -10,6 +10,7 @@ import re
 import statistics
 from datetime import datetime, timedelta
 
+import patrol_watch
 import stage_roi
 from report import Report, Section, console_link, entry, finding, link, metric, note
 
@@ -23,12 +24,14 @@ SECTIONS = {
     "inbox": ("人の判断待ち", ("provider", "business_owner")),
     "cost": ("費用", ("provider", "business_owner")),
     "stages": ("工程と ROI", ("provider",)),
+    "patrols": ("見回り", ("provider",)),
 }
 DOWN = ("idle:", "drain:")   # ラインが動いていない時間に数える停止（ラインが空・一時停止）
 OPEN_MAX = 5                 # 開いている停止はここまで載せる（製品の作業を止めているものを先に、その中で長い順）
 # 失敗しても製品の作業を止めないジョブ（工場の振り返り・委員会・記録の体裁）。停止が長く開いていても「危険」にはしない（2026-11-10 オーナー:
 # 無害な古い停止で「危険」が埋まると、本当に危険なものへの対処が遅れる。rally #1031 の実装の時間切れが 5 件の上限で押し出されて見えなかった）
 INTERNAL_KINDS = ("case_review", "committee_review", "committee_weekly", "incident_review", "body_fix")
+INTERNAL_KEYS = (patrol_watch.PREFIX,)   # 見回りが止まった停止（ADR 0050）も製品の作業は止めない
 IMPACT_PRODUCT, IMPACT_INTERNAL = "製品の作業が止まっている", "工場の内部の作業"
 # 見立ての閾値（仮置き）。注意（warn）と危険（bad）
 THRESHOLDS = {
@@ -44,6 +47,7 @@ THRESHOLDS = {
     "wait_share": (50.0, 75.0),      # ジョブの時間のうち、積まれてから始まるまでの待ちの割合（%）
     "defects_per_impl": (0.5, 1.0),  # 実装 1 件あたりに混入した Defect
     "trial_drop_pt": (10.0, 20.0),   # モデルの試しで、試す側の一発で通った割合が既定の側より何 pt 低いか（両側が 5 件以上のとき）
+    "patrol_availability": (99.0, 90.0),  # 見回りの可用性の平均（%）がこれを下回る（ADR 0050。工場の内部なので製品の作業は止めない）
 }
 ROI_DAYS = 14   # 工程と ROI は 1 日だと少ないので、期間の終わりから直近 14 日で見る
 MIN_JOBS = 3
@@ -98,6 +102,8 @@ def _impact(r: dict) -> str:
     """停止が何を止めているか。ラインが空・一時停止は稼働の割合で見るので別にする。分からないものは製品の作業とみなす（見落とさない側に倒す）"""
     if (r.get("key") or "").startswith(DOWN):
         return "ラインの空き"
+    if (r.get("key") or "").startswith(INTERNAL_KEYS):
+        return IMPACT_INTERNAL
     return IMPACT_INTERNAL if r.get("job_kind") in INTERNAL_KINDS else IMPACT_PRODUCT
 
 
@@ -220,9 +226,29 @@ def stages(cur, start: datetime, end: datetime):
     return items
 
 
-BUILDERS = {"line": line, "jobs": jobs, "ship": ship, "inbox": inbox, "cost": cost, "stages": stages}
+def patrols(cur, start: datetime, end: datetime):
+    """見回り（ADR 0050。2026-11-11 オーナー「見回りに id を振り実施を記録、費用は実行記録とともに、対象ごとの可用性を数で」）。
+    期間の見回りごとの実施の回数・費用・可用性（停止 patrol:<id> が開いていなかった割合）。数は patrol_watch.summary"""
+    rows = patrol_watch.summary(cur, start, end)
+    if not rows:
+        return [note("見回りの宣言がまだありません（supervisor の heartbeat に patrols がない）")]
+    av = [r["availability"] for r in rows if r["availability"] is not None]
+    items = [metric("見回りの可用性（平均）", round(sum(av) / len(av), 1) if av else None, "%"),
+             metric("見回りの実施", sum(r["runs"] for r in rows), "回"),
+             metric("見回りの費用（積んだジョブの消費）", round(sum(r["cost_usd"] for r in rows), 2), "USD"),
+             metric("止まっていた見回り", sum(1 for r in rows if r["availability"] is not None and r["availability"] < 100), "件")]
+    for r in rows:
+        last = f"、最後 {r['last']:%m-%d %H:%M}（UTC）" if r["last"] else "、記録なし"
+        items.append(entry(f"{r['name']}（{r['id']}）", f"{r['runs']} 回・${r['cost_usd']:,.2f}・可用性 {r['availability']}%{last}"))
+    items.append(note("可用性は期間のうち見回りの停止（patrol:<id>）が開いていなかった割合。期限は毎日のもの 36 時間、週 1 回のもの 8 日（仮置き）。"
+                      "費用は見回りが積んだジョブの消費で、決定論の見回りは $0"))
+    return items
+
+
+BUILDERS = {"line": line, "jobs": jobs, "ship": ship, "inbox": inbox, "cost": cost, "stages": stages, "patrols": patrols}
 CHARTS = [("line", "ラインが動いていた割合", "ラインの稼働（%）"), ("jobs", "終わったジョブ", "終わったジョブ（件）"),
-          ("ship", "マージした PR", "マージした PR（件）"), ("cost", "消費（API 単価に換算）", "消費（USD）")]
+          ("ship", "マージした PR", "マージした PR（件）"), ("cost", "消費（API 単価に換算）", "消費（USD）"),
+          ("patrols", "見回りの可用性（平均）", "見回りの可用性（%）")]
 
 
 def build(cur, start: datetime, end: datetime) -> Report:
@@ -293,6 +319,9 @@ def assess(rep: Report) -> Report:
                           else "対象のチケットか PR を開き、再実行（factoryctl rerun）か切り直し（factoryctl plan resplit）か、閉じてよいかを決める")
                 found.append(finding(lv, text, action,
                                      (lambda n=name, u=i.url: [link(n, u)] if u else console_link("操業コンソールのライン", "/line"))))
+    pav = val("patrols", "見回りの可用性（平均）")
+    flag("patrols", "見回りの可用性（平均）", _lvl(pav, *THRESHOLDS["patrol_availability"], below=True), f"見回りの可用性が {pav}%（止まっていた見回りがある）",
+         "見回りの節で止まっていた見回りを見て、supervisor のログで止まった理由を確かめる。直すのは工場の不具合として建設者に回す", line_page)
     left, wait = val("inbox", "期間の終わりに残っていた件"), val("inbox", "判断までの待ち時間（中央値）")
     flag("inbox", "期間の終わりに残っていた件", _lvl(left, *THRESHOLDS["inbox_left"]), f"人の判断待ちが {left} 件残っている",
          "受信トレイの判断を片付ける。滞りが続くなら、代わりに判断する人（INBOX_PROXY）を決める", inbox_page)

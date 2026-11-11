@@ -56,7 +56,12 @@ def test_closes_active_tickets_whose_issue_closed(cur):
             raise RuntimeError("502")
         return issues[n]
 
-    assert ticket_sync.step(cur, gh, log=lambda *a: None, now=1e9, force=True) == ["o/r#1"]
+    assert ticket_sync.observe(cur, gh, log=lambda *a: None, now=1e9, force=True) == ["o/r#1"]
+    assert states(cur)["o/r#1"][0] == "active"   # 見ただけでは閉じない。出来事を記録する（ADR 0050）
+    cur.execute("select payload from events where name = 'github.issue_closed'")
+    assert [r["payload"]["source_ref"] for r in cur.fetchall()] == ["o/r#1"]
+    assert ticket_sync.apply(cur, log=lambda *a: None) == ["o/r#1"]
+    assert ticket_sync.apply(cur, log=lambda *a: None) == []
     st = states(cur)
     assert st["o/r#1"] == ("closed", OLD)   # 済んだ時刻は分からないので updated_at は動かさない
     assert [st[f"o/r#{n}"][0] for n in (2, 3, 4, 5)] == ["active", "active", "active", "planned"]
@@ -70,8 +75,20 @@ def test_runs_once_per_interval(cur):
     calls = []
     gh = lambda m, p: calls.append(p) or {"state": "open"}   # noqa: E731
     ticket_sync._last = 0.0
-    ticket_sync.step(cur, gh, log=lambda *a: None, now=1e9)
-    ticket_sync.step(cur, gh, log=lambda *a: None, now=1e9 + ticket_sync.STEP_SEC - 1)
+    ticket_sync.observe(cur, gh, log=lambda *a: None, now=1e9)
+    ticket_sync.observe(cur, gh, log=lambda *a: None, now=1e9 + ticket_sync.STEP_SEC - 1)
     assert len(calls) == 1
-    ticket_sync.step(cur, gh, log=lambda *a: None, now=1e9 + ticket_sync.STEP_SEC)
+    ticket_sync.observe(cur, gh, log=lambda *a: None, now=1e9 + ticket_sync.STEP_SEC)
     assert len(calls) == 2
+
+
+def test_apply_reads_records_without_github(cur):
+    """片付けは記録だけを読む。閉じた記録より後にジョブが積まれた（Issue を開き直して作業した）チケットは閉じない"""
+    ticket(cur, 1, job="succeeded")
+    ticket(cur, 2)
+    for n, at in ((1, datetime.now(timezone.utc)), (2, OLD)):   # #1 はジョブの後に閉じた、#2 は閉じた後にまたジョブが積まれた
+        cur.execute("insert into events(name, correlation_id, payload, occurred_at) values ('github.issue_closed', %s, %s, %s)",
+                    (f"github:o/r#{n}", psycopg.types.json.Jsonb({"source_ref": f"o/r#{n}", "closed_at": "2026-10-31T16:00:00Z"}), at))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, enqueued_at) values ('github:o/r#2', 'o/r', 2, 'implement', 'succeeded', now())")
+    assert ticket_sync.apply(cur, log=lambda *a: None) == ["o/r#1"]
+    assert states(cur)["o/r#2"][0] == "active"

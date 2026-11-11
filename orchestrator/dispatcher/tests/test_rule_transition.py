@@ -90,7 +90,6 @@ def sup(monkeypatch):
     def make(state, since):
         gh = FakeGH(state, since)
         monkeypatch.setattr(supervisor, "gh", gh)
-        monkeypatch.setattr(supervisor, "_transitions_checked_at", 0.0)
         return gh
     return make
 
@@ -121,3 +120,17 @@ def test_supervisor_does_nothing_without_enough_record(cur, sup):
     gh = sup("shadow", NOW - timedelta(days=5))
     supervisor.rule_transition_step(cur, NOW)
     assert not [c for c in gh.calls if c[0] == "POST"]
+
+
+def test_supervisor_checks_once_per_jst_day(cur, sup):
+    """ルールの移り変わりは JST の 1 日 1 回だけ GitHub を見る（ADR 0050 の決定 3）。記録で数えるので再起動しても増えない"""
+    gh = sup("shadow", NOW - timedelta(days=5))
+    supervisor.rule_transition_step(cur, NOW)
+    first = len(gh.calls)
+    assert first > 0
+    supervisor.rule_transition_step(cur, NOW + timedelta(hours=3))
+    assert len(gh.calls) == first
+    supervisor.rule_transition_step(cur, NOW + timedelta(days=1))   # 次の日はまた見る
+    assert len(gh.calls) > first
+    cur.execute("select count(*) as n from events where name='learn.rule_transitions_checked'")
+    assert cur.fetchone()["n"] == 2

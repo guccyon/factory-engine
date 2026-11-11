@@ -265,3 +265,23 @@ def test_supervisor_quality_learn_waits_for_committee_turn(cur, monkeypatch):
     supervisor.quality_learn_step(cur, mon)
     cur.execute("select count(*) as n from events where name='quality.proposal_filed'")
     assert cur.fetchone()["n"] == 1
+
+
+def test_supervisor_synthetic_users_catches_up_after_the_hours(cur, monkeypatch):
+    """日曜 5〜7 時を逃しても、その週のうちに起きた周回で 1 回積む（ADR 0050 の決定 3）。時刻より前は積まない"""
+    gh = FakeGH()
+    monkeypatch.setattr(supervisor, "gh", gh)
+    monkeypatch.setattr(supervisor, "SYNTHETIC_USERS", [REPO])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "over_budget", lambda cur: None)
+    monkeypatch.setattr(supervisor, "QA_DEFS", str(ROOT / "definitions" / "qa.yaml"))
+    monkeypatch.setitem(supervisor.ENV, "SYNTH_FRICTION", "example")
+    supervisor.synthetic_users_step(cur, datetime(2026, 11, 15, 4, 30, tzinfo=JST))   # 日曜の 5 時より前
+    cur.execute("select count(*) as n from jobs")
+    assert cur.fetchone()["n"] == 0
+    late = datetime(2026, 11, 15, 21, tzinfo=JST)   # Mac が日曜の朝に眠っていて、夜に起きた
+    supervisor.synthetic_users_step(cur, late)
+    supervisor.synthetic_users_step(cur, late + timedelta(hours=1))
+    cur.execute("select payload from events where name='supervisor.synthetic_users_enqueued'")
+    rows = cur.fetchall()
+    assert len(rows) == 1 and rows[0]["payload"]["week"] == "2026-W46"

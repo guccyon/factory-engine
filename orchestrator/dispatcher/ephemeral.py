@@ -4,6 +4,7 @@
 合成シードを入れ、QA 役か人が触ったあと、PR が閉じたら壊す。同時に立てるのは EPHEMERAL_MAX（既定 2）まで。
 Gen1.5 で製品が複数のリポジトリに分かれたら、環境の単位を「PR の束」に作り直す前提（ADR 0043 の持ち越しの節）。
 
+PR が閉じたかは events の記録で見る（PR の見張りが github.pr_closed を残す。ADR 0050）。
 入口（factoryctl・supervisor）は events に依頼を書くだけで、手を動かすのは常駐の shipper（ship.py の main から handle を呼ぶ）。
 立てるのは、その製品のリポジトリの中のブランチから出た開いた PR だけ（fork の PR のコードはこの機械で作らない）。shipper が GitHub で確かめる。
 
@@ -102,16 +103,34 @@ def touch(cur, repo: str, pr: int, by: str, kind: str = "human", note: str = "")
     return True, f"{repo}#{pr} の環境を触った印を残した"
 
 
-def due_down(cur, closed, now: datetime | None = None) -> list[tuple[str, int, str]]:
-    """壊す時期が来た環境 [(repo, pr, reason)]。closed(repo, pr) は PR が閉じていれば真（supervisor が GitHub を見る）"""
+def pr_url(repo: str, pr: int) -> str:
+    return f"https://github.com/{repo}/pull/{pr}"
+
+
+def pr_closed(cur, repo: str, pr: int) -> bool:
+    """PR が閉じた記録があるか（ADR 0050 の決定 2）。工場の PR は supervisor の pr.merged・pr.closed_unmerged、
+    それ以外は PR の見張りの小さなポーリング（pr_events.observe_closed）の github.pr_closed。GitHub は見ない"""
+    cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged','github.pr_closed') and payload->>'pr_url'=%s limit 1",
+                (pr_url(repo, pr),))
+    return cur.fetchone() is not None
+
+
+def watched(cur) -> list[tuple[str, int]]:
+    """PR の見張りが閉じたかを見に行く PR: 立っている環境のうち、まだ閉じた記録のないもの"""
+    return [(a["repo"], int(a["pr"])) for a in active(cur) if not pr_closed(cur, a["repo"], int(a["pr"]))]
+
+
+def due_down(cur, now: datetime | None = None, closed=None) -> list[tuple[str, int, str]]:
+    """壊す時期が来た環境 [(repo, pr, reason)]。PR が閉じたかは events の記録で見る（closed(cur, repo, pr) はテスト用の差し替え）"""
     now = now or datetime.now(timezone.utc)
+    closed = closed or pr_closed
     asked = {(e["payload"]["repo"], int(e["payload"]["pr"])) for e in pending(cur) if e["name"] == "env.ephemeral_down_requested"}
     out = []
     for a in active(cur):
         key = (a["repo"], int(a["pr"]))
         if key in asked:
             continue
-        if closed(*key):
+        if closed(cur, *key):
             out.append((*key, "pr_closed"))
         elif (now - a["at"]).total_seconds() > TTL_HOURS * 3600:
             out.append((*key, "ttl"))

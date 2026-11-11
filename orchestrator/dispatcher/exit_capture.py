@@ -4,7 +4,7 @@
 「画面のキャプチャ / <アプリ>」を付け、その target_url を CI の成果物（screenshots-<アプリ>）にする。
 成果物の manifest.json が、変わった・新しい・消えた・撮れなかった・変わらない画面の一覧。
 
-工場はこれを dispatcher の周回で読み:
+工場はこれを dispatcher の周回で、見る（observe: 状態を capture.status_seen に記録する。ADR 0050）と取り込む（記録を読む）に分けて読み:
 - 変わった画面の後の画像をオブジェクトストアの choices/capture/ の下に置く（操業コンソールが中継する。外部の URL を画面に出さない）
 - 人の選択（HumanChoice の kind exit_capture）を作る。受信トレイに「実装後の画面」として出て、画面ごとに違和感の印を付けられる
   （taste.flagged。教師信号 taste_flag として learn が束ねる）。見て違和感がなければ「見た」で閉じる（choice.seen。負例の材料）
@@ -268,17 +268,40 @@ def candidates(cur, repos: list[str], now: datetime | None = None, window_h: int
     return out
 
 
-def step(cur, gh, download, put, repos: list[str], *, dry_run: bool = False, log=print) -> int:
-    """工場の PR の head ごとに、まだ読んでいないキャプチャを読む。返り値は読んだ成果物の数"""
+def observe(cur, gh, repos: list[str], *, log=print) -> int:
+    """小さなポーリング（ADR 0050 の決定 2）。見る PR の head の「画面のキャプチャ / <アプリ>」の状態を、出来事 capture.status_seen として残す。
+    同じ PR・head・アプリは 1 回だけ（dedupe_key）。取り込みはこの記録を読む。Webhook（status イベント）が使えたら入口を足すだけでよい"""
     n = 0
-    expire(cur)
     for p in candidates(cur, repos):
         try:
             sts = capture_statuses(gh, p["repo"], p["sha"])
         except Exception as e:  # noqa: BLE001  次の周回でやり直す
             log("capture statuses failed", p["url"], repr(e))
             continue
-        new = [s for s in sts if not collected(cur, p["url"], p["sha"], s["app"])]
+        for s in sts:
+            cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('capture.status_seen', %s, %s, %s) "
+                        "on conflict (dedupe_key) do nothing returning id",
+                        (p["corr"], Jsonb({"pr_url": p["url"], "repo": p["repo"], "number": p["number"], "head_sha": p["sha"], **s}),
+                         f"capture.status_seen:{p['url']}@{p['sha']}:{s['app']}"))
+            n += 1 if cur.fetchone() else 0
+    return n
+
+
+def seen_statuses(cur, pr_url: str, sha: str) -> list[dict]:
+    """記録に残った、その head のキャプチャの状態（アプリ順）"""
+    cur.execute("select payload from events where name='capture.status_seen' and payload->>'pr_url'=%s and payload->>'head_sha'=%s order by payload->>'app'",
+                (pr_url, sha))
+    return [{k: r["payload"].get(k, "") for k in ("app", "target_url", "description")} for r in cur.fetchall()]
+
+
+def step(cur, gh, download, put, repos: list[str], *, dry_run: bool = False, log=print) -> int:
+    """工場の PR の head ごとに、まだ読んでいないキャプチャを読む。返り値は読んだ成果物の数。
+    状態は observe が残した記録（capture.status_seen）から読む（ADR 0050）"""
+    n = 0
+    expire(cur)
+    observe(cur, gh, repos, log=log)
+    for p in candidates(cur, repos):
+        new = [s for s in seen_statuses(cur, p["url"], p["sha"]) if not collected(cur, p["url"], p["sha"], s["app"])]
         if not new:
             continue
         for s in new:
