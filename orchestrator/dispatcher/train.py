@@ -99,8 +99,9 @@ def train_of(cur, tid: str) -> dict | None:
     return r["payload"] if r else None
 
 
-def approve(cur, tid: str, by: str, via: str) -> tuple[bool, str]:
-    """便ごとに 1 回の承認。便に載った Release のうち、本番に出す段階の製品のものをまとめて承認する"""
+def approve(cur, tid: str, by: str, via: str, skip_qa: str | None = None) -> tuple[bool, str]:
+    """便ごとに 1 回の承認。便に載った Release のうち、本番に出す段階の製品のものをまとめて承認する。
+    QA の関門（ADR 0049）の報告の前の Release は skip_qa（理由）がなければ承認しない（skipped に理由が残る）"""
     t = train_of(cur, tid)
     if not t:
         return False, f"{tid} という便はない"
@@ -109,7 +110,7 @@ def approve(cur, tid: str, by: str, via: str) -> tuple[bool, str]:
         return False, "この便はもう承認した"
     approved, skipped = [], []
     for r in t["releases"]:
-        ok, m = ship.request_approve(cur, r["release_id"], by, f"{via}（便 {tid}）")
+        ok, m = ship.request_approve(cur, r["release_id"], by, f"{via}（便 {tid}）", skip_qa=skip_qa)
         (approved.append(r["release_id"]) if ok else skipped.append({"release_id": r["release_id"], "why": m}))
     if not approved:
         return False, "承認できる Release がない: " + "；".join(f"{s['release_id']} {s['why']}" for s in skipped)

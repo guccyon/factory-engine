@@ -125,6 +125,8 @@ NIGHTLY_EXPLORE = [r.strip() for r in ENV.get("NIGHTLY_EXPLORE", ",".join(RELEAS
 # 週次の KPI の Report ライン（ADR 0043 の O2）を回す製品。既定は出荷の列車の製品（staging と ship.yaml を持つもの）。空で止める
 KPI_WEEKLY = [r.strip() for r in ENV.get("KPI_WEEKLY", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
 QA_DEFS = ENV.get("QA_DEFINITIONS", "/definitions/qa.yaml")
+# 出荷の QA の関門（ADR 0049）。staging に配備した版に判定と探索を並行して積み、報告を承認に添える製品。既定は出荷の列車の製品。空で止める
+QA_GATE = [r.strip() for r in ENV.get("QA_GATE", ",".join(RELEASE_TRAIN)).split(",") if r.strip()]
 # 合成の利用者（ADR 0043 の O4）。週に 1 回（definitions/qa.yaml の synthetic.weekday・hours）歩かせる製品。既定は夜間の探索と同じ。空で止める。
 # わざと仕込む詰まりは SYNTH_FRICTION（example か JSON。staging だけ）
 SYNTHETIC_USERS = [r.strip() for r in ENV.get("SYNTHETIC_USERS", ",".join(NIGHTLY_EXPLORE)).split(",") if r.strip()]
@@ -1257,6 +1259,30 @@ def nightly_explore_step(cur, now: datetime | None = None):
         log("nightly explore enqueued", repo, night, got["charter"], "job", got["job_id"])
 
 
+def qa_gate_step(cur, now: datetime | None = None):
+    """出荷の QA の関門（ADR 0049）。判断は持たず、qa_gate.step に記録を見て次の手を打たせるだけ。
+    予算の枠を使い切っていれば新しく積まない（夜間の探索と同じ）。ラインの一時停止中も関門のジョブは流す（出荷は一時停止と別に動くので）"""
+    if not QA_GATE or DRY_RUN:
+        return
+    import qa_gate
+    defs = _qa_defs()
+    may = not over_budget(cur)
+
+    def allow(got):
+        if drain.active(cur):
+            drain.allow(cur, [got["corr"]], "supervisor", "出荷の QA の関門")
+
+    for repo in QA_GATE:
+        try:
+            out = qa_gate.step(cur, gh, repo, defs=defs, now=now, may_enqueue=may, on_enqueued=allow, log=log)
+        except Exception as e:  # noqa: BLE001  見回りの失敗で周回を止めない
+            log("qa gate step failed", repo, repr(e)[:300])
+            continue
+        if out["opened"] or out["enqueued"] or out["decided"]:
+            log("qa gate", repo, "opened", out["opened"], "enqueued", [(x["which"], x["job_id"]) for x in out["enqueued"]],
+                "decided", (out["decided"] or {}).get("release_id"), (out["decided"] or {}).get("candidates"))
+
+
 def kpi_weekly_step(cur, now: datetime | None = None):
     """週次の KPI の Report ライン（ADR 0043 の O2・O3）。週に 1 回、出荷の列車の製品ごとに staging で KPI を測る依頼を書き、
     測れた結果を前回と比べて Report・Opportunity の下書き（受信トレイ）・見込みの誤差（kpi.forecast_scored）にする。決定的でトークンを使わない"""
@@ -1280,13 +1306,13 @@ def opportunity_ticket_step(cur):
 
 
 def _qa_defs() -> dict:
-    """definitions/qa.yaml の explore と synthetic（なければ qa_line の写し）"""
+    """definitions/qa.yaml の explore・synthetic・gate（なければ qa_line の写し）"""
     try:
         with open(QA_DEFS, encoding="utf-8") as f:
             full = yaml.safe_load(f) or {}
     except OSError:
         full = {}
-    return {**qa_line.load_defs(), **{k: full[k] for k in ("explore", "synthetic") if full.get(k)}}
+    return {**qa_line.load_defs(), **{k: full[k] for k in ("explore", "synthetic", "gate") if full.get(k)}}
 
 
 def synthetic_users_step(cur, now: datetime | None = None):
@@ -1387,6 +1413,7 @@ def tick():
         notify_report_step(cur)
         changelog_step(cur)
         release_train_step(cur)
+        qa_gate_step(cur)
         ephemeral_step(cur)
         nightly_explore_step(cur)
         kpi_weekly_step(cur)

@@ -290,10 +290,23 @@ def _release_item(cur, repo: str) -> dict | None:
                 (rid, list(ship.RESULTS)))
     pending = cur.fetchone()
     ver = rid.split("@")[-1]
+    import qa_gate   # QA の関門（ADR 0049）: 報告ができるまで出さない。報告を添え、ブロッカーにするかは承認者が決める（「見送る」）
+    g = qa_gate.gate(cur, rid)
+    if g and (g["state"] == "open" or g["blocked"]):
+        return None
+    if g and g["state"] == "decided":
+        n = g["decided"].get("candidates") or 0
+        detail = list(g["decided"].get("report") or [])
+        action = (f"QA の報告にブロッカーの候補が {n} 件ある。ブロッカーにするなら「見送る」、承知で出すなら「本番に出す」" if n
+                  else "QA の報告にブロッカーの候補はない。staging で確かめて「本番に出す」を押す")
+    else:
+        detail = [{"label": "QA の関門", "text": "この版は関門を通っていない（判定と探索の報告がない）"}]
+        action = "staging で確かめて「本番に出す」を押す"
     return {"key": f"release:{rid}", "kind": "release", "who": "owner", "title": f"{repo} の {ver} が本番待ち",
-            "action": "staging で確かめて「本番に出す」を押す", "url": "/#ship", "since": d["occurred_at"] if d else None, "ref": repo,
+            "action": action, "detail": detail, "url": "/#ship", "since": d["occurred_at"] if d else None, "ref": repo,
             "processing": pending["payload"] if pending else None,
-            "answer": {"type": "approve", "options": [{"id": "approve", "label": f"本番に出す（{ver}）"}], "extra": [],
+            "answer": {"type": "approve", "options": [{"id": "approve", "label": f"本番に出す（{ver}）"}],
+                       "extra": [{"id": "block", "label": "見送る（ブロッカーにする）", "note_required": True}] if g else [],
                        "effect": f"staging で確かめた {ver} を本番に出す", "irreversible": True, "allowed": ["owner"],
                        "target": ("release", rid)}}
 
@@ -543,6 +556,9 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
         n = sum(1 for aid in ref if choice.mark_seen(cur, aid, by, note)[0])
         return (True, f"{n} 件を見たとして閉じた") if n else (False, "閉じられる画面がなかった")
     if kind == "release":
+        if option == "block":   # QA の報告の候補をブロッカーにして、この版は本番に出さない（ADR 0049）
+            import qa_gate
+            return qa_gate.block(cur, ref, by, via, note)
         import ship
         return ship.request_approve(cur, ref, by, via)
     if kind == "resume_line":

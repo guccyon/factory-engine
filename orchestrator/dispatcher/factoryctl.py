@@ -48,14 +48,15 @@
 
 出荷と Rollback（ADR 0012）。依頼を events に書くだけで、手を動かすのは常駐の shipper:
   factoryctl release ship <release_id> [--by ..]            # イメージを作って staging に出す（staging は自動）
-  factoryctl release approve <release_id> [--by ..]         # 承認ボタンと同じ。staging で確かめた版を prod に出す
+  factoryctl release approve <release_id> [--by ..] [--skip-qa --reason ..]   # 承認ボタンと同じ。staging で確かめた版を prod に出す
+      # QA の関門（ADR 0049）の報告の前に出すときだけ --skip-qa と理由を付ける
   factoryctl release rollback <repo> [--env prod] [--by ..] # その環境を 1 つ前の版に戻す（DB は戻さない）
   factoryctl release status <repo>                          # 環境ごとのいまの版と前の版、出荷の記録
 
 定期便（ADR 0043 の O6）。1 日 1 便は supervisor が出す。承認は便ごとに 1 回。S1 の修正だけ緊急便で待たずに出す:
   factoryctl release trains [--limit 10]                    # 最近の便（定期・緊急）と載った Release、承認待ち
   factoryctl release train <repo> --emergency --reason ".." [--by ..]   # 緊急便。まだ Release に入っていないマージ済みの PR を今すぐ出す
-  factoryctl release train-approve <train_id> [--by ..]     # 便に載った Release をまとめて prod へ承認する（本番を立てない段階の製品は飛ばす）
+  factoryctl release train-approve <train_id> [--by ..] [--skip-qa --reason ..]   # 便に載った Release をまとめて prod へ承認する（本番を立てない段階の製品は飛ばす）
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
 週次の KPI の Report ライン（ADR 0043 の O2・O3）。supervisor が毎週月曜 7 時（JST）に staging で測る。今すぐ 1 回測るには --measure:
@@ -76,6 +77,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl qa run <repo> [--stories id,id] [--env staging] [--priority p0|p1|p2|p3] [--through-pause] [--by ..]
       # 製品の固定 Issue（factory:qa）に積む。--stories を省けば active な全部（上限 6）。--through-pause はラインの一時停止の間もこれだけ流す
   factoryctl qa show <repo> [--limit 10]                     # 最近の判定と夜間の探索
+  factoryctl qa gate <repo> [--limit 5]                      # 出荷の QA の関門（ADR 0049）。版ごとの判定と探索のジョブ、ブロッカーの候補、承認者の見送り
   factoryctl qa explore <repo> [--through-pause] [--by ..]   # 夜間の探索（nightly_explore）を今すぐ 1 回積む（その夜のチャーター。人が積んだものは無人の夜に数えない）
   factoryctl qa synthetic <repo> [--friction example|none|<JSON>] [--through-pause] [--by ..]
       # 合成の利用者（ADR 0043 の O4）を今すぐ 1 回積む。仕込みは --friction か工場の SYNTH_FRICTION（staging だけ）。提案は受信トレイに出る
@@ -1096,8 +1098,23 @@ def qa_cmd(cur, argv) -> int:
     import qa_line
     sub = argv[2] if len(argv) > 2 else ""
     repo = argv[3] if len(argv) > 3 else ""
-    if sub not in ("run", "show", "explore", "synthetic", "learn") or "/" not in repo:
-        print("factoryctl qa run|show|explore|synthetic|learn <owner/repo> ..."); return 2
+    if sub not in ("run", "show", "explore", "synthetic", "learn", "gate") or "/" not in repo:
+        print("factoryctl qa run|show|explore|synthetic|learn|gate <owner/repo> ..."); return 2
+    if sub == "gate":   # 出荷の QA の関門（ADR 0049）
+        import qa_gate
+        gates = qa_gate.recent(cur, repo, int(opt(argv, "--limit", "5")))
+        state_ja = {"open": "結果を待っている", "decided": "報告済み", "superseded": "次の版に替わった"}
+        for g in gates:
+            jobs = "・".join(f"{'判定' if w == 'verdict' else '探索'} " + ",".join(str(j["job_id"]) for j in g["jobs"][w]) for w in qa_gate.WHICH if g["jobs"][w])
+            print(f"{g['opened_at']:%m-%d %H:%M} {g['release_id']}: {state_ja.get(g['state'], g['state'])}（ジョブ {jobs or 'まだ'}）")
+            if g["decided"]:
+                for r in g["decided"].get("report") or []:
+                    print(f"    {r['label']}: {r['text']}")
+            if g["blocked"]:
+                print(f"    見送り（{g['blocked'].get('by')}）: {g['blocked'].get('note')}")
+        if not gates:
+            print("関門の記録がない（staging に配備すると supervisor が開く。QA_GATE の製品だけ）")
+        return 0 if gates else 1
     if sub == "learn":
         import quality_learn
         from datetime import datetime, timezone
@@ -1424,7 +1441,7 @@ def main(argv):
         if argv[2] == "ship":
             ok, msg = ship.request_ship(cur, argv[3], by, "factoryctl")
         elif argv[2] == "approve":
-            ok, msg = ship.request_approve(cur, argv[3], by, "factoryctl")
+            ok, msg = ship.request_approve(cur, argv[3], by, "factoryctl", skip_qa=opt(argv, "--reason", "") if "--skip-qa" in argv else None)
         else:
             ok, msg = ship.request_rollback(cur, argv[3], opt(argv, "--env", "prod"), by, "factoryctl")
         print(msg)
@@ -1439,7 +1456,8 @@ def main(argv):
         print(msg)
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "train-approve":
-        ok, msg = train.approve(cur, argv[3], opt(argv, "--by", "builder"), "factoryctl")
+        ok, msg = train.approve(cur, argv[3], opt(argv, "--by", "builder"), "factoryctl",
+                                skip_qa=opt(argv, "--reason", "") if "--skip-qa" in argv else None)
         print(msg)
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":

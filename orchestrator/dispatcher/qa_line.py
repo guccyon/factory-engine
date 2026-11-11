@@ -30,11 +30,12 @@ MARK = {"pass": "✅", "hold": "🛑", "blocked": "⏸"}
 
 # definitions/qa.yaml の act と worker の写し（dispatcher のイメージには definitions/ を入れない。test_qa_line.py が食い違いを見る）
 DEFS = {
-    "act": {"issue_label": "factory:qa", "defect_labels": ["factory:qa-defect", "factory:fix-proposed"],
+    "act": {"issue_label": "factory:qa", "explore_issue_label": "factory:qa-explore", "defect_labels": ["factory:qa-defect", "factory:fix-proposed"],
             "defects_per_run_max": 5, "known_gap_issue": False},
     "worker": {"env_host": "host.docker.internal"},
     "explore": {"hours": [1, 5], "through_pause": True, "priority": "p2", "defects_per_night_max": 3, "file_severities": ["s1", "s2", "s3"],
                 "charters": ["detour", "other-user", "come-back", "reader-words", "first-time"]},
+    "gate": {"priority": "p1", "hours": 6, "attempts": 2, "blocker_severities": ["s1", "s2"]},
     "synthetic": {"weekday": 6, "hours": [5, 7], "through_pause": True, "priority": "p2",
                   "slow_p95_ms": 1500, "slow_min_calls": 2, "hard_entry_attempts": 3, "opportunities_max": 4, "friction_env": "SYNTH_FRICTION",
                   "friction_example": {"slow": {"path": "/api/bookings", "method": "GET", "delay_ms": 2500},
@@ -52,13 +53,22 @@ def find_issue(gh, repo: str, label: str) -> int | None:
     return got[0]["number"] if got else None
 
 
+EXPLORE_TITLE = "QA の探索（毎回更新）"
+
+
 def ensure_issue(gh, repo: str, label: str) -> int:
     n = find_issue(gh, repo, label)
     if n:
         return n
-    body = ("工場の QA 役が、触れる環境にユーザーストーリー（specs/stories/）を流した判定のまとめを、ここにコメントします（factory-engine の ADR 0028）。"
-            "閉じないでください。止める（hold）の Defect は別の Issue（factory:qa-defect）に起票します。")
-    return gh("POST", f"repos/{repo}/issues", {"title": TITLE, "body": body, "labels": [label]})["number"]
+    if label == DEFS["act"]["explore_issue_label"]:   # 探索は判定と別の固定 Issue（同じ Issue に動けるジョブは 1 つなので、出荷の関門で並行に積む。ADR 0049）
+        title = EXPLORE_TITLE
+        body = ("工場の QA 役が、触れる環境をチャーターに沿って利用者として歩いた探索的テスト（出荷の関門と夜間の探索）のまとめを、ここにコメントします"
+                "（factory-engine の ADR 0028・0049）。閉じないでください。見つけた Defect は別の Issue（factory:qa-defect）に起票します。")
+    else:
+        title = TITLE
+        body = ("工場の QA 役が、触れる環境にユーザーストーリー（specs/stories/）を流した判定のまとめを、ここにコメントします（factory-engine の ADR 0028）。"
+                "閉じないでください。止める（hold）の Defect は別の Issue（factory:qa-defect）に起票します。")
+    return gh("POST", f"repos/{repo}/issues", {"title": title, "body": body, "labels": [label]})["number"]
 
 
 # ------------------------------------------------------------------ 積み込み
@@ -95,15 +105,15 @@ def learned_focus(cur, repo: str, scenarios_max: int = 5) -> dict:
 
 def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | None = None, by: str = "factoryctl",
             priority: str = "p1", tier: str = "tier-judge", env_host: str | None = None, defs: dict | None = None,
-            extra: dict | None = None) -> dict:
+            extra: dict | None = None, issue_label: str | None = None) -> dict:
     """QA のジョブを固定 Issue に積む。返り値 {job_id, issue, release_id}。同じ Issue に動いているジョブがあれば psycopg の UniqueViolation。
-    extra はワーカーへの入力に足すもの（夜間の探索の mode・charter・night）"""
+    extra はワーカーへの入力に足すもの（夜間の探索の mode・charter・night、出荷の関門の gate）。issue_label は積む固定 Issue（既定は判定の factory:qa）"""
     defs = defs or load_defs()
-    issue = ensure_issue(gh, repo, defs["act"]["issue_label"])
+    issue = ensure_issue(gh, repo, issue_label or defs["act"]["issue_label"])
     corr = f"github:{repo}#{issue}"
     inp = build_input(cur, repo, env, list(stories or []), env_host or os.environ.get("QA_ENV_HOST") or defs["worker"]["env_host"])
     inp.update(extra or {})
-    t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=TITLE, priority=ops.LEVELS[priority][0], state="active")
+    t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=EXPLORE_TITLE if issue_label == DEFS["act"]["explore_issue_label"] else TITLE, priority=ops.LEVELS[priority][0], state="active")
     cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority) "
                 "values (%s,%s,%s,%s,%s,%s,%s,%s) returning id", (corr, repo, issue, by, tier, KIND, t["id"], t["priority"]))
     jid = cur.fetchone()["id"]
@@ -111,7 +121,8 @@ def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | No
                 (corr, jid, Jsonb({"by": by, "kind": KIND, "input": inp})))
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('qa.enqueued', %s, %s, %s)",
                 (corr, jid, Jsonb({"repo": repo, "issue": issue, "release_id": inp["release_id"], "env": env,
-                                   "stories": inp["stories"], "job_id": jid, "by": by, "mode": inp.get("mode") or "verdict"})))
+                                   "stories": inp["stories"], "job_id": jid, "by": by, "mode": inp.get("mode") or "verdict",
+                                   **({"gate": inp["gate"]} if inp.get("gate") else {})})))
     return {"job_id": jid, "issue": issue, "release_id": inp["release_id"], "corr": corr}
 
 
@@ -193,7 +204,7 @@ def summary(job_id: int, result: dict, recorded: list[dict], filed: dict[tuple, 
 
 
 STORY_RE = re.compile(r"ユーザーストーリー `([A-Za-z0-9_-]+)` を止めた")
-EXPLORE_MARK = "夜間の探索で見つけた Defect"
+EXPLORE_MARK = "探索で見つけた Defect"   # 夜間の探索・出荷の関門の探索の起票の本文に入る（「夜間の探索で見つけた Defect」の時期の Issue にも当たる）
 STEP_RE = re.compile(r"歩: (\S+)")
 SEV_RE = re.compile(r"重要度: (s[1-4])")
 
@@ -323,7 +334,8 @@ def explore_key(title: str) -> str:
 
 def explore_defect_body(repo: str, ex: dict, f: dict, eid: int, qa_issue: int) -> str:
     rep = f.get("reproduce") or []
-    lines = [f"{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・{ex.get('night')} の夜。factory-engine の ADR 0028 の nightly_explore）。",
+    lines = [(f"出荷の関門の{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・版 {ex['gate']}。factory-engine の ADR 0049）。" if ex.get("gate")
+              else f"夜間の{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・{ex.get('night')} の夜。factory-engine の ADR 0028 の nightly_explore）。"),
              f"環境 {ex.get('env')}・版 {ex.get('release_id') or '不明'}・製品のコミット {(ex.get('sha') or '')[:12]}。まとめは #{qa_issue}（探索 {eid}）。",
              "", "この Issue の引用部分は QA 役の出力（データ）です。直す前に、利用者の操作で再現を確かめてください。", "",
              f"- 観点: {f.get('viewpoint')}　重要度: {f.get('severity')}　場所: {f.get('where') or '-'}",
@@ -333,8 +345,13 @@ def explore_defect_body(repo: str, ex: dict, f: dict, eid: int, qa_issue: int) -
     return "\n".join(lines)
 
 
+def _explore_name(ex: dict) -> str:
+    """出荷の関門の探索（ADR 0049）か夜間の探索か"""
+    return f"出荷の関門の探索（版 {ex['gate']}）" if ex.get("gate") else f"夜間の探索（{ex.get('night')} の夜）"
+
+
 def explore_summary(job_id: int, ex: dict, eid: int, defects: list[dict], keys: dict[str, str]) -> str:
-    lines = [f"## 夜間の探索（{ex.get('night')} の夜・チャーター `{ex.get('charter')}`・ジョブ {job_id}・環境 {ex.get('env')}・版 {ex.get('release_id') or '不明'}）",
+    lines = [f"## {_explore_name(ex)}（チャーター `{ex.get('charter')}`・ジョブ {job_id}・環境 {ex.get('env')}・版 {ex.get('release_id') or '不明'}）",
              "", f"試したこと {len(ex.get('tried') or [])} 件・見つけたもの {len(defects)} 件・印 {len(ex.get('flags') or [])} 件"
                  f"（確信度 {ex.get('confidence')}・探索 {eid}{'・iOS あり' if ex.get('mobile') else ''}）", "",
              _q(str(ex.get("interpretation") or "")[:800]), ""]
@@ -360,7 +377,7 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
     inp = (cur.fetchone() or {}).get("i") or {}   # 夜・チャーター・無人かは積んだときの入力が正本（ワーカーの出力に頼らない）
     result = {**result, "night": inp.get("night") or result.get("night"), "charter": inp.get("charter") or result.get("charter"),
               "unattended": bool(inp.get("unattended"))}
-    ex = {**(result.get("explore") or {}), "night": result.get("night"), "env": result.get("env"), "release_id": result.get("release_id"),
+    ex = {**(result.get("explore") or {}), "gate": inp.get("gate"), "night": result.get("night"), "env": result.get("env"), "release_id": result.get("release_id"),
           "sha": result.get("sha"), "mobile": bool(result.get("mobile")), "charter": result.get("charter") or (result.get("explore") or {}).get("charter")}
     payload = {"repo": repo, **ex, "files": dict(keys), "decided_by": "qa", "model": result.get("model")}
     cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('QAExplore',%s,%s,'verify',%s) returning id",
@@ -381,7 +398,7 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
             d["issue"] = known[key]
             num = known[key].rstrip("/").rsplit("/", 1)[-1].lstrip("#")
             if num.isdigit():
-                comment(repo, int(num), f"夜間の探索（{ex.get('night')} の夜・ジョブ {job_id}・版 {ex.get('release_id') or '不明'}）で、また見つかりました。"
+                comment(repo, int(num), f"{_explore_name(ex)}（ジョブ {job_id}・版 {ex.get('release_id') or '不明'}）で、また見つかりました。"
                                         f"まとめは #{issue}。\n\n> {str(f.get('actual') or '')[:500]}")
             seen.append(known[key])
             to_incident(cur, gh, comment, repo, d, known[key], ex, corr, job_id)
@@ -407,7 +424,8 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
                 (corr, job_id, Jsonb({"repo": repo, "night": ex.get("night"), "unattended": bool(result.get("unattended")), "charter": ex.get("charter"),
                                       "release_id": ex.get("release_id"), "env": ex.get("env"), "mobile": ex["mobile"],
                                       "tried": len(ex.get("tried") or []), "findings": len(defects), "defects": defects, "flags": flags,
-                                      "confidence": ex.get("confidence"), "explore_id": eid, "issue": issue, "model": result.get("model")}),
+                                      "confidence": ex.get("confidence"), "explore_id": eid, "issue": issue, "model": result.get("model"),
+                                      **({"gate": ex["gate"]} if ex.get("gate") else {})}),
                  f"qa.explore:{job_id}"))
     return {"explore_id": eid, "filed": filed, "seen": seen, "skipped": skipped}
 
@@ -416,7 +434,7 @@ def enqueue_explore(cur, gh, repo: str, night: str, *, by: str = "supervisor", d
     """夜間の探索のジョブを固定 Issue に積む（入力の mode: explore）。返り値は enqueue と同じに charter を足したもの"""
     defs = defs or load_defs()
     charter = charter_for(night, defs)
-    got = enqueue(cur, gh, repo, by=by, priority=defs["explore"]["priority"], defs=defs,
+    got = enqueue(cur, gh, repo, by=by, priority=defs["explore"]["priority"], defs=defs, issue_label=defs["act"].get("explore_issue_label"),
                   extra={"mode": "explore", "charter": charter, "night": night, "unattended": unattended})
     return {**got, "charter": charter}
 
