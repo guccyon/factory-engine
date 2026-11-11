@@ -126,3 +126,66 @@ def test_step_records_aggregate_candidates_and_stats():
     cur.execute("select payload from events where name='pr.files' order by id limit 1")
     assert cur.fetchone()["payload"]["stats"][LIST] == [1, 0]   # 行数も pr.files に残す
     conn.close()
+
+
+def test_declarations_read_and_default():
+    """宣言の読み口（ADR 0051 の 2）。宣言がない・読めなければ CHANGELOG.md だけ"""
+    import base64
+    decl = "aggregates:\n  - path: README.md\n    fragments: readme.d/\n    compile: append_section\n  - fragments: x.d/\n"
+    gh = lambda m, p, b=None: {"content": base64.b64encode(decl.encode()).decode()}  # noqa: E731
+    assert hm.declared(gh, "o/r") == {"README.md"}   # path のない行は数えない
+
+    def missing(m, p, b=None):
+        raise RuntimeError("404")
+    assert hm.declared(missing, "o/r") == {"CHANGELOG.md"}
+
+
+def test_declared_files_are_not_candidates():
+    changes = Counter({HOT: 20, "README.md": 10})
+    assert hm.candidates(changes, {HOT: {"conflicts": 3}}, hm.EXEMPT | {HOT}) == {}
+    prof = {"README.md": {"concurrent": 4}}
+    assert hm.aggregate_candidates(changes, prof, {"README.md": "append"}, set(), hm.EXEMPT | {"README.md"}) == {}
+
+
+@pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL がない")
+def test_step_unmarks_declared_file_same_day():
+    """取りまとめに宣言したファイルは、衝突が残っていても印をその日のうちに外し、付け直さない"""
+    import base64
+    conn = psycopg.connect(URL, row_factory=dict_row, autocommit=True)
+    cur = conn.cursor()
+    cur.execute("truncate events, artifacts, jobs, tickets restart identity cascade")
+    t0 = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    LIST = "tools/knowledge-enforcement-check/README.md"
+    state = {"declared": False}
+
+    def gh(method, path, body=None):
+        if path.endswith("aggregates.yaml"):
+            if not state["declared"]:
+                raise RuntimeError("404")
+            decl = f"aggregates:\n  - path: {LIST}\n    fragments: knowledge.d/\n    compile: sorted_list\n"
+            return {"content": base64.b64encode(decl.encode()).decode()}
+        if "/pulls?" in path:
+            return [{"number": i, "merged_at": (t0 + timedelta(hours=i)).isoformat()} for i in range(1, 6)] if "page=1" in path else []
+        if path.endswith("files?per_page=100&page=1"):
+            return [{"filename": LIST, "additions": 1, "deletions": 0}]
+        return {}
+
+    for i in range(3):
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, state) values (%s,'o/r',%s,'succeeded') returning id",
+                    (f"github:o/r#{100 + i}", 100 + i))
+        jid = cur.fetchone()["id"]
+        cur.execute("insert into events(name, correlation_id, job_id, occurred_at, payload) values ('continue.enqueued',%s,%s,%s,%s)",
+                    (f"github:o/r#{100 + i}", jid, t0 + timedelta(hours=2 + i), Jsonb({"reason": "conflict"})))
+        process_learn.record_conflict_files(cur, jid, f"github:o/r#{100 + i}", [LIST])
+    cur.execute("update events set occurred_at=%s where name='conflict.files'", (t0 + timedelta(hours=3),))
+    res = hm.step(cur, gh, ["o/r"], now=t0 + timedelta(days=1))
+    assert res["marked"] == [f"o/r:{LIST}"]
+    state["declared"] = True
+    res = hm.step(cur, gh, ["o/r"], now=t0 + timedelta(days=2))   # 7 日たたず、衝突も残っているが外す
+    assert res["unmarked"] == [f"o/r:{LIST}"] and LIST not in hm.active(cur)
+    assert res["candidates"] == []   # 宣言済みは取りまとめの候補にも出さない
+    cur.execute("select payload->>'why' as why from events where name='hotfile.unmarked'")
+    assert "取りまとめに宣言した" in cur.fetchone()["why"]
+    res = hm.step(cur, gh, ["o/r"], now=t0 + timedelta(days=3))
+    assert res["marked"] == [] and res["unmarked"] == []
+    conn.close()
