@@ -139,7 +139,7 @@ def hold(cur, inc: dict, *, qa_corr: str | None, defect_corr: str | None, by: st
         stoppage.post_notice(f"**差し止めに Incident を足しました**: {what}", cur)
     else:
         stoppage.open_stoppage(cur, stoppage_key(st), "human", what, detected_by="qa", started_at=st["since"],
-                               waiting_for="人の解除（操業コンソールの「差し止めを解除」か factoryctl line release --reason ...）。"
+                               waiting_for="手動の解除（操業コンソールの「差し止めを解除」か factoryctl line release --reason ...）。"
                                            "S1 の修正（p0）と QA の確かめ直しは差し止めの間も流れる")
     return prev is None
 
@@ -251,7 +251,7 @@ def from_qa(cur, gh, comment, repo: str, *, key: str, severity: str, title: str,
                 comment(repo, int(num), f"重要度 {severity.upper()} の Incident（`{inc['incident_id']}`）として、QA 役がラインを差し止めました"
                                         f"（factory-engine の ADR 0043 の O5）。{'**これは演習です**（staging に仕込んだもの。直すコードはありません）。' if inc['drill'] else ''}\n\n"
                                         "差し止めの間も、この Issue（p0）と QA の確かめ直しは流れます。ほかのチケットは止まっています。"
-                                        "解除は人が行います（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
+                                        "解除は手動で行います（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
         if policy is None:
             policy = fetch_policy(gh, repo)
         check_budget(cur, repo, policy)

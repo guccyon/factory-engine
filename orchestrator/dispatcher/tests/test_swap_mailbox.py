@@ -185,5 +185,5 @@ def test_failure_keeps_the_issue_open_and_redacts_paths(cur):
     swap.record(cur, sid, "swap.launched", {})
     swap.record(cur, sid, "swap.failed", {"error": "docker failed in /Users/someone/src/fe"})
     poll(cur, gh)
-    assert gh.issues[12]["state"] == "open" and "someone" not in gh.comments[-1][1] and "人の確認が要ります" in gh.comments[-1][1]
+    assert gh.issues[12]["state"] == "open" and "someone" not in gh.comments[-1][1] and "確認が要ります" in gh.comments[-1][1]
     assert (12, ("factory:swapping",), ("factory:swap-failed",)) in gh.labels

@@ -112,7 +112,7 @@ def _dur(sec) -> str:
 def render(batch: list[tuple[dict, str]], channel: str, dest: notify.Destination | None = None) -> str:
     slack = channel in ("slack", "slack_webhook", "slack_app")
     mention = dest.mention if dest is not None else (lambda who: MENTIONS.get(who, ""))
-    lines = [f"*受信トレイ: 人の出番が {len(batch)} 件*" if slack else f"**受信トレイ: 人の出番が {len(batch)} 件**"]
+    lines = [f"*受信トレイ: 判断待ちが {len(batch)} 件*" if slack else f"**受信トレイ: 判断待ちが {len(batch)} 件**"]
     for i, why in batch:
         who = inbox.WHO.get(i["who"], i["who"])
         if slack and mention(i["who"]):

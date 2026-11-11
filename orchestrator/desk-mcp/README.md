@@ -35,7 +35,7 @@ Claude Desktop（`claude_desktop_config.json`）:
 | `desk_ticket` | `GET /api/desk/tickets/<ref>` | チケットの進み具合・順番・PR |
 | `desk_set_priority` | `POST /api/desk/tickets/<ref>/priority` | 明確な指示（「#812 を先に」）。壁打ちを通さない |
 | `inbox_list` | `GET /api/desk/inbox` | 受信トレイ（人の判断待ち）のうち、トークンで答えてよい件の一覧（ADR 0034 の順番 2） |
-| `inbox_read` | `GET /api/desk/inbox/<key>` | 1 件の中身（問い・今の案・他の案・judge の見立て・推す案）と答え方（選択肢・推奨・作用） |
+| `inbox_read` | `GET /api/desk/inbox/<key>` | 1 件の中身（問い・今の案・他の案・見立て・おすすめの案）と答え方（選択肢・推奨・作用） |
 | `inbox_answer` | `POST /api/desk/inbox/<key>/answer` | 本人がはっきり選んだ答えを返す。先に別の入口で答えられていれば、誰が何と答えたかが返る |
 | `desk_preferences` | `GET /api/desk/preferences` | 本人の好みの一覧（ADR 0040 の決定 6。id・好み・効く業務・確かさ）。工場が会話から覚えたものも入る |
 | `desk_preference_set` | `POST /api/desk/preferences`（id があれば `/<P-NNNN>`） | 好みを足す・直す。本人が言ったものは確認済み |

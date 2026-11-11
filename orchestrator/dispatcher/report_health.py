@@ -22,7 +22,7 @@ SECTIONS = {
     "line": ("ライン", ("provider", "business_owner")),
     "jobs": ("ジョブ", ("provider", "business_owner")),
     "ship": ("出荷", ("provider", "business_owner")),
-    "inbox": ("人の判断待ち", ("provider", "business_owner")),
+    "inbox": ("判断待ち", ("provider", "business_owner")),
     "cost": ("費用", ("provider", "business_owner")),
     "stages": ("工程と ROI", ("provider",)),
     "patrols": ("見回り", ("provider",)),
@@ -89,7 +89,7 @@ def line(cur, start: datetime, end: datetime):
     items = [metric("ラインが動いていた割合", round(100 * (1 - down / span), 1) if span else None, "%"),
              metric("止まった回数（ラインが空・一時停止を除く）", len(started), "件"),
              metric("止まってから戻るまで（中央値）", round(recover) if recover is not None else None, "分"),
-             metric("人の対応待ちで止まっていた時間", round(human / 60), "分"),
+             metric("対応待ちで止まっていた時間", round(human / 60), "分"),
              metric("期間の終わりに開いていた停止", len(open_), "件"),
              metric("うち製品の作業を止めているもの", sum(1 for r in open_ if _impact(r) == IMPACT_PRODUCT), "件")]
     for r in open_[:OPEN_MAX]:
@@ -326,7 +326,7 @@ def assess(rep: Report) -> Report:
     flag("patrols", "見回りの可用性（平均）", _lvl(pav, *THRESHOLDS["patrol_availability"], below=True), f"見回りの可用性が {pav}%（止まっていた見回りがある）",
          "見回りの節で止まっていた見回りを見て、supervisor のログで止まった理由を確かめる。直すのは工場の不具合として建設者に回す", line_page)
     left, wait = val("inbox", "期間の終わりに残っていた件"), val("inbox", "判断までの待ち時間（中央値）")
-    flag("inbox", "期間の終わりに残っていた件", _lvl(left, *THRESHOLDS["inbox_left"]), f"人の判断待ちが {left} 件残っている",
+    flag("inbox", "期間の終わりに残っていた件", _lvl(left, *THRESHOLDS["inbox_left"]), f"判断待ちが {left} 件残っている",
          "受信トレイの判断を片付ける。滞りが続くなら、代わりに判断する人（INBOX_PROXY）を決める", inbox_page)
     flag("inbox", "判断までの待ち時間（中央値）", _lvl(wait, *THRESHOLDS["inbox_wait"]), f"判断までに中央値で {wait} 分かかっている",
          "通知が届いているか（宛先・夜の時間）を確かめ、判断の担当を決める", inbox_page)

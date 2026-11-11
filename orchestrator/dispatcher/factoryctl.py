@@ -122,8 +122,8 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl desk from-issue <owner/repo#番号>              # clarify で確定した Issue などを窓口の依頼として開き直す（相談役が下書きを出す）
 
 モードと判断（ADR 0006）:
-  factoryctl mode show                                          # いまのモード（人が並走 attended・全面委任 unattended）と決め手
-  factoryctl mode set attended|unattended [--until ISO]       # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先
+  factoryctl mode show                                          # いまのモード（並走モード attended・全自動モード unattended）と決め手
+  factoryctl mode set attended|unattended|schedule [--until ISO]  # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先。schedule で切り替えを外す
   factoryctl judgment list [--ungraded] [--limit N]             # 工場の判断の記録（--ungraded は人がまだ採点していないもの）
   factoryctl judgment recategorize <remap.yaml>                 # 類型の振り直し（definitions/judgment-remap-*.yaml。元の類型は category_v1 に残す）
   factoryctl judgment grade <artifact_id> agree|disagree [--note ..]   # 人の採点（教師データ）。類型ごとの一致率になる
@@ -1406,8 +1406,12 @@ def main(argv):
                          "生成: `factoryctl report learning`（ADR 0013）", ""] + learn.report_lines(retro) + [""]
                         + learn.rule_lines(learn.rule_stats(cur, datetime.fromisoformat(retro["from"]), datetime.fromisoformat(retro["to"])))))
     elif cmd == "mode":
-        if len(argv) > 3 and argv[2] == "set" and argv[3] in judgment.MODES:
-            cur.execute("insert into events(name, payload) values ('factory.mode_set', %s)", (Jsonb({"mode": argv[3], "until": opt(argv, "--until"), "by": "factoryctl"}),))
+        if len(argv) > 3 and argv[2] == "set":
+            try:
+                judgment.set_mode(cur, argv[3], "factoryctl", opt(argv, "--until"), opt(argv, "--reason", ""))
+            except ValueError as e:
+                print(e)
+                return 2
         mode, basis = judgment.current_mode(cur, os.environ.get("FACTORY_MODE") or "attended", os.environ.get("MODE_SCHEDULE", ""))
         print(f"mode={mode}（決め手: {basis}）")
     elif cmd == "judgment":

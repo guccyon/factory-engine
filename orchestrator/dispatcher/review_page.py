@@ -17,9 +17,9 @@ import json
 PATH = "/review/{aid}"
 IMAGE_PATH = "/review/{aid}/image/{name}"
 STATUS_JA = {"open": "判断待ち", "decided": "決定済み", "reviewing": "検査中", "returned": "デザイナー役に戻した"}
-DECISION_JA = {"approve": "承認", "revise": "直し", "human": "人へ"}
+DECISION_JA = {"approve": "承認", "revise": "直し", "human": "オーナーへ"}
 REASON_JA = {"new_screen": "新しい画面", "brand_impact": "ブランドと印象に効く画面", "low_confidence": "検査役の確信度が低い",
-             "revisions_exhausted": "直しを 1 回使った後も直しが要る", "inspector": "検査役が人の判断が要るとした"}
+             "revisions_exhausted": "直しを 1 回使った後も直しが要る", "inspector": "検査役がオーナーの判断が要るとした"}
 PRD_JA = {"goal": "誰が何を達成したいか", "success": "達成した状態", "scope": "範囲", "source": "出どころ"}
 SECTION_JA = {"purpose": "目的", "route": "ルート", "audience": "誰が見るか", "transitions": "画面遷移", "states": "状態",
               "microinteractions": "マイクロインタラクション", "copy": "文言", "accessibility": "アクセシビリティ", "analytics": "計測",
@@ -135,12 +135,12 @@ def render(ctx: dict, token: str, prototype_base: str = "") -> str:
             *([f'<p class="lead">{esc(spec.get("summary"))}</p>'] if spec.get("summary") else []),
             f'<p><span class="pill {st}">{STATUS_JA[st]}</span>'
             + (f' 人に回った理由: {esc(reasons)}' if reasons and st == "open" else "")
-            + (f' 体験の案: <b>{esc(h.get("variant"))}</b>（{"人が承認" if h.get("decided_by") == "human" else "デザイン検査役が承認"}、実装に渡した）' if h else "")
+            + (f' 体験の案: <b>{esc(h.get("variant"))}</b>（{"オーナーが承認" if h.get("decided_by") == "human" else "デザイン検査役が承認"}、実装に渡した）' if h else "")
             + (f' 見た目の案: <b>{esc(look)}</b>（デザインのチーフが選んだ）' if look else (f' 見た目は仮に <b>{esc(h.get("look"))}</b>' if h and h.get("look") else ""))
             + "</p>"]
     if flow_open:
         head.append('<p class="m">プロダクトオーナーへ: 体験の案（流れ・要素・振る舞い）を見比べて「この案で承認」を押すと実装に流れます。'
-                    'どれも違うときは一言を書いて「直しを頼む」。気になる点は「違和感」で残せます（工場の学習に使います）。</p>')
+                    'どれも違うときはコメントを書いて「直しを頼む」。気になる点は「違和感」で残せます（工場の学習に使います）。</p>')
     if look_open:
         head.append('<p class="m">デザインのチーフへ: 見た目の案から 1 つ選んでください。実装は推す見た目で先に進んでいて、違う見た目を選ぶと合わせるタスクが切られます。</p>')
 
@@ -230,7 +230,7 @@ def render(ctx: dict, token: str, prototype_base: str = "") -> str:
         *([("判断してほしいこと: 見た目の案（デザインのチーフ）", look_cards
             + (f'<p class="m">推す理由（デザイナー役）: {esc(spec.get("recommended_look_reason"))}</p>' if spec.get("recommended_look_reason") else ""))]
           if look_cards else []),
-        *([("一言・直し", f'<div class="acts back"><input id="note" maxlength="300" placeholder="一言（直しの中身・違和感の理由。直しを頼むときは必須）">'
+        *([("コメント・直し", f'<div class="acts back"><input id="note" maxlength="300" placeholder="コメント（直しの中身・違和感の理由。直しを頼むときは必須）">'
                          f'<button data-a="return" data-c="{back_id}">どれも違う（直しを頼む）</button></div>')] if actionable else []),
         ("画面の流れ", proto_html + flow_html + (strips or '<p class="m">（コマなし。案の画面だけ）</p>')),
         ("項目定義と振る舞い", "".join(screens) or '<p class="m">（なし）</p>'),
@@ -277,6 +277,6 @@ async function post(path,body){try{const r=await fetch(path,{method:"POST",heade
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b||!/^\d+$/.test(b.dataset.c||""))return;
  const id=b.dataset.c,note=(document.getElementById("note")||{}).value||"";
  if(b.dataset.a==="choose")return post(`/api/choices/${id}/choose`,{option:b.dataset.o,reason:note});
- if(b.dataset.a==="flag"){if(!note.trim())return toast("違和感の一言を下の欄に入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
- if(!note.trim())return toast("直しの中身を一言入れてください");post(`/api/choices/${id}/return`,{reason:note})});
+ if(b.dataset.a==="flag"){if(!note.trim())return toast("違和感のコメントを下の欄に入れてください");return post(`/api/choices/${id}/flag`,{option:b.dataset.o,note})}
+ if(!note.trim())return toast("直しの中身をコメントに入れてください");post(`/api/choices/${id}/return`,{reason:note})});
 """

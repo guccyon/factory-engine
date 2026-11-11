@@ -218,7 +218,7 @@ SNAPSHOT = json.loads(r'''{
   },
   {
    "name": "inbox_read",
-   "description": "受信トレイの 1 件を読む。detail に問い・今の案・他の案・judge の見立て・影響・推す案、answer に選択肢（options と extra の id）・推奨・答えたときの作用（effect）・取り返しがつかないか（irreversible）が入る。判断の材料が足りなければ、url の PR の差分や製品のリポジトリを調べて本人の問いに答える",
+   "description": "受信トレイの 1 件を読む。detail に問い・今の案・他の案・見立て・影響・おすすめの案、answer に選択肢（options と extra の id）・推奨・答えたときの作用（effect）・取り返しがつかないか（irreversible）が入る。判断の材料が足りなければ、url の PR の差分や製品のリポジトリを調べて本人の問いに答える",
    "inputSchema": {
     "type": "object",
     "properties": {

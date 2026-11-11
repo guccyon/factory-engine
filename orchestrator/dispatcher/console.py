@@ -20,6 +20,7 @@
                                           渡したものだけ変える。今の決め方は /api/state の factory.budget
   POST /api/line/scale                    {"workers"?, "tickets"?, "governance"?, "desk"?, "reason"?} ラインの流量の宣言（ADR 0028。factoryctl line scale と同じ）。
                                           渡したものだけ変える。上げ直さずに次の周回から効く
+  POST /api/factory/mode                  {"mode": "attended"|"unattended"|"schedule", "until"?, "reason"?} モードの切り替え（factoryctl mode set と同じ）。schedule で時間帯の設定に戻す
   POST /api/factory/drain | resume        {"reason"} ラインの一時停止（順番待ちを取り出さない）と再開。工場の更新のため（ADR 0020）
   POST /api/line/release-hold             {"reason"} QA 役の差し止め（S1 の Incident。ADR 0043 の O5）を人が解除する。理由は必須
   POST /api/host/keep-awake               {"prevent_sleep": true|false} 工場の稼働中にホスト（Mac）のスリープを止めるか
@@ -201,7 +202,7 @@ def snapshot(cur) -> dict:
         elif human:
             stage, note = "human", human["what"]
         elif name == "supervisor.merge_decided" and pl.get("table") == "human_approve":
-            stage, note = "human", "マージに人の承認が要る（" + ", ".join(pl.get("change_types") or []) + "）"
+            stage, note = "human", "マージに承認が要る（" + ", ".join(pl.get("change_types") or []) + "）"
         else:
             stage, note = "review", {None: "CI 待ち", "supervisor.merge_decided": "検査中", "gate.evaluated": "判定待ち",
                                      "supervisor.judge_enqueued": "検査役の承認待ち" if pl.get("skipped") else "判定中",
@@ -232,7 +233,7 @@ def snapshot(cur) -> dict:
         "runners": runners.view(cur),
         "runner_pairs": runners.pending_pairs(cur),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur), "budget": usage.budget_spec(cur),
+        "factory": {"heartbeat_age_sec": hb["age"], "mode": mode, "mode_basis": basis, "mode_spec": judgment.mode_spec(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", "")), "running": running, "max_parallel": line.spec(cur)["workers"], "scale": line.status(cur), "budget": usage.budget_spec(cur),
                     "cost_today_usd": round(cost, 2), "open_stoppages": stoppages, "host": host_view(cur), "line": drain.status(cur),
                     "qa_hold": incident.hold_status(cur),
                     "planned": planned, "line_low_below": LINE_LOW_BELOW},
@@ -355,6 +356,12 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         except (ValueError, TypeError) as e:
             return 400, {"error": str(e)}
         return 200, {"budget": spec}
+    if path == "/api/factory/mode":   # モードの切り替え（factoryctl mode set と同じ）。schedule で切り替えを外す
+        try:
+            judgment.set_mode(cur, str(body.get("mode") or ""), by, str(body.get("until") or "") or None, reason)
+        except (ValueError, TypeError) as e:
+            return 400, {"error": str(e)}
+        return 200, {"mode": judgment.mode_spec(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))}
     if path in ("/api/factory/drain", "/api/factory/resume"):
         drain.set_drain(cur, path.endswith("/drain"), by, reason)
         return 200, {"line": drain.status(cur)}

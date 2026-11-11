@@ -59,13 +59,13 @@ def test_operator_lists_reads_detail_and_answers_once(cur):
     st, out = call("GET", "/api/desk/inbox", tok)
     assert st == 200 and out["count"] == 3 and {i["kind"] for i in out["items"]} == {"judgment"}
     it = next(i for i in out["items"] if i["key"] == keys["開始前の文言"])
-    assert it["product"] == REPO and it["url"] == PR and it["answerable"] and it["recommended"] == "judge が推す案に直す"
+    assert it["product"] == REPO and it["url"] == PR and it["answerable"] and it["recommended"] == "おすすめの案に直す"
     assert "detail" not in it   # 一覧は短く。中身は inbox_read で
 
     st, one = call("GET", path(keys["開始前の文言"]), tok)
     assert st == 200
     d = {x["label"]: x["text"] for x in one["detail"]}
-    assert d["今の案（ワーカーの仮決め）"] == "1 文" and d["judge が推す案"] == "2 文にする" and "基準は 2 文" in d["judge の見立て"]
+    assert d["今の案"] == "1 文" and d["おすすめの案"] == "2 文にする" and "基準は 2 文" in d["見立て"]
     a = one["answer"]
     assert [o["id"] for o in a["options"]] == ["keep", "replace"] and a["recommended"] == "replace" and a["extra"][0]["note_required"]
     assert "target" not in a and a["effect"]

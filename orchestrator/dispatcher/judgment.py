@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
@@ -138,6 +139,44 @@ def current_mode(cur, default: str = "attended", schedule: str = "", tz: str = "
     return (default if default in MODES else "attended"), "default"
 
 
+MODE_JA = {"attended": "並走モード", "unattended": "全自動モード", "schedule": "時間帯の設定に従う"}
+MODE_BASIS_JA = {"factoryctl": "切り替え", "schedule": "時間帯の設定", "default": "既定"}
+
+
+def set_mode(cur, mode: str, by: str, until: str | None = None, reason: str = "") -> None:
+    """モードを切り替える（factoryctl mode set と操業コンソールの設定の共通の口）。
+    mode が schedule なら切り替えを外し、時間帯の設定（MODE_SCHEDULE）と既定に戻す。until（ISO 8601）までの切り替えにもできる"""
+    if mode not in MODES + ("schedule",):
+        raise ValueError("mode は attended・unattended・schedule のどれか")
+    if until and mode == "schedule":
+        raise ValueError("時間帯の設定に戻すときは期限を付けない")
+    if until:
+        try:
+            t = datetime.fromisoformat(until)
+        except ValueError:
+            raise ValueError("期限は ISO 8601 の日時（例 2026-11-12T08:00+09:00）") from None
+        if t.tzinfo is None:
+            raise ValueError("期限には時差を付ける（例 2026-11-12T08:00+09:00）")
+        if t <= datetime.now(timezone.utc):
+            raise ValueError("期限は今より後の時刻にする")
+        until = t.isoformat()
+    cur.execute("insert into events(name, payload) values ('factory.mode_set', %s)",
+                (Jsonb({"mode": mode, "until": until or None, "by": by[:80], "reason": reason[:200]}),))
+
+
+def mode_spec(cur, default: str = "attended", schedule: str = "") -> dict:
+    """いまのモードと、決め手・切り替えの記録（期限内のもの）・時間帯の設定。操業コンソールの設定に出す"""
+    mode, basis = current_mode(cur, default, schedule)
+    cur.execute("select payload, occurred_at from events where name='factory.mode_set' order by id desc limit 1")
+    r = cur.fetchone()
+    override = None
+    if r and basis == "factoryctl":
+        p = r["payload"]
+        override = {"mode": p.get("mode"), "until": p.get("until"), "by": p.get("by"), "reason": p.get("reason") or "",
+                    "at": r["occurred_at"].isoformat() if r["occurred_at"] else None}
+    return {"mode": mode, "basis": basis, "override": override, "schedule": schedule, "default": default if default in MODES else "attended"}
+
+
 def delegated_verdict(category: str, verdict: str | None, confidence=None, precedent: str | None = None,
                       level: str | None = None) -> tuple[str | None, bool]:
     """委任の範囲に合わせた裁き。条件付きの類型で条件を満たさない裁きは escalate に替える。返り値は (裁き, 替えたか)。
@@ -241,12 +280,12 @@ def fix_of(p: dict, decision: str, note: str) -> dict | None:
     if p.get("subject") == "defect" and decision == "fix":
         d = p.get("defect") or {}
         return {**{k: d.get(k) for k in ("rubric_id", "severity", "location", "evidence", "remediation_hint")},
-                **({"remediation_hint": f"{d.get('remediation_hint') or ''}\n人の一言: {note}".strip()} if note else {})}
+                **({"remediation_hint": f"{d.get('remediation_hint') or ''}\nオーナーのコメント: {note}".strip()} if note else {})}
     want = p.get("recommended_replacement") if decision == "replace" else None
-    hint = "\n".join(x for x in (f"人が選んだ案: {want}" if want else "", f"人の一言: {note}" if note else "") if x)
+    hint = "\n".join(x for x in (f"オーナーが選んだ案: {want}" if want else "", f"オーナーのコメント: {note}" if note else "") if x)
     return {"rubric_id": "human_decision", "severity": "major", "location": f"判断: {p.get('question') or ''}"[:300],
-            "evidence": f"judge が人に回した判断に、人が直す答えを出した（{decision}）。今の差分の案: {p.get('decision') or '（記録なし）'}"[:MAX_LEN],
-            "remediation_hint": hint[:MAX_LEN] or "人の答えに沿って直す"}
+            "evidence": f"judge がオーナーに回した判断に、直す回答が出た（{decision}）。今の差分の案: {p.get('decision') or '（記録なし）'}"[:MAX_LEN],
+            "remediation_hint": hint[:MAX_LEN] or "オーナーの回答に沿って直す"}
 
 
 def decide(cur, aid: int, decision: str, by: str, via: str, note: str = "") -> tuple[bool, str]:
@@ -271,7 +310,7 @@ def decide(cur, aid: int, decision: str, by: str, via: str, note: str = "") -> t
                                              "decision": decision, "note": note or None, "by": by, "via": via, "fix": fix})))
     msg = "直しを同じ担当に渡す" if fix else "今の差分のままにする"
     if p.get("pr_url") and decisions_settled(cur, p["pr_url"]):
-        stoppage.close_stoppage(cur, f"judge:{p['pr_url']}", remedy=f"人が人に回した判断に答えた（{via}）", closed_by=by[:80] or "inbox")
+        stoppage.close_stoppage(cur, f"judge:{p['pr_url']}", remedy=f"オーナーが判断に答えた（{via}）", closed_by=by[:80] or "inbox")
         msg += "。この PR の判断はすべて決まった"
     return True, msg
 

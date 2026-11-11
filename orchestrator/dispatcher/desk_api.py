@@ -21,7 +21,7 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
   POST /api/desk/tickets/<id か ref>/priority          {"level" か "priority", "reason"?, "conversation_id"?} 明確な指示（「#812 を先に」）は壁打ちを通さずここで即時に通す
   POST /api/desk/tickets/<id か ref>/hold | resume     {"reason"?}
   GET  /api/desk/inbox?all=1                           受信トレイのうち、トークンの役割と製品で答えてよい件（ADR 0034 の順番 2）。all=1 で答え済みで反映待ちの件も
-  GET  /api/desk/inbox/<key>                           1 件。detail（問い・今の案・他の案・judge の見立てなど）と答え方（選択肢・推奨・作用）
+  GET  /api/desk/inbox/<key>                           1 件。detail（問い・今の案・他の案・見立てなど）と答え方（選択肢・推奨・作用）
   POST /api/desk/inbox/<key>/answer                    {"option", "note"?, "raw"?, "on"?, "confirm"?} 答える。inbox.answer（唯一の口、先勝ち）を入口 mcp で通す。
                                                        取り返しのつかない作用の件（本番に出す）は本人の明示の承認として confirm: true が要る。
                                                        答え済みは 409（誰が何と答えたか）、選択肢の外・一言が足りないは 400

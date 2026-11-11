@@ -40,8 +40,8 @@ FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\.(html|css|png)$")
 CONTENT_TYPES = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "png": "image/png"}
 MAX_HTML_INLINE = 20000   # 推す案の HTML を Issue に載せる上限（実装役が見た目の参考にする）
 REASON_JA = {"new_screen": "新しい画面", "brand_impact": "ブランドと印象に効く画面", "low_confidence": "検査役の確信度が低い",
-             "revisions_exhausted": "直しを 1 回使った後も直しが要る", "inspector": "検査役が人の判断が要るとした"}
-DECIDED_JA = {"design_inspector": "デザイン検査役が承認した", "human": "人が選んだ"}
+             "revisions_exhausted": "直しを 1 回使った後も直しが要る", "inspector": "検査役がオーナーの判断が要るとした"}
+DECIDED_JA = {"design_inspector": "デザイン検査役が承認した", "human": "オーナーが選んだ"}
 PUBLIC_URL = os.environ.get("CONSOLE_PUBLIC_URL", "").rstrip("/")   # Issue のコメントに出すレビューページの URL の前半（なければパスだけ）
 
 
@@ -78,7 +78,7 @@ def ask_reviewers(cur, repo: str, issue: int, corr: str, d: dict, reasons: list[
     体験（flow）はプロダクトオーナー、見た目（look）はデザインのチーフ。Gen1 はどちらもオーナー"""
     if inbox is None or not d.get("id"):
         return False
-    why = "、".join(REASON_JA.get(x, x) for x in reasons) or "人の判断が要る"
+    why = "、".join(REASON_JA.get(x, x) for x in reasons) or "オーナーの判断が要る"
     if axis == "flow":
         return inbox.request(cur, inbox_key(d["id"]), "review_page", "po", f"{repo}#{issue} の画面の体験を判断する（{why}）",
                              url=review_page.url(d["id"]), action="レビューページで体験の案を承認するか、直しを頼む", correlation_id=corr, by="design_line")
@@ -262,7 +262,7 @@ def request_choice(cur, repo: str, issue: int, corr: str, job_id: int, d: dict, 
         return choice.request(cur, kind, corr, f"#{issue} の画面の{'体験' if axis == 'flow' else '見た目'}の案", options,
                               recommended=rec if rec in {o["id"] for o in options} else None,
                               subject={"repo": repo, "ticket": str(issue), "uxspec": str(d.get("id") or "")},
-                              context="デザイン検査役が人に回した: " + "、".join(REASON_JA.get(x, x) for x in reasons), job_id=job_id)
+                              context="デザイン検査役がオーナーに回した: " + "、".join(REASON_JA.get(x, x) for x in reasons), job_id=job_id)
     except ValueError:   # 形が合わない案は画面に出さず、factoryctl design pick で選ぶ
         return None
 
@@ -500,7 +500,7 @@ def look_comment(d: dict, reasons: list[str]) -> str:
 
 def choice_comment(d: dict, v: dict, reasons: list[str], look_reasons: list[str] | None = None) -> str:
     spec = d.get("uxspec") or {}
-    why = "、".join(REASON_JA.get(r, r) for r in reasons) or "検査役が人の判断が要るとした"
+    why = "、".join(REASON_JA.get(r, r) for r in reasons) or "検査役がオーナーの判断が要るとした"
     note = [f"> {v['human_reason']}"] if v.get("human_reason") else []
     return "\n".join([f"## 画面の案を選んでください（{why}）", "",
                       f"デザイナー役が体験の案を {len(flow_variants(spec))} つ作り、デザイン検査役は `{v.get('chosen_variant')}` を推しています（確信度 {v.get('confidence')}）。",
