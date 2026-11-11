@@ -774,7 +774,7 @@ def _inbox_item(cur, who: dict, key) -> dict:
 
 
 def inbox_read(cur, who: dict, key: str) -> dict:
-    """受信トレイの 1 件。detail（問い・今の案・他の案・judge の見立てなど）と答え方（選択肢・推奨・作用・取り返しがつくか）を付ける"""
+    """受信トレイの 1 件。detail（問い・今の案・他の案・見立てなど）と答え方（選択肢・推奨・作用・取り返しがつくか）を付ける"""
     import inbox
     it = _inbox_item(cur, who, key)
     if it.get("since") is not None and it.get("age_sec") is None:

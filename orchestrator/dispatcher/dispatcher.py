@@ -1036,8 +1036,8 @@ def act_on_judgment(cur, repo: str, corr: str, job_id: int, pr_url: str, summary
     remove = []
     if summary["escalated"]:
         labels.append("factory:needs-judgment")
-        stoppage.open_stoppage(cur, f"judge:{pr_url}", "human", f"judge が {len(summary['escalated'])} 件を人に回した",
-                               waiting_for="人の判断（PR の factory:needs-judgment）", correlation_id=corr, job_id=job_id, detected_by="supervisor")
+        stoppage.open_stoppage(cur, f"judge:{pr_url}", "human", f"judge が {len(summary['escalated'])} 件をオーナーに回した",
+                               waiting_for="オーナーの判断（PR の factory:needs-judgment）", correlation_id=corr, job_id=job_id, detected_by="supervisor")
     else:
         # 裁き直して人に回すものが無くなった（決まりの変更・直しのあと）。前の裁きの印と停止を外し、マージへ進める
         remove.append("factory:needs-judgment")
@@ -1104,7 +1104,7 @@ def file_sendback(cur, repo: str, corr: str, job_id: int, pr_url: str, to_fix: l
         record_event(cur, "sendback.residual" if reason == "residual_after_sendback" else "sendback.skipped", corr, job_id,
                      {"origin_pr": pr_url, "reason": reason, "items": len(items), "chain_origin": (chain or {}).get("payload", {}).get("origin_pr") if chain else None})
         stoppage.open_stoppage(cur, f"sendback:{pr_url}", "human", f"差し戻しを流さなかった（{reason}）。指摘 {len(items)} 件が残っている",
-                               waiting_for="人の判断（直すか、受け入れるか）", correlation_id=corr, job_id=job_id, detected_by="supervisor")
+                               waiting_for="判断（直すか、受け入れるか）", correlation_id=corr, job_id=job_id, detected_by="supervisor")
         return
     origin_issue = corr.rsplit("#", 1)[1] if "#" in corr else None
     lines = [f"差し戻し（ADR 0006 / 戦略会議 D5）。元 PR: {pr_url}（モード {mode} で judge が採用した指摘と、差し替えた仮決め）",

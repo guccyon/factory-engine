@@ -74,14 +74,14 @@ def test_questions_options_and_recommendation_show_in_the_inbox(cur):
     start = q["いつから通話を始められるか"]
     assert start["title"].startswith("o/r#921 の判断（画面と操作）") and start["url"] == PR and start["who"] == "owner"
     detail = {d["label"]: d["text"] for d in start["detail"]}
-    assert detail["今の案（ワーカーの仮決め）"] == "開始時刻ちょうどから" and detail["他の案"] == "5 分前から入室前チェック"
-    assert "デモなので" in detail["judge の見立て"]
+    assert detail["今の案"] == "開始時刻ちょうどから" and detail["他の案"] == "5 分前から入室前チェック"
+    assert "デモなので" in detail["見立て"]
     a = start["answer"]
     assert a["type"] == "choose" and [o["id"] for o in a["options"]] == ["keep"] and a["recommended"] == "keep" and a["effect"]
     assert a["extra"][0]["id"] == "change" and a["extra"][0]["note_required"]
     copy = q["開始前の文言"]["answer"]
     assert [o["id"] for o in copy["options"]] == ["keep", "replace"] and copy["recommended"] == "replace"
-    assert {d["label"]: d["text"] for d in q["開始前の文言"]["detail"]}["judge が推す案"] == "2 文にする"
+    assert {d["label"]: d["text"] for d in q["開始前の文言"]["detail"]}["おすすめの案"] == "2 文にする"
     defect = next(i for i in xs if "copy.two_sentences" in i["title"])
     assert [o["id"] for o in defect["answer"]["options"]] == ["fix", "dismiss"] and defect["answer"]["recommended"] == "fix"
     v = inbox.view(cur)

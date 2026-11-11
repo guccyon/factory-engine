@@ -151,7 +151,7 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
 - 拾うのは、ラベルを付けたのが `SWAP_REQUESTERS`（カンマ区切りの GitHub のログイン。既定は郵便受けのリポジトリの持ち主）のものだけ。ほかの人が付けたラベルは黙って飛ばす（リポジトリは公開）
 - 本文は上の形の行だけ読み、値も決まった形（`main` か 16 進のコミットなど）に当たるものだけ受ける。ほかの文は記録だけで、シェルにもプロンプトにも渡さない
 - 同時に 1 件。ほかの更新が終わっていなければ、その旨を 1 回返して待つ
-- 一時停止を伴う更新（申告か判定が `control_plane`・`db`）は、人が並走する時間帯（attended。`FACTORY_MODE`・`MODE_SCHEDULE`・`factoryctl mode`）だけ始める（決めどころ S4）。
+- 一時停止を伴う更新（申告か判定が `control_plane`・`db`）は、並走モードの時間帯（attended。`FACTORY_MODE`・`MODE_SCHEDULE`・`factoryctl mode`）だけ始める（決めどころ S4）。
   申告が `code` で判定が重かったときは、更新役が何も変えずに止め、attended に入ったら同じ Issue で依頼し直す。手で打った `swap run` は時間帯で止めない
 - 人に回す条件（DB の変更・秘密情報と権限など）は手で打つときと同じ。更新役を起動する前に Issue を閉じれば取り消す
 - 返すコメントには工場のマシンのパスとホスト名を出さない。`SWAP_MAILBOX_REPO`（既定 `guccyon/factory-engine`）・`SWAP_MAILBOX_INTERVAL_SEC`（既定 60）・`SWAP_MAILBOX=0` で止める。

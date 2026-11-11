@@ -201,7 +201,7 @@ def snapshot(cur) -> dict:
         elif human:
             stage, note = "human", human["what"]
         elif name == "supervisor.merge_decided" and pl.get("table") == "human_approve":
-            stage, note = "human", "マージに人の承認が要る（" + ", ".join(pl.get("change_types") or []) + "）"
+            stage, note = "human", "マージに承認が要る（" + ", ".join(pl.get("change_types") or []) + "）"
         else:
             stage, note = "review", {None: "CI 待ち", "supervisor.merge_decided": "検査中", "gate.evaluated": "判定待ち",
                                      "supervisor.judge_enqueued": "検査役の承認待ち" if pl.get("skipped") else "判定中",

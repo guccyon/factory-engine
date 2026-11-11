@@ -225,7 +225,7 @@ def test_skip_qa_and_block(cur):
     verdicts(cur, j["verdict"][0], [("s", "pass", [])])
     explored(cur, j["explore"][0], [{"title": "他人の予約が見える", "severity": "s1"}])
     qa_gate.step(cur, gh, REPO, now=NOW)
-    assert inbox._apply(cur, ("release", rid), "block", "owner", "console", "", None) == (False, "どれをブロッカーにしたか、一言が要る")
+    assert inbox._apply(cur, ("release", rid), "block", "owner", "console", "", None) == (False, "どれをブロッカーにしたか、コメントが要る")
     ok, _ = inbox._apply(cur, ("release", rid), "block", "owner", "console", "他人の予約が見えるのは出せない", None)
     assert ok and inbox._releases(cur) == []   # 見送った版は本番待ちに出さない
 

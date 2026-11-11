@@ -165,7 +165,7 @@ def test_human_choice_flow(cur):
     with pytest.raises(ValueError):
         dl.choose(cur, REPO, ISSUE, "a", "builder")   # 1 度だけ
     assert dl.apply_choices(cur, gh, gh.comment, store.__getitem__) == 1
-    assert "id: b" in gh.body and "<p>b</p>" in gh.body and "人が選んだ" in gh.body
+    assert "id: b" in gh.body and "<p>b</p>" in gh.body and "オーナーが選んだ" in gh.body
     assert ("DELETE", "factory%3Adesign-choice") in gh.labels()
     assert dl.apply_choices(cur, gh, gh.comment, store.__getitem__) == 0
 

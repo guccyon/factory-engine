@@ -24,7 +24,7 @@ Claude Code への登録の例:
   desk_ticket           チケットの状態（進み具合・優先度・順番・作業中のジョブ・PR）
   desk_set_priority     明確な指示（「#812 を先に」）で優先度を変える。壁打ちを通さない
   inbox_list            受信トレイのうち、自分が答えてよい判断待ち（ADR 0034 の順番 2）
-  inbox_read            受信トレイの 1 件（問い・今の案・他の案・judge の見立てなど、答え方と推奨）
+  inbox_read            受信トレイの 1 件（問い・今の案・他の案・見立てなど、答え方と推奨）
   inbox_answer          受信トレイの 1 件に答える（本人がはっきり選んだときだけ）
 """
 from __future__ import annotations
@@ -95,7 +95,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "include_answered": {"type": "boolean", "default": False, "description": "回答済で反映を待っている件も入れる"}}}},
     {"name": "inbox_read",
-     "description": "受信トレイの 1 件を読む。detail に問い・今の案・他の案・judge の見立て・影響・推す案、answer に選択肢（options と extra の id）・"
+     "description": "受信トレイの 1 件を読む。detail に問い・今の案・他の案・見立て・影響・おすすめの案、answer に選択肢（options と extra の id）・"
                     "推奨・答えたときの作用（effect）・取り返しがつかないか（irreversible）が入る。判断の材料が足りなければ、url の PR の差分や"
                     "製品のリポジトリを調べて本人の問いに答える",
      "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}},

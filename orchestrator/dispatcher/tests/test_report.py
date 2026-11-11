@@ -133,7 +133,7 @@ def test_health_build_counts_the_day(cur):
     assert got[("inbox", "期間の終わりに残っていた件")] == 1
     assert got[("cost", "消費（API 単価に換算）")] == 2.0
     assert any(i.kind == "entry" and "マージ待ち" in i.label for s in rep.sections for i in s.items)
-    assert got[("line", "人の対応待ちで止まっていた時間")] == 240                   # マージ待ち 20〜24 時（一時停止は数えない）
+    assert got[("line", "対応待ちで止まっていた時間")] == 240                   # マージ待ち 20〜24 時（一時停止は数えない）
     assert got[("jobs", "途中終了したジョブ（ターンの上限など）")] == 0 and got[("ship", "マージした PR")] == 0
     report_health.assess(rep)
     assert rep.level == "warn" and [f["text"] for f in rep.findings] == ["ラインが動いていたのは 66.7% だけ"]   # 失敗の割合は 2 件なので見ない

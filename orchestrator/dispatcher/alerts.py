@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 
 import usage
 
-CAT_JA = {"env": "実行環境", "perm": "権限", "human": "人の判断待ち", "factory-bug": "工場の不具合", "ticket": "チケット",
+CAT_JA = {"env": "実行環境", "perm": "権限", "human": "判断待ち", "factory-bug": "工場の不具合", "ticket": "チケット",
           "external": "外部", "budget": "予算・上限", "idle": "ラインが空"}
 WHO_JA = {"owner": "オーナー", "builder": "建設者", "none": "対応は要らない"}
 # 並べる順（人の出番を先に、待てば戻るものを後に）
@@ -121,15 +121,15 @@ def _swap(cur, s: dict, a: dict, sid: str) -> None:
     cur.execute("select payload->>'target' as target from events where name='swap.requested' and id=%s", (int(sid) if sid.isdigit() else -1,))
     target = (cur.fetchone() or {}).get("target") or ""
     ver = esc.get("short") or target[:7]
-    reasons = [SWAP_ESCALATE_JA.get(e.get("id"), "人が確かめる決まりの変更") for e in esc.get("escalations") or []]
+    reasons = [SWAP_ESCALATE_JA.get(e.get("id"), "確認が要る決まりの変更") for e in esc.get("escalations") or []]
     files = sorted({f for e in esc.get("escalations") or [] for f in e.get("files") or []})
     a.update(group="工場の更新", who="owner", target={"label": f"更新の依頼 {sid}", "url": ""},
-             title=f"工場の更新（版 {ver or '不明'}）を自動では進めず、人の確認に回した",
+             title=f"工場の更新（版 {ver or '不明'}）を自動では進めず、確認に回した",
              todo="変更の中身を確かめてから、手で更新する。わからなければ建設者に「更新 " + sid + " を確かめて」と頼む")
     if reasons:
-        a["detail"] = [{"label": "人に回した理由", "text": "、".join(dict.fromkeys(reasons))}, {"label": "変わるファイル", "text": "、".join(files[:8])}]
+        a["detail"] = [{"label": "確認に回した理由", "text": "、".join(dict.fromkeys(reasons))}, {"label": "変わるファイル", "text": "、".join(files[:8])}]
     else:
-        a["detail"] = [{"label": "人に回した理由", "text": _plain(s.get("cause") or s.get("what"))}]
+        a["detail"] = [{"label": "確認に回した理由", "text": _plain(s.get("cause") or s.get("what"))}]
     a["links"] = [{"label": "受信トレイで見る", "href": f"/inbox/stoppage:{s['key']}", "nav": True}]
 
 
@@ -157,7 +157,7 @@ def describe(cur, s: dict) -> dict:
             pr = _pr(url) if url else "PR"
             a.update(group="PR が進めない" if prefix != "merge" else "判断待ち", target=_target(t) or ({"label": pr, "url": url} if url else None))
             if prefix == "merge":
-                a.update(who="owner", title=f"{pr} が人のマージを待っている（工場が自分でマージしない決まりの変更）",
+                a.update(who="owner", title=f"{pr} がマージを待っている（工場が自分でマージしない決まりの変更）",
                          todo=f"{pr} を見て、マージするか差し戻す")
             elif prefix == "sendback":
                 a.update(title=f"{pr} の検査の指摘を、自動では直しに回さなかった", todo="建設者が、直すか差し戻すかを決める")

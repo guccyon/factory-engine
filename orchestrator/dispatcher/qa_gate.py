@@ -283,7 +283,7 @@ def block(cur, release_id: str, by: str, via: str, note: str) -> tuple[bool, str
     if not g:
         return False, "この版には QA の関門がない"
     if not (note or "").strip():
-        return False, "どれをブロッカーにしたか、一言が要る"
+        return False, "どれをブロッカーにしたか、コメントが要る"
     _ev(cur, "qa.gate_blocked", {"release_id": release_id, "repo": g["repo"], "by": by, "via": via, "note": note.strip()[:500]},
         f"qa.gate_blocked:{release_id}")
     return True, f"{release_id} を本番に出さないことにした（修正は次の便で）"

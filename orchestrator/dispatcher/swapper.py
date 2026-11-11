@@ -198,15 +198,15 @@ class Swapper:
             raise Stop("DB の変更を含む（自律の範囲の外。承認してから流す）", escalate="db", detail={**plan, "sql": sql})
         esc = swap.escalations(files, lambda f: self.git("diff", prev, sha, "--", f), self.rules)
         if esc:
-            raise Stop("人に回す変更を含む: " + "、".join(f"{e['why']}（{', '.join(e['files'][:3])}）" for e in esc), escalate="human",
-                       waiting_for="差分を確かめ、人が手で更新する", detail={**plan, "escalations": esc})
+            raise Stop("確認が要る変更を含む: " + "、".join(f"{e['why']}（{', '.join(e['files'][:3])}）" for e in esc), escalate="human",
+                       waiting_for="差分を確かめ、手で更新する", detail={**plan, "escalations": esc})
         with self.db() as conn, conn.cursor() as cur:
             if ship.pending(cur):
                 raise Stop("出荷の処理中（終わってから更新する）")
             if kind != "code" and self.req.get("source", "manual") != "manual" and unattended(cur):
                 # Issue の郵便受けからの依頼で、差分が一時停止を要る種類だった。一時停止を伴う更新は人が並走する時間帯だけ（決めどころ S4）。
                 # 手で打った swap run は、打った人が近くにいるので止めない
-                raise Stop(f"一時停止を伴う更新（判定 {kind}）は、人が並走する時間帯（attended）だけ自動で始める。いまは全面委任の時間帯",
+                raise Stop(f"一時停止を伴う更新（判定 {kind}）は、並走モードの時間帯（attended）だけ自動で始める。いまは全自動モードの時間帯",
                            detail={**plan, "deferred": "unattended"})
         self.snapshot_tags(prev[:7])
         self.build(sha)
@@ -242,7 +242,7 @@ class Swapper:
                 args += ["--env-file", env_file]
             r = self.run(args + ["config", "-q"], cwd=self.orch, check=False, timeout=60)
             if r.returncode != 0:
-                raise Stop("新しい版の compose.yaml が今の .env で通らない（足りない環境変数は人が入れる）", escalate="human",
+                raise Stop("新しい版の compose.yaml が今の .env で通らない（足りない環境変数は手で入れる）", escalate="human",
                            waiting_for=".env に値を足してから依頼し直す", detail={"error": (r.stderr or r.stdout).strip()[-400:]})
             self.run(["bash", "scripts/build.sh"], cwd=f"{src}/orchestrator", timeout=5400)
             self.docker("run", "--rm", "--entrypoint", "python", f"factory-dispatcher:p0-{sha[:7]}", "-m", "compileall", "-q", "/app", timeout=120)

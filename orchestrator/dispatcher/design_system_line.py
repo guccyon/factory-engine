@@ -69,7 +69,7 @@ def request_choice(cur, repo: str, issue: int, corr: str, job_id: int, aid: int,
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('design_system.awaiting_choice',%s,%s,%s)",
                 (corr, job_id, Jsonb({"repo": repo, "issue": issue, "concept_artifact_id": aid, "choice_id": cid, "recommended": c.get("recommended")})))
     swap_label(repo, issue, [RUNNING_LABEL], [CHOICE_LABEL])
-    lines = ["デザインシステムのデザイナー役が、コンセプトとトーン＆マナーの案を作りました。操業コンソールの「人の選択」で 1 つ選んでください"
+    lines = ["デザインシステムのデザイナー役が、コンセプトとトーン＆マナーの案を作りました。操業コンソールの受信トレイ（選択待ち）で 1 つ選んでください"
              "（どれも違うときは一言を添えて戻すと、作り直します）。", ""]
     for x in items:
         rec = "（推奨）" if x.get("id") == c.get("recommended") else ""

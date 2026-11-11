@@ -122,7 +122,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl desk from-issue <owner/repo#番号>              # clarify で確定した Issue などを窓口の依頼として開き直す（相談役が下書きを出す）
 
 モードと判断（ADR 0006）:
-  factoryctl mode show                                          # いまのモード（人が並走 attended・全面委任 unattended）と決め手
+  factoryctl mode show                                          # いまのモード（並走モード attended・全自動モード unattended）と決め手
   factoryctl mode set attended|unattended [--until ISO]       # 期限まで（なければ次に切り替えるまで）時間帯と既定より優先
   factoryctl judgment list [--ungraded] [--limit N]             # 工場の判断の記録（--ungraded は人がまだ採点していないもの）
   factoryctl judgment recategorize <remap.yaml>                 # 類型の振り直し（definitions/judgment-remap-*.yaml。元の類型は category_v1 に残す）

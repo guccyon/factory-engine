@@ -14,7 +14,7 @@ reports:
       - { id: line,  ja: ライン,     parties: [provider, business_owner] }   # 動いていた割合、停止の件数、戻るまでの時間、開いている停止
       - { id: jobs,  ja: ジョブ,     parties: [provider, business_owner] }   # 終わったジョブの成否、途中終了、使用量の上限、実行時間・待ち時間
       - { id: ship,  ja: 出荷,       parties: [provider, business_owner] }   # マージした PR・閉じた PR・マージできた割合・切った版
-      - { id: inbox, ja: 人の判断待ち, parties: [provider, business_owner] }   # 受信トレイに残っている件数、判断までの待ち時間
+      - { id: inbox, ja: 判断待ち, parties: [provider, business_owner] }   # 受信トレイに残っている件数、判断までの待ち時間
       - { id: cost,  ja: 費用,       parties: [provider, business_owner] }   # API 単価に換算した消費、PR 1 本あたり、トークン、予算の上限で止まった時間（R5: 操業レポートにだけ載せる）
       - { id: stages, ja: 工程と ROI, parties: [provider] }                # 直近 14 日の工程ごとの時間・費用のボトルネック、待ちの割合、実装の一発で通った割合と混入した Defect、モデルの試しの比べ（2026-11-08 オーナー。モデルの既定値を替える判断の根拠。提供元の中の話なので事業主には出さない）
       - { id: patrols, ja: 見回り, parties: [provider] }               # 見回りごとの実施の回数・費用・可用性（停止 patrol:<id> が開いていなかった割合）。ADR 0050、2026-11-11 オーナー。工場の中の話なので事業主には出さない

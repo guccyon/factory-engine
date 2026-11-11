@@ -241,12 +241,12 @@ def fix_of(p: dict, decision: str, note: str) -> dict | None:
     if p.get("subject") == "defect" and decision == "fix":
         d = p.get("defect") or {}
         return {**{k: d.get(k) for k in ("rubric_id", "severity", "location", "evidence", "remediation_hint")},
-                **({"remediation_hint": f"{d.get('remediation_hint') or ''}\n人の一言: {note}".strip()} if note else {})}
+                **({"remediation_hint": f"{d.get('remediation_hint') or ''}\nオーナーのコメント: {note}".strip()} if note else {})}
     want = p.get("recommended_replacement") if decision == "replace" else None
-    hint = "\n".join(x for x in (f"人が選んだ案: {want}" if want else "", f"人の一言: {note}" if note else "") if x)
+    hint = "\n".join(x for x in (f"オーナーが選んだ案: {want}" if want else "", f"オーナーのコメント: {note}" if note else "") if x)
     return {"rubric_id": "human_decision", "severity": "major", "location": f"判断: {p.get('question') or ''}"[:300],
-            "evidence": f"judge が人に回した判断に、人が直す答えを出した（{decision}）。今の差分の案: {p.get('decision') or '（記録なし）'}"[:MAX_LEN],
-            "remediation_hint": hint[:MAX_LEN] or "人の答えに沿って直す"}
+            "evidence": f"judge がオーナーに回した判断に、直す回答が出た（{decision}）。今の差分の案: {p.get('decision') or '（記録なし）'}"[:MAX_LEN],
+            "remediation_hint": hint[:MAX_LEN] or "オーナーの回答に沿って直す"}
 
 
 def decide(cur, aid: int, decision: str, by: str, via: str, note: str = "") -> tuple[bool, str]:
@@ -271,7 +271,7 @@ def decide(cur, aid: int, decision: str, by: str, via: str, note: str = "") -> t
                                              "decision": decision, "note": note or None, "by": by, "via": via, "fix": fix})))
     msg = "直しを同じ担当に渡す" if fix else "今の差分のままにする"
     if p.get("pr_url") and decisions_settled(cur, p["pr_url"]):
-        stoppage.close_stoppage(cur, f"judge:{p['pr_url']}", remedy=f"人が人に回した判断に答えた（{via}）", closed_by=by[:80] or "inbox")
+        stoppage.close_stoppage(cur, f"judge:{p['pr_url']}", remedy=f"オーナーが判断に答えた（{via}）", closed_by=by[:80] or "inbox")
         msg += "。この PR の判断はすべて決まった"
     return True, msg
 

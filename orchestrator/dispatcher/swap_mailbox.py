@@ -151,7 +151,7 @@ def submit(cur, comment, set_labels, rp, n, f, who, note, unattended, log) -> in
     if f["kind"] != "code" and unattended():
         if not _noted(cur, ref, "unattended"):
             _note(cur, ref, "unattended")
-            comment(rp, n, f"一時停止を伴う更新（`{f['kind']}`）なので、人が並走する時間帯（attended）に入ってから始めます。")
+            comment(rp, n, f"一時停止を伴う更新（`{f['kind']}`）なので、並走モードの時間帯（attended）に入ってから始めます。")
         return None
     act = swap.active(cur)
     if act:
@@ -214,7 +214,7 @@ def report(cur, gh, comment, set_labels, log=print) -> None:
                         (REPORTED, swap.corr(s["id"]), Jsonb({"swap_id": s["id"], "event_id": e["id"]})))
             if e["name"] == "swap.preflight_failed" and (e["payload"] or {}).get("deferred") == "unattended":
                 comment(rp, n, f"更新 {s['id']}: 差分の判定が一時停止を伴う種類（`{e['payload'].get('kind')}`）でした。"
-                               "人が並走する時間帯（attended）に入ったら、この Issue のまま依頼し直します。")
+                               "並走モードの時間帯（attended）に入ったら、この Issue のまま依頼し直します。")
                 continue
             comment(rp, n, step_text(s, e))
             if e["name"] == "swap.completed":
@@ -240,7 +240,7 @@ def step_text(s: dict, e: dict) -> str:
     if why:
         text += f"\n\n> {redact(str(why))[:600]}"
     if e["name"] in ("swap.escalated", "swap.failed"):
-        text += "\n\n人の確認が要ります（停止の記録か受信トレイに出しています）。直した版で依頼し直すときは、ラベル `factory:swap` を付け直してください。"
+        text += "\n\n確認が要ります（停止の記録か受信トレイに出しています）。直した版で依頼し直すときは、ラベル `factory:swap` を付け直してください。"
     elif e["name"] in ("swap.rolled_back", "swap.preflight_failed"):
         text += "\n\n工場は前の版のまま動いています。直した版で依頼し直すときは、ラベル `factory:swap` を付け直してください。"
     return text

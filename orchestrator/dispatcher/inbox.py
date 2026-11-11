@@ -7,7 +7,7 @@
 - stoppage: 開いている停止のうち分類が human のもの（マージ待ち・judge が人に回した・差し戻しを流さなかった・ラインの一時停止）
 - choice: 開いている人の選択（HumanChoice。画面の案の選択・抜き取り・実装後の画面のキャプチャ）
 - release: staging で確かめた版がまだ本番に出ていない（「本番に出す」を押すのは人。ADR 0012）
-- judgment: judge が人に回した判断（停止 judge: の PR の、人の判断がまだの問い 1 つずつ。今の案・他の案・judge の見立てと推奨を detail に）
+- judgment: judge が人に回した判断（停止 judge: の PR の、人の判断がまだの問い 1 つずつ。今の案・他の案・見立てと推奨を detail に）
 - task: 他の工程が request() で積んだ依頼（レビューページの承認待ち、着手判定で起票者に返した問いなど）。resolve() で消える
 
 1 件の形: key（通知の重複を防ぐ一意の名前）・kind・who（誰の出番か）・title・action（何をすればよいか）・url・since・age_sec・ref・
@@ -35,7 +35,7 @@ WHO = {
 }
 CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り",
                  "exit_capture": "実装後の画面"}   # choice.KINDS と同じ
-KINDS = {"stoppage": "人の判断待ちの停止", "judgment": "judge が人に回した判断", "choice": "人の選択", "release": "本番への出荷", "task": "依頼"}
+KINDS = {"stoppage": "対応待ち", "judgment": "判断待ち", "choice": "選択待ち", "release": "リリース承認待ち", "task": "作業依頼"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
 MAX_LEN = 300
@@ -47,8 +47,8 @@ VIAS = ("console", "review_page", "factoryctl", "mcp", "github", "slack")   # �
 EXTRA = {"return": {"id": "return", "label": "どれも違う（戻す）", "note_required": True},
          "flag": {"id": "flag", "label": "違和感の印", "note_required": True, "closes": False}}   # 印は件を閉じない（何度でも付けられる）
 CHOICE_EFFECTS = {
-    "design_variants": "選んだ体験の案で実装のタスクに切って投入する。戻すと一言を直しの指摘にしてデザイナー役が作り直す",
-    "design_look": "選んだ見た目の案を実装に反映する。戻すと一言を直しの指摘にしてデザイナー役が作り直す",
+    "design_variants": "選んだ体験の案で実装のタスクに切って投入する。戻すとコメントを直しの指摘にしてデザイナー役が作り直す",
+    "design_look": "選んだ見た目の案を実装に反映する。戻すとコメントを直しの指摘にしてデザイナー役が作り直す",
     "concept_tone": "選んだコンセプトとトーン＆マナーでデザインシステムの線が進む。戻すと作り手に作り直しを頼む",
     "taste_sample": "選んだ案を内部品質の教師信号として残す。戻すと作り手に戻す",
 }
@@ -65,7 +65,7 @@ DESK_ANSWERS = {
     "desk_receipt": {"options": [{"id": "accept", "label": "受け取った"}],
                      "extra": [{"id": "more", "label": "続きを頼む", "note_required": True},
                                {"id": "return", "label": "差し戻す（頼んだことと違う）", "note_required": True}],
-                     "effect": "受け取ったら依頼を完了にする。続き・差し戻しは一言を添えて同じ会話で振り分けからやり直す"},
+                     "effect": "受け取ったら依頼を完了にする。続き・差し戻しはコメントを添えて同じ会話で振り分けからやり直す"},
     "desk_decline": {"options": [{"id": "accept", "label": "納得した"}],
                      "extra": [{"id": "more", "label": "別案で進める（別の依頼として開く）"},
                                {"id": "return", "label": "断りを差し戻す", "note_required": True}],
@@ -182,13 +182,13 @@ def _sendback_answer(cur, pr_url: str, who: str) -> dict:
     options = ([{"id": "flow", "label": f"差し戻しを流す（#{sendback.fix_issue(cur, pr_url).rsplit('#', 1)[-1]}）"}]
                if sendback.fix_issue(cur, pr_url) else [])
     options.append({"id": "accept", "label": "受け入れて先へ進める"})
-    return {"type": "choose", "options": options, "recommended": options[0]["id"], "extra": [], "note_hint": "一言（任意。受け入れる理由など）",
+    return {"type": "choose", "options": options, "recommended": options[0]["id"], "extra": [], "note_hint": "コメント（任意。受け入れる理由など）",
             "effect": SENDBACK_EFFECT, "allowed": [who], "target": ("sendback", pr_url)}
 
 
 JUDGMENT_EFFECT = ("答えを判断として記録する。この PR の判断がすべて決まったら停止を閉じてマージの判定に進める。"
                    "直す答えは同じ担当の続きのジョブで直し、もう一度検査と judge を通す")
-JUDGMENT_NOTE = "一言（別の答えでは必須。どう直すか）"
+JUDGMENT_NOTE = "コメント（別の回答では必須。どう直すか）"
 CATEGORY_JA = {"ui": "画面と操作", "aesthetic": "見た目と印象", "system_interface": "境界と契約", "implementation": "実装の選び方",
                "error_handling": "失敗の扱い", "data": "データ", "scope": "範囲", "inspection": "検査の指摘", "unknown": "判断"}
 
@@ -205,10 +205,10 @@ def _judgment_items(cur, s: dict, url: str, who: str) -> list[dict]:
         d = p.get("defect") or {}
         detail = ([{"label": "指摘", "text": _clip(d.get("evidence"), 600)}, {"label": "直し方の手がかり", "text": _clip(d.get("remediation_hint"), 600)}]
                   if defect else
-                  [{"label": "今の案（ワーカーの仮決め）", "text": _clip(p.get("decision"), 600)}, {"label": "他の案", "text": _clip(e.get("alternatives"), 600)}])
-        detail += [{"label": "judge の見立て", "text": _clip(p.get("interpretation"), 800)}, {"label": "影響", "text": _clip(p.get("impact"), 400)}]
+                  [{"label": "今の案", "text": _clip(p.get("decision"), 600)}, {"label": "他の案", "text": _clip(e.get("alternatives"), 600)}])
+        detail += [{"label": "見立て", "text": _clip(p.get("interpretation"), 800)}, {"label": "影響", "text": _clip(p.get("impact"), 400)}]
         if p.get("recommended_replacement"):
-            detail.append({"label": "judge が推す案", "text": _clip(p["recommended_replacement"], 600)})
+            detail.append({"label": "おすすめの案", "text": _clip(p["recommended_replacement"], 600)})
         rec = p.get("recommend")
         if defect:
             options = [{"id": "fix", "label": "指摘どおり直す"}, {"id": "dismiss", "label": "直さない（今のままでよい）"}]
@@ -216,16 +216,16 @@ def _judgment_items(cur, s: dict, url: str, who: str) -> list[dict]:
         else:
             options = [{"id": "keep", "label": "今の案のまま"}]
             if p.get("recommended_replacement"):
-                options.append({"id": "replace", "label": "judge が推す案に直す"})
+                options.append({"id": "replace", "label": "おすすめの案に直す"})
             recommended = "replace" if rec == "replace" and p.get("recommended_replacement") else "keep" if rec == "adopt" else None
         label = {o["id"]: o["label"] for o in options}.get(recommended)
         out.append({"key": f"judgment:{e['id']}", "kind": "judgment", "who": who,
                     "title": f"{pr} の判断（{CATEGORY_JA.get(p.get('category'), p.get('category') or '判断')}）: " + _clip(p.get("question"), 200),
-                    "action": "今の案・他の案・judge の見立てを読んで答える" + (f"（推奨: {label}）" if label else ""),
+                    "action": "今の案・他の案を読んで答える" + (f"（推奨: {label}）" if label else ""),
                     "detail": [x for x in detail if x["text"]], "url": url, "since": e["created_at"] or s["started_at"],
                     "ref": (e["correlation_id"] or s["correlation_id"] or ":").split(":", 1)[-1], "also": [],   # 停止の key を別名にしない（1 つ答えると同じ PR の残りの問いまで答え済みに見える）
                     "answer": {"type": "choose", "options": options, "recommended": recommended,
-                               "extra": [{"id": "change", "label": "別の答え（一言で直し方を書く）", "note_required": True}],
+                               "extra": [{"id": "change", "label": "別の回答", "note_required": True}],
                                "note_hint": JUDGMENT_NOTE, "effect": JUDGMENT_EFFECT, "allowed": [who], "target": ("judgment", e["id"])}})
     return out
 
@@ -237,12 +237,12 @@ def _choice_item(r: dict) -> dict:
     # 体験の承認は PO、見た目の判断はデザインのチーフ（ADR 0026 の 4・6。Gen1 はどちらもオーナーが兼ねる）
     # 実装後の画面への違和感の印（ADR 0025 の 4）は見た目の判断なのでデザインのチーフ
     who = "po" if p.get("kind") == "design_variants" else "design_chief" if p.get("kind") in ("design_look", "concept_tone", "exit_capture") else "owner"
-    action = ("画面を見て、違和感があれば画面ごとに一言の印を付ける。なければ「見た」で閉じる" if p.get("kind") == "exit_capture" else
+    action = ("画面を見て、違和感があれば画面ごとにコメントで印を付ける。なければ「見た」で閉じる" if p.get("kind") == "exit_capture" else
               "案を選ぶか、どれも違えば戻す" + (f"（推奨 {p['recommended']}）" if p.get("recommended") else ""))
     uxspec = (p.get("subject") or {}).get("uxspec")
     also = [f"task:{'design_review' if p.get('kind') == 'design_variants' else 'design_look'}:{uxspec}"] if design and uxspec else []
     return {"key": f"choice:{r['id']}", "kind": "choice", "who": who,
-            "title": f"{CHOICE_TITLES.get(p.get('kind'), '人の選択')}: " + _clip(p.get("question"), 200),
+            "title": f"{CHOICE_TITLES.get(p.get('kind'), '選択')}: " + _clip(p.get("question"), 200),
             "action": action,
             "url": f"/#choice-{r['id']}", "since": r["created_at"], "ref": (r["correlation_id"] or ":").split(":", 1)[-1],
             "answer": _choice_answer(r["id"], p, who), "also": also,
@@ -263,10 +263,10 @@ def _choices(cur) -> list[dict]:
         head = "・".join(f"#{n}" for n in prs[-3:]) + (f" ほか {len(prs) - 3} 件" if len(prs) > 3 else "")
         out.append({"key": "choice:exit_capture", "kind": "choice", "who": "design_chief",
                     "title": f"{CHOICE_TITLES['exit_capture']}: {len(captures)} 件（{head}）",
-                    "action": "画面を見て、違和感があれば画面ごとに一言の印を付ける。なければ「見た」で閉じる（任意）",
+                    "action": "画面を見て、違和感があれば画面ごとにコメントで印を付ける。なければ「見た」で閉じる（任意）",
                     "url": "/#choices", "since": min(r["created_at"] for r in captures), "ref": "", "once": True, "uxspec": None,
                     "answer": {"type": "ack", "options": [{"id": "seen", "label": f"{len(captures)} 件とも見た（違和感なし）"}], "extra": [],
-                               "effect": f"実装後の画面 {len(captures)} 件を、違和感のなかった画面としてまとめて閉じる（印は画面ごとに下の人の選択で付ける）",
+                               "effect": f"実装後の画面 {len(captures)} 件を、違和感のなかった画面としてまとめて閉じる（印は画面ごとに下の選択で付ける）",
                                "allowed": ["design_chief"], "target": ("captures", [r["id"] for r in captures])}})
     return out
 
@@ -527,7 +527,7 @@ def _answer(cur, key, option, by, via, note, raw, confidence, on, explicit, role
         if o is None:
             return "invalid", f"答えは {' / '.join(opts)} のどれか"
         if o.get("note_required") and not note.strip():
-            return "invalid", "一言（理由・違和感）が要る"
+            return "invalid", "コメント（理由・違和感）が要る"
         if spec.get("irreversible") and not explicit:
             return "invalid", "取り返しのつかない作用なので、ボタンか明示した答え（approve）で確定する"
         if role is not None and role not in (spec.get("allowed") or [it["who"]]):
