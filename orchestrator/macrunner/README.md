@@ -57,9 +57,9 @@ docker compose exec dispatcher factoryctl runner check   # 工場の側で
 2. Firebase のプロジェクトを作り、Android アプリを足す（パッケージ名は作業場で作る applicationId。rally の生徒アプリは `jp.rally.rally_student_app`）。App Distribution の「テスター」でグループ（例 `testers`）を作り、自分のメールを足す
 3. Firebase CLI を入れてログインする: `npm install -g firebase-tools && firebase login`（node を mise などで入れているときは、node の版を替えると launchd から firebase が見えなくなる。替えたら install し直す）
 4. 署名の鍵を作る: `scripts/macrunner.sh android-key`（鍵は `~/.config/factory/android-upload.jks`、パスワードはキーチェーン。鍵はバックアップする）
-5. 宛先を入れて install し直す: `MAC_RUNNER_FIREBASE_APP_ID=1:…:android:… scripts/macrunner.sh install`（グループが `testers` でなければ `MAC_RUNNER_FIREBASE_GROUPS` も）
+5. `scripts/macrunner.sh install` し直す。宛先（Firebase のアプリの ID とグループ）は操業コンソールの出荷の「配布先」で入れる（Mac の `MAC_RUNNER_FIREBASE_APP_ID` でもよい。工場の宛先が優先）
 
-配るとき（工場の側）: `docker exec factory-dispatcher-1 factoryctl distribute --notes "変更点"`。Mac の画面に確かめの窓が出るので「配布する」を押す（5 分押さなければ何もせずにやめる）。数分〜十数分で、テスターにメールが届く。結果は `factoryctl distribute list`。
+配るとき: 操業コンソールの出荷で「配布する」を押す（`docker exec factory-dispatcher-1 factoryctl distribute --notes "変更点"` でもよい）。手順の全体は操業コンソールのヘルプの「モバイルの配布」。Mac の画面に確かめの窓が出るので「配布する」を押す（5 分押さなければ何もせずにやめる）。数分〜十数分で、テスターにメールが届く。結果は `factoryctl distribute list`。
 
 ## できることの範囲
 

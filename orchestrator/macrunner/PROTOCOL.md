@@ -30,7 +30,7 @@
 |---|---|
 | `sim_devices` | シミュレーターの UDID・名前・状態・OS の版 |
 | `app_build` / `build_status` | ビルドの状態、コミット、bundle id、ビルドのログの末尾（1500 文字） |
-| `preview_distribute` / `build_status` | 配布の状態（`waiting_for_human` → `building` → `distributed` か `failed`）と段（`attend`・`build`・`sign`・`upload`）、コミット、ビルド番号、APK の SHA-256、配った相手のグループ、配布の道具のログの末尾。署名の鍵・パスワード・配布先のログインは返さない |
+| `preview_distribute` / `build_status` | 配布の状態（`waiting_for_human` → `building` → `distributed` か `failed`）と段（`attend`・`build`・`sign`・`upload`）、コミット、ビルド番号、APK の SHA-256、配った相手のグループ、配布の道具のログの末尾。署名の鍵・パスワード・配布先のログインは返さない。宛先（`firebase_app_id`・`groups`）は工場が渡せ、渡さなければ Mac の設定を使う |
 | `app_install` / `app_launch` / `app_terminate` / `sim_*` | 成否と UDID・bundle id |
 | `screenshot` | シミュレーターの画面の PNG |
 | `ui_describe` | シミュレーターの画面の要素（文言・座標） |

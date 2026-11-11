@@ -16,6 +16,8 @@
   POST /api/releases/approve              {"release_id"} 承認ボタン。staging で確かめた版を prod に出す（ADR 0012）
   POST /api/releases/rollback             {"repo", "env"} その環境を 1 つ前の版に戻す
   POST /api/releases/reseed               {"repo"} 触れる環境（staging）の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env）
+  POST /api/distribute                    {"app", "notes"} モバイルアプリを審査前の配布先（Firebase）に配る依頼（ADR 0047）。dispatcher が拾い、Mac の画面で人が「配布する」を押すと進む
+  POST /api/distribute/target             {"app", "firebase_app_id", "groups"} 配布先（宛先）を覚える。アプリの ID を空にすると Mac ランナーの設定に戻す
   POST /api/budget                        {"mode"?: "daily"|"weekday", "daily_usd"?, "weekday_usd"?: {"mon".."sun"}, "reason"?} 使用量の予算の宣言（usage.set_budget）。
                                           渡したものだけ変える。今の決め方は /api/state の factory.budget
   POST /api/line/scale                    {"workers"?, "tickets"?, "governance"?, "desk"?, "reason"?} ラインの流量の宣言（ADR 0028。factoryctl line scale と同じ）。
@@ -67,6 +69,7 @@ import reference
 import rerun
 import review_page
 import runners
+import distribution
 import ship
 import touch
 import usage
@@ -293,10 +296,25 @@ def releases(cur) -> list[dict]:
         if t:   # 触れる環境の入口（URL・QR・ログインの手がかり）。QR は工場の中で作る（外部のサービスに依存しない）
             t = {k: t.get(k) for k in ("release_id", "env", "reachable_from_phone", "accounts", "note", "at")} | {
                 "entries": [{**e, "qr_svg": touch.qr_svg(e["url"]) if e.get("qr") else None} for e in t.get("entries") or []]}
-        out.append({"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(cur, repo), "stage": ship.stage_of(cur, repo), "touch": t,
-                    "last": {"name": last["name"], "at": iso(last["occurred_at"]), **{k: last["payload"].get(k) for k in
-                             ("release_id", "env", "seconds", "from", "error")}} if last else None})
+        r = {"repo": repo, "environments": st["environments"], "pending": pending, "prod_held": ship.prod_held(cur, repo), "stage": ship.stage_of(cur, repo), "touch": t,
+             "last": {"name": last["name"], "at": iso(last["occurred_at"]), **{k: last["payload"].get(k) for k in
+                      ("release_id", "env", "seconds", "from", "error")}} if last else None}
+        r["targets"] = [{"kind": "web", "label": "Web", "release": dict(r)}] + [previews(cur, app) for app in distribution.apps_for(repo)]
+        out.append(r)
     return out
+
+
+def previews(cur, app: str) -> dict:
+    """審査前の配布（ADR 0047）の出荷先のカード: 直近の配布と、いま動いているか"""
+    rows = distribution.recent(cur, app, limit=5)
+    items = [{"id": x["id"], "at": iso(x["occurred_at"]), "by": x["req"].get("by"), "via": x["req"].get("via"),
+              "channel": x["req"].get("channel"), "notes": x["req"].get("notes") or "",
+              "state": "distributed" if x["result"] == "ship.preview_distributed" else "failed" if x["result"] else "running" if x["started"] else "queued",
+              **{k: (x["res"] or {}).get(k) for k in ("sha", "build_number", "stage", "error", "seconds")}} for x in rows]
+    t = distribution.target(cur, app)
+    return {"kind": "preview", "label": "Android（審査前の配布・Firebase）", "app": app, "channel": "firebase_android",
+            "target": {**t, "at": iso(t["at"])} if t else None,
+            "busy": any(i["state"] in ("queued", "running") for i in items), "items": items}
 
 
 # ------------------------------------------------------------------ 操作（ops を通す）
@@ -341,6 +359,13 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
     if path == "/api/releases/reseed":
         ok, msg = ship.request_reseed(cur, str(body.get("repo") or ""), "staging", by, "console")
         return (200, {"message": msg}) if ok else (409, {"error": msg})
+    if path == "/api/distribute/target":   # 配布先（宛先）を覚える（ADR 0047）。アプリの ID を空にすると Mac の設定に戻す
+        ok, msg = distribution.set_target(cur, str(body.get("app") or ""), str(body.get("firebase_app_id") or ""), str(body.get("groups") or ""), by)
+        return (200, {"message": msg}) if ok else (400, {"error": msg})
+    if path == "/api/distribute":   # 審査前の配布（ADR 0047）。依頼を書くだけ。dispatcher が拾い、Mac の画面で人が「配布する」を押すと進む
+        notes = str(body.get("notes") or "").strip()
+        ok, res = distribution.request(cur, str(body.get("app") or ""), str(body.get("channel") or "firebase_android"), "main", notes, None, by, "console")
+        return (200, {"request_id": res, "message": "依頼した。Mac の画面に確かめの窓が出たら「配布する」を押す"}) if ok else (409, {"error": res})
     if path == "/api/line/scale":   # ラインの流量の宣言（ADR 0028）。{workers, tickets, governance, desk} のうち渡したものだけ変える
         try:
             line.scale(cur, by, reason, **{k: body.get(k) for k in line.FIELDS})

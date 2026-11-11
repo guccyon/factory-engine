@@ -20,7 +20,7 @@ Gen2 のパイロットの企業は iPhone アプリを出しており、工場�
 | 配ってよいかの最後の判断 | Mac の前の人 | Mac の画面の確かめの窓（「配布する」） |
 | 署名の鍵 | 製品の持ち主 | Mac（`~/.config/factory/android-upload.jks`、パスワードはキーチェーン） |
 | 配布先へのログイン | 製品の持ち主 | Mac（`firebase login`） |
-| 配布先の宛先（アプリの ID・テスターのグループ） | 製品の持ち主 | Mac のランナーの設定（`MAC_RUNNER_FIREBASE_APP_ID`・`MAC_RUNNER_FIREBASE_GROUPS`） |
+| 配布先の宛先（アプリの ID・テスターのグループ） | 製品の持ち主 | 工場（操業コンソールの出荷の「配布先」。2026-11-12 追記）。なければ Mac のランナーの設定（`MAC_RUNNER_FIREBASE_APP_ID`・`MAC_RUNNER_FIREBASE_GROUPS`）。宛先は秘密ではなく、上げるのは Mac の持ち主の `firebase login` なので、持ち主が触れないアプリには配れない。確かめの窓に宛先を出す |
 | 依頼と結果の記録 | 工場 | events（`ship.preview_*`） |
 
 鍵・パスワード・ログインは工場（Docker・DB・ワーカー）に入らない。工場が知るのは「配ったか、どのコミットを、どの番号で、APK の SHA-256 は何か、誰に」だけ。
@@ -67,7 +67,12 @@ events: ship.preview_distributed / ship.preview_failed                          
 | `ship.preview_distributed` | request_id, app, channel, sha, build_number, sha256, testers, runner, build_id, seconds |
 | `ship.preview_failed` | request_id, app, channel, stage（`request` / `attend` / `build` / `sign` / `upload` / `timeout`）, error, runner, build_id, seconds |
 
-**入口** `factoryctl distribute [--channel ..] [--app ..] [--ref ..] [--notes ..] [--define K=V].. [--timeout 秒]` と `factoryctl distribute list`。
+**入口**（2026-11-12 追記。オーナー: ターミナルの操作はできるだけ避け、コンソールで押す・Mac で押すの 2 回にする）
+
+- 操業コンソールの出荷のページの「配布する」（`POST /api/distribute`）。依頼を書くだけで、dispatcher の `distribute_loop` が拾って動かす。拾うときに `ship.preview_started`（dedupe_key `dist-start:<id>`）を書いて 1 回だけ動かす。同じアプリの配布が終わるまで次の依頼は断る
+- 配布先（宛先）は同じページで入れる（`POST /api/distribute/target`、events の `ship.preview_target_set`）。依頼のときの宛先を依頼の payload に写し、ランナーに `firebase_app_id`・`groups` で渡す
+- `factoryctl distribute [--channel ..] [--app ..] [--ref ..] [--notes ..] [--define K=V].. [--timeout 秒]` と `factoryctl distribute list`（依頼を書いてその場で動かす）
+- Mac と Firebase の準備の手順は操業コンソールのヘルプの「モバイルの配布」（/help/mobile）
 
 ### 4. チャネルの足し方
 
