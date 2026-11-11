@@ -166,8 +166,10 @@ def prompt(inp: dict) -> str:
 
 作業ディレクトリに材料があります。読むだけにし、何も書き換えないでください。
 - conversation.md: 依頼者との会話（問い合わせの本文と、それまでのやりとり）
-- records.json: 工場の制御プレーンの記録。どの記録にも参照の id（"id": "ticket:owner/repo#12" "job:345" "event:678" "stoppage:…" "report:…" "line:status" "activity:7d"）がある
+- records.json: 工場の制御プレーンの記録。どの記録にも参照の id（"id": "ticket:owner/repo#12" "job:345" "event:678" "stoppage:…" "report:…" "roadmap:…" "line:status" "activity:7d"）がある
   - line: ラインの宣言（desired）と今動いている数（running）
+  - roadmap: 工場の建設のロードマップの各項目の現在値（最新の建設日報が測った値。as_of の時点）。段階ごとの項目の数は item_count、
+    項目の値は items[].value。工場の建設の進みを聞かれたら、項目の数と値はここから写す（factory/roadmap.yaml の定義を自分で数え直さない）
   - tickets: 流れている・投入待ちのチケット（優先度・保留・依存待ち）。recently_closed: 30 日以内に閉じたもの
   - open_stoppages / recent_stoppages: 開いている停止と、7 日以内に閉じた停止
   - activity_7d: 7 日の日ごとのジョブの成否・費用とマージの数
