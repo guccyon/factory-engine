@@ -55,7 +55,7 @@ docker compose exec dispatcher factoryctl runner check   # 工場の側で
 
 1. Android Studio を入れ、Android SDK を入れる（`flutter doctor` の Android の行が緑になるまで）
 2. Firebase のプロジェクトを作り、Android アプリを足す（パッケージ名は作業場で作る applicationId。rally の生徒アプリは `jp.rally.rally_student_app`）。App Distribution の「テスター」でグループ（例 `testers`）を作り、自分のメールを足す
-3. Firebase CLI を入れてログインする: `npm install -g firebase-tools && firebase login`
+3. Firebase CLI を入れてログインする: `npm install -g firebase-tools && firebase login`（node を mise などで入れているときは、node の版を替えると launchd から firebase が見えなくなる。替えたら install し直す）
 4. 署名の鍵を作る: `scripts/macrunner.sh android-key`（鍵は `~/.config/factory/android-upload.jks`、パスワードはキーチェーン。鍵はバックアップする）
 5. 宛先を入れて install し直す: `MAC_RUNNER_FIREBASE_APP_ID=1:…:android:… scripts/macrunner.sh install`（グループが `testers` でなければ `MAC_RUNNER_FIREBASE_GROUPS` も）
 

@@ -70,7 +70,7 @@ EOF
     ;;
   android-key)
     # 鍵は Mac にだけ置く。パスワードは乱数で作ってキーチェーンに入れ、ランナーは配布のたびにキーチェーンから読む（工場には渡さない）
-    [ -e "$keystore" ] && { echo "もうある: $keystore（作り直すと、配ったアプリの更新ができなくなる。消すのは人の判断で）"; exit 1; }
+    [ -e "$keystore" ] && { echo "もうある: ${keystore}（作り直すと、配ったアプリの更新ができなくなる。消すのは人の判断で）"; exit 1; }
     command -v keytool >/dev/null || { echo "keytool が見つからない（Android Studio の JDK。例: PATH=\"/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin:\$PATH\"）"; exit 1; }
     mkdir -p "$(dirname "$keystore")" && chmod 700 "$(dirname "$keystore")"
     FACTORY_KS_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"; export FACTORY_KS_PASS
@@ -80,12 +80,18 @@ EOF
     # -T /usr/bin/security: ランナーが security で読むときに毎回の許可を出さない（ほかのアプリには許可を求める）
     security add-generic-password -U -a "$USER" -s "$kc_service" -T /usr/bin/security -w "$FACTORY_KS_PASS" || exit 1
     unset FACTORY_KS_PASS
-    echo "作った: $keystore（パスワードはキーチェーンの $kc_service）。鍵はバックアップしておく（なくすと同じアプリの更新を配れない）"
+    echo "作った: ${keystore}（パスワードはキーチェーンの ${kc_service}）。鍵はバックアップしておく（なくすと同じアプリの更新を配れない）"
     ;;
   status)
     if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then echo "常駐: あり"; else echo "常駐: なし（install する）"; fi
     if "$py" "$runner" paired; then echo "ペアリング: 済み"; else echo "ペアリング: まだ（install する）"; fi
     tail -n 3 "$HOME/Library/Logs/factory-macrunner/runner.log" 2>/dev/null
+    # 常駐しているランナーと同じ設定で確かめる（打ったシェルの環境変数ではなく、plist の EnvironmentVariables を使う）
+    if [ -f "$plist" ]; then
+      for k in PATH MAC_RUNNER_APPS MAC_RUNNER_FIREBASE_APP_ID MAC_RUNNER_FIREBASE_GROUPS MAC_RUNNER_FIREBASE MAC_RUNNER_ANDROID_KEYSTORE MAC_RUNNER_ANDROID_KEY_ALIAS MAC_RUNNER_APKSIGNER ANDROID_HOME; do
+        v="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$k" "$plist" 2>/dev/null)" && export "$k=$v"
+      done
+    fi
     "$py" "$runner" preflight
     ;;
   *)
