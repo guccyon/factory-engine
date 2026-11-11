@@ -215,6 +215,7 @@ def dist(tmp_path, monkeypatch):
     ks.write_bytes(b"keystore")
     monkeypatch.setenv("MAC_RUNNER_ANDROID_KEYSTORE", str(ks))
     monkeypatch.setenv("MAC_RUNNER_APKSIGNER", "/sdk/apksigner")
+    monkeypatch.setenv("MAC_RUNNER_JAVA_HOME", "/jdk")
     os.makedirs(tmp_path / "home" / "repos" / "guccyon__rally" / ".git")
     seen = types.SimpleNamespace(argv=[], env={}, answer="button returned:配布する, gave up:false", merged=True)
 
@@ -272,7 +273,8 @@ def test_distribute_signs_with_keychain_and_uploads(dist):
     assert "--release" in build and "--dart-define=RALLY_API_URL=https://staging.example" in build
     sign = next(a for a in dist.seen.argv if a[0] == "/sdk/apksigner")
     assert sign[sign.index("--ks-pass") + 1] == "env:FACTORY_KS_PASS"
-    assert dist.seen.env["/sdk/apksigner"] == {"FACTORY_KS_PASS": "s3cret-pass"}
+    assert dist.seen.env["/sdk/apksigner"]["FACTORY_KS_PASS"] == "s3cret-pass"
+    assert dist.seen.env["/sdk/apksigner"]["JAVA_HOME"] == "/jdk" and dist.seen.env["/sdk/apksigner"]["PATH"].startswith("/jdk/bin")
     assert not any("s3cret-pass" in x for a in dist.seen.argv for x in a)   # パスワードは argv に出さない
     up = next(a for a in dist.seen.argv if a[0] == "firebase")
     assert up[1] == "appdistribution:distribute" and up[up.index("--app") + 1] == FB_APP
@@ -319,3 +321,12 @@ def test_dialog_text_is_passed_as_argv():
 
 def test_release_notes_redacted_in_log():
     assert runner.redact("preview_distribute", {"release_notes": "abc", "dart_defines": {"A": "1"}}) == {"release_notes": "<3 文字>", "dart_defines": ["A"]}
+
+
+def test_java_found_or_said(monkeypatch):
+    """launchd には JAVA_HOME がない。Android Studio の JDK もなければ、何を入れればよいかを言う。"""
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr(runner, "ANDROID_STUDIO_JDK", "/nonexistent")
+    with pytest.raises(runner.ToolError, match="MAC_RUNNER_JAVA_HOME"):
+        runner.java_env({"java_home": ""})
+    assert runner.java_env({"java_home": "/jdk"})["JAVA_HOME"] == "/jdk"

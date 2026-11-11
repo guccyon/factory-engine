@@ -37,7 +37,7 @@ import time
 import urllib.parse
 import uuid
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 HOME = os.path.expanduser("~")
 
 
@@ -72,7 +72,8 @@ def config():
         "android_keystore": env("MAC_RUNNER_ANDROID_KEYSTORE", os.path.join(HOME, ".config", "factory", "android-upload.jks")),
         "android_key_alias": env("MAC_RUNNER_ANDROID_KEY_ALIAS", "upload"),
         "keychain_service": env("MAC_RUNNER_KEYCHAIN_SERVICE", "factory-macrunner-android-keystore"),
-        "apksigner": env("MAC_RUNNER_APKSIGNER", ""),                      # 空なら Android SDK の build-tools の新しいものを探す
+        "apksigner": env("MAC_RUNNER_APKSIGNER", ""),
+        "java_home": env("MAC_RUNNER_JAVA_HOME", ""),                      # 空なら JAVA_HOME か Android Studio に入っている JDK                      # 空なら Android SDK の build-tools の新しいものを探す
         "attend_timeout": int(env("MAC_RUNNER_ATTEND_TIMEOUT_SEC", "300")),
     }
 
@@ -303,7 +304,7 @@ class Builds:
         password = keychain_password(self.cfg["keychain_service"])
         run([apksigner(self.cfg), "sign", "--ks", self.cfg["android_keystore"], "--ks-key-alias", self.cfg["android_key_alias"],
              "--ks-pass", "env:FACTORY_KS_PASS", "--key-pass", "env:FACTORY_KS_PASS", "--out", signed, built],
-            timeout=300, env_extra={"FACTORY_KS_PASS": password})
+            timeout=300, env_extra={"FACTORY_KS_PASS": password, **java_env(self.cfg)})
         del password
         with open(signed, "rb") as f:
             digest = hashlib.sha256(f.read()).hexdigest()
@@ -384,6 +385,21 @@ def keychain_password(service):
     if out.returncode != 0:
         raise ToolError(f"キーチェーンに {service} がない（scripts/macrunner.sh android-key で作る）")
     return out.stdout.decode().rstrip("\n")
+
+
+ANDROID_STUDIO_JDK = "/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+
+
+def java_env(cfg):
+    """apksigner は Java で動く。launchd から起こしたランナーには JAVA_HOME も Java の PATH もないので、
+    MAC_RUNNER_JAVA_HOME → JAVA_HOME → Android Studio に入っている JDK の順に探して渡す（2026-11-12、初回の配布が sign で
+    「Unable to locate a Java Runtime」で止まった。flutter は Android Studio の JDK を自分で探すのでビルドは通っていた）"""
+    home = cfg.get("java_home") or env("JAVA_HOME")
+    if not home and os.path.isfile(os.path.join(ANDROID_STUDIO_JDK, "bin", "java")):
+        home = ANDROID_STUDIO_JDK
+    if not home:
+        raise ToolError("Java が見つからない（Android Studio を入れるか、MAC_RUNNER_JAVA_HOME に JDK の場所を入れて install し直す）")
+    return {"JAVA_HOME": home, "PATH": os.path.join(home, "bin") + os.pathsep + env("PATH", "/usr/bin:/bin")}
 
 
 def apksigner(cfg):

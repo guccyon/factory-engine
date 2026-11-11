@@ -96,6 +96,7 @@ docker compose exec dispatcher factoryctl runner check   # 工場の側で
 | `MAC_RUNNER_FIREBASE_GROUPS` | testers | 配る相手（Firebase のテスターのグループ、カンマ区切り） |
 | `MAC_RUNNER_ANDROID_KEYSTORE` / `MAC_RUNNER_ANDROID_KEY_ALIAS` | `~/.config/factory/android-upload.jks` / upload | 署名の鍵（パスワードはキーチェーンの `factory-macrunner-android-keystore`） |
 | `MAC_RUNNER_ATTEND_TIMEOUT_SEC` | 300 | 確かめの窓で人を待つ秒 |
+| `MAC_RUNNER_JAVA_HOME` | 空（`JAVA_HOME` か Android Studio に入っている JDK） | 署名（apksigner）に使う Java |
 
 ## テスト
 

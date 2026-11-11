@@ -29,7 +29,7 @@ keystore="${MAC_RUNNER_ANDROID_KEYSTORE:-$HOME/.config/factory/android-upload.jk
 kc_service="${MAC_RUNNER_KEYCHAIN_SERVICE:-factory-macrunner-android-keystore}"
 # 審査前の配布の設定（入れたものだけ plist に書く。値は Mac の中だけに置き、リポジトリには書かない）
 dist_env=""
-for k in MAC_RUNNER_FIREBASE_APP_ID MAC_RUNNER_FIREBASE_GROUPS MAC_RUNNER_FIREBASE MAC_RUNNER_ANDROID_KEYSTORE MAC_RUNNER_ANDROID_KEY_ALIAS MAC_RUNNER_APKSIGNER ANDROID_HOME; do
+for k in MAC_RUNNER_FIREBASE_APP_ID MAC_RUNNER_FIREBASE_GROUPS MAC_RUNNER_FIREBASE MAC_RUNNER_ANDROID_KEYSTORE MAC_RUNNER_ANDROID_KEY_ALIAS MAC_RUNNER_APKSIGNER MAC_RUNNER_JAVA_HOME ANDROID_HOME; do
   eval "v=\${$k:-}"
   [ -n "$v" ] && dist_env="$dist_env
     <key>$k</key><string>$v</string>"
@@ -88,7 +88,7 @@ EOF
     tail -n 3 "$HOME/Library/Logs/factory-macrunner/runner.log" 2>/dev/null
     # 常駐しているランナーと同じ設定で確かめる（打ったシェルの環境変数ではなく、plist の EnvironmentVariables を使う）
     if [ -f "$plist" ]; then
-      for k in PATH MAC_RUNNER_APPS MAC_RUNNER_FIREBASE_APP_ID MAC_RUNNER_FIREBASE_GROUPS MAC_RUNNER_FIREBASE MAC_RUNNER_ANDROID_KEYSTORE MAC_RUNNER_ANDROID_KEY_ALIAS MAC_RUNNER_APKSIGNER ANDROID_HOME; do
+      for k in PATH MAC_RUNNER_APPS MAC_RUNNER_FIREBASE_APP_ID MAC_RUNNER_FIREBASE_GROUPS MAC_RUNNER_FIREBASE MAC_RUNNER_ANDROID_KEYSTORE MAC_RUNNER_ANDROID_KEY_ALIAS MAC_RUNNER_APKSIGNER MAC_RUNNER_JAVA_HOME ANDROID_HOME; do
         v="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$k" "$plist" 2>/dev/null)" && export "$k=$v"
       done
     fi
