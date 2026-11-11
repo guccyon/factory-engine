@@ -21,7 +21,7 @@ P2 の Exit のうち 2 つ（承認ボタンだけのリリース、1 分以内
 4. **3 段階の結晶化**。Stage 1 エピソード（1 件から。似た変更のときだけワーカーに渡す）→ Stage 2 ルーブリック（同じ signature が 30 日で 3 件以上、2 つ以上のチケットから。検査官のルーブリックに足す）→ Stage 3 決定的な規則（Stage 2 が adopted になり、差分の正規表現に書けて同じ eval ケースを全部通したとき。元の Stage 2 には降格注記）
 5. **ルールは製品の `.factory-config/overlay/rules/OV-NNN.yaml` に 1 ファイル 1 ルール**。id は base の rubric と混ぜず、再利用しない。`confidentiality: product | client | public` を必須にする（憲章 09 節）。eval ケースの差分は `.factory-config/evals/rules/<id>/` にファイルで置く
 6. **ライフサイクルは candidate → shadow → adopted → retired**（`definitions/learning.yaml` の lifecycle）。shadow は判定して記録するが差し戻さない。shadow で 5 回以上発火し、judge と人の裁きに照らした的中率が 0.8 以上で adopted。採用から 7 日はカナリアで、そのルールの範囲の教師信号が増えたか偽陽性率が 0.3 を超えたら shadow に戻す。発火ゼロ 60 日、偽陽性の超過 14 日、矛盾、根拠の Lesson の無効化で retired。ファイルは消さない
-7. **ルール変更 PR は工場自身のパイプラインを通る**。決定的な部分は `core-gates/rule_eval.py`（形の検査、正規表現のルールの eval ケース、retired 以外の全ルールの再実行で退行を見る）を製品の CI が Engine の固定した版で走らせる。LLM が要る段（エピソード・ルーブリック）の eval ケースは工場の inspect ジョブが判定し、ルールの digest と head に結びつけて events に残す。supervisor は factory_rule の PR を、両方が緑のときだけマージの対象にする
+7. **ルール変更 PR は工場自身のパイプラインを通る**。決定的な部分は `core-gates/rule_eval.py`（形の検査、正規表現のルールの eval ケース、retired 以外の全ルールの再実行で退行を見る）を製品の CI が Engine の固定した版で走らせる。LLM が要る種類（エピソード・ルーブリック）の eval ケースは工場の inspect ジョブが判定し、ルールの digest と head に結びつけて events に残す。supervisor は factory_rule の PR を、両方が緑のときだけマージの対象にする
 8. **学習器に自分を採点させない**。ルールの的中率・効き目・カナリアの判定は govern 側（factoryctl report learning と supervisor の表引き）が events から計算し、learn ジョブには計算させない。健康が赤のとき（breaker learning_freeze）は adopted への昇格を止め、shadow は続ける
 9. **Exit は件数の比で示す**。そのルールの signature に当たる教師信号の件数を、そのルールの範囲に触れた工場の PR の件数で割り、shadow 前の 30 日と adopted 後の 30 日を比べる。件数が少ないので Wilson の区間を併記する
 10. **還流（Engine への昇格）は P6**。public かつ複数の工場で独立に発生したものだけ。Gen1 は工場が 1 つなので、記録だけ残す
@@ -51,7 +51,7 @@ P2 の Exit のうち 2 つ（承認ボタンだけのリリース、1 分以内
 
 - 束から Lesson とルールを書く専用のジョブ（kind=learn）とワーカーのイメージは作らず、supervisor が製品のリポジトリに「ルール化」の Issue（`factory:planned` と `factory:learn`）を 1 日 1 本まで起票し、通常の implement ジョブがルール変更 PR を書く。起票の材料（指摘の本文・元 PR と差し戻しの修正 PR）は制御プレーンの記録だけで組み立て、指摘の本文は引用（データ）として渡す（差し戻しの Issue と同じ形）。Mac でワーカーのイメージを作り直せない制約にも合う
 - Issue を起こす束は、Stage 2 の候補（3 件以上・2 チケット以上）で、負例の元（差し戻しの修正 PR）があり、まだ起票していない signature。overlay のルール自身の発火（`rubric:OV-*`）は教師信号にしない
-- 検査（`core-gates/shadow_review.py`）は製品の既定ブランチの overlay から shadow と adopted の rubric・episodic の段のルールを読み、ルーブリックに足す。shadow のルールの指摘には `shadow: true` を付け、judge は裁く（的中率の材料）が dispatcher は差し戻さない
+- 検査（`core-gates/shadow_review.py`）は製品の既定ブランチの overlay から shadow と adopted の rubric・episodic の種類のルールを読み、ルーブリックに足す。shadow のルールの指摘には `shadow: true` を付け、judge は裁く（的中率の材料）が dispatcher は差し戻さない
 - ルールの成績（発火・採用・不採用・的中率）は `factoryctl report learning` に出す。adopted への昇格とカナリアの自動化は、成績が溜まってから足す
 - 指摘の本文が Issue を経てワーカーのプロンプトに、工場が書いたルールが検査官のプロンプトに入るので、この変更はオーナーの承認を得てからマージする
 

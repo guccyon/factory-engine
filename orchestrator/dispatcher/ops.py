@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from psycopg.types.json import Jsonb
 
-# 優先度の段（内部は 0〜100 の数。ラベルは 4 段から始める。2026-10-28 オーナー）
+# 優先度のレベル（内部は 0〜100 の数。ラベルは 4 つから始める。2026-10-28 オーナー）
 LEVELS = {
     "p0": (100, "緊急", "作業中のものを止めてでも先に流す（障害の調査・hotfix）"),
     "p1": (75, "急ぎ", "順番待ちの先頭に回す"),
@@ -23,7 +23,7 @@ SETTERS_OVERRIDABLE_BY_SOURCE = ("default", "source")
 
 
 def level_of(priority: int) -> str:
-    """数から段の名前（その数以下で最も高い段）"""
+    """数からレベルの名前（その数以下で最も高いレベル）"""
     for key, (value, _, _) in sorted(LEVELS.items(), key=lambda kv: -kv[1][0]):
         if priority >= value:
             return key

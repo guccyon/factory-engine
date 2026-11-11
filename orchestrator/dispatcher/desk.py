@@ -355,7 +355,7 @@ def _resolve_inbox(cur, conversation_id: int, by: str, outcome: str) -> None:
 
 def closing_record(cur, c: dict) -> dict:
     """閉じたときの記録（ADR 0039 の決定 7 の表。外側のループの束ねる材料）。events の時刻から決定論で組み立てる。
-    今は対応の種類・時間・費用・往復・結末まで。進め方・断りの理由・主題は、その段を入れたときに足す"""
+    今は対応の種類・時間・費用・往復・結末まで。進め方・断りの理由・主題は、その仕組みを入れたときに足す"""
     cur.execute("select id, name, occurred_at, payload from events where correlation_id=%s order by id", (corr(c["id"]),))
     evs = cur.fetchall()
     t0 = c["created_at"]
@@ -593,7 +593,7 @@ def _answer_step(cur, who: dict, conversation_id: int, kind: str, state: str, op
 
 
 def confirm_route(cur, who: dict, conversation_id: int, option: str, note: str = "") -> dict:
-    """振り分けの確認（send の段）に答える。run（実行する）か cancel（やめる）"""
+    """振り分けの確認（send のレベル）に答える。run（実行する）か cancel（やめる）"""
     if option not in CONFIRM_ANSWERS:
         raise DeskError(400, f"answer は {' / '.join(CONFIRM_ANSWERS)}")
     return _answer_step(cur, who, conversation_id, "desk_confirm", "awaiting_confirm", option, note)
@@ -627,7 +627,7 @@ def find_ticket(cur, key: str | int) -> dict | None:
 
 
 def ticket_status(cur, who: dict, key: str | int) -> dict:
-    """チケットの状態（読むだけ）。段・優先度・保留・依存待ち・順番待ちの何番目か・作業中のジョブ・PR"""
+    """チケットの状態（読むだけ）。進み具合・優先度・保留・依存待ち・順番待ちの何番目か・作業中のジョブ・PR"""
     t = find_ticket(cur, key)
     if not t or not can_product(who, t["repo"]):
         raise DeskError(404, "そのようなチケットはない")

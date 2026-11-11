@@ -410,7 +410,7 @@ def open_from_issue(cur, gh, who: dict, repo: str, number: int) -> dict:
 
 # ------------------------------------------------------------------ 単発の依頼のループ（ADR 0039 の順番 2。operate の 1 本）
 #   受付（desk.open_conversation がすぐ返す）→ 振り分け（相談役が route を返す → route()）
-#   → 確認（send の段は受信トレイの件 desk_confirm。read の段は飛ばす）→ 実行（run_operations。dispatcher が操作を 1 回動かす）
+#   → 確認（send のレベルは受信トレイの件 desk_confirm。read のレベルは飛ばす）→ 実行（run_operations。dispatcher が操作を 1 回動かす）
 #   → 提出（会話に結果を書き、受信トレイの件 desk_receipt で受取確認を待つ）→ 依頼者の答え（answer()）
 MAX_FOLLOW_UPS = desk.LOOP["max_follow_ups"]     # 続きの上限（決定 5。仮置き）。超えたら新しい会話にしてもらう
 CONFIRM_KIND, RECEIPT_KIND, DECLINE_KIND = "desk_confirm", "desk_receipt", "desk_decline"
@@ -462,7 +462,7 @@ def route(cur, cid: int, job: dict, res: dict) -> None:
                "request": res.get("request") or {}, "workflow": {"path": "operate", "steps": ["confirm", "execute", "respond"]}}
     desk.advance(cur, cid, "routed", "desk.routed", payload, path="operate")
     lines = [f"振り分けました: 決まった操作（{op}。{operations.OPS[op]['ja']}）で済みます。", f"- やること: {pv['text']}",
-             f"- 確認の段: {TIER_JA.get(tier, tier)}"]
+             f"- 確認のレベル: {TIER_JA.get(tier, tier)}"]
     if r.get("why"):
         lines.append(f"- 理由: {r['why']}")
     if tier == "read":

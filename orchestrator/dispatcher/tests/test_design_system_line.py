@@ -1,4 +1,4 @@
-"""デザインシステムのデザイナー役の制御プレーン側（design_system_line.py、ADR 0025・0026）: 案を人の選択へ、選択から次の段、正本を実装役へ"""
+"""デザインシステムのデザイナー役の制御プレーン側（design_system_line.py、ADR 0025・0026）: 案を人の選択へ、選択から次の工程、正本を実装役へ"""
 import os
 import sys
 from pathlib import Path

@@ -13,7 +13,7 @@ URL = os.environ.get("TEST_DATABASE_URL")
 REPO, ISSUE, CORR = "o/r", 5, "github:o/r#5"
 SPEC = {"ticket": "o/r#5", "screens": [{"id": "s", "purpose": "p", "new": False, "elements": ["題"], "behaviors": ["送る前に確認"]}],
         "states": ["失敗"], "design_system_constraints": [], "design_system_gaps": [], "brand_impact": False,
-        "variants": [{"id": "a", "name": "確認の段", "tradeoff": "誤送信に強い"}, {"id": "b", "name": "並べる", "tradeoff": "見える"}],
+        "variants": [{"id": "a", "name": "確認を挟む", "tradeoff": "誤送信に強い"}, {"id": "b", "name": "並べる", "tradeoff": "見える"}],
         "recommended": "a", "recommended_reason": "取り消せない操作"}
 
 

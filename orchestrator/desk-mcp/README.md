@@ -32,7 +32,7 @@ Claude Desktop（`claude_desktop_config.json`）:
 | `desk_read` | `GET .../<id>?after&wait` | 問い・下書き・作ったチケットを読む。`wait`（60 秒まで）で返事を待つ |
 | `desk_confirm` | `POST .../<id>/confirm` | 依頼者が同意した下書きを投入する（確認 1 回） |
 | `desk_list` | `GET /api/desk/conversations` | 自分の相談の一覧 |
-| `desk_ticket` | `GET /api/desk/tickets/<ref>` | チケットの段・順番・PR |
+| `desk_ticket` | `GET /api/desk/tickets/<ref>` | チケットの進み具合・順番・PR |
 | `desk_set_priority` | `POST /api/desk/tickets/<ref>/priority` | 明確な指示（「#812 を先に」）。壁打ちを通さない |
 | `inbox_list` | `GET /api/desk/inbox` | 受信トレイ（人の判断待ち）のうち、トークンで答えてよい件の一覧（ADR 0034 の順番 2） |
 | `inbox_read` | `GET /api/desk/inbox/<key>` | 1 件の中身（問い・今の案・他の案・judge の見立て・推す案）と答え方（選択肢・推奨・作用） |

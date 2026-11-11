@@ -5,7 +5,7 @@
 --   - factory_restricted は最初は NOLOGIN。管理者が合言葉を決めて有効にし、合言葉は管理者だけが持つ（.env に置かない）
 --       docker compose exec postgres psql -U factory -c "alter role factory_restricted login password '...'"
 --   - ワーカーのジョブの DB は管理者でない別の利用者（factory_job）の持ち物で、制御プレーンの DB には繋げない（dispatcher/jobdb.py）
---   - 制御プレーンのサービスは今も Postgres の管理者（factory）で動くので、そこからは見える。サービスを分けるのは別の段で
+--   - 制御プレーンのサービスは今も Postgres の管理者（factory）で動くので、そこからは見える。サービスを分けるのは別の作業で
 -- 読んだ記録は restricted.reads と events の restricted.read に残す（誰が・いつ・何のために）。events には中身を書かない。
 -- 既存の DB にも当てられるように冪等に書く（docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/005_restricted.sql）。
 

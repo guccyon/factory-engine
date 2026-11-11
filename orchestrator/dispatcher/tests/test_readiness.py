@@ -1,5 +1,5 @@
 """オンボーディングの準備度の判定（readiness.py、ADR 0045 の決定 8 と追記）:
-定義の形・必須の欠けで始められない・割合の線・警告とお願いの並び・段の到達・稼働 ready の承認を出す条件"""
+定義の形・必須の欠けで始められない・割合の線・警告とお願いの並び・レベルの到達・稼働 ready の承認を出す条件"""
 import os
 import sys
 from pathlib import Path
@@ -61,7 +61,7 @@ def test_musts_at_min_but_rest_empty_is_weak():
     assert j["verdict"] == "weak" and not j["blocked"]
     assert rd.band_ja(DEFS, "weak") == "品質が出にくい"
     ids = [w["id"] for w in j["warnings"]]
-    assert ids[0] in ("o-screens", "o-api", "o-rules")   # 足りない段の多い順
+    assert ids[0] in ("o-screens", "o-api", "o-rules")   # 目標までの差の大きい順
     assert "o-api" in ids and "o-api" not in [a["id"] for a in j["asks"]]   # お願いを持たない項目は警告だけ
 
 

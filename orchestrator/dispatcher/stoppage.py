@@ -137,7 +137,7 @@ def _body(cur) -> str:
 
 
 def post_notice(text: str, cur=None):
-    """停止ではない知らせ（段の残りが少ないなど）を、停止と同じ Issue にコメントする。本文の停止の一覧は変えない"""
+    """停止ではない知らせ（投入待ちのタスクが少ないなど）を、停止と同じ Issue にコメントする。本文の停止の一覧は変えない"""
     try:
         if NOTIFIER == "github-issue" and STATUS_REPO and not ENV.get("WORKER_DRY_RUN"):
             _gh("POST", f"repos/{STATUS_REPO}/issues/{_status_issue()}/comments", {"body": text})

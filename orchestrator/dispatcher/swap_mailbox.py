@@ -11,7 +11,7 @@ dispatcher の更新の周回（swap_loop）から SWAP_MAILBOX_INTERVAL_SEC ご
      ただし申告が一時停止を伴う種類（control_plane・db）で、いまが全面委任（unattended）の時間帯なら、人が並走する時間帯まで待つ（決めどころ S4）。
      差分の判定が重かったときは更新役が同じ理由で止め（deferred）、ここが時間帯に入ってから依頼し直す
      ほかの更新が終わっていなければ待つ（同時に 1 件）
-  4. 返す: 段（起動・一時停止・結果）ごとに 1 回ずつコメントする。更新したら Issue を閉じる。止まったら `factory:swap-failed` を付けて開いたまま
+  4. 返す: ステップ（起動・一時停止・結果）ごとに 1 回ずつコメントする。更新したら Issue を閉じる。止まったら `factory:swap-failed` を付けて開いたまま
   5. 取り消す: 更新役を起動する前に Issue を閉じたら取り消す
 
 コメントには工場のマシンのパスやホスト名を出さない（リポジトリは公開）。
@@ -30,7 +30,7 @@ RUNNING_LABEL = "factory:swapping"
 DONE_LABEL = "factory:swapped"
 FAILED_LABEL = "factory:swap-failed"
 NOTED = "swap_mailbox.noted"        # 待ちや読めなかったことを 1 回だけ返した印（payload の issue・key）
-REPORTED = "swap_mailbox.reported"  # 段を Issue に返した印（payload の event_id）。swap.* ではないので更新の状態には数えない
+REPORTED = "swap_mailbox.reported"  # ステップを Issue に返した印（payload の event_id）。swap.* ではないので更新の状態には数えない
 FIELDS = {
     "target": re.compile(r"^(main|[0-9a-fA-F]{7,40})$"),
     "kind": re.compile(r"^(code|control_plane|db)$"),
@@ -195,7 +195,7 @@ def retry_deferred(cur, gh, comment, set_labels, rp, unattended, log) -> None:
 
 
 def report(cur, gh, comment, set_labels, log=print) -> None:
-    """郵便受けから来た更新の段を、まだ返していなければ Issue に返す。起動する前に Issue が閉じられていたら取り消す"""
+    """郵便受けから来た更新のステップを、まだ返していなければ Issue に返す。起動する前に Issue が閉じられていたら取り消す"""
     rp = repo()
     cur.execute("select id from events where name='swap.requested' and payload->>'source' like %s order by id desc limit 10", (rp + "#%",))
     for r in cur.fetchall():
