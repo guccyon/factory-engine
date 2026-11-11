@@ -8,7 +8,7 @@
 """
 import re
 
-APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|usage|help(/(api|cli))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
 
 PAGE = r"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -250,7 +250,7 @@ const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if(p==="/line"||p==="/ship"||p==="/usage")return[p.slice(1),""];
- if((m=p.match(/^\/help(?:\/(api|cli))?$/)))return["help",m[1]||""];
+ if((m=p.match(/^\/help(?:\/(api|cli|mobile))?$/)))return["help",m[1]||""];
  if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
  return["home",""]}
 // 前の構成のリンク（通知や古いタブの /#choice-1・/#choices・/#ship）を新しいページに読み替える
@@ -362,7 +362,32 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 </dl><div class="m" style="margin-top:12px">画面は 10 秒ごとに自動で読み直す（タブを開いている間）</div>`;
 
 // ---- ヘルプのリファレンス（/help/api・/help/cli）。中身は GET /api/reference（コードの説明から作る。reference.py）
-const HTABS=[["","画面の言葉"],["api","API と MCP"],["cli","コマンド（factoryctl）"]];
+// ---- ヘルプ: モバイルアプリの審査前の配布（ADR 0047）。Mac と Firebase の準備は人が 1 回だけ
+const HELP_MOBILE=`<h2>モバイルアプリの配布（Android・Firebase App Distribution）</h2>
+<p>工場が作ったモバイルアプリを、ストアの審査を通さずにテスターの端末へ配る（ADR 0047）。署名の鍵と Firebase へのログインは Mac にだけ置き、工場には渡さない。配るたびに、Mac の画面で人が「配布する」を押す。</p>
+<h3>流れ</h3>
+<ol><li><a href="/ship" data-nav>出荷</a>の「Android（審査前の配布・Firebase）」で「配布する」を押す</li>
+<li>工場が Mac ランナーに頼む。Mac の画面に「工場の Mac ランナー」の窓が出るので、宛先とコミットを見て「配布する」を押す（5 分押さなければ何もせずにやめる）</li>
+<li>Mac が main の最新を release でビルドし、Mac の鍵で署名して Firebase に上げる（数分）</li>
+<li>テスターに Firebase から招待のメールが届く。初回は App Tester を入れ、そこから入れる</li></ol>
+<h3>はじめに 1 回だけ: Firebase のサイト</h3>
+<ol><li><a href="https://console.firebase.google.com" target="_blank" rel="noopener">Firebase コンソール</a>でプロジェクトを作る（Google アナリティクスはなしでよい）</li>
+<li>「アプリを追加」→ Android。パッケージ名は工場が作る applicationId（rally の生徒アプリは <code>jp.rally.rally_student_app</code>）。google-services.json はダウンロードしなくてよい</li>
+<li>左のメニューの「App Distribution」を開いて始める。「テスターとグループ」でグループ（例 <code>testers</code>）を作り、テスターのメールを足す</li>
+<li>プロジェクトの設定 →「マイアプリ」の「アプリ ID」（<code>1:…:android:…</code>）を控え、<a href="/ship" data-nav>出荷</a>の「配布先」に入れて保存する（秘密ではない）</li></ol>
+<h3>はじめに 1 回だけ: Mac（工場を動かしている Mac）</h3>
+<ol><li><b>Android の道具</b>: Android Studio を入れる（<code>brew install --cask android-studio</code>）。起動して Android SDK・SDK Command-line Tools・Platform-Tools・Build-Tools を入れ、<code>flutter doctor --android-licenses</code> で同意する。<code>flutter doctor</code> の Android の行が ✓ になればよい</li>
+<li><b>Firebase CLI</b>: <code>npm install -g firebase-tools</code> のあと <code>firebase login</code>（ブラウザで、Firebase のプロジェクトに触れる Google アカウントでログイン）。<code>firebase projects:list</code> にプロジェクトが出ればよい。node を mise などで入れているときは、node の版を替えると常駐のランナーから firebase が見えなくなるので、替えたら下の 4 をやり直す</li>
+<li><b>署名の鍵</b>: factory-engine の orchestrator で <code>scripts/macrunner.sh android-key</code>。鍵は <code>~/.config/factory/android-upload.jks</code>、パスワードはキーチェーン（<code>factory-macrunner-android-keystore</code>）に入る。keytool が見つからないときは Android Studio の JDK を PATH に足す（<code>/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin</code>）。<b>鍵はバックアップする</b>（なくすと、同じアプリの更新を配れない）</li>
+<li><b>ランナーを入れ直す</b>: orchestrator で <code>scripts/macrunner.sh install</code>。<code>scripts/macrunner.sh status</code> の最後に「審査前の配布は閉じている」が出なければよい</li></ol>
+<p class="m">fish など zsh 以外のシェルでも上のコマンドはそのまま打てる。Mac の設定は Mac にだけ残り、工場の DB には入らない。</p>
+<h3>うまくいかないとき</h3>
+<dl><dt>Mac で押されなかった</dt><dd>窓は 5 分で消え、何もしない。Mac の前にいるときにもう一度「配布する」を押す</dd>
+<dt>ランナーに届かない・断られた</dt><dd>設定 →<a href="/settings/runners" data-nav>ランナー</a>で Mac ランナーが来ているかを見る。「開いていない」と出たら、上の Mac の準備の 3・4 か、配布先のアプリ ID を確かめる</dd>
+<dt>署名で止まった</dt><dd>Java か鍵が見つからない。Android Studio が入っているか、<code>scripts/macrunner.sh status</code> を見る</dd>
+<dt>アップロードで止まった</dt><dd>Firebase のログインが切れているか、配布先のアプリ ID が違う。Mac で <code>firebase login</code> と <code>firebase apps:list</code> を確かめる</dd></dl>
+<p class="m">iOS（TestFlight）は Gen2 で足す。Apple Developer Program（有料）が要る。</p>`;
+const HTABS=[["","画面の言葉"],["api","API と MCP"],["cli","コマンド（factoryctl）"],["mobile","モバイルの配布"]];
 let REF=null,refQ="";
 async function loadRef(){try{REF=await (await fetch("/api/reference")).json()}catch(e){put("ref-b",'<div class="m">リファレンスを読み込めませんでした</div>');return}refPut()}
 const rrow=(h,d)=>`<div class="ref-r"><div>${h}</div><div class="d">${esc(d)}</div></div>`;
@@ -451,9 +476,26 @@ document.addEventListener("change",e=>{if(e.target.id==="ln-repo"||e.target.id==
 
 // ---- 出荷（製品ごとに出荷先のカード。今は Web だけ。モバイルのストアや CDN は同じ形のカードで足す）
 function targetsOf(r){return r.targets||[{kind:"web",label:"Web",release:r}]}
+const PV_STATE={queued:"依頼した（工場が拾うのを待っている）",running:"配布中（Mac の画面の窓で「配布する」を押す）",distributed:"配った",failed:"配れなかった"};
+const PV_STAGE={request:"Mac ランナーに届かない・断られた",attend:"Mac で押されなかった",build:"ビルド",sign:"署名",upload:"アップロード",timeout:"時間切れ",lost:"途中で止まった",checkout:"コミットの確かめ"};
+function previewView(t){const it=t.items||[];
+ const rows=it.map(i=>`<li><span class="m">${esc(String(i.at||"").slice(0,16).replace("T"," "))}</span> ${esc(PV_STATE[i.state]||i.state)}${i.build_number?` <b>${esc(i.build_number)}</b>`:""}${i.sha?` <span class="m">${esc(i.sha.slice(0,8))}</span>`:""}${i.state==="failed"?` <span class="m">— ${esc(PV_STAGE[i.stage]||i.stage||"")}${i.error?"："+esc(i.error).slice(0,120):""}</span>`:""}${i.notes?` <span class="m">「${esc(i.notes).slice(0,60)}」</span>`:""}</li>`).join("");
+ const form=t.busy?`<div class="m">配布中は次の依頼を出せない。Mac の画面に窓が出ていたら「配布する」を押す（5 分で取り消し）</div>`
+  :`<div><input id="pv-notes-${esc(t.app)}" placeholder="テスターに見せる変更点（任意）" maxlength="1000" style="width:min(100%,28em)"> <button class="go" data-preview="${esc(t.app)}">配布する（main の最新）</button></div>
+   <div class="m">押すと Mac の画面に確かめの窓が出る。そこでもう一度「配布する」を押すと、署名して Firebase のテスターに配る</div>`;
+ const tg=t.target,tid="pv-t-"+esc(t.app);
+ const dest=`<details${tg?"":" open"}><summary class="m">配布先: ${tg?`Firebase のアプリ <code>${esc(tg.firebase_app_id)}</code>・グループ <code>${esc(tg.groups)}</code>`:"工場では未設定（Mac ランナーの設定を使う）"}</summary>
+  <div><input id="${tid}-id" placeholder="Firebase の Android アプリの ID（1:…:android:…）" value="${esc(tg?tg.firebase_app_id:"")}" style="width:min(100%,24em)">
+  <input id="${tid}-g" placeholder="テスターのグループ（例 testers）" value="${esc(tg?tg.groups:"testers")}" style="width:12em"> <button data-preview-target="${esc(t.app)}">保存</button></div>
+  <div class="m">アプリの ID は Firebase のプロジェクトの設定で見られる。秘密ではない（署名の鍵と Firebase のログインは Mac にだけある）。空にして保存すると Mac の設定に戻る</div></details>`;
+ return dest+form+(rows?`<ul class="pv">${rows}</ul>`:`<div class="m">まだ配っていない</div>`)}
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-preview-target]");if(!b)return;const app=b.dataset.previewTarget,id="pv-t-"+app;
+ post("/api/distribute/target",{app,firebase_app_id:(document.getElementById(id+"-id")||{}).value||"",groups:(document.getElementById(id+"-g")||{}).value||""}).then(()=>{force=true})});
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-preview]");if(!b)return;const app=b.dataset.preview;
+ const n=document.getElementById("pv-notes-"+app);b.disabled=true;post("/api/distribute",{app,notes:n?n.value:""}).then(ok=>{if(!ok)b.disabled=false;force=true})});
 function shipPage(rs){if(!rs.length)return `<div class="m">出荷した製品はまだない</div>`;
- return rs.map(r=>`<section class="card"><h2>${esc(r.repo)}</h2><div class="targets">${targetsOf(r).map(t=>`<div class="target"><div class="th2">${esc(t.label)}</div>${t.kind==="web"?shipView([t.release]):`<div class="m">${esc(t.note||"")}</div>`}</div>`).join("")}</div></section>`).join("")
-  +`<div class="m">出荷の指示は Claude からもできる（窓口の MCP）。モバイルのストアや CDN などの出荷先は、ここに同じ形のカードで足していく</div>`}
+ return rs.map(r=>`<section class="card"><h2>${esc(r.repo)}</h2><div class="targets">${targetsOf(r).map(t=>`<div class="target"><div class="th2">${esc(t.label)}</div>${t.kind==="web"?shipView([t.release]):t.kind==="preview"?previewView(t):`<div class="m">${esc(t.note||"")}</div>`}</div>`).join("")}</div></section>`).join("")
+  +`<div class="m">出荷の指示は Claude からもできる（窓口の MCP）。モバイルの審査前の配布は ADR 0047。ストアや CDN などの出荷先は、ここに同じ形のカードで足していく</div>`}
 
 // ---- 設定
 function scaleForm(sc){if(!sc)return `<div class="m">流量の宣言が読めない</div>`;const d=sc.desired,r=sc.running,n=v=>v==null?"?":v;
@@ -508,7 +550,7 @@ function skeleton(v,arg){
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="usage")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
- if(v==="help")return `<nav class="htabs">${HTABS.map(([k,n])=>`<a href="/help${k?"/"+k:""}" data-nav class="${k===arg?"on":""}">${n}</a>`).join("")}</nav>`+(arg?`<section class="card help ref"><div class="ref-q"><input id="ref-qi" type="search" placeholder="絞り込み（例 inbox、drain、予算）" value="${esc(refQ)}"><span class="m" id="ref-n"></span></div><div id="ref-b"><div class="m">読み込み中…</div></div></section>`:`<section class="card help">${HELP}</section>`);
+ if(v==="help")return `<nav class="htabs">${HTABS.map(([k,n])=>`<a href="/help${k?"/"+k:""}" data-nav class="${k===arg?"on":""}">${n}</a>`).join("")}</nav>`+(arg==="mobile"?`<section class="card help">${HELP_MOBILE}</section>`:arg?`<section class="card help ref"><div class="ref-q"><input id="ref-qi" type="search" placeholder="絞り込み（例 inbox、drain、予算）" value="${esc(refQ)}"><span class="m" id="ref-n"></span></div><div id="ref-b"><div class="m">読み込み中…</div></div></section>`:`<section class="card help">${HELP}</section>`);
  return `<div class="set"><nav class="sn">${SETTINGS.map(([k,n])=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(n)}</a>`).join("")}${LATER.map(n=>`<span class="later" title="今後">${esc(n)}（今後）</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
 let force=false,usageAt=0;
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
@@ -530,7 +572,7 @@ function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="setting
   put("lanes",LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return `<section class="lane"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join(""))}
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="usage"){if(Date.now()-usageAt>60000||!document.querySelector("#usage-b .usage"))loadUsage()}
- else if(v==="help"){if(arg&&!document.querySelector("#ref-b section")){if(REF)refPut();else loadRef()}}
+ else if(v==="help"){if(arg&&arg!=="mobile"&&!document.querySelector("#ref-b section")){if(REF)refPut();else loadRef()}}
  else if(force||!busy("set-b"))put("set-b",settingsBody(arg,s));
  force=false}
 async function load(){if(document.hidden&&!force)return;let s;try{s=await (await fetch("/api/state")).json()}catch(e){toast("読み込めませんでした");return}

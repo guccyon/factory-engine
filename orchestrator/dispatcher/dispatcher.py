@@ -38,6 +38,7 @@ import continuation
 import model_route
 import design
 import design_line
+import distribution
 import qa_line
 import defect
 import runner_relay
@@ -126,6 +127,7 @@ REVIEW_FIX = ENV.get("REVIEW_FIX", "1") == "1"   # マージ前に採用した�
 SWAP_INTERVAL = int(ENV.get("SWAP_INTERVAL_SEC", "15"))   # 工場の更新の依頼を見る間隔（ADR 0031）
 SWAP_MAILBOX_INTERVAL = int(ENV.get("SWAP_MAILBOX_INTERVAL_SEC", "60"))   # Issue の郵便受け（factory:swap）を見る間隔。GET は ETag つき
 OPS_INTERVAL = int(ENV.get("OPS_INTERVAL_SEC", "5"))
+DISTRIBUTE_INTERVAL = int(ENV.get("DISTRIBUTE_INTERVAL_SEC", "10"))   # 操業コンソールの「配布する」の依頼を見に行く間隔（ADR 0047）
 EXIT_CAPTURE = ENV.get("EXIT_CAPTURE", "1") == "1"   # 実装後の画面のキャプチャを CI の成果物から読み、PR の本文と受信トレイに載せる（ADR 0025 の 4）。0 で止める
 EXIT_CAPTURE_INTERVAL = int(ENV.get("EXIT_CAPTURE_INTERVAL_SEC", "300"))   # 見に行く間隔（状態の取得は ETag つき）。仮置き   # 停止・割り込みを見る間隔（トークンを使わない）
 
@@ -1461,6 +1463,18 @@ def tidy_loop():
         time.sleep(tidy.TIDY_INTERVAL)
 
 
+def distribute_loop():
+    """審査前の配布（ADR 0047）。操業コンソールの「配布する」で書かれた依頼を拾い、Mac ランナーで動かして結果を書く。
+    人が Mac で押すまで待つので 1 本ずつ。失敗してもラインは止めない"""
+    while True:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                distribution.tick(cur, log=lambda m: log(m))
+        except Exception as e:  # noqa: BLE001
+            log("distribute error", repr(e))
+        time.sleep(DISTRIBUTE_INTERVAL)
+
+
 def swap_loop():
     """工場の更新（ADR 0031）。Issue の郵便受け（factory:swap）から依頼を拾い、受けた依頼の時刻になったら、使い捨ての更新役のコンテナを起動する。
     更新役が消えていたら人に回す。進み具合は依頼の Issue に返す"""
@@ -1625,6 +1639,8 @@ def main():
         threading.Thread(target=tidy_loop, daemon=True).start()
     if ENV.get("SWAP_ENABLED", "1") == "1":
         threading.Thread(target=swap_loop, daemon=True).start()
+    if ENV.get("DISTRIBUTE_ENABLED", "1") == "1":
+        threading.Thread(target=distribute_loop, daemon=True).start()
     pr_events.start(threading)
     if ENV.get("RUNNER_RELAY", "1") == "1":
         RELAY = runner_relay.Relay(_relay_call, _relay_record, local=_relay_local)

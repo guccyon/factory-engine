@@ -37,7 +37,7 @@ import time
 import urllib.parse
 import uuid
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 HOME = os.path.expanduser("~")
 
 
@@ -280,15 +280,17 @@ class Builds:
         b = self.items[bid]
         b["stage"] = "checkout"
         channel, notes = b["channel"], b.get("release_notes", "")
-        closed = channel_closed(self.cfg, channel)
+        dest = {"firebase_app_id": b.get("firebase_app_id"), "groups": b.get("groups")}
+        closed = channel_closed(self.cfg, channel, dest)
         if closed:
             raise ToolError(closed)
+        app_id, groups = destination(self.cfg, dest)
         repo_dir, sha = self._checkout(app, ref)
         build_number = str(int(time.time() // 60))   # 上げるたびに増える番号（Android の versionCode。分の通し番号）
         b.update({"sha": sha, "build_number": build_number, "state": "waiting_for_human", "stage": "attend"})
         attend(f"工場が {app['repo']} の {app['path']} を配布しようとしています（{channel}）。\n\n"
                f"コミット {sha[:12]}（マージ済み）、ビルド番号 {build_number}\n"
-               f"配る相手: Firebase のグループ {self.cfg['firebase_groups']}\n\n"
+               f"宛先: Firebase のアプリ {app_id}\n配る相手: テスターのグループ {groups}\n\n"
                "この Mac の署名の鍵で署名し、この Mac の Firebase のログインで送ります。よければ「配布する」を押してください。",
                self.cfg["attend_timeout"])
         b.update({"state": "building", "stage": "build", "approved_at": now()})
@@ -309,14 +311,14 @@ class Builds:
         with open(signed, "rb") as f:
             digest = hashlib.sha256(f.read()).hexdigest()
         b["stage"] = "upload"
-        argv = [self.cfg["firebase"], "appdistribution:distribute", signed, "--app", self.cfg["firebase_app_id"],
-                "--groups", self.cfg["firebase_groups"], "--non-interactive"]
+        argv = [self.cfg["firebase"], "appdistribution:distribute", signed, "--app", app_id,
+                "--groups", groups, "--non-interactive"]
         if notes:
             argv += ["--release-notes", notes]
         log = run(argv, cwd=app_dir, timeout=900)
         self._prune(repo_dir, keep=bid)
         return {"sha": sha, "build_number": build_number, "channel": channel, "sha256": digest, "stage": "done",
-                "testers": self.cfg["firebase_groups"], "log_tail": log.decode("utf-8", "replace")[-1500:]}
+                "testers": groups, "firebase_app_id": app_id, "log_tail": log.decode("utf-8", "replace")[-1500:]}
 
     def _prune(self, repo_dir, keep, n=3):
         """古いビルドの作業場を消す（新しい順に n 本残す）。消せなくてもビルドは失敗にしない。"""
@@ -360,15 +362,23 @@ def read_bundle_id(app_path):
         return None
 
 
-def channel_closed(cfg, channel):
-    """配布先が開いていなければ、その理由（人が Mac ですること）を返す。開いていれば空。"""
+def destination(cfg, a=None):
+    """配る宛先（Firebase のアプリの ID、テスターのグループ）。工場が渡せばそれ、なければ Mac の設定。
+    宛先は秘密ではない（上げるのは Mac の持ち主の firebase login なので、持ち主が触れないアプリには配れない）。確かめの窓に出す"""
+    a = a or {}
+    return (a.get("firebase_app_id") or cfg["firebase_app_id"], a.get("groups") or cfg["firebase_groups"])
+
+
+def channel_closed(cfg, channel, a=None):
+    """配布先が開いていなければ、その理由（人がすること）を返す。開いていれば空。"""
     if channel not in CHANNELS:
         return f"{channel} という配布先はない（あるもの: {', '.join(CHANNELS)}）"
+    app_id, groups = destination(cfg, a)
     missing = []
-    if not FIREBASE_APP_ID.match(cfg["firebase_app_id"]):
-        missing.append("MAC_RUNNER_FIREBASE_APP_ID（Firebase の Android アプリの ID）")
-    if not all(GROUP.match(g) for g in cfg["firebase_groups"].split(",")):
-        missing.append("MAC_RUNNER_FIREBASE_GROUPS の形（英小文字・数字・-）")
+    if not isinstance(app_id, str) or not FIREBASE_APP_ID.match(app_id):
+        missing.append("Firebase の Android アプリの ID（操業コンソールの配布先か、Mac の MAC_RUNNER_FIREBASE_APP_ID）")
+    if not isinstance(groups, str) or not all(GROUP.match(g) for g in groups.split(",")) or len(groups) > 200:
+        missing.append("テスターのグループの形（英小文字・数字・-、カンマ区切り）")
     if not os.path.isfile(cfg["android_keystore"]):
         missing.append(f"署名の鍵 {cfg['android_keystore']}（scripts/macrunner.sh android-key で作る）")
     if missing:
@@ -471,6 +481,8 @@ TOOLS = [
           "channel": {"type": "string", "enum": list(CHANNELS)},
           "ref": {"type": "string", "description": "コミットかブランチ（既定 main）"},
           "release_notes": {"type": "string", "maxLength": 1000, "description": "テスターに見せる変更点"},
+          "firebase_app_id": {"type": "string", "description": "宛先の Firebase の Android アプリの ID（省くと Mac の設定）"},
+          "groups": {"type": "string", "description": "配る相手のテスターのグループ（カンマ区切り。省くと Mac の設定）"},
           "dart_defines": {"type": "object", "description": "--dart-define に渡す値（例 {\"RALLY_API_URL\": \"https://…\"}）", "additionalProperties": {"type": "string"}}},
          ["app", "channel"]),
     tool("app_install", "ビルドしたアプリを起動中のシミュレーターに入れる", {"udid": S_UDID, "build_id": {"type": "string"}}, ["udid", "build_id"]),
@@ -566,14 +578,15 @@ class Runner:
 
     def t_preview_distribute(self, a):
         channel = need(a, "channel")
-        closed = channel_closed(self.cfg, channel)
+        closed = channel_closed(self.cfg, channel, a)
         if closed:
             raise ToolError(closed)
         notes = a.get("release_notes", "")
         if not isinstance(notes, str) or len(notes) > 1000:
             raise ToolError("release_notes は 1000 文字までの文字列")
         app, ref, defines = build_args(a)
-        return text(public_build(self.builds.start(app, ref, defines, kind="distribute", extra={"channel": channel, "release_notes": notes})))
+        return text(public_build(self.builds.start(app, ref, defines, kind="distribute", extra={
+            "channel": channel, "release_notes": notes, "firebase_app_id": a.get("firebase_app_id"), "groups": a.get("groups")})))
 
     def t_build_status(self, a):
         return text(public_build(self.builds.status(need(a, "build_id", BUILD_ID))))
@@ -751,9 +764,8 @@ def preflight(cfg):
     for exe, what in (("xcrun", "Xcode"), (cfg["flutter"], "Flutter"), (cfg["idb"], "idb（ui_* に要る）"), ("git", "git")):
         if not shutil.which(exe):
             notes.append(f"{exe} が見つからない（{what}）")
-    closed = channel_closed(cfg, "firebase_android")
-    if closed:
-        notes.append(closed + "（配布を使わないなら、このままでよい）")
+    if not os.path.isfile(cfg["android_keystore"]):   # 宛先（アプリの ID）は工場が渡せるので、Mac に要るのは鍵と Firebase CLI のログイン
+        notes.append(f"審査前の配布は閉じている: 署名の鍵 {cfg['android_keystore']} がない（scripts/macrunner.sh android-key。配布を使わないなら、このままでよい）")
     elif not shutil.which(cfg["firebase"]):
         notes.append(f"{cfg['firebase']} が見つからない（Firebase CLI。npm install -g firebase-tools のあと firebase login）")
     return notes

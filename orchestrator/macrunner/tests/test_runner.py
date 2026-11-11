@@ -330,3 +330,26 @@ def test_java_found_or_said(monkeypatch):
     with pytest.raises(runner.ToolError, match="MAC_RUNNER_JAVA_HOME"):
         runner.java_env({"java_home": ""})
     assert runner.java_env({"java_home": "/jdk"})["JAVA_HOME"] == "/jdk"
+
+
+def test_destination_from_factory_overrides_mac(dist):
+    """宛先は工場が渡せる（操業コンソールの配布先）。渡したものが確かめの窓に出て、その宛先に上げる。"""
+    bid, app = start_item(dist)
+    dist.b.items[bid].update({"firebase_app_id": "1:999:android:beef", "groups": "qa,owners"})
+    out = dist.b._distribute(bid, app, "main", {})
+    dialog = next(a for a in dist.seen.argv if a[0] == "osascript")
+    assert "1:999:android:beef" in dialog[-2] and "qa,owners" in dialog[-2]
+    up = next(a for a in dist.seen.argv if a[0] == "firebase")
+    assert up[up.index("--app") + 1] == "1:999:android:beef" and up[up.index("--groups") + 1] == "qa,owners"
+    assert out["firebase_app_id"] == "1:999:android:beef"
+
+
+def test_bad_destination_from_factory_is_refused(server, monkeypatch, tmp_path):
+    s, _ = server
+    ks = tmp_path / "k.jks"
+    ks.write_bytes(b"k")
+    s.r.cfg["android_keystore"] = str(ks)
+    res = call(s, "preview_distribute", {"app": APP, "channel": "firebase_android", "firebase_app_id": "1:1:ios:ab"})
+    assert res["isError"] and "アプリの ID" in res["content"][0]["text"]
+    res = call(s, "preview_distribute", {"app": APP, "channel": "firebase_android", "firebase_app_id": FB_APP, "groups": "a b"})
+    assert res["isError"] and "グループ" in res["content"][0]["text"]
