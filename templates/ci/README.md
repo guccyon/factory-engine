@@ -33,3 +33,24 @@ factory-engine の main にない版（フォークのコミットなど）は�
 | ファイル | 内容 |
 |---|---|
 | `diagnose.yml` | PR ごとの診断（依存 osv-scanner・静的解析 semgrep・秘密情報 gitleaks）。shadow。写すときは何も変えない |
+
+## 共有ファイルの直書きを止める（ADR 0051 の 3）
+
+製品が `.factory-config/aggregates.yaml` で共有ファイルを宣言したら、PR ごとの CI に次のジョブを足す。工場の PR（ブランチ `factory/`）が宣言したファイルを直接書き換えていたら落とす。取りまとめの PR（宣言したファイルの更新と断片の削除だけ）と、人の PR は通す。宣言がなければ何もしない。
+
+```yaml
+  aggregate-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      # ここに上の「Engine の版を読む」の手順を置く
+      - name: 宣言した共有ファイルの直書きを止める
+        run: |
+          git init -q "$RUNNER_TEMP/eng" && git -C "$RUNNER_TEMP/eng" fetch -q --depth 1 https://github.com/guccyon/factory-engine.git "$ENGINE_REF" && git -C "$RUNNER_TEMP/eng" checkout -q FETCH_HEAD
+          python3 "$RUNNER_TEMP/eng/core-gates/aggregate_guard.py" . --base "origin/${{ github.base_ref }}" --branch "${{ github.head_ref }}"
+```
+
+製品の検査やテストが宣言したファイルの中身（一覧など）を照らすときは、`python3 core-gates/aggregate_compile.py . --view <path>` の出力（まだ取りまとめていない断片を含む）で照らす。ワークフローを足すのは特権のラインのチケット（ADR 0041）。

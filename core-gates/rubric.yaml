@@ -235,7 +235,7 @@ rules:
     knowledge_stage: rubric
     state: candidate
     confidentiality: public
-    check: "利用者に見える変更を含む PR に CHANGELOG の差分があるか。製品が断片の置き場 changelog.d/ を持つときは、CHANGELOG.md を直接書き換えず changelog.d/<Issue 番号>.md に書いているか（ADR 0027。取りまとめの PR だけは CHANGELOG.md を書き換える）"
+    check: "利用者に見える変更を含む PR に CHANGELOG の差分があるか。製品が断片の置き場 changelog.d/ を持つときは、CHANGELOG.md を直接書き換えず changelog.d/<Issue 番号>.md に書いているか（ADR 0027。取りまとめの PR だけは CHANGELOG.md を書き換える）。製品が .factory-config/aggregates.yaml で宣言したほかの共有ファイルも同じく、直接書き換えず宣言の断片の置き場に書いているか（ADR 0051）"
     severity: should
     source: "リポジトリの開発ガイド"
 
