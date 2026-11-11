@@ -1,6 +1,6 @@
-# ADR 0028: QA と実行環境のケイパビリティと、P5 の 2 段への分割
+# ADR 0028: QA と実行環境のケイパビリティと、P5 の 2 つへの分割
 
-- 状態: 承認（2026-11-04 オーナー。P5 を 2 段に分ける案をカードで選択。アーキテクチャに触れる点は本文で承認、実装は各 PR）
+- 状態: 承認（2026-11-04 オーナー。P5 を 2 つに分ける案をカードで選択。アーキテクチャに触れる点は本文で承認、実装は各 PR）
 - 関係: ADR 0012（出荷）、ADR 0019（内部品質）、ADR 0023（学習の体系）、ADR 0024（知見と委員会）、ADR 0025（上流の工程）、factory-engine #160（SHIP_PROD_HOLD。製品の段階ができるまでのつなぎ。段階に置き換えた: ADR 0012 の追記 2026-11-05）
 - 検討の記録: 50_build-work/strategy/qa-and-runtime-2026-11-04.md（発散）、strategy/qa-model/、strategy/capability-model/、strategy/roadmap-qa-runtime/（図）、capability-model-knowledge-2026-11-04.md（知見）
 
@@ -24,7 +24,7 @@
 
 ## 決定
 
-### 1. P5 を 2 段に分ける
+### 1. P5 を 2 つに分ける
 
 `definitions/roadmap.yaml` の P5「Operate」を、P5a「触れる環境と QA の 1 本」（6 週）と P5b「Operate」（6 週）に分ける。P5a は P4 に依存しないもの（Mac ランナー、触れる環境）から着手し、P4 の残りと並行でよい。ユーザーストーリーの型は P4 の `typed_upstream` と同じ PR で足す。
 

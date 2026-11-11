@@ -5,7 +5,7 @@
 # - rules は上から全部評価し、PR のファイルが 1 つでも当たった種別をすべて足す（最も厳しい値を使う）
 # - always:<id> は manifest の always_human_approve の id
 # - どの rules にも当たらず、全ファイルが docs_only_paths なら docs_only、そうでなければ default
-# - glob: ** は任意の深さ（0 段を含む）、* は / を含まない
+# - glob: ** は任意の深さ（0 階層を含む）、* は / を含まない
 
 schema_version: "0.1"
 

@@ -156,7 +156,7 @@ def patrol_prompt(defs: dict, vps: list[dict], free_share: float, due: list[dict
   - is_incident: 事故か（可用性だけの問題や、ふだんの範囲の費用なら false）
   - case: 台帳の id（cases にある IC-...）。台帳にないものは空
   - overlaps: 同じ型・同じ仕組みの既存の FIR の id。なければ空
-  - why: なぜなぜの要約（3〜5 段）。工場のどの部品のどの振る舞いが費用を膨らませたか
+  - why: なぜなぜの要約（3〜5 回）。工場のどの部品のどの振る舞いが費用を膨らませたか
   - evidence: 根拠にした week.json の数字（比や件数）
   - engine_fix: Engine の直し方の案（原因の直し。専用のチェックではなく原因を直す。一般の歯止めで足りるならそう書く）。なければ空
   - record: 新しい FIR の下書きにするか（事故で、帯が medium 以上で、overlaps が空のとき true）

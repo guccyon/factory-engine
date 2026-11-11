@@ -12,7 +12,7 @@ create table if not exists tickets (
   url             text,
   state           text        not null default 'active'
                   check (state in ('planned','active','closed')),   -- planned: 依存・上限で投入待ち / active: ジョブに渡した / closed: 済み
-  priority        smallint    not null default 50 check (priority between 0 and 100),   -- 大きいほど先。段は ops.LEVELS
+  priority        smallint    not null default 50 check (priority between 0 and 100),   -- 大きいほど先。レベルは ops.LEVELS
   priority_set_by text        not null default 'default',          -- default | source（入口のラベル）| console | factoryctl
   held            boolean     not null default false,              -- 保留（順番待ちから一時的に外す）
   depends_on      text[]      not null default '{}',               -- 依存チケットの source_ref

@@ -157,7 +157,7 @@ def decisions_lines(adrs: dict, contracts: list[dict]) -> list[str]:
                          f"{COMPAT_JA.get(c.get('compat_impact'), c.get('compat_impact'))}: {c.get('summary') or ''}")
         lines += ["", "実装役へ: 契約のファイルを先に直し、実装はそれに合わせる。"]
         if any(c.get("compat_impact") == "breaking" for c in contracts):
-            lines[-1] += "互換を壊す差分は、足す（expand）→ 移す → 消す（contract）に分け、消す段は人の承認を待つ（製品の ADR 0004）。"
+            lines[-1] += "互換を壊す差分は、足す（expand）→ 移す → 消す（contract）に分け、消す工程は人の承認を待つ（製品の ADR 0004）。"
         lines.append("")
     return lines
 

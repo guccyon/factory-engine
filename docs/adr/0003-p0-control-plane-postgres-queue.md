@@ -12,7 +12,7 @@ P0a の完了条件は「Issue にラベルを付けると、デスクトップ�
 ## 決定
 
 1. **制御プレーンは Postgres 単体**。`jobs` を `SELECT … FOR UPDATE SKIP LOCKED` で取り出すジョブキュー、`pg_try_advisory_lock(hashtext(repo#issue))` による所有ロック、`events`（テレメトリ）、`artifacts`（成果物メタデータ）を 1 つの DB に持つ。オブジェクト（ワーカーのログ）は S3 互換のオブジェクトストア 1 サービス。開始定義は MinIO を想定していたが、2026-10-26 時点で MinIO の公式イメージが Docker Hub から取得できなくなっていたため versitygw（posix バックエンド）を使う。クライアントは S3 API なので差し替え可能
-2. **二重実行の抑止は 2 段**。DB の部分ユニーク索引（同じ repo#issue で `queued|running` は 1 件だけ）と、実行時のアドバイザリロック。GitHub 側のラベル（`factory:implement` → `factory:queued` → `factory:running` → `factory:pr-open | factory:failed`）は人間向けの表示で、抑止の根拠にしない
+2. **二重実行の抑止は 2 つ**。DB の部分ユニーク索引（同じ repo#issue で `queued|running` は 1 件だけ）と、実行時のアドバイザリロック。GitHub 側のラベル（`factory:implement` → `factory:queued` → `factory:running` → `factory:pr-open | factory:failed`）は人間向けの表示で、抑止の根拠にしない
 3. **起動はポーリングを既定にする**。dispatcher が 30 秒ごとに対象リポジトリの `factory:implement` ラベルの Issue を見る。Webhook 受け口（`/webhook`、HMAC 検証付き）も同じプロセスに持ち、`WEBHOOK_SECRET` を設定したときだけ有効にする。トンネル（cloudflared 等）は Webhook を使うときに builder が足す
 4. **ワーカーは使い捨てコンテナ**。dispatcher が Docker ソケット経由で `docker run --rm` し、ワーカーは浅いクローン（`--depth 1`）→ Claude Code（`claude -p`）→ commit / push → `gh pr create` → 結果を標準出力の最終行に JSON で出して終了する。ワーカーの中に状態を残さない。ログは dispatcher がオブジェクトストアに置く
 5. **手動停止と再実行**は `factoryctl stop <job>`（cancel_requested を立て、dispatcher がコンテナを kill）と `factoryctl rerun <job>`（同じ correlation_id で attempt を増やして再投入）
@@ -28,7 +28,7 @@ P0a の完了条件は「Issue にラベルを付けると、デスクトップ�
 | 基準 | Postgres 単体で苦しくなる兆候 |
 |---|---|
 | 長時間待機 | 人間の Approval / Question の回答待ちが日単位になり、待機中のジョブの状態機械を自前で書く量が増える |
-| 再開性 | ワーカーの途中失敗からの再開を「最初からやり直す」で済ませられなくなる（1 ジョブが 30 分を超える、外部副作用が多段になる） |
+| 再開性 | ワーカーの途中失敗からの再開を「最初からやり直す」で済ませられなくなる（1 ジョブが 30 分を超える、外部副作用が何重にもなる） |
 | 並列度 | 同時実行が 10 を超え、コンテキストごとのマージ直列化とレート制限の制御を dispatcher 1 プロセスで持てなくなる |
 | 運用負荷 | 失われたジョブ・二重実行・タイムアウトの調査が週に複数回起きる |
 

@@ -21,7 +21,7 @@
   factoryctl budget [status]                       # 使用量の予算（毎日同じ額か曜日ごと。7:00 JST 区切り）と今日の予算
   factoryctl budget set [--daily USD] [--mon USD .. --sun USD] [--mode daily|weekday] [--reason ..]   # 予算を宣言する。上げ直さずに次の周回から効く
   factoryctl drain allow <PR か Issue の URL>... [--reason ..]   # 一時停止のまま、その PR のジョブ（衝突の解消・検査・judge・委員会）か、その Issue のチケットのジョブだけ流す。再開で消える
-  factoryctl drain allow --priority p0 [--reason ..]    # 一時停止のまま、優先度がその段以上のチケットのジョブ（着手判定・実装を含む）も流す。再開で消える
+  factoryctl drain allow --priority p0 [--reason ..]    # 一時停止のまま、優先度がそのレベル以上のチケットのジョブ（着手判定・実装を含む）も流す。再開で消える
   factoryctl runner check                          # Mac ランナー（ADR 0033）に届くか: 窓口・ペアリング済みの台数・道具・端末。届かなければ終了コード 1
   factoryctl version [--expect <コミット>]          # サービスごと・ジョブごとに動いている版（イメージのラベル。ADR 0031）。ずれたサービスか止まっているサービスがあれば終了コード 1
   factoryctl resume [--reason ..]                  # チケットを渡さないときはラインを再開する
@@ -29,7 +29,7 @@
 工場の更新の自律化（ADR 0031）。dispatcher が使い捨ての更新役（コンテナ factory-swap-<id>）を起動し、事前の確かめ → 一時停止（control_plane のとき）→
 すべてのサービスの上げ直し → 確かめ → 再開を行う。確かめに通らなければ前の版に戻す。DB の変更・秘密情報と権限を含む版は人に回す:
   factoryctl swap run <main|コミット> [--kind code|control_plane|db] [--note ..] [--by ..]   # いま更新する（時刻の合意なし。順番 2）。種類は差分から判定し直し、重い方を採る
-  factoryctl swap status [<id>]                    # 直近の更新の一覧か、1 件の段ごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
+  factoryctl swap status [<id>]                    # 直近の更新の一覧か、1 件のステップごとの記録。進み具合はホストで docker logs -f factory-swap-<id> でも見られる
   factoryctl swap cancel <id> [--reason ..]        # 更新役を起動する前だけ取り消せる
   （クラウドの建設者は factory-engine の Issue に factory:swap を付けて依頼する。dispatcher が拾い、結果を同じ Issue に返す。orchestrator/README.md）
 

@@ -20,7 +20,7 @@ create table if not exists desk_conversations (
   state       text        not null default 'open'
               check (state in ('open','waiting_requester','drafted','confirmed','answered','closed')),
   title       text        not null default '',
-  wanted      jsonb       not null default '{}'::jsonb,    -- 依頼者の希望（優先度の段・期限）
+  wanted      jsonb       not null default '{}'::jsonb,    -- 依頼者の希望（優先度のレベル・期限）
   rounds      integer     not null default 0,              -- 相手の問いと依頼者の返事の往復の数（上限は壁打ちが入ってから使う）
   cost_usd    numeric     not null default 0,              -- 相談のジョブの費用の合計（窓口の枠。ADR 0030 の 6）
   created_at  timestamptz not null default now(),

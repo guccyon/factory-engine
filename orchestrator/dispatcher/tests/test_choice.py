@@ -13,7 +13,7 @@ pytest.importorskip("psycopg")
 import choice  # noqa: E402
 
 URL = os.environ.get("TEST_DATABASE_URL")
-OPTS = [{"id": "A", "label": "確認の段", "image_key": "choices/1/a.png"}, {"id": "B", "label": "並べる", "image_key": "choices/1/b.png"}]
+OPTS = [{"id": "A", "label": "確認を挟む", "image_key": "choices/1/a.png"}, {"id": "B", "label": "並べる", "image_key": "choices/1/b.png"}]
 
 
 def test_validate_rejects_bad_shapes():

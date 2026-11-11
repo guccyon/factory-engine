@@ -86,7 +86,7 @@ services:
       WATCH_IDLE_MIN: ${WATCH_IDLE_MIN:-20}
       WATCH_HEARTBEAT_MIN: ${WATCH_HEARTBEAT_MIN:-30}
       WATCH_DRAIN_MIN: ${WATCH_DRAIN_MIN:-30}          # ラインの一時停止（ADR 0020）がこの分数続いたら停止 drain: を開く（再開の忘れ）
-      WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 投入待ちの段がこの数を切ったら知らせる（停止ではない。0 で無効）
+      WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 投入待ちのタスクがこの数を切ったら知らせる（停止ではない。0 で無効）
       NOTIFIER: ${NOTIFIER:-github-issue}
       STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
       # 受信トレイの通知（ADR 0026 の決定 7）。通知先は建てるときに選ぶ: log / github-issue / slack をカンマで。受信トレイ自体はコンソールに常にある
@@ -210,7 +210,7 @@ services:
       SUPERVISOR_MAX_INFLIGHT: ${SUPERVISOR_MAX_INFLIGHT:-1}
       GOVERNANCE_PARALLEL: ${GOVERNANCE_PARALLEL:-1}
       DESK_PARALLEL: ${DESK_PARALLEL:-1}
-      WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 段の残りを赤く出す下限（dispatcher と同じ値）
+      WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 投入待ちのタスクの残りを赤く出す下限（dispatcher と同じ値）
       PLAN_WEEK_RESET: ${PLAN_WEEK_RESET:-sun 11:00}     # 使用量のページの契約の週の区切り（JST）
       PLAN_WEEKLY_LIMIT_USD: ${PLAN_WEEKLY_LIMIT_USD:-}  # 契約の週の上限の目安（API 単価換算）。空なら割合と見込みを出さない
       JOB_TIMEOUT_SEC: ${JOB_TIMEOUT_SEC:-2400}

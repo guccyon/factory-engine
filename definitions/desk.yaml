@@ -23,7 +23,7 @@ task_kinds:
   implement:    { ja: 実装, does: "コードとテストを書く" }
   answer:       { ja: 成果物, does: "データの書き出しなど、成果物を返す仕事（Gen1 は実装のタスクとして流し、スクリプトと結果を PR に添える。P5b の Answer ライン）" }
 
-efforts:                 # planner.yaml の efforts と同じ段
+efforts:                 # planner.yaml の efforts と同じレベル
   light: 既存のものの組み合わせで済む
   standard: ふつう
   deep: ゼロから考える部分が大きい

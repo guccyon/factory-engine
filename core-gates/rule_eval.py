@@ -9,7 +9,7 @@ LLM を使わないので、同じルールと同じ差分に同じ結果を返�
      - 形の検査: definitions/learning.yaml の rule.required、状態・段階・機密区分の値、eval ケースの正例・負例が 1 件以上ずつ、id の重複
      - eval ケースの実行: check.kind が diff_regex のルールは、eval ケースの差分に当てて expect（fire / silent）どおりかを見る。
        retired 以外の全ルールを毎回走らせるので、ほかのルールの退行もここで出る
-     - rubric・episodic の段のルールは LLM が要るので、ここでは形だけを見て「工場で判定」と出す（判定は工場の inspect ジョブ）
+     - rubric・episodic の種類のルールは LLM が要るので、ここでは形だけを見て「工場で判定」と出す（判定は工場の inspect ジョブ）
   2. 発火（--base / --head）: PR の差分に shadow と adopted の diff_regex ルールを当て、当たった箇所を出す（gate.evaluated の gate=overlay）
 
 eval ケースの差分は製品の .factory-config/evals/ からの相対パス（file:rules/OV-001/positive-1.diff など）。CI で外に取りに行かない。

@@ -4,7 +4,7 @@
 ここには渡されるだけ。判定は DB にも GitHub にも触れない純粋な関数で、操業コンソールと受信トレイが同じ結果を使う。
 
 - judge(defs, levels, target): 1 つの仕事について、判定（blocked / weak / ready / enough）・割合・警告・お願い
-- ladder(defs, met): 段 L1〜L5 のどこまで届いたかと、次の段に足りない条件
+- ladder(defs, met): レベル L1〜L5 のどこまで届いたかと、次のレベルに足りない条件
 - ready_line_ok(defs, levels, met): 稼働 ready の承認を出してよいか（L1〜L3 の条件と「開発を始める」の必須。D4）
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ def judge(defs: dict, levels: dict[str, int], target: str) -> dict:
 
     返す形: {target, verdict, ratio, blocked: [項目 id], warnings: [{id, level, goal, warn}], asks: [{id, ask}]}
     blocked は必須が最低に届かない項目、warnings は目標に届かない必須でない項目（blocked と重ねない）、
-    asks は目標に届かない項目のうちお願いを持つもの（blocked を先に、あとは足りない段の多い順）。"""
+    asks は目標に届かない項目のうちお願いを持つもの（blocked を先に、あとは目標までの差の大きい順）。"""
     if target not in defs["targets"]:
         raise ValueError(f"知らない仕事: {target}")
     num = den = 0.0
@@ -77,10 +77,10 @@ def judge(defs: dict, levels: dict[str, int], target: str) -> dict:
 
 
 def ladder(defs: dict, met: set[str] | list[str]) -> dict:
-    """段の到達。met は満たした条件 id。段は下から順に、全部の条件を満たした段までを「届いた」とする
-    （上の段の条件を先に満たしていても、下の段が欠けていれば届いたことにしない）。
+    """レベルの到達。met は満たした条件 id。レベルは下から順に、全部の条件を満たしたレベルまでを「届いた」とする
+    （上のレベルの条件を先に満たしていても、下のレベルが欠けていれば届いたことにしない）。
 
-    返す形: {reached: 届いた段（0 は未着手）, next: 次の段 or None, missing: [{id, ja}]}"""
+    返す形: {reached: 届いたレベル（0 は未着手）, next: 次のレベル or None, missing: [{id, ja}]}"""
     met = set(met)
     reached = 0
     for rung in defs["ladder"]:

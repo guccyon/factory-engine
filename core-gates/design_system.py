@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """デザインシステムのデザイナー役（ADR 0025 のデザインシステムの決定、ADR 0026）。
 
-2 つの段で動く（definitions/design_system.yaml）:
+2 つの工程で動く（definitions/design_system.yaml）:
 - concept: コンセプトとトーン＆マナーの案（2〜3）と、案ごとの見本の画面（静的 HTML）を作らせ、ヘッドレスの Chromium で撮る。
            人が選ぶ（ブランドに効くので必ず人。ADR 0025 の E2）
 - spec:    選ばれた案（またはいまのデザインシステム）から、デザインガイドラインの必須の節を specs/design/ のファイルとして書かせる
@@ -51,7 +51,7 @@ def has_design_system(repo_dir: Path) -> bool:
 
 
 def phase_of(inp: dict, repo_dir: Path) -> str:
-    """段を決める。入力の指定が先、なければデザインシステムの有無（ない製品はコンセプトから）"""
+    """工程を決める。入力の指定が先、なければデザインシステムの有無（ない製品はコンセプトから）"""
     if inp.get("phase") in PHASES:
         return inp["phase"]
     return "spec" if has_design_system(repo_dir) else "concept"
@@ -177,7 +177,7 @@ def prompt(defs: dict, issue: dict, inp: dict, phase: str, delta: bool, ds_exist
 """
     chosen = yaml.safe_dump(inp.get("concept") or {}, allow_unicode=True, sort_keys=False) if inp.get("concept") else "（指定なし。いまの specs/design/ を土台にする）"
     catalog_vars = ("tokens.yaml の color.roles の <名前> → --color-<名前>（_ は -）、color.status の <状態>.<名前> → --color-<状態>-<名前>、"
-                    "spacing.scale_px の <段> → --space-<段>、shape.radius_px の <段> → --radius-<段>、typography.families の <名前> → --font-<名前>")
+                    "spacing.scale_px の <キー> → --space-<キー>、shape.radius_px の <キー> → --radius-<キー>、typography.families の <名前> → --font-<名前>")
     chromium = os.environ.get("CHROMIUM_BIN", "chromium")
     files = "\n".join(f"   - {f}: {sec}" for f, sec in defs["spec"]["files"].items())
     scope = ("いまのデザインシステムへの追加・変更です。変わるファイルだけを書く（既存のファイルは product/specs/design/ から写して直す）。"
@@ -200,7 +200,7 @@ def prompt(defs: dict, issue: dict, inp: dict, phase: str, delta: bool, ds_exist
   （例: primary・押下・読み込み中・disabled・誤り。部品の states にある代表的なものを 2〜5 つ。見本の数は全部で {design_catalog.MAX_PREVIEWS} 個まで）
 - 見本は実際の文言で描く（「予約する」「10/28（水）12:00」など。ダミーの文字にしない）
 - 色・余白・角丸・書体はトークンの CSS 変数だけで書く。変数の名前: {catalog_vars}
-  書体の段は class="type-<段の名前>"。部品の共通の見た目は components.yaml の preview_css（任意の CSS 文字列）に書いてよい
+  書体の種類は class="type-<種類の名前>"。部品の共通の見た目は components.yaml の preview_css（任意の CSS 文字列）に書いてよい
 - 見本に script・iframe・link・イベント属性（onclick など）・外の URL・@import は使えない
 - `python3 {HERE / 'design_catalog.py'} out/spec out/catalog.html` でカタログを組み立て、
   `{chromium} --headless --no-sandbox --hide-scrollbars --window-size=1200,<高さ> --screenshot=out/catalog.png out/catalog.html` で撮って、
