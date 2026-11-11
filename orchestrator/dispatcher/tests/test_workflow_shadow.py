@@ -174,3 +174,23 @@ def test_ticket_without_plan_uses_default_caps(cur):
     hits = ws.evaluate(cur, CORR)
     assert [(h["cap"], h["plan_id"], h["default"]) for h in hits] == [("retries.conflict", None, True)]
     assert ws.evaluate(cur, CORR) == []
+
+
+@needs_db
+def test_judge_rounds_count_same_head_only(cur):
+    from psycopg.types.json import Jsonb
+
+    def judge(sha):
+        jid = job(cur, kind="judge", turns=3, cost=0.1)
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                    (CORR, jid, Jsonb({"kind": "judge", "pr_url": "u", "head_sha": sha})))
+    plan(cur)
+    for sha in ("a", "b", "c"):                      # 続きのジョブで head が変わるたびの judge はやり直しではない
+        judge(sha)
+    assert ws.ledger(cur, CORR)["retries.judge_rounds"] == 0
+    assert ws.evaluate(cur, CORR) == []
+    judge("c")                                       # 同じ head をもう一度裁いた
+    assert ws.ledger(cur, CORR)["retries.judge_rounds"] == 1
+    judge("c")
+    hits = ws.evaluate(cur, CORR)
+    assert [h["cap"] for h in hits] == ["retries.judge_rounds"] and hits[0]["actual"] == 2
