@@ -31,6 +31,8 @@ kc_service="${MAC_RUNNER_KEYCHAIN_SERVICE:-factory-macrunner-android-keystore}"
 dist_env=""
 for k in MAC_RUNNER_FIREBASE_APP_ID MAC_RUNNER_FIREBASE_GROUPS MAC_RUNNER_FIREBASE MAC_RUNNER_ANDROID_KEYSTORE MAC_RUNNER_ANDROID_KEY_ALIAS MAC_RUNNER_APKSIGNER MAC_RUNNER_JAVA_HOME ANDROID_HOME; do
   eval "v=\${$k:-}"
+  # 打ったときに渡さなかった値は、今の plist の値を引き継ぐ（install し直すたびにアプリの ID を打たなくてよいように）
+  [ -z "$v" ] && [ -f "$plist" ] && v="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$k" "$plist" 2>/dev/null)"
   [ -n "$v" ] && dist_env="$dist_env
     <key>$k</key><string>$v</string>"
 done
