@@ -194,7 +194,8 @@ def request_ship(cur, release_id: str, by: str, via: str) -> tuple[bool, str]:
     return True, "staging への出荷を依頼した"
 
 
-def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]:
+def request_approve(cur, release_id: str, by: str, via: str, skip_qa: str | None = None) -> tuple[bool, str]:
+    """staging でいま確かめられている版を prod に出す承認。QA の関門（ADR 0049）が報告の前なら skip_qa（理由）が要る"""
     st = status(cur, release_of(cur, release_id)["repo"]) if release_of(cur, release_id) else None
     if not st:
         return False, "その Release はない"
@@ -204,7 +205,11 @@ def request_approve(cur, release_id: str, by: str, via: str) -> tuple[bool, str]
     staged = st["environments"].get("staging", {}).get("release_id")
     if staged != release_id:
         return False, "staging でいま確かめられている版ではない"
-    record(cur, "release.approved", release_id, {"by": by, "via": via})
+    import qa_gate
+    ok, why, qa = qa_gate.approval_check(cur, release_id, skip_qa)
+    if not ok:
+        return False, why
+    record(cur, "release.approved", release_id, {"by": by, "via": via, **qa})
     return True, "prod への出荷を承認した"
 
 

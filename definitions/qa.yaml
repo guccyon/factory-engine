@@ -61,13 +61,14 @@ runner_tools: [sim_devices, sim_boot, app_build, build_status, app_install, app_
 # dispatcher の作用
 act:
   issue_label: "factory:qa"                     # 固定 Issue（QA の判定。閉じない）。まとめをコメントする
+  explore_issue_label: "factory:qa-explore"     # 探索の固定 Issue（閉じない）。1 つの Issue に動けるジョブは 1 つなので、出荷の関門で判定と並行に積むために分けた（ADR 0049）
   defect_labels: ["factory:qa-defect", "factory:fix-proposed"]   # hold の Defect。流すときは人が factory:fix-proposed を factory:planned に替える（差し戻しと同じ）
   defects_per_run_max: 5        # 1 回の判定で起票する Defect の上限（残りはまとめに載せるだけ）
   known_gap_issue: false        # known_gaps に当たった Defect は起票しない（ストーリーに既に書いてある。まとめに載せる）
 
 # 夜間の探索（ADR 0028 の決定 3 と P5a の nightly_explore）。台本（ストーリーの steps）どおりに流す判定と違い、その夜のチャーター（狙い）に沿って
 # 利用者として寄り道し、ストーリーが書いていないところの食い違いを探す。人のいない夜（unattended）に回し、結果は朝の報告に出す。
-# 流れ: supervisor が JST の hours の間に、製品ごとに 1 晩 1 回 QA のジョブ（入力の mode: explore）を固定 Issue（factory:qa）に積む
+# 流れ: supervisor が JST の hours の間に、製品ごとに 1 晩 1 回 QA のジョブ（入力の mode: explore）を探索の固定 Issue（factory:qa-explore）に積む
 # → ワーカー（core-gates/qa.py の探索）が out/explore.yaml を返す → dispatcher が QAExplore と qa.explore（1 晩 1 件）を残し、
 # 見つけたもの（findings）の Defect を判定と同じラベルで起票し、固定 Issue にまとめを書く → 日報（health/daily/status_report.py）が昨夜の分を載せる。
 # 見た目と言葉の温度は判定と同じく印（flags）として人に出す。印は人が採点して Golden Set に入れる（P5b の quality_learn の材料）。
@@ -102,6 +103,16 @@ explore:
     tried: "試したこと 1 件以上。{actor, where, did, saw, story_id（近いストーリーがあれば）}"
     findings: "見つけたもの（なければ []）。{title, viewpoint, severity, where, reproduce, expected, actual, story_id, known_gap}"
     flags: "任意。判定と同じ印 {viewpoint: aesthetic | tone, where, note}"
+
+# 出荷の QA の関門（ADR 0049）。staging に配備した版に、判定（mode: verdict、全ストーリーの E2E）と探索（mode: explore、チャーター 1 つ）を
+# 同時に積み、両方の結果を 1 つの報告にまとめて承認に添える。関門は合否を決めない。ブロッカーの候補を挙げ、ブロッカーにするかは承認者が決める。
+# 流れ: supervisor（qa_gate_step）が release.deployed を見て開く → 判定は factory:qa、探索は factory:qa-explore に積む
+# → dispatcher が今までどおり記録する → そろったら qa.gate_decided と判定の固定 Issue へのまとめ → 受信トレイの「本番待ち」に報告を添える
+gate:
+  priority: p1                  # 承認を待たせるので、夜の探索（p2）より前
+  hours: 6                      # 開いてから結果がそろうのを待つ時間。過ぎたらそろった分だけで報告を作る
+  attempts: 2                   # 確かめられなかったジョブ（失敗・結果なし・判定が blocked だけ）は 1 回だけ積み直す
+  blocker_severities: [s1, s2]  # 探索の見つけたもののうち、ブロッカーの候補に挙げる重要度（判定は known_gap でない Defect の hold を全部挙げる）
 
 # 合成の利用者（ADR 0043 の O4 synthetic_users_loop。ADR 0023 の決めどころ 3）。夜間の探索の道具（ワーカー・触れる環境・Chromium）を流用し、
 # ユーザーストーリーに沿って合成の利用者が staging を一定量歩き、行動ログ（製品の specs/analytics/events.yaml の名前）と応答時間を残す。

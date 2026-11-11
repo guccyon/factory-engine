@@ -19,6 +19,7 @@ create "factory:needs-judgment" "b60205" "judge が人に回した判断があ�
 create "factory:sendback" "fef2c0" "差し戻し（judge が採用した指摘の修正）"
 create "factory:fix-proposed" "d4c5f9" "差し戻しの提案。流すときは factory:planned に替える（attended の 1 タップ）"
 create "factory:qa" "0e8a16" "QA 役の判定のまとめ（固定 Issue。閉じない。ADR 0028 の決定 2）"
+create "factory:qa-explore" "0e8a16" "QA 役の探索的テストのまとめ（固定 Issue。閉じない。ADR 0049）"
 create "factory:qa-defect" "b60205" "QA 役がユーザーストーリーを止めた Defect（ADR 0028 の決定 2）"
 create "factory:status" "5319e7" "工場の状況（番人が操業停止を通知する Issue。ADR 0005）"
 create "factory:design" "d4c5f9" "画面を含むタスク: 実装の前にデザイナー役とデザイン検査役を通す（ADR 0025。決まると factory:planned に戻る）"

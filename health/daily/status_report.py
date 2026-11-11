@@ -195,7 +195,7 @@ def explore_view(conn, now: datetime | None = None) -> dict | None:
     since = (to - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     try:
         with conn.cursor() as cur:
-            cur.execute("select payload, job_id from events where name='qa.explore' and occurred_at >= %s order by id", (since,))
+            cur.execute("select payload, job_id from events where name='qa.explore' and occurred_at >= %s and payload->>'gate' is null order by id", (since,))
             runs = [{**r[0], "job_id": r[1]} for r in cur.fetchall()]
             cur.execute("select payload from events where name='supervisor.nightly_explore_skipped' and occurred_at >= %s order by id", (since,))
             skipped = [r[0] for r in cur.fetchall()]
@@ -205,6 +205,44 @@ def explore_view(conn, now: datetime | None = None) -> dict | None:
         print("[status-report] 夜間の探索を数えられない:", repr(e), file=sys.stderr)
         return None
     return {"runs": runs, "skipped": [x for x in skipped if not any(r.get("repo") == x.get("repo") for r in runs)], "nights": nights}
+
+
+def gate_view(conn, now: datetime | None = None) -> dict | None:
+    """出荷の QA の関門（ADR 0049）。直近 24 時間にまとまった関門（qa.gate_decided）と、承認者が見送った版、いま結果を待っている関門"""
+    if conn is None:
+        return None
+    since = (now or datetime.now(timezone.utc)) - timedelta(hours=24)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select payload, occurred_at from events where name='qa.gate_decided' and occurred_at >= %s order by id", (since,))
+            decided = [{**r[0], "at": r[1].isoformat()} for r in cur.fetchall()]
+            cur.execute("select payload from events where name='qa.gate_blocked' and occurred_at >= %s order by id", (since,))
+            blocked = [r[0] for r in cur.fetchall()]
+            cur.execute("select o.payload from events o where o.name='qa.gate_opened' and not exists (select 1 from events e where "
+                        "e.correlation_id=o.correlation_id and e.name in ('qa.gate_decided','qa.gate_superseded')) order by o.id")
+            waiting = [r[0] for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] 出荷の QA の関門を数えられない:", repr(e), file=sys.stderr)
+        return None
+    return {"decided": decided, "blocked": blocked, "waiting": waiting}
+
+
+def fmt_gate(g: dict | None) -> list[str]:
+    """出荷の QA の関門の行（日次のコメントとダッシュボード）"""
+    if not g or (not g["decided"] and not g["waiting"] and not g["blocked"]):
+        return ["- 直近 24 時間の関門はない"]
+    lines = []
+    for d in g["decided"]:
+        n = d.get("candidates") or 0
+        head = f"**ブロッカーの候補 {n} 件**" if n else "ブロッカーの候補なし"
+        lines.append(f"- {d.get('release_id')}: {head}" + ("（時間切れ。そろった分だけ）" if d.get("timed_out") else ""))
+        for b in (d.get("blockers") or [])[:5]:
+            lines.append(f"  - [{b.get('from')}・{b.get('severity')}] {b.get('title')}" + (f" → {b['issue']}" if b.get("issue") else ""))
+    for b in g["blocked"]:
+        lines.append(f"- {b.get('release_id')}: 承認者が見送った（{b.get('note')}）")
+    for w in g["waiting"]:
+        lines.append(f"- {w.get('release_id')}: 判定と探索の結果を待っている")
+    return lines
 
 
 def incident_view(conn, now: datetime | None = None) -> dict | None:
@@ -796,7 +834,7 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 事故の見回り（お金の損）", "", *fmt_incident(snap.get("incident")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
+    lines += ["## 出荷の QA の関門（直近 24 時間）", "", *fmt_gate(snap.get("gate")), "", "## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 事故の見回り（お金の損）", "", *fmt_incident(snap.get("incident")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
               "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "",
               "## 品質（Defect）", "", *fmt_defects(snap.get("defects")), "",
               "## 工程ごとの ROI（費用・時間・一発で通ったか・混入した Defect）", "", *stage_roi.fmt(snap.get("stage_roi")), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
@@ -825,6 +863,7 @@ def render_daily(snap: dict, prev: dict | None) -> str:
     if roi:
         lines.append(roi)
     lines += ["", "**頼みたいこと**", *fmt_needs(snap["needs"]), "", "**前日（JST）**", *fmt_activity(snap["activity"])]
+    lines += ["", "**出荷の QA の関門（直近 24 時間）**", *fmt_gate(snap.get("gate"))]
     lines += ["", "**夜間の探索（昨夜）**", *fmt_explore(snap.get("explore"))]
     lines += ["", "**事故の見回り（お金の損）**", *fmt_incident(snap.get("incident"))]
     lines += fmt_usage(snap.get("usage"))
@@ -915,7 +954,7 @@ def main() -> int:
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
-            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now), "incident": incident_view(conn, now),
+            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now), "gate": gate_view(conn, now), "incident": incident_view(conn, now),
             "defects": defect_view(conn), "stage_roi": stage_roi.view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
