@@ -6,7 +6,7 @@
 宣言のないチケット（プランナーを通らずに入ったもの）は既定値の上限で数える（ADR 0038 の決定 7）。
 
 - 台帳（ledger）: チケットごとの実績。実装のターン（衝突の解消の続きを除く。ADR 0036 と同じ数え方）と費用、チケット全体の費用、
-  続きのジョブの理由ごとの回数（衝突・CI 落ち・検査の指摘・途中終了）、QA と judge のやり直し
+  続きのジョブの理由ごとの回数（衝突・CI 落ち・検査の指摘・途中終了）、QA のやり直し、judge のやり直し（同じ head を裁き直した数）
 - cap_hit: 実績が宣言の上限を超えた（守らせていれば、超えた分は動かなかった）。当たったときの動き（action）も残す
 - would_skip: 宣言で飛ばしたステップ（inspect・qa）のジョブが動いた
 - would_wait: 宣言で start: after にしたのに、前のチケットが閉じる前に投入した（supervisor の enqueue_step が残す）
@@ -98,8 +98,19 @@ def ledger(cur, corr: str) -> dict:
     led["implement.cost_usd"] = round(impl_cost, 4)
     led["ticket.cost_usd"] = round(total, 4)
     led["retries.qa_rerun"] = max(0, kinds.get("qa", 0) - 1)
-    led["retries.judge_rounds"] = max(0, kinds.get("judge", 0) - 1)
+    led["retries.judge_rounds"] = judge_rounds(cur, corr)
     return led
+
+
+def judge_rounds(cur, corr: str) -> int:
+    """judge のやり直し = 同じ PR の同じ head を 2 回以上裁いた数。judge は head ごとに 1 回積まれる（supervisor.judge_step）ので、
+    続きのジョブで head が変わるたびの judge は新しい審査であってやり直しではない（検査の指摘の直しは retries.review_fix が数える）。
+    head の記録がないジョブ（手で積んだものなど）は、その 1 件だけの審査として数える"""
+    cur.execute("""select count(*) - count(distinct k) as n
+                     from (select coalesce(j.issue_number::text || '@' || (e.payload->>'head_sha'), 'job:' || j.id) as k
+                             from jobs j left join events e on e.job_id=j.id and e.name='job.enqueued'
+                            where j.correlation_id=%s and j.kind='judge' and j.state in ('succeeded','failed')) t""", (corr,))
+    return int(cur.fetchone()["n"] or 0)
 
 
 def _record(cur, corr: str, kind: str, key: str, payload: dict) -> bool:
