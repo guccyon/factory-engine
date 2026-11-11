@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover
     inbox = None
 
 TRIGGER_LABEL, CHOICE_LABEL, AFTER_LABEL = "factory:design", "factory:design-choice", "factory:planned"   # definitions/ui_design.yaml の labels
-GAPS_LABEL = "factory:design-system"   # 足りない部品はデザインシステムのデザイナー役に回す（ADR 0026。spec の段で部品を足し、実装役へ）
+GAPS_LABEL = "factory:design-system"   # 足りない部品はデザインシステムのデザイナー役に回す（ADR 0026。spec の工程で部品を足し、実装役へ）
 RUNNING_LABEL, FAILED_LABEL = "factory:running", "factory:failed"
 MARK, MARK_END = "<!-- factory-uxspec:v1 -->", "<!-- /factory-uxspec -->"
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\.(html|css|png)$")

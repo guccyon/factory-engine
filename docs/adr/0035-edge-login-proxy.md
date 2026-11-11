@@ -52,7 +52,7 @@
 - **答えた人の確認（ADR 0034 決定 7）**: 写しの表に載せる身元は、パイロットでは「窓口のトークンの名前」と「前段の GitHub の login」の 2 つ。どちらも同じ人に写す（Blueprint の人の一覧）。コンソールからの答えは、コンソールがヘッダーを読むまで今どおり `by: console`
 - **Claude の入口（ADR 0034 決定 3・順番 2）**: `inbox_list`・`inbox_read`・`inbox_answer` は窓口の API と MCP に足す予定なので、この前段の `desk.<EDGE_DOMAIN>` とトークンのまま届く。前段に手を入れずに足せる
 - **リモートの MCP と OAuth（ADR 0030 順番 5、ADR 0034 決定 3 の「パイロットの前に OAuth に移す」）**: パイロットはトークンのままにし、OAuth は Gen2 が始まってから仕様を考える（オーナー 2026-11-05。2 名で、どちらも手元の Claude から stdio で繋ぐため）。ADR 0034 の「パイロットの前に」はこれで置き換える。OAuth に移すときの案は、MCP の認可サーバーの身元の確かめに同じ GitHub の OAuth App（か、事業主の Google Workspace・Microsoft のアカウント）を使い、身元はこの前段と同じ GitHub の login にする。人の手を介さないエージェント用にトークンは残す
-- **コンソールのログイン（ADR 0034 順番 6、Gen2）**: コンソールが自分でログインを持ったら、oauth2-proxy を外し、Caddy は TLS と IP 制限だけにする（前段が付ける `X-Auth-Request-User` を読む中間の段を挟んでもよい）
+- **コンソールのログイン（ADR 0034 順番 6、Gen2）**: コンソールが自分でログインを持ったら、oauth2-proxy を外し、Caddy は TLS と IP 制限だけにする（前段が付ける `X-Auth-Request-User` を読む中間の層を挟んでもよい）
 
 ## 決めどころ（オーナーの承認が要る）
 

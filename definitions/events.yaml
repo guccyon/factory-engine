@@ -146,7 +146,7 @@ events:
   investigate.issue_proposed:
     source: control_plane
     required: [conversation_id, round, artifact_id, key, title, body]
-    note: "ADR 0048 の順番 5。Engine の改善 Issue の案（調査役の検査と dispatcher の 2 段目の検査を通ったもの）。supervisor が起票する"
+    note: "ADR 0048 の順番 5。Engine の改善 Issue の案（調査役の検査と dispatcher の 2 つ目の検査を通ったもの）。supervisor が起票する"
   investigate.issue_held:
     source: control_plane
     required: [conversation_id, round, artifact_id, key, errors]
@@ -210,11 +210,11 @@ events:
   watcher.line_low:
     source: control_plane
     required: [planned, ready, low_below]
-    note: "投入待ちの段（planned で保留でないチケット）が WATCH_LINE_LOW_BELOW を切った。停止ではない知らせ。line_ok が出るまで 1 度だけ。停止の Issue にコメントする"
+    note: "投入待ちのタスク（planned で保留でないチケット）が WATCH_LINE_LOW_BELOW を切った。停止ではない知らせ。line_ok が出るまで 1 度だけ。停止の Issue にコメントする"
   watcher.line_ok:
     source: control_plane
     required: [planned, ready]
-    note: "line_low のあと段が積み足され、下限以上に戻った"
+    note: "line_low のあとタスクが積み足され、下限以上に戻った"
   supervisor.heartbeat:
     source: control_plane
     required: []
@@ -365,15 +365,15 @@ events:
   desk.routed:
     source: control_plane
     required: [conversation_id, from, state]
-    note: "ADR 0039 の決定 2・8。振り分けた。対応の種類（path）・ワークフローの宣言・見込み・確認の段を payload に。確認を飛ばすときも必ず残す"
+    note: "ADR 0039 の決定 2・8。振り分けた。対応の種類（path）・ワークフローの宣言・見込み・確認のレベルを payload に。確認を飛ばすときも必ず残す"
   desk.confirm_requested:
     source: control_plane
     required: [conversation_id, from, state]
-    note: "ADR 0039。確認の段が要る振り分けを依頼者に見せた（受信トレイの件）"
+    note: "ADR 0039。確認のレベルが要る振り分けを依頼者に見せた（受信トレイの件）"
   desk.confirmed_run:
     source: control_plane
     required: [conversation_id, from, state]
-    note: "ADR 0039。依頼者が確認したので実行に進めた（read の段は確認なしで進む）"
+    note: "ADR 0039。依頼者が確認したので実行に進めた（read のレベルは確認なしで進む）"
   desk.progress:
     source: control_plane
     required: [conversation_id]
@@ -433,7 +433,7 @@ events:
   op.rejected:
     source: control_plane
     required: [conversation_id, round, by]
-    note: "ADR 0037 の決定 4。確認の段で依頼者（か運用主）がやめた。会話は取り下げ（withdrawn）で閉じる"
+    note: "ADR 0037 の決定 4。確認のレベルで依頼者（か運用主）がやめた。会話は取り下げ（withdrawn）で閉じる"
   desk.handed_off:
     source: control_plane
     required: [conversation_id, tickets]
@@ -849,7 +849,7 @@ events:
   design_system.choice_applied:
     source: control_plane
     required: [repo, issue, choice_id, status, chosen, agreed]
-    note: "人の選択を受けて次の段を積んだ（chosen は spec、returned は人の一言つきで concept の作り直し）。agreed は推す案と一致したか"
+    note: "人の選択を受けて次の工程を積んだ（chosen は spec、returned は人の一言つきで concept の作り直し）。agreed は推す案と一致したか"
   design_system.handed_off:
     source: control_plane
     required: [repo, issue, spec_artifact_id, files, delta]

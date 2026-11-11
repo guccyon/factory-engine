@@ -335,7 +335,7 @@ def assess(rep: Report) -> Report:
             ratio = cost.value / avg
             flag("cost", "消費（API 単価に換算）", _lvl(ratio, *THRESHOLDS["cost_ratio"]),
                  f"消費が前の 7 日の平均の {ratio:.1f} 倍（{cost.value} USD）",
-                 "費用の外れ値（factoryctl report process）で、どのチケットが膨らんだかを見る。切り直しやモデルの段の見直しを検討する")
+                 "費用の外れ値（factoryctl report process）で、どのチケットが膨らんだかを見る。切り直しやモデルの選び直しを検討する")
     bm = val("cost", "予算の上限で止まっていた時間")
     flag("cost", "予算の上限で止まっていた時間", _lvl(bm, *THRESHOLDS["budget_min"]), f"予算の上限で {bm} 分止まっていた",
          "1 日の枠を見直すか、流量を下げて止まらずに流れるようにする")

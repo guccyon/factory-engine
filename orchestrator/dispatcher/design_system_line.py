@@ -3,7 +3,7 @@
   Issue に factory:design-system → design_system のジョブ（core-gates/design_system.py）→ ここで:
     concept: 案と見本を残し（artifacts の DesignConcept、見本はオブジェクトストアの design/<job>/）、人の選択（HumanChoice の concept_tone）に回す。
              factory:design-choice。ブランドに効くので必ず人（ADR 0025 の E2）
-    人の選択: 選ばれたら spec の段を積む。「どれも違う」なら人の一言を付けて concept を積み直す（apply_choices。dispatcher の周回）
+    人の選択: 選ばれたら spec の工程を積む。「どれも違う」なら人の一言を付けて concept を積み直す（apply_choices。dispatcher の周回）
     spec:    デザインシステムの正本のファイルを残し（DesignSystemSpec）、Issue の本文に足して factory:planned（実装役がファイルを置き、
              両アプリのテーマと部品をトークンに合わせる。PR は今の検査と judge を通る）。正本から組み立てたカタログ（catalog.html・.png）は
              オブジェクトストアに置き、DesignSystemSpec の catalog に残して、prototype.py の囲いで配る（Issue のコメントに入り口）
@@ -85,7 +85,7 @@ def load(cur, type_: str, aid: int) -> dict | None:
 
 
 def apply_choices(cur, swap_label, comment) -> int:
-    """人が選んだ（戻した）コンセプトの依頼のうち、まだ次の段を積んでいないものを積む（dispatcher の poll の周回）"""
+    """人が選んだ（戻した）コンセプトの依頼のうち、まだ次の工程を積んでいないものを積む（dispatcher の poll の周回）"""
     cur.execute("select e.payload, h.correlation_id, h.payload as hc from events e join artifacts h on h.id = (e.payload->>'choice_id')::int "
                 "where e.name='design_system.awaiting_choice' and h.payload->>'status' in ('chosen','returned') and not exists ("
                 "select 1 from events a where a.name='design_system.choice_applied' and a.payload->>'choice_id' = e.payload->>'choice_id') order by e.id")

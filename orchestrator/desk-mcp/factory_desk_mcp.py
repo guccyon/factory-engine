@@ -21,7 +21,7 @@ Claude Code への登録の例:
   desk_read             会話を読む（after より後の発言、wait 秒まで待つ。最新の下書きと作ったチケットも付く）
   desk_confirm          下書きを確認して投入する（依頼者の確認 1 回）。決まった操作に振り分けた依頼は、動かしてよいか（run / cancel）
   desk_list             自分の相談の一覧
-  desk_ticket           チケットの状態（段・優先度・順番・作業中のジョブ・PR）
+  desk_ticket           チケットの状態（進み具合・優先度・順番・作業中のジョブ・PR）
   desk_set_priority     明確な指示（「#812 を先に」）で優先度を変える。壁打ちを通さない
   inbox_list            受信トレイのうち、自分が答えてよい判断待ち（ADR 0034 の順番 2）
   inbox_read            受信トレイの 1 件（問い・今の案・他の案・judge の見立てなど、答え方と推奨）
@@ -81,7 +81,7 @@ TOOLS = [
     {"name": "desk_list", "description": "自分の相談の一覧（運用主はすべて）。新しい順",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "desk_ticket",
-     "description": "チケットの状態（段・優先度・保留・依存待ち・順番待ちの何番目か・作業中のジョブ・PR）。ticket は工場のチケットの id か owner/repo#123",
+     "description": "チケットの状態（進み具合・優先度・保留・依存待ち・順番待ちの何番目か・作業中のジョブ・PR）。ticket は工場のチケットの id か owner/repo#123",
      "inputSchema": {"type": "object", "properties": {"ticket": {"type": "string"}}, "required": ["ticket"]}},
     {"name": "desk_set_priority",
      "description": "明確な指示（「#812 を先に」）でチケットの優先度を変える。壁打ちを通さずすぐ効く。依頼者が変えられるのは自分の依頼から作ったチケットだけ",

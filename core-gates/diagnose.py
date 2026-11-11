@@ -11,7 +11,7 @@
 shadow で動かす前提なので、道具の出力がない・壊れているときはその診断を error にして先へ進み、終了コードは常に 0。
 秘密情報の値（Secret・Match）は出力に入れない（公開リポジトリの Job Summary に残るため）。
 
-findings の各要素は Defect（ADR 0028 の 5）の found_in=diagnose に写せる形にしてある。取り込みは次の段。
+findings の各要素は Defect（ADR 0028 の 5）の found_in=diagnose に写せる形にしてある。取り込みは次の作業で。
 
 使い方:
   core-gates/diagnose.py summarize [--deps-head osv-head.json] [--deps-base osv-base.json]

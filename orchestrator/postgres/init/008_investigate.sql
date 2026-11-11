@@ -68,7 +68,7 @@ select id, name, occurred_at, correlation_id, job_id, payload
 create or replace view investigate.desk_conversations as
 select * from public.desk_conversations;
 
--- 費用（ジョブが終わったときの記録。種類とモデルの段は jobs から）
+-- 費用（ジョブが終わったときの記録。種類とモデルは jobs から）
 create or replace view investigate.costs as
 select e.job_id, e.occurred_at as finished_at, e.correlation_id, j.repo, j.kind, j.model_tier,
        e.payload->>'state'                                   as state,

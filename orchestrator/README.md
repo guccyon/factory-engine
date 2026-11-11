@@ -27,7 +27,7 @@ docker compose logs -f dispatcher
 
 ## GitHub の身元（ADR 0041）
 
-工場は GitHub App として GitHub に書く（PAT は App が無いときの代わり）。dispatcher がジョブを起動するたびに、そのジョブのリポジトリと役の段の権限だけに絞ったトークン（1 時間で切れる）を発行してワーカーに渡す。常駐のプロセスはインストールの全権限のトークンを、期限の 10 分前に作り直して使う（`dispatcher/ghapp.py`）。App が無ければ今までどおり `GH_TOKEN` を全部に使う。
+工場は GitHub App として GitHub に書く（PAT は App が無いときの代わり）。dispatcher がジョブを起動するたびに、そのジョブのリポジトリと役の区分の権限だけに絞ったトークン（1 時間で切れる）を発行してワーカーに渡す。常駐のプロセスはインストールの全権限のトークンを、期限の 10 分前に作り直して使う（`dispatcher/ghapp.py`）。App が無ければ今までどおり `GH_TOKEN` を全部に使う。
 
 App の作り方（builder が 1 回）:
 
@@ -37,7 +37,7 @@ App の作り方（builder が 1 回）:
 4. `.env` に `GH_APP_ID`（App の画面の App ID）と `GH_APP_PRIVATE_KEY_B64`（`base64 < 鍵.pem | tr -d '\n'`）を入れ、`GH_TOKEN` を空にする
 5. `docker compose up -d` で作り直す。製品の ruleset で main への反映を工場の App に許しているなら、PAT の利用者から App に替える
 
-段（`ghapp.GRANTS`）: 見る（observe）・作る（build）・工程を変える（privileged）。今は全ジョブが作る段（PAT と同じ権限）。役ごとの絞り込みと特権のラインは ADR 0041 の順番 3・4。
+区分（`ghapp.GRANTS`）: 見る（observe）・作る（build）・工程を変える（privileged）。今は全ジョブが「作る」の区分（PAT と同じ権限）。役ごとの絞り込みと特権のラインは ADR 0041 の順番 3・4。
 
 ## ワーカーのイメージ
 
@@ -120,7 +120,7 @@ running のジョブのコンテナにつなぎ直し（`job.reattached`）、�
 
 ```bash
 docker compose exec dispatcher factoryctl swap run main      # main の先頭に更新する（コミットも渡せる。main に入っているものだけ）
-docker compose exec dispatcher factoryctl swap status <id>   # 段ごとの記録。dispatcher を上げ直す間は答えないので、ホストでは docker logs -f factory-swap-<id>
+docker compose exec dispatcher factoryctl swap status <id>   # ステップごとの記録。dispatcher を上げ直す間は答えないので、ホストでは docker logs -f factory-swap-<id>
 ```
 
 - 事前の確かめ（ラインは止めない）: 作業ツリーがきれい、`target` が main に入っていて今の版から早送りできる、差分から種類を判定し直す（`definitions/swap.yaml`。申告より軽くしない）、
@@ -201,9 +201,9 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
 コンセプト・原則・ガイドラインから、トークン・部品・画面の型まで考える役。数値と決まりは `definitions/design_system.yaml`、何を基準化するかは `definitions/design_guideline.yaml`。
 
 - Issue に `factory:design-system`（プランナーが付けるか、人か建設者が付ける）→ `design_system` のジョブ（`worker/design_system.sh` → `core-gates/design_system.py`、tier-large、`factory-worker:design` で動く）
-- concept の段（デザインシステムがない製品、作り直し）: コンセプトとトーン＆マナーの案（2〜3）と、案ごとの見本の画面（今の代表の画面を案のトークンで描き直した静的 HTML とキャプチャ）を作る。案は `DesignConcept`、見本は `design/<job_id>/`。人の選択（`HumanChoice` の `concept_tone`。ブランドに効くので必ず人）に回して `factory:design-choice`
-- 操業コンソールの「人の選択」で選ぶと、周回が spec の段を積む。「どれも違う」で戻すと、人の一言を付けて concept を作り直す
-- spec の段（選ばれた案か、いまのデザインシステムへの追加）: デザインガイドラインの必須の節を `specs/design/` のファイル（principles・concept_tone・tokens・components・patterns・content・accessibility・governance）として書く。正本は `DesignSystemSpec` に残し、Issue の本文に足して `factory:planned`。実装役がファイルを置き、両アプリのテーマと基本の部品をトークンに合わせる（PR は今の検査と judge を通る）
+- concept の工程（デザインシステムがない製品、作り直し）: コンセプトとトーン＆マナーの案（2〜3）と、案ごとの見本の画面（今の代表の画面を案のトークンで描き直した静的 HTML とキャプチャ）を作る。案は `DesignConcept`、見本は `design/<job_id>/`。人の選択（`HumanChoice` の `concept_tone`。ブランドに効くので必ず人）に回して `factory:design-choice`
+- 操業コンソールの「人の選択」で選ぶと、周回が spec の工程を積む。「どれも違う」で戻すと、人の一言を付けて concept を作り直す
+- spec の工程（選ばれた案か、いまのデザインシステムへの追加）: デザインガイドラインの必須の節を `specs/design/` のファイル（principles・concept_tone・tokens・components・patterns・content・accessibility・governance）として書く。正本は `DesignSystemSpec` に残し、Issue の本文に足して `factory:planned`。実装役がファイルを置き、両アプリのテーマと基本の部品をトークンに合わせる（PR は今の検査と judge を通る）
 - events: `design_system.concepts_drafted`・`awaiting_choice`・`choice_applied`（推す案との一致 `agreed`）・`handed_off`
 
 ## デザインの線（ADR 0025。デザイナー役とデザイン検査役）
@@ -231,7 +231,7 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
   - `merge:<PR>` supervisor が工場はマージしない（execute=false）と記録した PR が、30 分（`WATCH_MERGE_WAIT_MIN`）マージも閉じもされない。分類は human。マージか閉じられたら閉じる
   - `inspect:<PR>` マージを判定した最新の head に検査が積まれないまま 30 分（`WATCH_INSPECT_WAIT_MIN`）。分類は factory-bug（検査がないと検査役が承認せず、PR が同時に流す枠を塞ぐ）。検査が積まれる、head が動く、PR がマージか閉じられたら閉じる
   - `patrol:<見回りの id>` 見回りの見回り（ADR 0050。実施は `patrol.ran` に残し、回数・費用・可用性は操業レポートの節「見回り」に出る）。supervisor が heartbeat の `patrols` で有効と宣言した見回り（夜間の探索・設計の診断・委員会の定例・事故の見回り・日報など 12 個。表は `dispatcher/patrol_watch.py`）の最後の記録が期限（1 日のものは 36 時間、週 1 のものは 8 日）より古い。分類は factory-bug。新しい記録が付いたら閉じる。一時停止中・予算の枠の使い切り中・heartbeat の途絶え中は開かない
-- 停止ではない知らせ: 投入待ちの段（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「着手待ちのチケット」も下限を切ると赤くなる
+- 停止ではない知らせ: 投入待ちのタスク（`factory:planned` を写したチケットのうち保留でないもの）が `WATCH_LINE_LOW_BELOW`（既定 2）を切ると、イベント `watcher.line_low` を残して工場状況 Issue に 1 度だけコメントする。積み足されて戻ると `watcher.line_ok`。停止の一覧と停止時間には数えない。操業コンソールの「着手待ちのチケット」も下限を切ると赤くなる
 - 通知は 1 経路。`NOTIFIER=github-issue` で `STATUS_REPO` の工場状況 Issue（ラベル `factory:status`。なければ作る）に開始と終了をコメントし、本文を開いている停止の一覧に書き換える。`NOTIFIER=log` はログだけ
 - 番人に見えない停止（builder の端末の許可待ち、契約の上限など）は手で記録する。週次レポートの `stoppages.md` はレポートの出力にする
 
@@ -300,8 +300,8 @@ docker compose exec dispatcher factoryctl hold 12
 - 単発の依頼のループ（ADR 0039 の順番 1、`postgres/init/006_desk_loop.sql`）: 会話の状態に `routed`（振り分けた）・`awaiting_confirm`（確認待ち）・`running`（実行中）・`delivered`（提出した。受取確認待ち）・`accepted`（依頼者が受け取った）・`handed_off`（チケット化で製品のラインに渡した）を足した。状態を進めるのは dispatcher だけ（`desk.advance`。向きは `desk.TRANSITIONS`）で、終わり方は `desk.finish` を通り、閉じる理由（`accepted`・`declined`・`superseded`・`withdrawn`・`handed_off`）と、閉じたときの記録（対応の種類・最初の返事／振り分け／提出までの秒・費用・往復・結末）を `desk.closed` に残す。チケット化は起票した時点で `handed_off` で終わる。依頼者が閉じると取り下げ（`withdrawn`）で、動いているジョブを止める。断りから別案として開いた依頼は `derived_from` で元と結ぶ。振り分けた後の依頼者の言い足しは記録だけ（相談役に回し直さない）
 - 決まった操作の 1 本（ADR 0039 の順番 2、ADR 0037 の決定 3・4。`definitions/operations.yaml`、`dispatcher/operations.py`）:
   1. 受付: 依頼を開くと、中身を読まずに「受け付けた・次は振り分け」をすぐ返す（`kind: ack`）
-  2. 振り分け: 相談役に操作の一覧を渡し、操作を 1 回動かせば済む依頼なら `route`（`path: operate`・操作の id・引数）が返る。dispatcher が宣言と照らして引数を検査し（宣言にない引数・範囲の外の値・通知の設定にない宛先は拒む）、`desk.routed` に対応の種類・引数・確認の段・見本（何をどこへ）を残す
-  3. 確認: 段が `send` なら受信トレイに依頼者の件 `task:desk_confirm:<会話>:<回>`（実行する・やめる）を出す。窓口の `confirm` に `{"answer": "run"|"cancel"}`、操業コンソールの受信トレイのどちらから答えても `inbox.answer` を通る。`read` の段は飛ばす
+  2. 振り分け: 相談役に操作の一覧を渡し、操作を 1 回動かせば済む依頼なら `route`（`path: operate`・操作の id・引数）が返る。dispatcher が宣言と照らして引数を検査し（宣言にない引数・範囲の外の値・通知の設定にない宛先は拒む）、`desk.routed` に対応の種類・引数・確認のレベル・見本（何をどこへ）を残す
+  3. 確認: 確認のレベルが `send` なら受信トレイに依頼者の件 `task:desk_confirm:<会話>:<回>`（実行する・やめる）を出す。窓口の `confirm` に `{"answer": "run"|"cancel"}`、操業コンソールの受信トレイのどちらから答えても `inbox.answer` を通る。`read` のレベルは飛ばす
   4. 実行: dispatcher の周回（`desk_line.run_operations`）が操作を 1 回だけ動かす（`op.started` で同じ回を 2 度動かさない）。最初の操作は `report.send`（`factoryctl report send` と同じ `report.send_now`）
   5. 提出: 会話に結果を書き、受信トレイに受取確認の件 `task:desk_receipt:<会話>:<回>`（受け取った・続きを頼む・差し戻す）を出す。窓口の `messages` に `{"answer": "accept"|"more"|"return", "body": 一言}`。受け取ったら `accepted` で完了、続き・差し戻しは同じ会話で相談役の振り分けからやり直す（続きは 5 回まで）。返事がなくても閉じない
 - 応答時間の目安・途中の様子・断り・上限（ADR 0039 の順番 3。値は `definitions/desk.yaml` の `loop`、dispatcher の写しは `desk.LOOP`）:
@@ -576,7 +576,7 @@ ADR 0040 の決定 7 で、ほかの役にも業務で選んだ知見を渡す�
 
 知見の制限付きの保管先（ADR 0024 の 5）: 障害対応などで利用者の情報をどうしても含む知見の根拠は、git に置かず制御プレーンの Postgres の専用スキーマ `restricted` に置き、git の知見からは evidence の `restricted: R-NNNN` で指すだけにする。
 守り方は利用者を分けること。`restricted` は保管先の専用の利用者 `factory_restricted` の持ち物で、ほかの利用者（PUBLIC）からは何もできない。`factory_restricted` は最初は NOLOGIN で、管理者が合言葉を決めて有効にし、合言葉は管理者だけが持つ（`.env` に置かない）。ワーカーのジョブの DB は別の利用者 `factory_job` で、制御プレーンの DB には繋げない（「ジョブ用の DB」）。
-一覧には中身を出さず、読むたびに誰が・何のために読んだかを `restricted.reads` と events の `restricted.read` に残す。ワーカー・操業コンソール・窓口の API には出さない（factoryctl だけ）。制御プレーンのサービスは今も Postgres の管理者で動くので、そこからは見える（サービスの利用者を分けるのは別の段）。
+一覧には中身を出さず、読むたびに誰が・何のために読んだかを `restricted.reads` と events の `restricted.read` に残す。ワーカー・操業コンソール・窓口の API には出さない（factoryctl だけ）。制御プレーンのサービスは今も Postgres の管理者で動くので、そこからは見える（サービスの利用者を分けるのは別の作業）。
 
 ```bash
 docker compose exec postgres psql -U factory -f /docker-entrypoint-initdb.d/005_restricted.sql   # 既存の DB にスキーマと利用者を足す（冪等）
@@ -633,7 +633,7 @@ dispatcher はジョブごとに制御プレーンと同じ Postgres に `job_<i
 
 - 状態は postgres とオブジェクトストアにだけある。dispatcher を落として上げ直しても続きから動く
 - ワーカーは `--rm`。浅いクローンで、終了時に何も残さない。人間の手元の worktree 規約は持ち込まない
-- 二重実行は DB の部分ユニーク索引とアドバイザリロックの 2 段で抑止する。ラベルは表示用
+- 二重実行は DB の部分ユニーク索引とアドバイザリロックの 2 つで抑止する。ラベルは表示用
 - 権限は PR 作成まで。ワーカーはマージしない
 - 秘密情報は `.env` だけ。リポジトリに入れない
 

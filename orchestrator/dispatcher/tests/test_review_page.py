@@ -17,14 +17,14 @@ SPEC = {"ticket": "o/r#5", "summary": "本部のお知らせに送る前の確�
         "prd": {"goal": "本部が生徒に一斉にお知らせを届けたい", "success": "誤送信なく届く", "scope": "送信と確認", "source": "o/r#5"},
         "user_flow": [{"from": "お知らせ一覧", "action": "新規作成", "to": "送信画面"}, {"from": "送信画面", "action": "送る", "to": "確認"}],
         "rationale": {"why": "取り消せない操作なので確認を挟む", "rejected": [{"idea": "即送信", "reason": "誤送信に弱い"}],
-                      "requirement_map": [{"requirement": "誤送信を防ぐ", "how": "確認の段"}]},
+                      "requirement_map": [{"requirement": "誤送信を防ぐ", "how": "確認を挟む"}]},
         "screens": [{"id": "send", "purpose": "お知らせを送る", "new": True, "transitions": {"entries": ["一覧"], "exits": ["送信後は一覧へ"]},
                      "elements": [{"name": "題", "component": "TextField", "required": True, "note": "40 字まで"}, "本文"],
-                     "behaviors": [{"target": "送信", "action": "押す", "condition": "題が空でない", "result": "確認の段を出す"}],
+                     "behaviors": [{"target": "送信", "action": "押す", "condition": "題が空でない", "result": "確認の画面を出す"}],
                      "microinteractions": [{"trigger": "送る", "rules": "二重押しを防ぐ", "feedback": "送信中の表示", "loops": "なし"}]}],
         "states": ["読み込み中", "失敗"], "design_system_constraints": ["specs/design/ の部品"], "design_system_gaps": [],
         "open_questions": ["予約送信は次の版"], "brand_impact": False, "recommended": "a", "recommended_reason": "誤送信に強い",
-        "variants": [{"id": "a", "name": "確認の段", "tradeoff": "1 回余計に押す", "viewport": "desktop",
+        "variants": [{"id": "a", "name": "確認を挟む", "tradeoff": "1 回余計に押す", "viewport": "desktop",
                       "frames": [{"id": "confirm", "caption": "送るを押した後", "state": "確認"}, {"id": "err", "caption": "<b>失敗</b>"}]},
                      {"id": "b", "name": "<script>alert(1)</script>", "tradeoff": "届く姿が見える"}]}
 
@@ -41,7 +41,7 @@ def test_render_shows_the_package_and_actions_when_open():
     page = rp.render(ctx(), "tok")
     for text in ("本部が生徒に一斉にお知らせを届けたい", "お知らせ一覧", "取り消せない操作なので確認を挟む", "即送信", "マイクロインタラクション",
                  "画面遷移", "本部のお知らせに送る前の確認を足す", "新しい画面", "題と本文を書いて確認してから送る", "TextField", "40 字まで",
-                 "題が空でない", "確認の段を出す", "/review/7/image/a-confirm.png", "送るを押した後", "&lt;b&gt;失敗&lt;/b&gt;", "（画像なし）", "予約送信は次の版", "判断待ち", "新しい画面", "この案で承認", "直しを頼む", "/review/7/image/a.png"):
+                 "題が空でない", "確認の画面を出す", "/review/7/image/a-confirm.png", "送るを押した後", "&lt;b&gt;失敗&lt;/b&gt;", "（画像なし）", "予約送信は次の版", "判断待ち", "新しい画面", "この案で承認", "直しを頼む", "/review/7/image/a.png"):
         assert text in page, text
     assert 'data-a="choose" data-c="3" data-o="a"' in page and '"tok"' in page and "体験の案（プロダクトオーナー）" in page
     assert "見た目の案（デザインのチーフ）" not in page

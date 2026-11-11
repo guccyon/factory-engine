@@ -120,7 +120,7 @@ def test_report_send_from_request_to_acceptance(cur):
     cid = out["conversation"]["id"]
     assert out["messages"][-1]["kind"] == "ack"                                         # 1. 受付: すぐ返す
     consult_route(cur, cid, {"path": "operate", "op": "report.send", "params": {"kind": "report.product", "to": "owner_ops"}, "why": "送り直すだけ"})
-    c = state(cur, cid)                                                                 # 2. 振り分け → 3. 確認待ち（send の段）
+    c = state(cur, cid)                                                                 # 2. 振り分け → 3. 確認待ち（send のレベル）
     assert (c["state"], c["path"]) == ("awaiting_confirm", "operate") and float(c["cost_usd"]) == 0.3
     it = inbox.find(cur, f"task:desk_confirm:{cid}:1")
     assert it["who"] == "requester" and [o["id"] for o in it["answer"]["options"]] == ["run", "cancel"]

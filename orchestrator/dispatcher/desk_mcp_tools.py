@@ -157,7 +157,7 @@ SNAPSHOT = json.loads(r'''{
   },
   {
    "name": "desk_ticket",
-   "description": "チケットの状態（段・優先度・保留・依存待ち・順番待ちの何番目か・作業中のジョブ・PR）。ticket は工場のチケットの id か owner/repo#123",
+   "description": "チケットの状態（進み具合・優先度・保留・依存待ち・順番待ちの何番目か・作業中のジョブ・PR）。ticket は工場のチケットの id か owner/repo#123",
    "inputSchema": {
     "type": "object",
     "properties": {

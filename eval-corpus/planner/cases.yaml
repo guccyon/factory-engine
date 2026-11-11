@@ -22,7 +22,7 @@ cases:
       \    の説明）、 枠の取り下げはコーチ本人だけ（withdrawMySlot）、お知らせは生徒全員かスポーツごとにしか送れない（sendAnnouncement））。\n    PRD の文書は specs/ にない。'\n \
       \ success: '本部がコーチの様子からこの画面を開き、お休みの期間を入れて、期間の予約（確定待ち・確定済み）と枠を画面で確かめ、 「お休みにする」を 1 回確かめて押すだけで、(1)\n    期間の予約がすべて本部のキャンセルになり（生徒のビデオ通話の枠を使わない）、\
       \ (2) 予約した生徒全員にお知らせが届き、(3) 期間の枠がすべて取り下げられて生徒の検索に出なくなる。\n    どの予約をキャンセルしたかは「キャンセルされた予約」（キャンセルした人: 本部）であとからたどれる。'\nnotes:\n\
-      - 案は admin-web（PC の管理画面）なので desktop で撮った。今の本部の画面は幅 48rem の 1 段で、狭い幅でも同じ並びで縦に伸びる\n- 動くプロトタイプの入口は a.html。a-overview.html（コーチの様子）の「お休み」→\
+      - 案は admin-web（PC の管理画面）なので desktop で撮った。今の本部の画面は幅 48rem の 1 列で、狭い幅でも同じ並びで縦に伸びる\n- 動くプロトタイプの入口は a.html。a-overview.html（コーチの様子）の「お休み」→\
       \ a.html の「お休みにする」→ a-confirm.html\n  の「キャンセルしてお休みにする」→ a-done.html → 「コーチの様子へ戻る」でひと回りする。a-loading・a-invalid・a-empty・a-sending・a-failed\n\
       \  は状態のコマ\n- 送信中（a-sending）の後ろの画面は案 a の代表と同じ中身を描いている。コマの中の「モックの注記」の文と、入口のリンクの薄い青の面はモックだけのもの\n- サンプルの名前・日時は架空（2026-11-05\
       \ を今日とした）\nstates:\n- 'hqCoachLeave コーチの読み込み中: 「読み込み中…」（frame loading とは別。コーチの欄だけ）'\n- 'hqCoachLeave コーチが見つからない（coach_id\
@@ -645,8 +645,8 @@ cases:
       \ success    # 確定済み\n    cancelled: neutral    # キャンセル済み（text_muted の文字と surface の面）\n  slot_state:   # スロットの状態（glossary\
       \ の slot.states）と色の対応（0.4.0 で足した。#455）\n    open: info            # 公開中。予約を待っている\n    booked: success       # 予約済み。予約が入った（確定待ちを含む。確定待ちかは予約の\
       \ status_tag で別に出す）\n    closed: neutral       # 終了\n  state_rules:\n    - neutral は文字 text_muted・面 surface・輪郭 border\
-      \ 1px（booking_state と同じ）\n    - 状態の色はこの対応からだけ選ぶ。スロットと予約の状態を同じ行に出すときは両方の呼び名を出す\n  scale:   # 濃淡の段階。roles にない段は使わない（足すときは\
-      \ governance の手順で）\n    blue:  {50: \"#E9EDF8\", 600: \"#3A54B0\", 700: \"#2E4590\", 900: \"#1E2A5C\"}   # 0.2.0 で彩度を下げた（段の名前は同じ）\n\
+      \ 1px（booking_state と同じ）\n    - 状態の色はこの対応からだけ選ぶ。スロットと予約の状態を同じ行に出すときは両方の呼び名を出す\n  scale:   # 濃淡の段階。roles にない濃さは使わない（足すときは\
+      \ governance の手順で）\n    blue:  {50: \"#E9EDF8\", 600: \"#3A54B0\", 700: \"#2E4590\", 900: \"#1E2A5C\"}   # 0.2.0 で彩度を下げた（濃さの名前は同じ）\n\
       \    lime:  {300: \"#D4F53C\"}\n    ink:   {50: \"#F1F3F8\", 100: \"#DDE1EA\", 300: \"#B8BFCC\", 500: \"#7D8599\", 700:\
       \ \"#4A5163\", 950: \"#10131A\"}\n  usage_rules:\n    - secondary（ライム）は文字の色にしない。濃い面の上の強調（線・しるし・数字の下線）か、on_secondary\
       \ の文字の下の面にだけ使う\n    - primary を inverse_surface の上の文字・アイコンに使わない（2.72）。濃い面の上は on_inverse_surface か secondary\n    - border\
@@ -688,18 +688,18 @@ cases:
       \ 400, line_height: 1.6,  letter_spacing: \"0.01em\",  use: カードの補足・ラベル, sample: \"コーチ: 山田\"}\n    caption:  {size: 12,\
       \ weight: 700, line_height: 1.5,  letter_spacing: \"0.02em\",  use: しるし・タグだけ。文には使わない, sample: \"確定待ち\"}\n  sample_rule:\
       \ 書体の見本（sample とカタログ）は日本語で、実際の画面の文言にする。サービスは日本国内だけに出す\n  admin_web: admin-web は display を使わず、headline を 24px、本文を 16px\
-      \ にする\n  emphasis: 本文の強調は 700。下線は押せるリンクだけ。斜体は使わない\n  max_line_length: 本文の 1 行は 40 字まで（PC の admin-web は読む画面が 1 段 48rem。一覧の画面の\
+      \ にする\n  emphasis: 本文の強調は 700。下線は押せるリンクだけ。斜体は使わない\n  max_line_length: 本文の 1 行は 40 字まで（PC の admin-web は読む画面が 1 列 48rem。一覧の画面の\
       \ wide でも表の外の文は 40em まで）\n  punctuation:\n    - 句読点は「、」「。」。全角の約物（「」（）・〜）を使い、行頭に来る約物は詰める（palt を使わない。字間は letter_spacing\
       \ だけ）\n    - 英数字と和文のあいだは半角スペースを 1 つ（例「残り 2 回」「10/28（水）12:00」）\n    - 感嘆符は全角「！」で、1 つの文言に 1 つまで。疑問符は確認の題だけ\n  numerals:\n\
       \    style: 数字は等幅（font-feature-settings \"tnum\"）。display の数字は 900 で、単位（回・分）は title の大きさで添える\n    example: 「残り [2] 回」の\
       \ 2 を display、回を title\n\nspacing:   # design_guideline の spacing_layout（余白・グリッド・画面幅・安全領域）\n  base_unit: 4\n  scale_px:\
       \ {xs: 4, sm: 8, md: 16, lg: 24, xl: 40}\n  rules:\n    - 画面の左右は md 16px（PC の admin-web は lg 24px）\n    - 欄と欄のあいだは xl\
       \ 40px、欄の中の行と行は sm 8px、カードの中の余白は md 16px\n    - 押せる部品の高さは 48px 以上、押せるもの同士のあいだは sm 8px 以上\n    - 段階にない値（例 12px・20px）を余白に使わない\n\
-      \  grid:\n    phone: 1 段。幅いっぱい（左右 16px）\n    tablet: 1 段、中身の幅は 600px まで中央寄せ\n    pc: >-\n      admin-web は 1 段。中身の幅は画面の型で\
+      \  grid:\n    phone: 1 列。幅いっぱい（左右 16px）\n    tablet: 1 列、中身の幅は 600px まで中央寄せ\n    pc: >-\n      admin-web は 1 列。中身の幅は画面の型で\
       \ 2 つ（content_width_px）。読む画面（ログイン・詳細・フォーム・本部のホーム）は reading の最大 768px、\n      本部の一覧の画面（data_table が主役の画面）は wide の最大 1280px。どちらも左右\
       \ lg 24px で中央寄せ（0.3.0 で一覧の表を 768px に収める決まりをやめた）\n    admin_web_narrow: 600〜1023px は幅いっぱいで左右 lg 24px、600px 未満は左右 md 16px。表が幅に収まらないときは表の包み（data_table\
       \ の wrapper）だけを横に動かし、ページ全体は横に動かさない\n  content_width_px: {reading: 768, wide: 1280}   # 0.3.0 で足した。reading は今の 48rem\
-      \ と同じ値\n  wide_rules:\n    - wide の画面でも、表の外の文（件数・説明・知らせ）は 1 行 40 字まで（max-width 40em）\n    - 表は 1 段の幅いっぱい（width 100%）に広げ、列の幅は中身で決める。細い枠に押し込んで折り返させない\n\
+      \ と同じ値\n  wide_rules:\n    - wide の画面でも、表の外の文（件数・説明・知らせ）は 1 行 40 字まで（max-width 40em）\n    - 表は 1 列の幅いっぱい（width 100%）に広げ、列の幅は中身で決める。細い枠に押し込んで折り返させない\n\
       \  breakpoints_px: {phone: 0, tablet: 600, pc: 1024}\n  safe_area: student-app は SafeArea の内側に置く。下に固定するボタンは下の安全領域 +\
       \ 16px 上に置く\n\nshape:   # design_guideline の shape_elevation（角丸・影と重なり）\n  radius_px: {sm: 6, md: 12, pill: 999}\n  usage:\n\
       \    pill: 主なボタン・副のボタン・絞り込みのチップ\n    md: カード・欄の面・ダイアログ・入力欄\n    sm: しるし（未読など）・タグ・コーチの顔写真\n  elevation:\n    rule: 影は使わない（box-shadow・Material\
@@ -784,8 +784,8 @@ cases:
       \  warning: {fg: \"#9A5B00\", container: \"#FFF1D6\", on_container: \"#5A3500\"}\n    danger:  {fg: \"#C0182F\", container:\
       \ \"#FDE8EB\", on_container: \"#7A0F1E\"}\n  status_rule: 状態は色と一緒に必ずアイコンか文字を出す。fg は文字・アイコン・輪郭、container は面、on_container\
       \ は面の上の文字\n  booking_state:   # 予約の状態（glossary の booking.states）と色の対応\n    pending: warning      # 確定待ち\n    confirmed:\
-      \ success    # 確定済み\n    cancelled: neutral    # キャンセル済み（text_muted の文字と surface の面）\n  scale:   # 濃淡の段階。roles にない段は使わない（足すときは\
-      \ governance の手順で）\n    blue:  {50: \"#E9EDF8\", 600: \"#3A54B0\", 700: \"#2E4590\", 900: \"#1E2A5C\"}   # 0.2.0 で彩度を下げた（段の名前は同じ）\n\
+      \ success    # 確定済み\n    cancelled: neutral    # キャンセル済み（text_muted の文字と surface の面）\n  scale:   # 濃淡の段階。roles にない濃さは使わない（足すときは\
+      \ governance の手順で）\n    blue:  {50: \"#E9EDF8\", 600: \"#3A54B0\", 700: \"#2E4590\", 900: \"#1E2A5C\"}   # 0.2.0 で彩度を下げた（濃さの名前は同じ）\n\
       \    lime:  {300: \"#D4F53C\"}\n    ink:   {50: \"#F1F3F8\", 100: \"#DDE1EA\", 300: \"#B8BFCC\", 500: \"#7D8599\", 700:\
       \ \"#4A5163\", 950: \"#10131A\"}\n  usage_rules:\n    - secondary（ライム）は文字の色にしない。濃い面の上の強調（線・しるし・数字の下線）か、on_secondary\
       \ の文字の下の面にだけ使う\n    - primary を inverse_surface の上の文字・アイコンに使わない（2.72）。濃い面の上は on_inverse_surface か secondary\n    - border\
@@ -826,14 +826,14 @@ cases:
       \ \"0.01em\",  use: カードの補足・ラベル, sample: \"コーチ: 山田\"}\n    caption:  {size: 12, weight: 700, line_height: 1.5,  letter_spacing:\
       \ \"0.02em\",  use: しるし・タグだけ。文には使わない, sample: \"確定待ち\"}\n  sample_rule: 書体の見本（sample とカタログ）は日本語で、実際の画面の文言にする。サービスは日本国内だけに出す\n\
       \  admin_web: admin-web は display を使わず、headline を 24px、本文を 16px にする\n  emphasis: 本文の強調は 700。下線は押せるリンクだけ。斜体は使わない\n  max_line_length:\
-      \ 本文の 1 行は 40 字まで（PC の admin-web は 1 段 48rem）\n  punctuation:\n    - 句読点は「、」「。」。全角の約物（「」（）・〜）を使い、行頭に来る約物は詰める（palt を使わない。字間は\
+      \ 本文の 1 行は 40 字まで（PC の admin-web は 1 列 48rem）\n  punctuation:\n    - 句読点は「、」「。」。全角の約物（「」（）・〜）を使い、行頭に来る約物は詰める（palt を使わない。字間は\
       \ letter_spacing だけ）\n    - 英数字と和文のあいだは半角スペースを 1 つ（例「残り 2 回」「10/28（水）12:00」）\n    - 感嘆符は全角「！」で、1 つの文言に 1 つまで。疑問符は確認の題だけ\n\
       \  numerals:\n    style: 数字は等幅（font-feature-settings \"tnum\"）。display の数字は 900 で、単位（回・分）は title の大きさで添える\n    example:\
       \ 「残り [2] 回」の 2 を display、回を title\n\nspacing:   # design_guideline の spacing_layout（余白・グリッド・画面幅・安全領域）\n  base_unit:\
       \ 4\n  scale_px: {xs: 4, sm: 8, md: 16, lg: 24, xl: 40}\n  rules:\n    - 画面の左右は md 16px（PC の admin-web は lg 24px）\n\
       \    - 欄と欄のあいだは xl 40px、欄の中の行と行は sm 8px、カードの中の余白は md 16px\n    - 押せる部品の高さは 48px 以上、押せるもの同士のあいだは sm 8px 以上\n    - 段階にない値（例\
-      \ 12px・20px）を余白に使わない\n  grid:\n    phone: 1 段。幅いっぱい（左右 16px）\n    tablet: 1 段、中身の幅は 600px まで中央寄せ\n    pc: admin-web\
-      \ は 1 段で最大 48rem（768px）、左右 24px。一覧の表は 1 段の幅に収める\n  breakpoints_px: {phone: 0, tablet: 600, pc: 1024}\n  safe_area: student-app\
+      \ 12px・20px）を余白に使わない\n  grid:\n    phone: 1 列。幅いっぱい（左右 16px）\n    tablet: 1 列、中身の幅は 600px まで中央寄せ\n    pc: admin-web\
+      \ は 1 列で最大 48rem（768px）、左右 24px。一覧の表は 1 列の幅に収める\n  breakpoints_px: {phone: 0, tablet: 600, pc: 1024}\n  safe_area: student-app\
       \ は SafeArea の内側に置く。下に固定するボタンは下の安全領域 + 16px 上に置く\n\nshape:   # design_guideline の shape_elevation（角丸・影と重なり）\n  radius_px:\
       \ {sm: 6, md: 12, pill: 999}\n  usage:\n    pill: 主なボタン・副のボタン・絞り込みのチップ\n    md: カード・欄の面・ダイアログ・入力欄\n    sm: しるし（未読など）・タグ・コーチの顔写真\n\
       \  elevation:\n    rule: 影は使わない（box-shadow・Material の elevation は 0）。重なりは面の色と border_strong の線で示す\n    levels:\n   \

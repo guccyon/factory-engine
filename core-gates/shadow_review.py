@@ -74,7 +74,7 @@ def parse_yaml(text: str):
 
 
 def load_overlay(repo: str) -> list[dict]:
-    """製品の overlay のルールのうち、検査官が判定するもの（ADR 0013）。shadow と adopted の rubric・episodic の段だけ。
+    """製品の overlay のルールのうち、検査官が判定するもの（ADR 0013）。shadow と adopted の rubric・episodic の種類だけ。
     crystallized（正規表現）は製品の CI の rule-eval が当てる。読めなければ空（overlay がなくても検査は続ける）"""
     import base64
     try:

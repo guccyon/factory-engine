@@ -37,7 +37,7 @@ import time
 import urllib.parse
 import uuid
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 HOME = os.path.expanduser("~")
 
 
@@ -64,6 +64,16 @@ def config():
         "flutter": env("MAC_RUNNER_FLUTTER", "flutter"),
         "idb": env("MAC_RUNNER_IDB", "idb"),
         "build_timeout": int(env("MAC_RUNNER_BUILD_TIMEOUT_SEC", "1800")),
+        # 審査前の配布（P5b の preview_distribution、ADR 0043 の O8・ADR 0047）。配布先（channel）ごとに、人が Mac で設定を入れたときだけ開く。
+        # 署名の鍵のパスワードは Mac のキーチェーン、配布先へのログインは Mac の持ち主のもの。工場には渡さない
+        "firebase": env("MAC_RUNNER_FIREBASE", "firebase"),
+        "firebase_app_id": env("MAC_RUNNER_FIREBASE_APP_ID", ""),          # Firebase の Android アプリの ID（1:<番号>:android:<16 進>）
+        "firebase_groups": env("MAC_RUNNER_FIREBASE_GROUPS", "testers"),   # 配る相手（Firebase のテスターのグループの別名、カンマ区切り）
+        "android_keystore": env("MAC_RUNNER_ANDROID_KEYSTORE", os.path.join(HOME, ".config", "factory", "android-upload.jks")),
+        "android_key_alias": env("MAC_RUNNER_ANDROID_KEY_ALIAS", "upload"),
+        "keychain_service": env("MAC_RUNNER_KEYCHAIN_SERVICE", "factory-macrunner-android-keystore"),
+        "apksigner": env("MAC_RUNNER_APKSIGNER", ""),                      # 空なら Android SDK の build-tools の新しいものを探す
+        "attend_timeout": int(env("MAC_RUNNER_ATTEND_TIMEOUT_SEC", "300")),
     }
 
 
@@ -84,6 +94,9 @@ UDID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}
 BUNDLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,154}$")
 REF = re.compile(r"^(?!-)[A-Za-z0-9._/\-]{1,200}$")
 BUILD_ID = re.compile(r"^b-[0-9a-f]{12}$")
+FIREBASE_APP_ID = re.compile(r"^1:[0-9]{1,20}:android:[0-9a-f]{1,40}$")
+GROUP = re.compile(r"^[a-z0-9-]{1,64}$")
+CHANNELS = ("firebase_android",)   # 配布先。testflight_ios は Gen2（ADR 0047）
 DEFINE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 URL = re.compile(r"^[a-z][a-z0-9+.\-]{1,31}://[^\s]{1,2000}$")
 IDB_RETRIES, IDB_RETRY_SEC = 4, 5
@@ -180,14 +193,15 @@ class Builds:
         self.lock = threading.Lock()       # ビルドは 1 本ずつ（Xcode と Flutter のキャッシュを取り合わない）
         self.items = {}
 
-    def start(self, app_key, ref, defines):
+    def start(self, app_key, ref, defines, kind="simulator", extra=None):
         app = self.cfg["apps"].get(app_key)
         if not app:
             raise ToolError(f"{app_key} はビルドを許していない（許しているもの: {', '.join(self.cfg['apps']) or 'なし'}）")
         bid = "b-" + uuid.uuid4().hex[:12]
-        self.items[bid] = {"build_id": bid, "app": app_key, "ref": ref, "state": "queued", "started_at": now(),
-                           "bundle_id": app["bundle_id"]}
-        threading.Thread(target=self._run, args=(bid, app, ref, defines), daemon=True).start()
+        self.items[bid] = {"build_id": bid, "app": app_key, "ref": ref, "kind": kind, "state": "queued", "started_at": now(),
+                           "bundle_id": app["bundle_id"], **(extra or {})}
+        work = self._distribute if kind == "distribute" else self._build
+        threading.Thread(target=self._run, args=(bid, app, ref, defines, work), daemon=True).start()
         return self.items[bid]
 
     def status(self, bid):
@@ -196,13 +210,14 @@ class Builds:
             raise ToolError(f"{bid} というビルドはない（ランナーを上げ直すと消える）")
         return b
 
-    def _run(self, bid, app, ref, defines):
+    def _run(self, bid, app, ref, defines, work=None):
         b = self.items[bid]
+        work = work or self._build
         with self.lock:
             b["state"] = "building"
             try:
-                b.update(self._build(bid, app, ref, defines))
-                b["state"] = "built"
+                b.update(work(bid, app, ref, defines))
+                b["state"] = "distributed" if b.get("kind") == "distribute" else "built"
             except ToolError as e:
                 b["state"] = "failed"
                 b["error"] = str(e)[-2000:]
@@ -211,7 +226,8 @@ class Builds:
                 b["error"] = f"{type(e).__name__}: {e}"
             b["finished_at"] = now()
 
-    def _build(self, bid, app, ref, defines):
+    def _checkout(self, app, ref):
+        """許したリポジトリを取り、ref が既定ブランチに入った（マージ済みの）コミットかを確かめる。(repo_dir, sha) を返す。"""
         repo_dir = os.path.join(self.cfg["root"], "repos", app["repo"].replace("/", "__"))
         if not os.path.isdir(os.path.join(repo_dir, ".git")):
             os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
@@ -223,17 +239,25 @@ class Builds:
             run(["git", "-C", repo_dir, "merge-base", "--is-ancestor", sha, default])
         except ToolError:
             raise ToolError(f"{ref}（{sha[:12]}）は {default} に入っていない。ビルドするのはマージ済みのコミットだけ")
+        return repo_dir, sha
+
+    def _workspace(self, bid, app, repo_dir, sha, platform="ios"):
+        """ビルドの作業場を作り、製品に ios/（android/）がまだなければこの作業場の中だけで作る（製品のリポジトリには書かない）。app_dir を返す。"""
         work = os.path.join(self.cfg["root"], "builds", bid)
         run(["git", "-C", repo_dir, "worktree", "add", "--detach", work, sha], timeout=300)
         app_dir = os.path.join(work, app["path"])
         flutter = self.cfg["flutter"]
-        # 製品に ios/ がまだなければ、この作業場の中だけで作る（製品のリポジトリには書かない。配布の署名の設定は P5b の preview_distribution）
-        if not os.path.isdir(os.path.join(app_dir, "ios")):
+        if not os.path.isdir(os.path.join(app_dir, platform)):
             org, _, name = app["bundle_id"].rpartition(".")
-            run([flutter, "create", "--platforms=ios", "--org", org, "--project-name", project_name(app_dir) or name, "."],
+            run([flutter, "create", f"--platforms={platform}", "--org", org, "--project-name", project_name(app_dir) or name, "."],
                 cwd=app_dir, timeout=600)
         run([flutter, "pub", "get"], cwd=app_dir, timeout=600)
-        argv = [flutter, "build", "ios", "--simulator", "--debug", "--no-codesign"]
+        return app_dir
+
+    def _build(self, bid, app, ref, defines):
+        repo_dir, sha = self._checkout(app, ref)
+        app_dir = self._workspace(bid, app, repo_dir, sha)
+        argv = [self.cfg["flutter"], "build", "ios", "--simulator", "--debug", "--no-codesign"]
         argv += [f"--dart-define={k}={v}" for k, v in sorted(defines.items())]
         log = run(argv, cwd=app_dir, timeout=self.cfg["build_timeout"])
         app_path = os.path.join(app_dir, "build", "ios", "iphonesimulator", "Runner.app")
@@ -243,6 +267,55 @@ class Builds:
         self._prune(repo_dir, keep=bid)
         return {"sha": sha, "app_path": app_path, "bundle_id": bundle, "log_tail": log.decode("utf-8", "replace")[-1500:]}
 
+    def _distribute(self, bid, app, ref, defines):
+        """署名つきでビルドし、審査前の配布先に上げる（P5b の preview_distribution、ADR 0043 の O8・ADR 0047）。今の配布先は firebase_android だけ。
+
+        - 人が Mac の前にいる合図でだけ通る: Mac の画面に確かめの窓を出し、人が「配布する」を押したときだけ続ける。
+          押されない（画面がロックされている・席にいない）まま時間が来たら、何もせずに失敗を返す
+        - 署名の鍵のパスワードは Mac のキーチェーンから読み、署名の道具（apksigner）にだけ環境変数で渡す。返り値・記録・工場には出さない
+        - Firebase へは Mac の持ち主が firebase login したログインで上げる。ランナーはその資格を読まない
+        - 作るのはマージ済みのコミットだけ（シミュレーター向けと同じ）
+        """
+        b = self.items[bid]
+        b["stage"] = "checkout"
+        channel, notes = b["channel"], b.get("release_notes", "")
+        closed = channel_closed(self.cfg, channel)
+        if closed:
+            raise ToolError(closed)
+        repo_dir, sha = self._checkout(app, ref)
+        build_number = str(int(time.time() // 60))   # 上げるたびに増える番号（Android の versionCode。分の通し番号）
+        b.update({"sha": sha, "build_number": build_number, "state": "waiting_for_human", "stage": "attend"})
+        attend(f"工場が {app['repo']} の {app['path']} を配布しようとしています（{channel}）。\n\n"
+               f"コミット {sha[:12]}（マージ済み）、ビルド番号 {build_number}\n"
+               f"配る相手: Firebase のグループ {self.cfg['firebase_groups']}\n\n"
+               "この Mac の署名の鍵で署名し、この Mac の Firebase のログインで送ります。よければ「配布する」を押してください。",
+               self.cfg["attend_timeout"])
+        b.update({"state": "building", "stage": "build", "approved_at": now()})
+        app_dir = self._workspace(bid, app, repo_dir, sha, platform="android")
+        argv = [self.cfg["flutter"], "build", "apk", "--release", f"--build-number={build_number}"]
+        argv += [f"--dart-define={k}={v}" for k, v in sorted(defines.items())]
+        run(argv, cwd=app_dir, timeout=self.cfg["build_timeout"])
+        built = os.path.join(app_dir, "build", "app", "outputs", "flutter-apk", "app-release.apk")
+        if not os.path.isfile(built):
+            raise ToolError("ビルドは通ったが app-release.apk がない")
+        b["stage"] = "sign"
+        signed = os.path.join(app_dir, "build", "app-release-signed.apk")
+        password = keychain_password(self.cfg["keychain_service"])
+        run([apksigner(self.cfg), "sign", "--ks", self.cfg["android_keystore"], "--ks-key-alias", self.cfg["android_key_alias"],
+             "--ks-pass", "env:FACTORY_KS_PASS", "--key-pass", "env:FACTORY_KS_PASS", "--out", signed, built],
+            timeout=300, env_extra={"FACTORY_KS_PASS": password})
+        del password
+        with open(signed, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        b["stage"] = "upload"
+        argv = [self.cfg["firebase"], "appdistribution:distribute", signed, "--app", self.cfg["firebase_app_id"],
+                "--groups", self.cfg["firebase_groups"], "--non-interactive"]
+        if notes:
+            argv += ["--release-notes", notes]
+        log = run(argv, cwd=app_dir, timeout=900)
+        self._prune(repo_dir, keep=bid)
+        return {"sha": sha, "build_number": build_number, "channel": channel, "sha256": digest, "stage": "done",
+                "testers": self.cfg["firebase_groups"], "log_tail": log.decode("utf-8", "replace")[-1500:]}
 
     def _prune(self, repo_dir, keep, n=3):
         """古いビルドの作業場を消す（新しい順に n 本残す）。消せなくてもビルドは失敗にしない。"""
@@ -286,6 +359,73 @@ def read_bundle_id(app_path):
         return None
 
 
+def channel_closed(cfg, channel):
+    """配布先が開いていなければ、その理由（人が Mac ですること）を返す。開いていれば空。"""
+    if channel not in CHANNELS:
+        return f"{channel} という配布先はない（あるもの: {', '.join(CHANNELS)}）"
+    missing = []
+    if not FIREBASE_APP_ID.match(cfg["firebase_app_id"]):
+        missing.append("MAC_RUNNER_FIREBASE_APP_ID（Firebase の Android アプリの ID）")
+    if not all(GROUP.match(g) for g in cfg["firebase_groups"].split(",")):
+        missing.append("MAC_RUNNER_FIREBASE_GROUPS の形（英小文字・数字・-）")
+    if not os.path.isfile(cfg["android_keystore"]):
+        missing.append(f"署名の鍵 {cfg['android_keystore']}（scripts/macrunner.sh android-key で作る）")
+    if missing:
+        return "配布先 firebase_android は開いていない。Mac で入れる: " + "、".join(missing)
+    return ""
+
+
+def keychain_password(service):
+    """署名の鍵のパスワードを Mac のキーチェーンから読む（scripts/macrunner.sh android-key が入れる）。値は失敗の文にも出さない"""
+    try:
+        out = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, timeout=60, env=child_env())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        raise ToolError("キーチェーンを読めなかった（security）")
+    if out.returncode != 0:
+        raise ToolError(f"キーチェーンに {service} がない（scripts/macrunner.sh android-key で作る）")
+    return out.stdout.decode().rstrip("\n")
+
+
+def apksigner(cfg):
+    if cfg["apksigner"]:
+        return cfg["apksigner"]
+    sdk = env("ANDROID_HOME") or env("ANDROID_SDK_ROOT") or os.path.join(HOME, "Library", "Android", "sdk")
+    tools = os.path.join(sdk, "build-tools")
+    try:
+        versions = sorted(os.listdir(tools), key=lambda v: [int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", v)])
+    except OSError:
+        versions = []
+    for v in reversed(versions):
+        p = os.path.join(tools, v, "apksigner")
+        if os.path.isfile(p):
+            return p
+    raise ToolError(f"apksigner が見つからない（Android SDK の build-tools。{tools}）")
+
+
+ATTEND_BUTTON = "配布する"
+ATTEND_SCRIPT = ['on run argv',
+                 'display dialog (item 1 of argv) with title "工場の Mac ランナー" buttons {"やめる", "%s"} '
+                 'default button "やめる" cancel button "やめる" giving up after ((item 2 of argv) as integer) with icon caution' % ATTEND_BUTTON,
+                 'end run']
+
+
+def attend(message, timeout):
+    """人が Mac の前にいる合図（ADR 0043 の O8）。Mac の画面に確かめの窓を出し、人が押したときだけ戻る。
+    やめた・時間切れ（席にいない・画面のロック）・窓が出せない（ログインしていない）は ToolError。文言は argv で渡し、スクリプトに埋めない"""
+    argv = ["osascript"]
+    for line in ATTEND_SCRIPT:
+        argv += ["-e", line]
+    argv += [message, str(int(timeout))]
+    try:
+        out = run(argv, timeout=timeout + 30).decode("utf-8", "replace")
+    except ToolError as e:
+        if "-128" in str(e):
+            raise ToolError("Mac の前の人がやめた（何もしていない）")
+        raise ToolError(f"Mac の画面に確かめの窓を出せなかった（何もしていない）: {e}")
+    if f"button returned:{ATTEND_BUTTON}" not in out or "gave up:true" in out:
+        raise ToolError(f"{timeout} 秒のあいだ Mac の前で押されなかった（人がいないとみなして何もしていない）")
+
+
 def now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -308,7 +448,15 @@ TOOLS = [
           "ref": {"type": "string", "description": "コミットかブランチ（既定 main）"},
           "dart_defines": {"type": "object", "description": "--dart-define に渡す値（例 {\"RALLY_API_URL\": \"http://127.0.0.1:8080\"}）", "additionalProperties": {"type": "string"}}},
          ["app"]),
-    tool("build_status", "ビルドの状態（queued / building / built / failed）と、終わっていれば bundle id とコミット", {"build_id": {"type": "string"}}, ["build_id"]),
+    tool("build_status", "ビルドの状態（queued / waiting_for_human / building / built / distributed / failed。配布は stage も）と、終わっていれば bundle id とコミット", {"build_id": {"type": "string"}}, ["build_id"]),
+    tool("preview_distribute", "許されたアプリを、マージ済みのコミットから署名つきでビルドして審査前の配布先に上げ始める（今は firebase_android だけ）。"
+         "Mac の画面で人が押したときだけ進む（人がいなければ失敗）。Mac で配布先の設定を入れていなければ使えない。build_id を返すので build_status で distributed か failed を待つ",
+         {"app": {"type": "string", "description": "<owner/repo>:<パス>（例 guccyon/rally:apps/student-app）"},
+          "channel": {"type": "string", "enum": list(CHANNELS)},
+          "ref": {"type": "string", "description": "コミットかブランチ（既定 main）"},
+          "release_notes": {"type": "string", "maxLength": 1000, "description": "テスターに見せる変更点"},
+          "dart_defines": {"type": "object", "description": "--dart-define に渡す値（例 {\"RALLY_API_URL\": \"https://…\"}）", "additionalProperties": {"type": "string"}}},
+         ["app", "channel"]),
     tool("app_install", "ビルドしたアプリを起動中のシミュレーターに入れる", {"udid": S_UDID, "build_id": {"type": "string"}}, ["udid", "build_id"]),
     tool("app_launch", "アプリを起動する（起動中なら前面に出す）", {"udid": S_UDID, "bundle_id": {"type": "string"}}, ["udid", "bundle_id"]),
     tool("app_terminate", "アプリを止める", {"udid": S_UDID, "bundle_id": {"type": "string"}}, ["udid", "bundle_id"]),
@@ -328,7 +476,8 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 # 範囲の宣言（SCOPE.md と同じ中身の要約）。登録済みのランナーの一覧に出す
 SCOPE_SUMMARY = ("できる: iOS シミュレーターの起動・停止・初期化、許したアプリのマージ済みのコミットからの署名なしビルドと入れる・起動・停止、"
                  "画面の撮影・読み取り・操作、許した URL を開く、プッシュ通知、アプリのログ。"
-                 "しない: 署名・鍵・配布、実機、シミュレーターの外の Mac のファイルとアプリ、任意のコマンド。"
+                 "人が Mac の画面で押したときだけ、Mac の鍵で署名して審査前の配布先（Firebase App Distribution）に上げる（Mac で設定を入れたときだけ）。"
+                 "しない: 鍵を工場に渡すこと、ストアへの公開、実機、シミュレーターの外の Mac のファイルとアプリ、任意のコマンド。"
                  "外と話すのは、工場への連絡と、製品のリポジトリ（GitHub）と依存のパッケージの取得だけ")
 
 
@@ -397,17 +546,18 @@ class Runner:
         return text({"udid": udid, "erased": True})
 
     def t_app_build(self, a):
-        app = need(a, "app")
-        ref = a.get("ref", "main")
-        if not isinstance(ref, str) or not REF.match(ref) or ".." in ref:
-            raise ToolError("ref の形が違う")
-        defines = a.get("dart_defines") or {}
-        if not isinstance(defines, dict) or len(defines) > 20:
-            raise ToolError("dart_defines はオブジェクト（20 個まで）")
-        for k, v in defines.items():
-            if not DEFINE_KEY.match(k) or not isinstance(v, str) or len(v) > 500 or "\n" in v:
-                raise ToolError(f"dart_defines の {k} の形が違う")
-        return text(public_build(self.builds.start(app, ref, defines)))
+        return text(public_build(self.builds.start(*build_args(a))))
+
+    def t_preview_distribute(self, a):
+        channel = need(a, "channel")
+        closed = channel_closed(self.cfg, channel)
+        if closed:
+            raise ToolError(closed)
+        notes = a.get("release_notes", "")
+        if not isinstance(notes, str) or len(notes) > 1000:
+            raise ToolError("release_notes は 1000 文字までの文字列")
+        app, ref, defines = build_args(a)
+        return text(public_build(self.builds.start(app, ref, defines, kind="distribute", extra={"channel": channel, "release_notes": notes})))
 
     def t_build_status(self, a):
         return text(public_build(self.builds.status(need(a, "build_id", BUILD_ID))))
@@ -527,8 +677,23 @@ class Runner:
         return text({"key": key})
 
 
+def build_args(a):
+    """app_build と preview_distribute に共通の引数を確かめる。(app, ref, defines) を返す。"""
+    app = need(a, "app")
+    ref = a.get("ref", "main")
+    if not isinstance(ref, str) or not REF.match(ref) or ".." in ref:
+        raise ToolError("ref の形が違う")
+    defines = a.get("dart_defines") or {}
+    if not isinstance(defines, dict) or len(defines) > 20:
+        raise ToolError("dart_defines はオブジェクト（20 個まで）")
+    for k, v in defines.items():
+        if not DEFINE_KEY.match(k) or not isinstance(v, str) or len(v) > 500 or "\n" in v:
+            raise ToolError(f"dart_defines の {k} の形が違う")
+    return app, ref, defines
+
+
 def public_build(b):
-    return {k: v for k, v in b.items() if k != "app_path"}
+    return {k: v for k, v in b.items() if k not in ("app_path", "release_notes")}
 
 
 def text(obj):
@@ -544,7 +709,9 @@ def redact(name, args):
         out["text"] = f"<{len(out['text'])} 文字>"
     if name == "push":
         out["payload"] = "<省略>"
-    if name == "app_build" and isinstance(out.get("dart_defines"), dict):
+    if name == "preview_distribute" and isinstance(out.get("release_notes"), str):
+        out["release_notes"] = f"<{len(out['release_notes'])} 文字>"
+    if name in ("app_build", "preview_distribute") and isinstance(out.get("dart_defines"), dict):
         out["dart_defines"] = sorted(out["dart_defines"])
     return out
 
@@ -568,6 +735,11 @@ def preflight(cfg):
     for exe, what in (("xcrun", "Xcode"), (cfg["flutter"], "Flutter"), (cfg["idb"], "idb（ui_* に要る）"), ("git", "git")):
         if not shutil.which(exe):
             notes.append(f"{exe} が見つからない（{what}）")
+    closed = channel_closed(cfg, "firebase_android")
+    if closed:
+        notes.append(closed + "（配布を使わないなら、このままでよい）")
+    elif not shutil.which(cfg["firebase"]):
+        notes.append(f"{cfg['firebase']} が見つからない（Firebase CLI。npm install -g firebase-tools のあと firebase login）")
     return notes
 
 

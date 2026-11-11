@@ -142,7 +142,7 @@ events:
 change_cost:
   difficulty:
     points:
-      areas: "触れた領域（パスの上 2 段。文書と CHANGELOG を除く）の数 − 1"
+      areas: "触れた領域（パスの上 2 階層。文書と CHANGELOG を除く）の数 − 1"
       contract_diff: { points: 2, paths: ["^specs/contracts/"] }
       schema_diff: { points: 2, paths: ["/migrations/"] }
       new_files: { points: 1, when: "製品コードの新しいファイルが 3 つ以上（テストを除く）" }

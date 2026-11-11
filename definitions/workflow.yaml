@@ -22,7 +22,7 @@ steps:                               # ステップのカタログ。役を足�
   qa:            {ja: QA（ユーザーストーリーを流す）, kind: review}
   ship:          {ja: 出荷, kind: handoff}
   learn:         {ja: Learn（信号の記録）, kind: handoff}
-  confirm:       {ja: 確認の段（ADR 0037 の 4）, kind: safety}
+  confirm:       {ja: 依頼者の確認（ADR 0037 の 4）, kind: safety}
   execute:       {ja: 実行, kind: build}
   reconcile:     {ja: 数の突き合わせ, kind: safety}
   respond:       {ja: 結果を返す, kind: handoff}
