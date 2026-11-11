@@ -218,7 +218,23 @@ events:
   supervisor.heartbeat:
     source: control_plane
     required: []
-    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る。engine_version（ADR 0031）は更新役が新しい版で回ったかを見るのに使う"
+    note: "ADR 0004 の supervisor が 60 秒ごとに出す。番人は 1 度でも来てから途絶えを見る。engine_version（ADR 0031）は更新役が新しい版で回ったかを見るのに使う。patrols（ADR 0050）はいま有効な見回りの id で、番人の見回りの見回りがこの一覧だけを見る"
+  patrol_watch.started:
+    source: control_plane
+    required: []
+    note: "ADR 0050。見回りの見回りが動き始めた時刻（1 回だけ。dedupe は patrol_watch.started:v1）。記録が 1 度もない見回りはここから期限を数える。停止は stoppage.opened の key patrol:<見回りの id>"
+  github.pr_closed:
+    source: pr_events
+    required: [pr_url, repo, pr, merged, closed_at]
+    note: "ADR 0050。PR の見張り（pr_events のポーリング）が、使い捨て環境の立っている PR が閉じたのを見た。使い捨て環境の後片付けは GitHub を見ずにこれ（と pr.merged・pr.closed_unmerged）を読む。PR ごとに 1 回（dedupe）"
+  github.issue_closed:
+    source: pr_events
+    required: [source_ref, repo, issue, closed_at]
+    note: "ADR 0050。PR の見張りが、着手中で動いているジョブのないチケットの Issue が閉じたのを見た（ticket_sync.observe、TICKET_SYNC_SEC ごと）。チケットの片付け（ticket_sync.apply）はこれを読む。Issue と閉じた時刻ごとに 1 回"
+  capture.status_seen:
+    source: control_plane
+    required: [pr_url, head_sha, app, target_url]
+    note: "ADR 0050。工場の PR の head に「画面のキャプチャ / <アプリ>」の状態が付いたのを見た（exit_capture.observe）。取り込みはこの記録を読む。PR・head・アプリごとに 1 回"
   dispatcher.started:
     source: control_plane
     required: [engine_version]
@@ -558,6 +574,10 @@ events:
     source: control_plane
     required: [day, signals, clusters, rubric_candidates]
     note: "ADR 0013。supervisor が 1 日 1 回、直近 30 日の教師信号を signature で束ねた。dedupe は learn.retrospected:<JST の日付>。束の中身は artifacts の Retrospective"
+  learn.rule_transitions_checked:
+    source: control_plane
+    required: [day]
+    note: "ADR 0050 の決定 3。supervisor がその日（JST）のルールの移り変わりを見た（1 日 1 回。dedupe は learn.rule_transitions_checked:<JST の日付>）。見回りの見回りもこの記録を見る"
   learn.process_retrospected:
     source: control_plane
     required: [day, signals, cost, clusters, routed]

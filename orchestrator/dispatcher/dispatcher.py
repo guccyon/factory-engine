@@ -59,6 +59,7 @@ import notify_inbox
 import ops
 import pr_events
 import process_learn
+import patrol_watch
 import reattach
 import stoppage
 import swap
@@ -1281,6 +1282,9 @@ def watch_once():
         else:
             for k in hb_open:
                 stoppage.close_stoppage(cur, k, remedy="heartbeat が戻った")
+
+        # 2b) 見回りの見回り（ADR 0050）: supervisor が宣言した見回りが期限を過ぎても動いていなければ patrol:<id>
+        patrol_watch.step(cur, paused=bool(draining or paused), heartbeat_stale=bool(h["last"] and h["stale"]))
 
         # 3) 予算・時間の超過と、人の手当てを待つ失敗
         cur.execute("select job_id, correlation_id, occurred_at, payload from events "

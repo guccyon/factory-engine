@@ -12,6 +12,10 @@
   pr.ci_passed      その head の CI がすべて通った
   pr.conflicted     その head が base と衝突している（mergeable_state=dirty）
   pr.review_submitted  レビューが付いた（approved / changes_requested / commented）
+
+ADR 0050 で、内ループの処理が GitHub に直接聞かずに済むよう、次の 2 つも同じポーリングで見て記録する:
+  github.pr_closed     使い捨て環境が立っている PR（工場の PR でなくてもよい）が閉じた（ephemeral.watched）
+  github.issue_closed  着手中のチケットの Issue が閉じた（ticket_sync.observe。TICKET_SYNC_SEC ごと）
 """
 from __future__ import annotations
 
@@ -22,10 +26,13 @@ import time
 from datetime import datetime, timezone
 
 import defect
+import ephemeral
 import ghapi
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+import ticket_sync
 
 ENV = os.environ
 DATABASE_URL = ENV.get("DATABASE_URL", "postgres://factory:factory@postgres:5432/factory")
@@ -124,6 +131,17 @@ def observe(cur, p: dict, source: str) -> list[str]:
 
 
 # ------------------------------------------------------------------ 入口 1: ポーリング
+def observe_closed(cur, repo: str, number: int, source: str) -> bool:
+    """工場の PR でない PR（使い捨て環境を立てた PR など）が閉じたかを見て、閉じていたら github.pr_closed を記録する（ADR 0050 の決定 2）。
+    工場の PR のマージ・閉じは supervisor が pr.merged・pr.closed_unmerged に残すので、ここでは見ない"""
+    pr = gh("GET", f"repos/{repo}/pulls/{number}") or {}
+    if pr.get("state") != "closed":
+        return False
+    url = f"https://github.com/{repo}/pull/{number}"
+    return emit(cur, "github.pr_closed", f"env:{repo}#{number}", {"pr_url": url, "repo": repo, "pr": number, "merged": bool(pr.get("merged_at")),
+                                                                  "closed_at": pr.get("closed_at"), "source": source}, f"github.pr_closed:{url}")
+
+
 def poll_once():
     with db() as conn, conn.cursor() as cur:
         for p in open_factory_prs(cur):
@@ -131,6 +149,17 @@ def poll_once():
                 observe(cur, p, "poll")
             except Exception as e:  # noqa: BLE001  1 本の失敗で他を止めない
                 log("poll error", p["url"], repr(e))
+        # 内ループの処理が GitHub に直接聞かずに済むように、見た結果を出来事として残す（ADR 0050 の決定 2）
+        for repo, number in ephemeral.watched(cur):   # 使い捨て環境が立っている PR（多くて EPHEMERAL_MAX 本）
+            try:
+                if observe_closed(cur, repo, number, "poll"):
+                    log("poll", f"{repo}#{number}", "github.pr_closed")
+            except Exception as e:  # noqa: BLE001
+                log("poll error", f"{repo}#{number}", repr(e))
+        try:
+            ticket_sync.observe(cur, gh, log=log)   # 着手中のチケットの Issue（TICKET_SYNC_SEC ごと）
+        except Exception as e:  # noqa: BLE001
+            log("poll error", "ticket sync", repr(e))
 
 
 def poll_loop():

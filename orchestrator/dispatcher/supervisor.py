@@ -22,7 +22,7 @@
   その日の便（release.train）に載せる。prod へは便ごとの承認を待つ（train.py）
 - 工場の事故の週次の見回り（ADR 0046 の順番 3・4）: 週 1 回、その週の記録で調査委員会のジョブ（incident_review）を積み、結果の Engine の改善 Issue の案を起票する
 - 工場の事故の日次の見回り（ADR 0046）: definitions/incident.yaml の時（JST）を過ぎたら 1 日 1 回、費用の記録を決定論で集計して兆しを残し、medium 以上は台帳に開く（factory_incident.py）
-- PR ごとの使い捨て環境（ADR 0043 の O7）: 立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く（ephemeral.py）
+- PR ごとの使い捨て環境（ADR 0043 の O7）: 立っている環境の PR が閉じた記録（ADR 0050）があるか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く（ephemeral.py）
 
 Issue と PR の本文は正規表現で番号を拾うだけで、シェルにもプロンプトにも渡さない。
 """
@@ -63,6 +63,7 @@ import learn
 import version
 import ops
 import opportunity
+import patrol_watch
 import plan_outcome
 import process_learn
 import qa_line
@@ -131,7 +132,6 @@ SYNTHETIC_USERS = [r.strip() for r in ENV.get("SYNTHETIC_USERS", ",".join(NIGHTL
 # 品質の Learn（ADR 0043 の O9）。週に 1 回（definitions/defects.yaml の learn）Defect と Incident を集計し、QA の重点とシナリオを足し、基準の変更案を委員会へ。0 で止める
 QUALITY_LEARN = ENV.get("QUALITY_LEARN", "1") == "1"
 DEFECT_DEFS = ENV.get("DEFECT_DEFINITIONS", "/definitions/defects.yaml")
-_transitions_checked_at = 0.0   # 1 時間に 1 回だけ見る（GitHub の呼び出しを抑える）
 STRICTNESS = ["auto", "shadow", "human_approve", "forbidden"]
 DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", re.IGNORECASE)
 
@@ -922,20 +922,28 @@ def overlay_rules(repo: str) -> list[dict]:
 
 
 def rule_transition_step(cur, now: datetime | None = None):
-    """overlay のルールの状態の移り変わりを判定し、変える Issue を起票する（ADR 0013 の 6・8）。判定は govern 側（ここ）が events から計算し、
+    """overlay のルールの状態の移り変わりを JST の 1 日 1 回判定し、変える Issue を起票する（ADR 0013 の 6・8）。判定は govern 側（ここ）が events から計算し、
     ワーカーは state の 1 行を書き換えるだけ。ルール変更 PR は factory_rule として検査を通って自動でマージされる"""
-    global _transitions_checked_at
-    if DRY_RUN or not LEARN_RULE_TRANSITIONS or time.time() - _transitions_checked_at < 3600:
+    if DRY_RUN or not LEARN_RULE_TRANSITIONS:
         return
-    _transitions_checked_at = time.time()
     now = now or datetime.now(timezone.utc)
+    day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
+    # 1 日 1 回（ADR 0050 の決定 3）。記録で数えるので、プロセスを入れ直しても 1 日 1 回のまま。見回りの見回りもこの記録を見る。
+    # 記録は見終わってから付ける（GitHub が読めずに途中で落ちたら、次の周回でやり直す）
+    cur.execute("select 1 from events where dedupe_key=%s", (f"learn.rule_transitions_checked:{day}",))
+    if cur.fetchone():
+        return
     for repo in REPOS:
         try:
             rules = overlay_rules(repo)
         except urllib.error.HTTPError as e:
             if e.code == 404:   # overlay のない製品
                 continue
-            raise
+            log("rule transition read failed", repo, repr(e)[:200])
+            return   # 記録を付けずに抜ける（次の周回でやり直す。後ろの処理は止めない）
+        except Exception as e:  # noqa: BLE001
+            log("rule transition read failed", repo, repr(e)[:200])
+            return
         for r in rules:
             stats = {s["id"]: s for s in learn.rule_stats(cur, r["since"], now)}
             s = stats.get(r["id"])
@@ -951,6 +959,7 @@ def rule_transition_step(cur, now: datetime | None = None):
             record(cur, "learn.rule_transition_filed", f"github:{repo}#{issue['number']}",
                    {"rule": r["id"], "from": r["state"], "to": t["to"], "why": t["why"], "issue": issue["html_url"], "stats": s}, key)
             log("rule transition filed", repo, r["id"], r["state"], "->", t["to"], issue["html_url"])
+    record(cur, "learn.rule_transitions_checked", None, {"day": day, "repos": REPOS}, f"learn.rule_transitions_checked:{day}")
 
 
 def case_review_step(cur, now: datetime | None = None):
@@ -1158,18 +1167,10 @@ def committee_weekly_step(cur, now: datetime | None = None):
 
 def ephemeral_step(cur):
     """PR ごとの使い捨て環境（ADR 0043 の O7）。立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く。
-    立っているのは EPHEMERAL_MAX（既定 2）までなので、GitHub を見るのも周回ごとにその数まで（GET は ETag つき）"""
+    PR が閉じたかは events の記録で見る（PR の見張りの小さなポーリングが github.pr_closed を残す。ADR 0050）。GitHub は見ない"""
     if DRY_RUN:
         return
-
-    def closed(repo: str, pr: int) -> bool:
-        try:
-            return gh("GET", f"repos/{repo}/pulls/{pr}").get("state") == "closed"
-        except Exception as e:  # noqa: BLE001  見えないときは壊さない（TTL で壊れる）
-            log("ephemeral pr check failed", repo, pr, repr(e)[:200])
-            return False
-
-    for repo, pr, reason in ephemeral.due_down(cur, closed):
+    for repo, pr, reason in ephemeral.due_down(cur):
         ok, m = ephemeral.request_down(cur, repo, pr, "supervisor", "ephemeral_step", reason)
         log("ephemeral down", repo, pr, reason, m)
 
@@ -1290,15 +1291,16 @@ def _qa_defs() -> dict:
 
 
 def synthetic_users_step(cur, now: datetime | None = None):
-    """週に 1 回、製品ごとに合成の利用者のジョブを積む（ADR 0043 の O4）。判断は持たず、曜日・時刻・予算・一時停止を見るだけ"""
+    """週に 1 回、製品ごとに合成の利用者のジョブを積む（ADR 0043 の O4）。判断は持たず、曜日・時刻・予算・一時停止を見るだけ。
+    決めた曜日の時刻（hours の 1 つめ）を過ぎたら、その週（ISO 週、JST）のうちに 1 回積む（ADR 0050 の決定 3）"""
     if not SYNTHETIC_USERS or DRY_RUN:
         return
     defs = _qa_defs()
     sd = defs["synthetic"]
     now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
-    lo, hi = (int(h) for h in sd.get("hours") or [5, 7])
-    if now.weekday() != int(sd.get("weekday", 6)) or not lo <= now.hour < hi:
-        return
+    lo = int((sd.get("hours") or [5, 7])[0])
+    if (now.weekday(), now.hour) < (int(sd.get("weekday", 6)), lo):
+        return   # その週の曜日・時刻を過ぎたら、週のうちに 1 回（ADR 0050 の決定 3。Mac が眠っていても起きた周回で取り戻す）
     week = qa_line.week_of(now)
     for repo in SYNTHETIC_USERS:
         key = f"supervisor.synthetic_users:{repo}:{week}"
@@ -1358,19 +1360,47 @@ def workflow_shadow_step(cur):
 
 
 def ticket_sync_step(cur):
-    """着手中なのに Issue が閉じたチケットを台帳から外す（ticket_sync.py、2026-11-10 オーナー）。GitHub を見るのは 30 分に 1 回"""
+    """着手中なのに Issue が閉じたチケットを台帳から外す（ticket_sync.py、2026-11-10 オーナー）。
+    Issue が閉じたかは PR の見張りが残す github.issue_closed を読む（ADR 0050）。GitHub は見ない"""
     if DRY_RUN:
         return
     try:
-        ticket_sync.step(cur, gh, log=log)
+        ticket_sync.apply(cur, log=log)
     except Exception as e:  # noqa: BLE001  台帳の片付けの失敗でラインを止めない
         log("ticket sync step error", repr(e)[:200])
 
 
+def patrols_enabled() -> list[str]:
+    """いま有効な見回りの id（ADR 0050 の決定 1）。heartbeat に書き、番人の見回りの見回りがこの一覧だけを見る。
+    環境変数や定義で止めたものは載せない（止めたものに停止を開かない）"""
+    if DRY_RUN:
+        return []
+    incident = (factory_incident.load_defs().get("committee") or {}).get("patrol") or {}
+    return patrol_watch.enabled_ids({
+        "nightly_explore": bool(NIGHTLY_EXPLORE),
+        "synthetic_users": bool(SYNTHETIC_USERS),
+        "design_review": DESIGN_REVIEW and bool(QUALITY_REPOS) and os.path.exists(DESIGN_REVIEW_DEFS),
+        "committee_weekly": COMMITTEE_WEEKLY and os.path.exists(KNOWLEDGE_DEFS),
+        "incident_daily": (incident.get("daily") or {}).get("enabled") is not False,
+        "incident_weekly": bool(REPOS) and (incident.get("weekly") or {}).get("enabled") is not False,
+        "daily_report": bool(DAILY_REPORT) and os.path.exists(DAILY_REPORT),
+        "notify_report": True,
+        "retrospective": True,
+        "rule_transition": LEARN_RULE_TRANSITIONS and bool(REPOS),
+        "quality_learn": QUALITY_LEARN and bool(REPOS),
+        "kpi_weekly": bool(KPI_WEEKLY),
+    })
+
+
 def tick():
     with db() as conn, conn.cursor() as cur:
+        try:
+            patrols = patrols_enabled()
+        except Exception as e:  # noqa: BLE001  宣言の失敗で heartbeat を止めない（宣言がなければ見回りの見回りは何も見ない）
+            log("patrols declaration failed", repr(e)[:200])
+            patrols = []
         cur.execute("insert into events(name, payload) values ('supervisor.heartbeat', %s) returning id",
-                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV)}),))   # 更新役が新しい版で回ったかを見る（ADR 0031）
+                    (Jsonb({"repos": REPOS, "engine_version": version.engine_version(ENV), "patrols": patrols}),))   # 更新役が新しい版で回ったかを見る（ADR 0031）
         hb = cur.fetchone()["id"]
         rules, manifests = load_rules(), {}
         open_prs = merge_step(cur, rules, manifests)
