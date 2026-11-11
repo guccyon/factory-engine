@@ -73,8 +73,8 @@ gates:
     limits: { minutes: 30, jpy: 500 }
     phase: P2
     implementations:
-      change_impact: { script: core-gates/l3_impact.py, status: shadow, since: "2026-10-30",
-                       note: "差分のファイルをコンテキストに割り当てて数える（語彙は製品の context-map・glossary・.factory-config/l3.yaml）。LLM を使わないので同じ差分に同じ判定と digest を返す。アドホック Probe はまだない。製品の CI で shadow" }
+      change_impact: { script: null, status: retired, since: "2026-10-30", retired: "2026-11-11",
+                       note: "core-gates/l3_impact.py を製品の CI（shadow）で動かしていたが、結果をどこも読んでいなかったので外した。内部品質の検査として、工場の側で製品のリポの外から測り、結果を記録する形で作り直す" }
 
   L4:
     name: "モデリング品質"
