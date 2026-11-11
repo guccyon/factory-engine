@@ -198,3 +198,10 @@ def test_route_changed_split_child_and_unplanned(cur):
     assert po._split_child(cur, "o/r", 9) and not po._split_child(cur, "o/r", 10)   # タスクのまとまりに切った子
     assert got[4]["planned"] is False and got[4]["judgment"] == "ok" and got[4]["plan_id"] is None
     assert len(po.outcomes(cur, days=14)) == 2   # occurred_at は PR の結果が出た時刻
+
+
+def test_title_score_prefers_same_form():
+    a = "担保: K-0012 を ci_check で決定論にする"
+    assert po.title_form(a) == "担保"
+    assert po.title_score(a, "担保: K-0031 を ci_check で決定論にする") > 1.0   # 形が同じで、番号だけ違う
+    assert po.title_score(a, "管理画面に大会の一覧を足す") < 0.35

@@ -84,7 +84,7 @@ def _claim(cur, where: str, corrs: list[str] | None = None, min_priority: int | 
         conds = ["false"]
     extra = f" and ({' or '.join(conds)})" if conds else ""
     cur.execute(f"""select q.id from jobs q where q.state='queued' and not q.cancel_requested and {where}{extra}
-                      and not exists (select 1 from tickets t where t.id = q.ticket_id and t.held)
+                      and not exists (select 1 from tickets t where t.held and (t.id = q.ticket_id or (t.source = 'github' and 'github:' || t.source_ref = q.correlation_id)))
                     order by q.priority desc, q.enqueued_at for update skip locked limit 1""",
                 {**ARGS, "corrs": corrs or [], "minp": min_priority})
     r = cur.fetchone()

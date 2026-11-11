@@ -311,3 +311,51 @@ def pass_status(rows: list[dict]) -> dict:
     return {"tickets": n, "planned": len(planned), "measured": measured, "metrics": metrics,
             "ok": measured and all(m["ok"] is not False for m in metrics.values()),
             "judgments": {j: sum(1 for o in rs if o.get("judgment") == j) for j in ("ok", "undersized", "misrouted", "oversized")}}
+
+
+# ------------------------------------------------------------------ 似た過去のチケット（ADR 0038 の追記、2026-11-11 オーナー「着手前に見積もれると良い」）
+# 内部の起票の多くは決まった形（「担保: K-0012 を ci_check で決定論にする」など）なので、同じ形の過去の実績がそのまま見積もりになる。
+# 題の形（「：」の前）と、題の文字の 2-gram の重なりで似たものを選び、実績（ターン・費用・帯・途中終了・流したモデル）をプランナーに渡す
+ID_RE = re.compile(r"[A-Z]+-\d+|#\d+|\d+|[\w./-]+/[\w./-]+")
+
+
+def title_form(title: str) -> str:
+    head = re.split(r"[:：]", title or "", maxsplit=1)
+    return head[0].strip() if len(head) == 2 and len(head[0].strip()) <= 12 else ""
+
+
+def _grams(title: str) -> set[str]:
+    t = re.sub(r"\s+", "", ID_RE.sub("", title or ""))
+    return {t[i:i + 2] for i in range(len(t) - 1)}
+
+
+def title_score(a: str, b: str) -> float:
+    ga, gb = _grams(a), _grams(b)
+    jac = len(ga & gb) / len(ga | gb) if ga and gb else 0.0
+    fa = title_form(a)
+    return round(jac + (0.5 if fa and fa == title_form(b) else 0.0), 3)
+
+
+def similar(cur, repo: str, corr: str, title: str, days: int = 60, limit: int = 6, min_score: float = 0.35) -> list[dict]:
+    """似た過去のチケットの実績（マージまで行ったもの）。新しいものほど前、点の高い順"""
+    if not title:
+        return []
+    cur.execute("""select e.correlation_id as corr, e.occurred_at as at, e.payload as o, t.title,
+                          (select coalesce(r.payload->>'tier', null) from events r where r.name='model.routed' and r.correlation_id=e.correlation_id
+                            order by r.id desc limit 1) as routed_tier,
+                          (select j.model_tier from jobs j where j.correlation_id=e.correlation_id and j.kind='implement' order by j.id limit 1) as job_tier
+                     from events e join tickets t on t.source='github' and 'github:' || t.source_ref = e.correlation_id
+                    where e.name='plan.outcome' and e.payload->>'repo'=%s and e.correlation_id <> %s and (e.payload->>'merged')::boolean
+                      and e.occurred_at > now() - make_interval(days => %s)
+                    order by e.id desc limit 500""", (repo, corr, days))
+    rows = []
+    for r in cur.fetchall():
+        sc = title_score(title, r["title"] or "")
+        if sc < min_score:
+            continue
+        o = r["o"]
+        rows.append({"title": r["title"], "issue": o.get("issue"), "score": sc, "turns": o.get("turns"), "band": o.get("band"),
+                     "cost_usd": o.get("cost_usd"), "incomplete": o.get("incomplete"), "layers": o.get("layers"), "files": o.get("files"),
+                     "planned": o.get("planned"), "tier": r["routed_tier"] or r["job_tier"]})
+    rows.sort(key=lambda x: -x["score"])
+    return rows[:limit]

@@ -142,6 +142,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl plan sizes [--repo owner/repo] [--days 60]    # 実績の表（層の組ごとのファイル数・ターン・途中終了。プランナーの見積もりの材料）
   factoryctl plan pass [--repo owner/repo]                 # 合格線（実績の 4 つ。直近 14 日）を満たしているか
   factoryctl plan resplit <owner/repo#123>                 # 途中終了を繰り返したチケットの残りを、プランナーに見積もり直させて切る（ADR 0036 の 6）
+  factoryctl plan cap <owner/repo#123> [--add-usd 10]      # 費用の残り（上限・実績）を見る。--add-usd で上限に上乗せし、費用の上限で止めたチケットを再開する（ADR 0038 の追記）
 
 知見の制限付きの保管先（ADR 0024 の 5）。利用者の情報をどうしても含む知見の根拠を専用スキーマ restricted に置き、git の知見からは restricted: R-NNNN で指す。
 保管先の専用の利用者（factory_restricted）で繋ぐ。合言葉は管理者だけが持ち（.env に置かない）、使うときに RESTRICTED_DATABASE_URL で渡す。読むたびに誰が・何のために読んだかを残す:
@@ -193,6 +194,7 @@ import process_learn
 import rerun
 import restricted
 import serialize
+import workflow_guard
 import workflow_shadow
 import ship
 import stoppage
@@ -274,6 +276,26 @@ def plan_outcome_cmd(cur, argv, sub: str) -> int:
     return 0 if st["ok"] or not st["measured"] else 1
 
 
+def plan_cap(cur, argv) -> int:
+    """費用の残りを見る。--add-usd で上限に上乗せし、費用の上限で止めたチケットを再開する（ADR 0038 の追記、2026-11-11）"""
+    repo, n = split_ref(argv[3])
+    corr = f"github:{repo}#{n}"
+    add = opt(argv, "--add-usd")
+    if add is not None:
+        if float(add) <= 0:
+            print("--add-usd は正の数"); return 2
+        rnd = workflow_guard.release_cost(cur, corr, float(add), "factoryctl")
+        for key in stoppage.open_keys(cur, f"cost:{corr}#"):
+            stoppage.close_stoppage(cur, key, remedy=f"上限に ${add} を上乗せ", closed_by="factoryctl", quiet=True)
+        cur.execute("select id from tickets where source='github' and source_ref=%s and held", (f"{repo}#{n}",))
+        for t in cur.fetchall():
+            ops.set_held(cur, t["id"], False, "factoryctl", f"費用の上限に ${add} を上乗せ")
+        print(f"上乗せ {rnd} 回目: ${add}")
+    for k, v in workflow_guard.cost_left(cur, corr).items():
+        print(f"{workflow_shadow.CAP_JA.get(k, k)}: 上限 ${v['cap']:.2f}  実績 ${v['spent']:.2f}  残り ${v['left']:.2f}")
+    return 0
+
+
 def plan_cmd(cur, argv) -> int:
     sub = argv[2] if len(argv) > 2 else "list"
     if sub == "show" and len(argv) > 3:
@@ -310,6 +332,15 @@ def plan_cmd(cur, argv) -> int:
         ja = {"conflict_wait": "同じファイルに触るチケットを待たせた", "conflict_retry": "待ちの後に 1 回だけ解いた", "conflict_human": "もう解かず人に回した"}
         for r in cur.fetchall():
             e = r["payload"]
+            if e.get("kind") == "cost_human":
+                print(f"守らせた（{r['occurred_at']:%m-%d %H:%M}）: 費用の上限に当たり、チケットを止めて人に回した（{', '.join(workflow_shadow.CAP_JA.get(k, k) for k in e.get('hit') or [])}）")
+                continue
+            if e.get("kind") == "cost_released":
+                print(f"上乗せ（{r['occurred_at']:%m-%d %H:%M}）: 費用の上限に ${e.get('add_usd')} を足して再開した（{e.get('by')}）")
+                continue
+            if e.get("kind") == "skipped":
+                print(f"飛ばした（{r['occurred_at']:%m-%d %H:%M}）: {e.get('step')}（{e.get('why') or ''}。決まり: {e.get('rule')}）")
+                continue
             print(f"守らせた（{r['occurred_at']:%m-%d %H:%M}）: 衝突の解消 {e.get('conflicts')} 回で上限 {e.get('cap')} に当たり、{ja.get(e.get('kind'), e.get('kind'))}"
                   + (f"（{' '.join(e.get('behind') or [])}）" if e.get("behind") else ""))
         return 0
@@ -317,6 +348,8 @@ def plan_cmd(cur, argv) -> int:
         return plan_outcome_cmd(cur, argv, sub)
     if sub == "resplit" and len(argv) > 3:
         return plan_resplit(cur, argv)
+    if sub == "cap" and len(argv) > 3:
+        return plan_cap(cur, argv)
     days = int(opt(argv, "--days", "7"))
     cur.execute("select correlation_id, payload, created_at from artifacts where type='Plan' and created_at > now() - make_interval(days => %s) "
                 "order by id desc limit 100", (days,))

@@ -112,3 +112,68 @@ def test_one_off_requests_skip_planner(cur, monkeypatch):
     assert not wg.needs_planner(cur, "o/r", 5, ["factory:planned", "factory:direct"])
     monkeypatch.setattr(wg, "PLAN_GATE", False)
     assert not wg.needs_planner(cur, "o/r", 5, ["factory:planned"])
+
+
+# ------------------------------------------------------------------ 費用の上限（ADR 0038 の追記 2026-11-11）
+def spend(cur, kind, cost):
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, attempt, result) values (%s,'o/r',5,%s,'succeeded',"
+                "(select count(*)+1 from jobs),%s)", (CORR, kind, Jsonb({"cost_usd": cost})))
+
+
+def test_cost_cap_holds_then_release(cur):
+    spend(cur, "implement", 5.0)
+    assert wg.cost_gate(cur, CORR) is None
+    assert wg.job_budget(cur, CORR) == 3.0            # 既定 M: 実装 $8 の残り
+    spend(cur, "implement", 3.5)
+    hit = wg.cost_gate(cur, CORR)
+    assert hit and hit["hit"] == ["implement.cost_usd"] and hit["round"] == 0 and hit["default"] is True
+    assert wg.job_budget(cur, CORR) == 0.0
+    wg.cost_gate(cur, CORR)
+    cur.execute("select count(*) as n from events where name='workflow.enforced' and payload->>'kind'='cost_human'")
+    assert cur.fetchone()["n"] == 1                   # 同じ区切りでは 1 回だけ
+    assert wg.release_cost(cur, CORR, 5, "test") == 1
+    assert wg.cost_gate(cur, CORR) is None and wg.job_budget(cur, CORR) == 4.5
+    assert wg.cost_stoppage_key(CORR, 1) == "cost:github:o/r#5#1"
+
+
+def test_ticket_cost_counts_all_steps(cur):
+    spend(cur, "implement", 7.0)
+    spend(cur, "inspect", 4.0)
+    spend(cur, "judge", 4.5)
+    hit = wg.cost_gate(cur, CORR)
+    assert hit and hit["hit"] == ["ticket.cost_usd"]   # 実装は $7 で上限の内、チケット全体は $15.5
+
+
+def test_cost_cap_off(cur, monkeypatch):
+    monkeypatch.setattr(wg, "ENFORCE", {"conflict"})
+    spend(cur, "implement", 30.0)
+    assert wg.cost_gate(cur, CORR) is None and wg.job_budget(cur, CORR) is None
+
+
+# ------------------------------------------------------------------ 着手の宣言と飛ばし
+def plan_with(cur, steps=None, start=None):
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Plan',%s,'plan',%s)",
+                (CORR, Jsonb({"decision": "ready", "workflow": {"path": "ticket", "steps": steps or [], "caps": {}, "start": start or {"mode": "now"}}})))
+
+
+def test_start_wait_recorded_once_per_blockers(cur):
+    assert wg.record_start_wait(cur, CORR, [7], {"why": "同じ画面"})
+    assert not wg.record_start_wait(cur, CORR, [7], {})
+    assert wg.record_start_wait(cur, CORR, [7, 8], {})
+
+
+def test_skips_recorded_and_inspect_skipped_only_for_docs(cur):
+    plan_with(cur, [{"step": "ui_design", "run": False, "why": "画面を変えない"}, {"step": "inspect", "run": False, "why": "文書だけ"},
+                    {"step": "implement", "run": True, "effort": "light"}])
+    assert wg.record_skips(cur, CORR) == 2
+    assert wg.record_skips(cur, CORR) == 0
+    assert wg.skip_inspect(cur, CORR, ["code_change"], PR, "a" * 40) is None    # コードが入っていれば検査する
+    assert not wg.inspect_skipped(cur, PR, "a" * 40)
+    sk = wg.skip_inspect(cur, CORR, ["docs_only"], PR, "b" * 40)
+    assert sk and sk["why"] == "文書だけ" and "docs" in sk["rule"]
+    assert wg.inspect_skipped(cur, PR, "b" * 40)
+
+
+def test_inspect_not_skipped_without_declaration(cur):
+    plan_with(cur, [{"step": "inspect", "run": True}])
+    assert wg.skip_inspect(cur, CORR, ["docs_only"], PR, "c" * 40) is None

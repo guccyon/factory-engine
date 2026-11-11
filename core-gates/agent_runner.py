@@ -242,6 +242,19 @@ def _claude_save(state: Path | None, sid: str | None, total_cost_usd: float = 0.
         print(f"[agent_runner] session save failed: {e}", file=sys.stderr)
 
 
+def budget_args(prior_cost: float) -> list[str]:
+    """費用の上限の残り（MAX_BUDGET_USD。dispatcher が実装のジョブに渡す。ADR 0038 の追記）を claude の --max-budget-usd にする。
+    再開した会話の費用は前のジョブまでの累計なので、その分を足す。渡されていなければ付けない"""
+    v = os.environ.get("MAX_BUDGET_USD", "").strip()
+    if not v:
+        return []
+    try:
+        left = float(v)
+    except ValueError:
+        return []
+    return ["--max-budget-usd", f"{max(left, 0.01) + prior_cost:.2f}"]
+
+
 def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, state_dir: str | None = None,
                     mcp_config: str | None = None) -> Result:
     # ワーカーの中だけで使う（使い捨てのコンテナなので権限の確認を省く）。stderr はそのまま流す
@@ -251,8 +264,9 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
             *_tools_args(a)]   # 組み込みの道具を絞る（一次調査は読むだけ。ADR 0048）
     sid, prior_cost = _claude_restore(state)
     resumed = bool(sid)
+    budget = budget_args(prior_cost if resumed else 0.0)
     with _Heartbeat():
-        r = subprocess.run(base + (["--resume", sid] if sid else []), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
+        r = subprocess.run(base + budget + (["--resume", sid] if sid else []), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
     try:
         res = json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -262,7 +276,7 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
         print("[agent_runner] resume failed; starting a new session", file=sys.stderr)
         resumed = False
         with _Heartbeat():
-            r = subprocess.run(base, input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
+            r = subprocess.run(base + budget_args(0.0), input=prompt, stdout=subprocess.PIPE, text=True, cwd=cwd)
         try:
             res = json.loads(r.stdout)
         except json.JSONDecodeError:

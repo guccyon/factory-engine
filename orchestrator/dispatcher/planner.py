@@ -277,6 +277,9 @@ def attach_context(cur, repo: str, corr: str, inp: dict) -> dict:
         out["inflight"] = rows
         out["hot_files"] = serialize.hot_files(cur)
         out["cap_hits"] = workflow_shadow.cap_hits(cur, repo)
+        cur.execute("select title from tickets where source='github' and 'github:' || source_ref = %s order by id desc limit 1", (corr,))
+        t = cur.fetchone()
+        out["similar"] = plan_outcome.similar(cur, repo, corr, (t or {}).get("title") or "")   # 似た過去のチケットの実績（見積もりの材料）
     except Exception:  # noqa: BLE001  材料がなくても判定はできる
         out.setdefault("inflight", [])
     return out
@@ -297,7 +300,7 @@ def workflow_lines(wf: dict | None, marks: list[str] | None = None) -> list[str]
         return []
     s = workflow_summary(wf)
     caps = wf.get("caps") or {}
-    lines = ["", "ワークフローの宣言（ADR 0038。今は記録だけで、守らせていない）:"]
+    lines = ["", "ワークフローの宣言（ADR 0038。衝突の解消・費用の上限・着手・飛ばしは指示役が守らせる。ほかの上限は記録だけ）:"]
     for st in wf.get("steps") or []:
         run = {True: "動かす", False: "飛ばす", "auto": "条件で動く"}.get(st.get("run"), str(st.get("run")))
         lines.append(f"- {st.get('step')}: {run}（{st.get('effort') or '-'}）{('。' + st['why']) if st.get('why') else ''}")

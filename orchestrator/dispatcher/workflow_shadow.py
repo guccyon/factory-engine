@@ -154,6 +154,13 @@ def would_wait(cur, corr: str, open_after: list[int]) -> bool:
                    {"repo": repo, "issue": issue, "plan_id": wf["plan_id"], "after": open_after, "files": st.get("files") or [], "why": st.get("why") or ""})
 
 
+def declared_start(cur, corr: str) -> dict:
+    """プランナーの着手の宣言（{mode: now|after, after: [番号], files, why}）。宣言がなければ {}"""
+    wf = latest_workflow(cur, corr)
+    st = (wf or {}).get("start")
+    return st if isinstance(st, dict) else {}
+
+
 def declared_after(cur, corr: str) -> list[int]:
     wf = latest_workflow(cur, corr)
     st = (wf or {}).get("start") or {}

@@ -42,6 +42,7 @@ from datetime import datetime, timedelta, timezone
 
 import ghapi
 import ghapp
+import hot_marks
 from globmatch import glob_re
 import psycopg
 import yaml
@@ -487,7 +488,10 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
         # 検査は判定の記録と切り離して周回ごとに試す（head ごとに 1 回積めば、以後は記録で素通り）。
         # 判定を記録した周回でしか試さないと、同じ PR の別のジョブ（body_fix など）と重なって積めなかった head の検査が
         # 二度と積まれず、検査のない PR が同時に流す枠を塞ぎ続ける（2026-11-05 rally #976、約 6 時間半ラインが止まった）
-        enqueue_inspect(cur, p, sha)
+        if workflow_guard.skip_inspect(cur, p["corr"], d["change_types"], p["url"], sha):
+            log("inspect skipped", p["url"], "docs only and declared")   # 宣言で飛ばし、差分も docs だけ（ADR 0038 の追記）
+        else:
+            enqueue_inspect(cur, p, sha)
         if "knowledge" in d["change_types"]:
             enqueue_committee(cur, p, sha)   # 周回ごとに試す。同じ PR の検査ジョブが動いている間は積めない（1 PR 1 ジョブ）
         # マージは表が auto で、かつ検査役が承認してから（ADR 0014）。承認は周期ごとに見直すので、検査・judge が終わった周期でマージする
@@ -515,6 +519,8 @@ def inspector_approved(cur, pr_url: str, sha: str) -> tuple[bool, str]:
     採用された指摘は差し戻しの Issue で直すので、マージは止めない（ラインを止めない方針 D7）"""
     if not INSPECT_ENABLED:
         return True, "検査なし（SUPERVISOR_INSPECT=0）"
+    if workflow_guard.inspect_skipped(cur, pr_url, sha):
+        return True, "検査を飛ばした（プランナーの宣言で、差分が docs だけ）"
     cur.execute("select occurred_at from events where dedupe_key=%s", (f"supervisor.inspect:{pr_url}@{sha}",))
     ins = cur.fetchone()
     if not ins:
@@ -751,7 +757,7 @@ def enqueue_step(cur, open_prs: set):
                 "and not (source_ref = any(%s))", (REPOS, seen))
     ready.sort(key=lambda r: (-r[0]["priority"], r[2].get("created_at") or ""))   # 優先度の高い順、同じなら古い順
     paused = over_budget(cur) if ready else None
-    hot = serialize.hot_files(cur) if ready and SERIALIZE else {}
+    hot = serialize.hot_files(cur) if ready and SERIALIZE else {}   # 衝突しやすいファイルの印（hot_marks.py。Learn ループが付け外しする）
     inflight_files: dict[str, set[str]] | None = None   # よく衝突するファイルに触るタスクがあるときだけ、流れているものの変更ファイルを集める
     if paused and record(cur, "supervisor.budget_paused", None, paused, f"supervisor.budget_paused:{paused['window_start']}"):
         log("budget paused", paused)
@@ -767,8 +773,22 @@ def enqueue_step(cur, open_prs: set):
             if serialize.record_duplicate(cur, corr, it.get("title") or "", dup):
                 log("duplicate held", corr, "behind", dup)
             continue
-        expected = serialize.expected_files(cur, corr, it.get("body")) if hot else set()
-        if hot and any(serialize.touches(expected, h) for h in hot):
+        try:   # プランナーの着手の宣言（ADR 0038 の 4b と追記 2026-11-11）。start: after は前のチケットが閉じるまで投入しない
+            start = workflow_shadow.declared_start(cur, corr)
+            after = [int(x) for x in start.get("after") or []] if start.get("mode") == "after" else []
+            open_after = [n for n in after if issue_state(repo, n) != "closed"] if after else []
+        except Exception as e:  # noqa: BLE001
+            log("workflow start check failed", corr, repr(e)[:200])
+            start, open_after = {}, []
+        if open_after and "start" in workflow_guard.ENFORCE:
+            if workflow_guard.record_start_wait(cur, corr, open_after, start):
+                log("workflow start after", corr, open_after)
+            continue
+        if open_after and workflow_shadow.would_wait(cur, corr, open_after):   # 守らせないときは記録だけ（順番 1 の形）
+            log("workflow would wait", corr, open_after)
+        # 印のファイルに触る並べ方は、プランナーが着手を宣言していないチケットだけ（宣言があればプランナーの判断に従う）
+        expected = serialize.expected_files(cur, corr, it.get("body")) if hot and not start.get("mode") else set()
+        if hot and expected and any(serialize.touches(expected, h) for h in hot):
             # 衝突を避ける並べ方（ADR 0027 の 2）: 同じよく衝突するファイルに触るタスクが流れていれば、終わるまで投入しない
             if inflight_files is None:
                 inflight_files = inflight_touched_files(cur)
@@ -777,17 +797,14 @@ def enqueue_step(cur, open_prs: set):
                 if serialize.record(cur, corr, b[0], b[1], hot[b[0]]):
                     log("serialized", corr, b[0], "behind", b[1])
                 continue
-        try:   # 宣言の start: after（ADR 0038 の 4b）。順番 1 は守らせず、前のチケットがまだ開いていれば待たせたはずと記録するだけ
-            after = workflow_shadow.declared_after(cur, corr)
-            open_after = [n for n in after if issue_state(repo, n) != "closed"] if after else []
-            if open_after and workflow_shadow.would_wait(cur, corr, open_after):
-                log("workflow would wait", corr, open_after)
-        except Exception as e:  # noqa: BLE001
-            log("workflow start check failed", corr, repr(e)[:200])
         if not record(cur, "supervisor.enqueued", corr, {"repo": repo, "issue": it["number"], "deps": deps, "priority": t["priority"]},
                       f"supervisor.enqueued:{repo}#{it['number']}"):
             continue
         log("enqueue", repo, it["number"], "deps", deps, "priority", t["priority"])
+        try:
+            workflow_guard.record_skips(cur, corr)   # 宣言で飛ばしたステップと根拠を残す（ADR 0038 の追記）
+        except Exception as e:  # noqa: BLE001
+            log("record skips failed", corr, repr(e)[:200])
         if not DRY_RUN:
             try:
                 gh("DELETE", f"repos/{repo}/issues/{it['number']}/labels/{urllib.parse.quote(PLANNED_LABEL, safe='')}")
@@ -918,6 +935,11 @@ def learn_step(cur):
     process_learn.record_retrospective(cur, proc, day)
     log("process retrospective", day, "signals", proc["signals"], "cost", proc["cost"],
         "routed", [c["signature"] for c in proc["clusters"] if c["route"]])
+    try:   # 衝突しやすいファイルの印を付け外しする（ADR 0038 の追記、2026-11-11）。失敗しても振り返りは止めない
+        marks = hot_marks.step(cur, gh, REPOS, log=log)
+        log("hot file marks", day, marks)
+    except Exception as e:  # noqa: BLE001
+        log("hot file marks failed", repr(e)[:200])
     c = learn.pick_cluster(cur, retro) if LEARN_RULE_ISSUES else None
     if not c:
         return
@@ -1413,6 +1435,38 @@ def workflow_shadow_step(cur):
         log("workflow shadow step error", repr(e)[:200])
 
 
+def cost_cap_step(cur):
+    """費用の上限を守らせる（ADR 0038 の追記、2026-11-11）。流しているチケットの実績が上限に達したら、チケットを保留にして
+    次のジョブを取り出させず（line._claim は保留のチケットのジョブを取り出さない）、人への停止 cost: を開く。
+    人が factoryctl plan cap <repo#n> --add-usd <額> で上乗せすると再開する。チケットが閉じたら停止も閉じる"""
+    if "cost" not in workflow_guard.ENFORCE:
+        return
+    try:
+        cur.execute("select id, repo, source_ref, held, state from tickets where source='github' and state='active'")
+        for t in cur.fetchall():
+            corr = f"github:{t['source_ref']}"
+            hit = workflow_guard.cost_gate(cur, corr)
+            if not hit:
+                continue
+            key = workflow_guard.cost_stoppage_key(corr, hit["round"])
+            k = hit["hit"][0]
+            c = hit["costs"][k]
+            what = (f"{t['source_ref']} の{workflow_shadow.CAP_JA.get(k, k)}が上限 ${c['cap']:.2f} に達した（実績 ${c['spent']:.2f}）。"
+                    "工場はこのチケットのジョブを止めている")
+            if stoppage.open_stoppage(cur, key, "human", what, waiting_for="続けるなら上限の上乗せ（factoryctl plan cap）、やめるならチケットか PR を閉じる",
+                                      cause="ticket_cost_cap", detected_by="supervisor", correlation_id=corr):
+                log("cost cap hit", corr, k, c)
+            if not t["held"] and not DRY_RUN:
+                ops.set_held(cur, t["id"], True, "supervisor", f"費用の上限（{k}）")
+        for key in stoppage.open_keys(cur, "cost:"):   # チケットが閉じた（人がやめた）ら停止も閉じる
+            corr = key.split(":", 1)[1].rsplit("#", 1)[0]
+            cur.execute("select 1 from tickets where source='github' and 'github:' || source_ref = %s and state='active'", (corr,))
+            if cur.fetchone() is None:
+                stoppage.close_stoppage(cur, key, remedy="チケットを閉じた", closed_by="supervisor", quiet=True)
+    except Exception as e:  # noqa: BLE001
+        log("cost cap step failed", repr(e)[:200])
+
+
 def ticket_sync_step(cur):
     """着手中なのに Issue が閉じたチケットを台帳から外す（ticket_sync.py、2026-11-10 オーナー）。
     Issue が閉じたかは PR の見張りが残す github.issue_closed を読む（ADR 0050）。GitHub は見ない"""
@@ -1460,6 +1514,7 @@ def tick():
         open_prs = merge_step(cur, rules, manifests)
         plan_outcome_step(cur)
         workflow_shadow_step(cur)
+        cost_cap_step(cur)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
         stage_step(cur, manifests)

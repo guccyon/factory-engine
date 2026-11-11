@@ -65,6 +65,7 @@ import stoppage
 import swap
 import swap_mailbox
 import tidy
+import workflow_guard
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -455,6 +456,12 @@ def run_job(job: dict, reattaching: bool = False):
                 jobdb.ensure_role(cur, JOB_DB_USER, JOB_DB_PASSWORD, CONTROL_DB)
                 jobdb.create(cur, dbname, JOB_DB_USER)
                 job_db_url = f"postgres://{JOB_DB_USER}:{JOB_DB_PASSWORD}@{JOB_DB_HOST}:5432/{dbname}"
+            budget = None
+            if kind == "implement" and not reattaching:   # 費用の上限の残り（ADR 0038 の追記）。1 回のジョブで上限を越えない
+                try:
+                    budget = workflow_guard.job_budget(cur, corr)
+                except Exception as e:  # noqa: BLE001
+                    log("job budget failed", repr(e)[:200])
             cont = continue_target(cur, job_id, repo, issue) if kind == "implement" else None   # 既存の工場の PR の続き（途中終了・衝突・CI 落ち・検査の指摘）
             signaled = bool(cont and cont["reason"] in continuation.SIGNALED)   # 合図の中身（CI のチェック名・指摘）を標準入力で渡す
             volume = continuation.volume_name(repo, issue) if kind == "implement" and continuation.HANDOFF_ENABLED else None   # チケットの引き継ぎのボリューム
@@ -469,6 +476,7 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
+                   *(["-e", f"MAX_BUDGET_USD={budget}"] if budget is not None else []),
                    "-e", f"GH_TOKEN={'' if kind == 'investigate' else ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）。一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）
                     "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
                    *(["-e", f"CONTINUE_BRANCH={cont['branch']}", "-e", f"CONTINUE_PR={cont['pr_number']}", "-e", f"CONTINUE_REASON={cont['reason']}"] if cont else []),

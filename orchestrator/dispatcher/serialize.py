@@ -1,6 +1,6 @@
 """衝突を避ける並べ方（ADR 0027 の 2）と、同じ目的の仕事を同時に流さない（ADR 0044 の決定 8 の 4）。決定的（LLM を使わない）。
 
-「よく衝突するファイル」（工程の信号 conflict_fix の束。process_learn）に触る見込みのタスクは、同じファイルに触る PR・ジョブが
+「衝突しやすいファイル」（Learn ループが付ける印。hot_marks.py）に触る見込みのタスクは、プランナーが着手を宣言していなければ、同じファイルに触る PR・ジョブが
 流れている間は投入しない（順番に並べる）。supervisor の enqueue_step が投入の直前に呼ぶ。並べた根拠は events の plan.serialized に残し、
 factoryctl plan show で見られる。
 
@@ -10,32 +10,22 @@ factoryctl plan show で見られる。
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from psycopg.types.json import Jsonb
 
-import process_learn
+import hot_marks
 
-HOT_WINDOW_DAYS = 7
-HOT_MIN_CONFLICTS = 3          # 7 日で 3 回以上衝突し
-HOT_MIN_COST = 5.0             # 衝突の解消にエージェントの費用が $5 以上かかったファイル（機械的に解けたものは $0）
 # 衝突しても機械的に解く・もう衝突しない作りにしたファイル（#148 の union と、ADR 0027 の 1 の断片）。並べる対象にしない
 EXEMPT = {"CHANGELOG.md"}
 PATH_RE = re.compile(r"(?<![\w/.\-])((?:[\w.\-]+/)+[\w.\-]+\.[A-Za-z0-9]+|[\w\-]+\.(?:ya?ml|ts|tsx|dart|rs|json|sql|py|md))(?![\w/])")
 
 
 def hot_files(cur, now: datetime | None = None) -> dict[str, dict]:
-    """よく衝突するファイル。{パス: {conflicts, cost}}"""
-    now = now or datetime.now(timezone.utc)
-    by: dict[str, dict] = {}
-    for s in process_learn.conflict_fix(cur, now - timedelta(days=HOT_WINDOW_DAYS), now):
-        if s["key"] in (process_learn.UNKNOWN, process_learn.NO_CONFLICT) or s["key"] in EXEMPT:
-            continue
-        g = by.setdefault(s["key"], {"conflicts": 0, "cost": 0.0})
-        g["conflicts"] += 1
-        g["cost"] += s["cost"]
-    return {f: {"conflicts": g["conflicts"], "cost": round(g["cost"], 2)} for f, g in sorted(by.items())
-            if g["conflicts"] >= HOT_MIN_CONFLICTS and g["cost"] >= HOT_MIN_COST}
+    """衝突しやすいファイル。{パス: {conflicts, changes, why}}。Learn ループが付け外しする印（hot_marks.py、ADR 0038 の追記 2026-11-11）。
+    以前は直近 7 日の衝突の回数（3 回以上）と費用（$5 以上）で毎回数えていた"""
+    return {f: {"conflicts": m.get("conflicts"), "changes": m.get("changes"), "why": m.get("why") or ""}
+            for f, m in sorted(hot_marks.active(cur).items()) if f not in EXEMPT}
 
 
 def paths_in(text: str) -> set[str]:
@@ -71,7 +61,7 @@ def record(cur, corr: str, file: str, behind: str, stats: dict) -> bool:
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.serialized',%s,%s,%s) "
                 "on conflict (dedupe_key) do nothing returning id",
                 (corr, Jsonb({"file": file, "behind": behind, "hot": stats,
-                              "why": f"{file} は直近 {HOT_WINDOW_DAYS} 日に {stats['conflicts']} 回衝突し、解消に ${stats['cost']:.2f} かかった。"
+                              "why": f"{file} は衝突しやすいファイル（{stats.get('why') or '印'}）。"
                                      f"{behind} が同じファイルに触っているので、終わるまで投入しない"}),
                  f"plan.serialized:{corr}:{file}:{behind}"))
     return cur.fetchone() is not None
