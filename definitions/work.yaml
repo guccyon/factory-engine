@@ -73,10 +73,13 @@ nodes:
   govern.patrol:              { ja: 工場の費用を見回る, domain: cross, note: "ADR 0046。事故の調査委員会。事故記録（FIR）はこの業務と下の調査にだけ渡す" }
   govern.incident_review:     { ja: 事故を調べて記録する, domain: cross, note: "ADR 0046。記録と査読" }
   govern.investigate:         { ja: 工場の問題を一次調査する, domain: cross, note: "ADR 0048。窓口の依頼から、工場の記録を読んで調べる。Engine のソースは読まない" }
+  govern.watch:               { ja: 工場の流れと見回りを監視する, domain: cross, note: "ADR 0052。停止の番人・投入待ちの残り・受信トレイの知らせ直し・見回りの見回り（ADR 0050）。決定論で LLM を使わない。工場そのものの可用性を持つ（Ops は製品の実行環境と障害）" }
+  govern.budget:              { ja: 予算の枠とチケットごとの上限を守らせる, domain: cross, note: "ADR 0052。予算の枠（ADR 0029）とチケットごとの上限（ADR 0038）の持ち主。投入や記録の直前・直後のその場の確認で、見回りではない" }
 
   learn:                      { ja: Learn（学ぶ）, domain: cross }
   learn.case:                 { ja: 出来事を分析する, domain: cross, artifacts: [CaseAnalysis] }
   learn.committee:            { ja: 知見を審査する, domain: cross, artifacts: [CommitteeDecision, CommitteeWeekly] }
+  learn.signals:              { ja: 教師信号から振り返る, domain: cross, note: "ADR 0052。振り返り・ルールの移り変わり・品質の Learn（ADR 0013・0043）。決定論で LLM を使わない" }
 
 # 成果物の型の細分（knowledge.yaml の軸 artifacts の語彙に足す）。artifacts.yaml の型の下に「型.部分」で置く。親の型に付いた知見は部分にも効く
 artifact_parts:
