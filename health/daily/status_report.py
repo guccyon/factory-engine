@@ -186,6 +186,43 @@ def workflow_view(conn, now: datetime | None = None) -> list[str]:
         return []
 
 
+def hotfile_view(conn) -> dict | None:
+    """共有ファイルの見回り（ADR 0051 の 1）。今付いている衝突しやすいファイルの印と、直近の日の取りまとめの候補。
+    印と候補は Learn ループの日次の振り返り（hot_marks.py）が記録する。数えられなくてもレポートは出す"""
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""select distinct on (payload->>'repo', payload->>'file') name, payload from events
+                            where name in ('hotfile.marked','hotfile.unmarked') order by payload->>'repo', payload->>'file', id desc""")
+            marked = [r[1] for r in cur.fetchall() if r[0] == "hotfile.marked"]
+            cur.execute("""select payload from events e where name='hotfile.aggregate_candidate'
+                            and occurred_at >= (select max(occurred_at) - interval '1 hour' from events x where x.name='hotfile.aggregate_candidate'
+                                                 and x.payload->>'repo'=e.payload->>'repo')
+                            order by payload->>'repo', (payload->>'rank')::int""")
+            cands = [r[0] for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001
+        print("[status-report] 共有ファイルの見回りを数えられない:", repr(e), file=sys.stderr)
+        return None
+    return {"marked": marked, "candidates": cands}
+
+
+SHAPE_JA = {"append": "追記型", "generated": "生成物", "registry": "登録の箇所", "content": "中身", "unknown": "形不明"}
+
+
+def fmt_hotfiles(h: dict | None) -> list[str]:
+    """共有ファイルの行。取りまとめの候補（断片にできる）と、衝突しやすいファイルの印（並べて流している）"""
+    if not h or (not h["marked"] and not h["candidates"]):
+        return ["- 候補も印もない"]
+    lines = []
+    for c in h["candidates"]:
+        lines.append(f"- 取りまとめの候補（{SHAPE_JA.get(c.get('shape'), c.get('shape'))}）: `{c.get('repo')}` `{c.get('file')}` — "
+                     f"直近 {c.get('prs')} PR で {c.get('changes')} 回、同時に {c.get('concurrent')} 本" + (f"、衝突 {c['conflicts']} 回" if c.get("conflicts") else ""))
+    for m in h["marked"]:
+        lines.append(f"- 衝突しやすいファイル（{SHAPE_JA.get(m.get('shape'), '形不明')}、並べて流している）: `{m.get('repo')}` `{m.get('file')}` — {m.get('why')}")
+    return lines
+
+
 def explore_view(conn, now: datetime | None = None) -> dict | None:
     """昨夜の探索（ADR 0028 の nightly_explore）。前日の正午（JST）からの qa.explore と、回らなかった理由（supervisor.nightly_explore_skipped）。
     Defect は起票した Issue、印（flags）は人が採点する材料として並べる。数えられなくてもレポートは出す"""
@@ -834,7 +871,7 @@ def render_dashboard(snap: dict, history: list[dict]) -> str:
             mark = "✅" if it["progress"] >= 1 else "❔" if it.get("unknown") else "🔸" if it["progress"] > 0 else "⬜"
             lines.append(f"- {mark} {it['ja']}: {it['value']}")
         lines.append("\n</details>\n")
-    lines += ["## 出荷の QA の関門（直近 24 時間）", "", *fmt_gate(snap.get("gate")), "", "## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 事故の見回り（お金の損）", "", *fmt_incident(snap.get("incident")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
+    lines += ["## 出荷の QA の関門（直近 24 時間）", "", *fmt_gate(snap.get("gate")), "", "## 夜間の探索（昨夜）", "", *fmt_explore(snap.get("explore")), "", "## 事故の見回り（お金の損）", "", *fmt_incident(snap.get("incident")), "", "## 共有ファイル（よく変わる・衝突しやすい）", "", *fmt_hotfiles(snap.get("hotfiles")), "", "## 推移", "", *fmt_trend(history), "", "## 内部品質（定期診断）", "", *fmt_quality(snap.get("quality") or {}),
               "### 変更のコスト（難易度別・週ごと）", "", *fmt_change_cost(snap.get("change_cost") or []), "",
               "## 品質（Defect）", "", *fmt_defects(snap.get("defects")), "",
               "## 工程ごとの ROI（費用・時間・一発で通ったか・混入した Defect）", "", *stage_roi.fmt(snap.get("stage_roi")), "", "## 前日（JST）", *fmt_activity(snap["activity"]), "",
@@ -958,7 +995,7 @@ def main() -> int:
             "activity": activity(conn, today0 - timedelta(days=1), today0), "needs": needs(progress),
             "series": series(conn, START_DATE, now), "merge_gate": merge_gate(conn, now), "db": conn is not None, "build_work": bool(BUILD_WORK_DIR),
             "cost_budget_usd": COST_BUDGET_USD, "quality": quality_trend(conn), "change_cost": change_cost(conn),
-            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now), "gate": gate_view(conn, now), "incident": incident_view(conn, now),
+            "usage": usage_view(conn), "workflow": workflow_view(conn), "explore": explore_view(conn, now), "hotfiles": hotfile_view(conn), "gate": gate_view(conn, now), "incident": incident_view(conn, now),
             "defects": defect_view(conn), "stage_roi": stage_roi.view(conn)}
     history = load_history(conn)
     prev = next((h for h in reversed(history) if h["date"] != date), None)
