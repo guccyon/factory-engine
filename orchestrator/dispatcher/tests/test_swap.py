@@ -170,7 +170,8 @@ class Fake:
         elif a[:3] == ["git", "remote", "get-url"]:
             out = "git@github.com:o/factory-engine.git"
         elif a[:3] == ["git", "rev-parse", "--verify"]:
-            out = TARGET
+            ref = [x for x in a[3:] if not x.startswith("--")][0].split("^")[0]
+            out = PREV if PREV.startswith(ref) else TARGET
         elif a[:3] == ["git", "rev-parse", "HEAD"]:
             out = self.head
         elif a[:3] == ["git", "diff", "--name-only"]:
@@ -252,6 +253,18 @@ def test_code_swap_goes_through_without_draining(cur, tmp_path):
     assert ups and "--no-build" in ups[0] and not any(s in ups[0] for s in ("dispatcher", "console"))   # すべてのサービスを上げる
     # 同じ swap をもう一度起動しても何もしない
     assert sw.main() == 2
+
+
+@needs_db
+def test_prev_comes_from_the_running_image_not_the_worktree(cur, tmp_path):
+    """作業ツリーを先に新しい版へ進めてあっても、比べる前の版は動いているイメージの版（#237）。差分が空にならず人に回す判定を通る"""
+    fake = Fake(cur, files=["orchestrator/compose.yaml"], diffs={"orchestrator/compose.yaml": "+      GH_TOKEN: ${GH_TOKEN:?}\n"})
+    fake.head = TARGET   # 人が手で作業ツリーを早送りしてイメージを作った後
+    sid, sw = make(cur, tmp_path, fake)
+    assert sw.main() != 0
+    diffs = [c for c in fake.calls if c[:3] == ["git", "diff", "--name-only"]]
+    assert diffs and diffs[0][3:5] == [PREV, TARGET]
+    assert "swap.applied" not in names(cur, sid)
 
 
 @needs_db

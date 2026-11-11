@@ -177,15 +177,21 @@ class Swapper:
             raise Stop(f"{self.req['target']} が見つからない")
         if self.run(["git", "merge-base", "--is-ancestor", sha, "origin/main"], cwd=self.root, check=False).returncode != 0:
             raise Stop(f"{sha[:7]} は main に入っていない（main に入った版だけ更新する）")
-        prev = self.git("rev-parse", "HEAD")
-        if self.run(["git", "merge-base", "--is-ancestor", prev, sha], cwd=self.root, check=False).returncode != 0:
-            raise Stop(f"今の版 {prev[:7]} から {sha[:7]} へ早送りできない（作業ツリーが main から外れている）", escalate="human",
+        head = self.git("rev-parse", "HEAD")
+        if self.run(["git", "merge-base", "--is-ancestor", head, sha], cwd=self.root, check=False).returncode != 0:
+            raise Stop(f"今の版 {head[:7]} から {sha[:7]} へ早送りできない（作業ツリーが main から外れている）", escalate="human",
                        waiting_for="作業ツリーの版を確かめる（git log）")
+        # 前の版は動いているイメージの版から取る（#237）。作業ツリーを先に進めてあると、HEAD から比べたのでは差分が空になり、
+        # 人に回す判定を素通りし、戻し先も誤る
+        prev = self.running_base(head)
+        if prev != head and self.run(["git", "merge-base", "--is-ancestor", prev, sha], cwd=self.root, check=False).returncode != 0:
+            raise Stop(f"動いている版 {prev[:7]} から {sha[:7]} へ早送りできない", escalate="human",
+                       waiting_for="動いているサービスの版を確かめる（factoryctl version）")
         files = [f for f in self.git("diff", "--name-only", prev, sha).splitlines() if f]
         judged = swap.classify(files, self.rules)
         kind = swap.heavier(self.req["kind"] or "code", judged)
         plan = {"target_sha": sha, "short": sha[:7], "prev": prev, "prev_short": prev[:7], "kind": kind, "declared": self.req["kind"], "judged": judged,
-                "files": len(files)}
+                "files": len(files), **({"worktree_head": head[:7]} if head != prev else {})}
         log("plan", json.dumps(plan, ensure_ascii=False))
         if kind == "db":
             sql = [f for f in files if f.startswith("orchestrator/postgres/init/")]
@@ -205,6 +211,25 @@ class Swapper:
         self.snapshot_tags(prev[:7])
         self.build(sha)
         return plan
+
+    def running_base(self, head: str) -> str:
+        """動いているサービス（工場が作るイメージ）の版のうち、いちばん古いコミット（重い側に倒す）。
+        版が読めない（unknown・作業ツリーに無い）ときは作業ツリーの HEAD"""
+        vers = sorted({r["version"] for r in self.list_running(self.project)
+                       if r["kind"] == "service" and not r["external"] and r["version"] not in (version.UNKNOWN, "-")})
+        shas = []
+        for v in vers:
+            s = self.git("rev-parse", "--verify", "--quiet", f"{v}^{{commit}}", check=False)
+            if re.fullmatch(r"[0-9a-f]{40}", s or "") and s not in shas:
+                shas.append(s)
+        if not shas:
+            return head
+        anc = lambda a, b: a == b or self.run(["git", "merge-base", "--is-ancestor", a, b], cwd=self.root, check=False).returncode == 0
+        oldest = next((c for c in shas if all(anc(c, o) for o in shas)), None)
+        if oldest is None:
+            base = self.git("merge-base", "--octopus", *shas, check=False)
+            oldest = base if re.fullmatch(r"[0-9a-f]{40}", base or "") else head
+        return oldest
 
     def build(self, sha: str) -> None:
         """新しい版のイメージを、新しい版の scripts/build.sh で依存の順に作る。作業ツリーとは別の場所に取り出して作る（今の工場はそのまま動く）"""
