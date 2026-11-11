@@ -1,0 +1,78 @@
+# ADR 0050: 見回りが黙って止まったら停止を開き、GitHub に直接聞きに行く処理を出来事の記録を読む形に寄せる（Gen1 の範囲）
+
+- 状態: 提案
+- 関係: ADR 0005（停止と番人）、ADR 0013（Learn のルールの移り変わり）、ADR 0015（PR の見張り。小さなポーリング → events のお手本）、ADR 0022（設計の診断）、ADR 0024（知見の委員会）、ADR 0025（画面のキャプチャ）、ADR 0028（夜間の探索）、ADR 0029（予算の枠）、ADR 0031（更新の郵便受け）、ADR 0043（合成の利用者・使い捨て環境）、ADR 0046（事故の見回り）、#308（工場の中のエラーに気づけない）、#378
+- 検討の記録: 事業部の仕様の置き場（05_specs）の 10（工場の見回り体制、1.0）。9a 節の決定のうち Gen1 で入れる 3 つだけをこの ADR にする
+
+## 文脈
+
+工場の中で定期に動く処理（見回り）は 16 個あり、supervisor の 60 秒の周回が上から順に呼んでいる。見回りの体制を整理した結果（05_specs/10）、Gen1 を閉じる前に入れたいものが 3 つ残った。
+
+1. **見回りが動いたかを誰も見ていない**。番人が見ているのは supervisor が生きているか（heartbeat）だけで、各見回りは失敗してもログに出して次の周回に回す。夜間の探索や委員会の定例が何日も動かなくても気づけない（#308 と同じ根）
+2. **前の出来事を待って進む処理（内ループ）のうち 4 つが、周回のたびに GitHub に直接聞きに行く**。使い捨て環境の後片付け（PR が閉じたか）、着手中のチケットの片付け（Issue が閉じたか）、画面のキャプチャの取り込み（CI の成果物ができたか）、更新の郵便受け（依頼の Issue）。処理と GitHub の呼び出しが混ざっていて、Webhook が使えるようになっても入口を差し替えられない。Rate Limit を食う芽でもある
+3. **時刻のずれが 2 つ**。ルールの移り変わりは 1 時間に 1 回見ているが 1 日 1 回で足りる。合成の利用者は日曜 5〜7 時の間しか積まないので、その時間に Mac が眠っていると、その週は動かない
+
+工場は手元の Mac や社内のネットワークで動いていて、外のサービスの Webhook を受けにくい（2026-11-11 オーナー）。無理にイベント駆動にはしない。
+
+## 決定
+
+### 1. 見回りの見回り（番人に足す。決定論、LLM なし）
+
+- 見回りの対象と「この間隔で 1 回は動くはず」の値を、コードの中の小さな表（`dispatcher/patrol_watch.py`）で持つ。1 行は **見回りの id**・名前・動いた記録（events の name）・期限（時間）
+- 番人（dispatcher の `watch_once`）が周回ごとに、対象ごとの最後の記録を見る。期限を過ぎていたら停止 `patrol:<id>`（分類 `factory-bug`）を開き、新しい記録が付いたら閉じる
+- 記録がまだ 1 度もないものは、見回りの見回りが動き始めた時刻（`patrol_watch.started`）から数える。入れた直後に一斉に開かないように
+- 有効かどうかは supervisor が決める。supervisor は heartbeat に、いま有効な見回りの id の一覧（`patrols`）を書く（環境変数や定義で止めたものは載らない）。番人は最新の heartbeat に載っている id だけを見る。heartbeat が途絶えたときは既存の停止 `heartbeat:` が出るので、見回りの停止は開かない
+- **意図して止めているときは開かない**。ラインの一時停止中（ADR 0020）と、予算の枠を使い切っている間（ADR 0029）は新しく開かない。開いている停止は、記録が付くまでそのまま
+- 最初の対象（期限は仮置き。運用パラメータとして工場が調整してよい）
+
+| id | 見回り | 動いた記録 | 期限 |
+|---|---|---|---|
+| `nightly_explore` | 夜間の探索 | `supervisor.nightly_explore_enqueued`・`_skipped` | 36 時間 |
+| `synthetic_users` | 合成の利用者 | `supervisor.synthetic_users_enqueued` | 8 日 |
+| `design_review` | 設計の診断 | `supervisor.design_review_enqueued` | 8 日 |
+| `committee_weekly` | 知見の委員会の定例 | `supervisor.committee_weekly_enqueued` | 8 日 |
+| `incident_daily` | 事故の日次の見回り | `fincident.patrolled` | 36 時間 |
+| `incident_weekly` | 事故の週次の見回り | `supervisor.incident_review_enqueued` | 8 日 |
+| `daily_report` | 建設状況の日報 | `report.daily` | 36 時間 |
+| `notify_report` | 定期レポート（操業・開発状況） | `report.built` | 36 時間 |
+| `retrospective` | 振り返り | `learn.retrospected` | 36 時間 |
+| `rule_transition` | ルールの移り変わり | `learn.rule_transitions_checked`（決定 3 で足す） | 36 時間 |
+| `quality_learn` | 品質の Learn | `quality.learned` | 8 日 |
+| `kpi_weekly` | 週次の KPI | `report.kpi_weekly`・`report.kpi_skipped` | 8 日 |
+
+- 載せないもの: 定期便（マージがない日は記録が残らない）と事例型の分析（分析する出来事がない日は記録が残らない）。どちらも「確かめた」の記録を足してから載せる（Gen1.5 の台帳で）
+- 見回りの id は Gen1.5 の台帳（`definitions/patrols.yaml`）の id にそのまま引き継ぐ
+
+### 2. GitHub に直接聞きに行く 4 つを、小さなポーリング → events → 処理 の形に寄せる
+
+お手本は PR の見張り（ADR 0015）。**小さなポーリングが見た結果を出来事として events に記録し、処理はその出来事を読んで動く**。同じ事実は dedupe_key で 1 回しか記録しないので、あとで Webhook の入口を足しても二重にならない。
+
+| 処理 | 見るもの（ポーリング） | 記録する出来事 | 処理が読むもの |
+|---|---|---|---|
+| 使い捨て環境の後片付け（**先に入れる**） | PR の見張りが、使い捨て環境が立っている PR も見る | `github.pr_closed {repo, pr, pr_url, merged, closed_at}` | `ephemeral_step` は `pr.merged`・`pr.closed_unmerged`・`github.pr_closed` を読む。GitHub を見ない |
+| 着手中のチケットの片付け | PR の見張りが、着手中で動いているジョブのないチケットの Issue を 30 分ごとに見る | `github.issue_closed {repo, issue, closed_at, state_reason}` | `ticket_sync` は記録を読んでチケットを閉じる |
+| 画面のキャプチャの取り込み | 今の 5 分ごとのポーリングを「見る」と「取り込む」に分ける | `capture.status_seen {pr_url, head_sha, app, target_url}` | 取り込みは記録のうちまだ取り込んでいないものを読む |
+| 更新の郵便受け | **寄せない** | ― | ― |
+
+- 更新の郵便受けを寄せない理由: 郵便受けそのものが「Issue を見て依頼（`swap.request`）を events に記録する」入口で、更新役はすでに記録を読んで動いている（この形になっている）。残る GitHub の読み取りは依頼の Issue の取り消しの確認だけで、件数は依頼の数（多くて数件）に限られ、ETag つき（変わらなければ上限に数えない）
+- Webhook の入口はつながない（Gen1 の工場は受け口がない）。使えるようになったら入口を足すだけでよい
+- events を通知で配る仕組み（全面的なイベント駆動）は Gen2 の進行役の設計に入れる
+
+### 3. 時刻のずれ 2 つ
+
+- ルールの移り変わり（`rule_transition_step`）は 1 日 1 回にする。JST の日付ごとに `learn.rule_transitions_checked` を記録し、その日の分があれば見ない（プロセスの再起動でも 1 日 1 回のまま）
+- 合成の利用者（`synthetic_users_step`）は、決めた曜日の時刻を過ぎたら、その週（ISO 週、JST）のうちに 1 回積む。設計の診断・委員会の定例と同じ取り戻し方。時間帯の終わり（`hours` の 2 つめ）は使わない
+
+## 入れないもの（Gen1.5 以降。05_specs/10 に未来の仕様として残す）
+
+- 見回りの台帳（`definitions/patrols.yaml`）。項目ごとの有効・無効、時刻と頻度の置き場の一本化
+- 見回りの実施の記録（見回り id ごと）と、実施ごとの費用、対象ごとの可用性の数字（操業コンソールのダッシュボードと日次の操業レポートの項目）
+- 節目（リリース・マイルストーン・件数）による学習・改善の起動と、節目が来ないときの期限（Gen2）
+- 停止への一次対応（Gen2）
+
+## 影響
+
+- 停止の種類が 1 つ増える（`patrol:<id>`）。操業レポートでは工場の内部の停止として「注意」に入る（#348 の分け方）
+- supervisor の heartbeat の payload に `patrols` が増える。読む側は無ければ空として扱う
+- 新しい出来事 3 つ（`github.pr_closed`・`github.issue_closed`・`capture.status_seen`）と `learn.rule_transitions_checked`・`patrol_watch.started` を `definitions/events.yaml` に足す。DB の表は変えない
+- GitHub の呼び出しは、使い捨て環境の分が supervisor から PR の見張りに移る（数はほぼ同じ。PR がマージ・閉じの記録を持つ工場の PR は見なくなる）。着手中のチケットと画面のキャプチャは数が変わらない。この ADR の狙いは呼び出しの数より、処理と GitHub を切り離すこと
