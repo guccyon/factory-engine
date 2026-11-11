@@ -53,9 +53,12 @@ events:
   pr.conflicted:
     source: pr_events
     required: [pr_url, pr_id, head_sha, source]
-  pr.ci_rerun:
+  pr.ci_unstarted:
     source: pr_events
-    required: [pr_url, pr_id, head_sha, source, workflow, run_id]   # 起動に失敗した（ジョブ 0 本で失敗）ワークフローを 1 回だけ再実行した。dedupe は PR・head・run ごと
+    required: [pr_url, pr_id, head_sha, source, workflow, run_id, attempt]   # ワークフローが起動に失敗した（ジョブ 0 本で失敗）。dedupe は PR・head・run・試行ごと
+  pr.ci_rerun:
+    source: supervisor
+    required: [pr_url, head_sha, workflow, run_id]   # 起動に失敗したワークフローを内ループ（ci_rerun_step）が 1 回だけ再実行した。dedupe は PR・head・run ごと
   pr.merged:
     source: github_pr
     required: [pr_id, merged_at, merge_commit, files]  # files: {path, status, additions}

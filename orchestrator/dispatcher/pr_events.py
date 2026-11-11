@@ -11,7 +11,7 @@
   pr.ci_failed      その head の CI が落ちた（failure / timed_out / cancelled のチェック名つき）
   pr.ci_passed      その head の CI がすべて通った
   pr.conflicted     その head が base と衝突している（mergeable_state=dirty）
-  pr.ci_rerun       その head のワークフローが起動に失敗した（ジョブが 0 本のまま失敗）ので、1 回だけ再実行した
+  pr.ci_unstarted   その head のワークフローが起動に失敗した（ジョブが 0 本のまま失敗）。再実行は supervisor の ci_rerun_step
   pr.review_submitted  レビューが付いた（approved / changes_requested / commented）
 
 ADR 0050 で、内ループの処理が GitHub に直接聞かずに済むよう、次の 2 つも同じポーリングで見て記録する:
@@ -39,7 +39,6 @@ ENV = os.environ
 DATABASE_URL = ENV.get("DATABASE_URL", "postgres://factory:factory@postgres:5432/factory")
 REPOS = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip()]
 INTERVAL = int(ENV.get("PR_EVENTS_INTERVAL_SEC", "60"))
-DRY_RUN = bool(ENV.get("SUPERVISOR_DRY_RUN"))   # GitHub に書かない（起動に失敗したワークフローを再実行しない）
 SOURCE = ENV.get("PR_EVENTS_SOURCE", "both")   # both | poll | webhook（webhook だけなら見逃しを拾えないので、商用でも both を薦める）
 FAILED = ("failure", "timed_out", "cancelled")
 PR_RE = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)$")
@@ -106,29 +105,20 @@ def snapshot(repo: str, number: int) -> dict:
 def unstarted_step(cur, p: dict, s: dict, base: dict, out: list) -> tuple[set, bool]:
     """起動に失敗したワークフロー（ジョブが 0 本のまま失敗。GitHub 側の一過性のことがある）はチェックが付かないので、チェックだけ見ると
     「全部通った」に見える。けれど必須のチェックがそろわず PR は clean にならず、検査も judge も積まれないまま黙って止まる
-    （2026-11-10 rally #1358、本体の CI 8 本が起動せず約 24 時間チケットの枠を塞いだ）。1 回だけ再実行し、それでも起動しなければ落ちた扱い。
-    返り値は（落ちた扱いのチェックの名前、CI が通ったとまだ言えないか）"""
+    （2026-11-10 rally #1358、本体の CI 8 本が起動せず約 24 時間チケットの枠を塞いだ）。
+    見張りは見た事実を pr.ci_unstarted に記録するだけ。再実行は内ループの処理（supervisor の ci_rerun_step）が記録を読んで頼む（ADR 0050 の決定 2）。
+    再実行（試行 2 回目以降）でも起動しなければ落ちた扱い。返り値は（落ちた扱いのチェックの名前、CI が通ったとまだ言えないか）"""
     url, sha = p["url"], s["head_sha"]
     suites = {r["suite"] for r in s["runs"] if r.get("suite")}
     workflows = s.get("workflows") or []
     unstarted = [w for w in workflows if w["status"] == "completed" and w["conclusion"] in FAILED and w["suite"] not in suites]
     extra: set = set()
     for w in unstarted:
-        key = f"pr.ci_rerun:{url}@{sha}:{w['id']}"
-        cur.execute("select 1 from events where dedupe_key=%s", (key,))
-        if w["attempt"] > 1 or DRY_RUN:
-            extra.add(f"{w['name']}（起動できなかった）")   # 再実行でも起動しなかった
-            continue
-        if cur.fetchone() is not None:
-            continue   # 再実行を頼んだ。GitHub の試行の数が上がるのを待つ
-        try:
-            gh("POST", f"repos/{p['repo']}/actions/runs/{w['id']}/rerun")
-        except Exception as e:  # noqa: BLE001  再実行を頼めなければ落ちた扱い（CI 落ちの流れで続きのジョブか人へ）
-            log("rerun error", url, w["name"], repr(e))
+        if emit(cur, "pr.ci_unstarted", p["corr"], {**base, "workflow": w["name"], "run_id": w["id"], "attempt": w["attempt"]},
+                f"pr.ci_unstarted:{url}@{sha}:{w['id']}#{w['attempt']}"):
+            out.append("pr.ci_unstarted")
+        if w["attempt"] > 1:
             extra.add(f"{w['name']}（起動できなかった）")
-            continue
-        emit(cur, "pr.ci_rerun", p["corr"], {**base, "workflow": w["name"], "run_id": w["id"]}, key)
-        out.append("pr.ci_rerun")
     return extra, bool(unstarted) or any(w["status"] != "completed" for w in workflows)
 
 

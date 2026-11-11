@@ -85,3 +85,7 @@ def test_transient_exception_before_container_starts():
     assert dispatcher.transient_exception(urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution")))
     assert dispatcher.transient_exception(TimeoutError("timed out"))
     assert not dispatcher.transient_exception(KeyError("pr_url"))
+    # 返事のある HTTP の失敗は 5xx と 429 だけ一時的。404 はやり直しても同じ（11/10 一次調査の評価が 3 周積み直された）
+    assert not dispatcher.transient_exception(urllib.error.HTTPError("https://api.github.com/x", 404, "Not Found", {}, None))
+    assert dispatcher.transient_exception(urllib.error.HTTPError("https://api.github.com/x", 502, "Bad Gateway", {}, None))
+    assert dispatcher.transient_exception(urllib.error.HTTPError("https://api.github.com/x", 429, "Too Many Requests", {}, None))

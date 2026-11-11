@@ -856,7 +856,11 @@ def net_transient(lines: list[str]) -> bool:
 
 
 def transient_exception(e: BaseException) -> bool:
-    """dispatcher の中で起きた例外が、一時的なネットワークの失敗か（名前解決・接続・時間切れ）"""
+    """dispatcher の中で起きた例外が、一時的なネットワークの失敗か（名前解決・接続・時間切れ、GitHub などの 5xx・429）。
+    HTTPError は URLError の子なので先に分ける。404 などの 4xx は返事が来ている（通信は通っている）ので、やり直しても同じ結果になる
+    （2026-11-10 一次調査の評価の 6 件が 404 のまま 3 周積み直された）"""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code >= 500 or e.code == 429
     return isinstance(e, (urllib.error.URLError, ConnectionError, TimeoutError)) or net_transient([repr(e)])
 
 
