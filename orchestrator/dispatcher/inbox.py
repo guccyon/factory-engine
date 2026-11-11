@@ -168,6 +168,9 @@ def _stoppages(cur, now) -> list[dict]:
         if cap:
             al["todo"] = (f"工場は衝突の解消を上限（{cap.get('cap')} 回）まで試してやめた（計 {cap.get('conflicts')} 回）。"
                           "最新の main から作り直す・差し戻す・閉じるのどれかを決める。よく変わる同じファイルを触る PR どうしなら、そのファイルの直しも検討する")
+        if prefix == "cost":   # 費用の上限（ADR 0038 の追記、2026-11-11）
+            al["todo"] = ("工場は費用の上限でこのチケットのジョブを止めている。続けるなら上限に上乗せ（factoryctl plan cap <repo#番号> --add-usd <額>）、"
+                          "やめるならチケットか PR を閉じる。大きすぎるなら切り直し（factoryctl plan resplit）も検討する")
         fixing = _sendback_fixing(cur, url) if prefix == "sendback" and url else None
         out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "fixing": fixing, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
                     "action": al["todo"] or "判断して止まりを解く", "detail": al["detail"], "url": url, "since": s["started_at"],

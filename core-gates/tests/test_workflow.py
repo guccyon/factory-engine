@@ -130,7 +130,9 @@ def test_schema_and_prompt_mention_workflow():
 def test_stage_writes_inflight_and_caps(tmp_path):
     pl.stage(tmp_path, {"title": "t", "body": "b"}, None, [], {
         "inflight": [{"issue": 812, "title": "画面", "state": "active", "files": ["apps/admin-web/src/screens.ts"]}],
-        "hot_files": {"apps/admin-web/src/screens.ts": {"conflicts": 4, "cost": 6.1}},
+        "hot_files": {"apps/admin-web/src/screens.ts": {"conflicts": 4, "why": "直近 50 件の PR で 9 回変わり、その間に 4 回衝突した"}},
+        "similar": [{"score": 0.8, "issue": 650, "title": "担保: K-0003 を test で決定論にする", "band": "S", "turns": 18, "cost_usd": 0.9, "tier": "tier-large"}],
         "cap_hits": [{"issue": 700, "cap": "retries.conflict", "declared": 3, "actual": 5}]})
-    assert "#812" in (tmp_path / "inflight.md").read_text() and "4 回" in (tmp_path / "inflight.md").read_text()
+    assert "#812" in (tmp_path / "inflight.md").read_text() and "4 回衝突" in (tmp_path / "inflight.md").read_text()
+    assert "#650" in (tmp_path / "similar.md").read_text() and "tier-large" in (tmp_path / "similar.md").read_text()
     assert "retries.conflict" in (tmp_path / "caps.md").read_text()

@@ -95,6 +95,16 @@ caps:                                # 上限（決定 4）。天井 > 既定値
       quick.cost_usd: 0.5
       analysis.cost_usd: 5
 
+models:                              # ステップ × 厚み × 帯 → モデル（2026-11-11 オーナー「4 も一度それで進めてみて」）。帯はプランナーが似た過去のチケットの実績から見積もる。
+  implement:                         # 当たらない組は既定の tier（と試し experiments）。途中終了したら既定の tier に戻す。写しは dispatcher/model_route.py の MODEL_TABLE
+    S: {light: tier-small}
+
+hot_files:                           # 衝突しやすいファイルの印（2026-11-11 オーナー）。Learn ループの日次の振り返りが付け外しする。写しは dispatcher/hot_marks.py
+  recent_prs: 50                     # 直近にマージした PR の数（50 は仮置き）
+  top_files: 20                      # 変更回数の上位
+  min_conflicts: 3                   # その期間の衝突の解消の回数
+  unmark_after_days: 7               # 付けてからこの日数がたち、この日数の間に衝突がなければ外す
+
 handoff:                             # 流れの終わりの渡し先（決定 5）
   ship: [train, none, expedite]      # 既定 train
   learn: [signals, case_review]      # 既定 signals（signals は飛ばせない。case_review は加えて分析役に回す）

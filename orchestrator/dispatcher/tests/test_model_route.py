@@ -130,3 +130,29 @@ def test_continuation_uses_routed_tier(cur):
                                branch=f"factory/issue-{issue}-job-1", head_sha="abc", reason="ci_failed", by="test")
     cur.execute("select model_tier from jobs where id=%s", (jid,))
     assert cur.fetchone()["model_tier"] == "tier-small"
+
+
+def test_table_copy_matches_definitions():
+    wf = yaml.safe_load((ROOT / "definitions" / "workflow.yaml").read_text(encoding="utf-8"))
+    assert wf["models"] == mr.MODEL_TABLE
+
+
+def test_table_routes_small_light_regardless_of_share(cur, monkeypatch):
+    # ADR 0038 の追記 2026-11-11: 帯 S・厚み light の実装は表で安いモデルに。試しの割合に依らない。途中終了したら既定へ戻す
+    monkeypatch.setenv("MODEL_ROUTE_SHARE", "0")
+    corr = corr_in(False)
+    cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Plan',%s,'plan',%s)",
+                (corr, Jsonb({"size": {"turns_band": "S", "layers": ["web"]},
+                              "workflow": {"steps": [{"step": "implement", "run": True, "effort": "light"}]}})))
+    assert mr.tier_for(cur, corr, "tier-large") == "tier-small"
+    cur.execute("select payload from events where name='model.routed' and correlation_id=%s", (corr,))
+    p = cur.fetchone()["payload"]
+    assert p["arm"] == "table" and p["effort"] == "light"
+    assert mr.tier_for(cur, corr, "tier-large", reason="incomplete") == "tier-large"
+
+
+def test_table_needs_light_and_small():
+    assert mr.table_tier({"turns_band": "S", "layers": ["web"]}, "standard") is None
+    assert mr.table_tier({"turns_band": "M", "layers": ["web"]}, "light") is None
+    assert mr.table_tier({"turns_band": "S", "layers": ["db"]}, "light") is None   # db・契約は外す
+    assert mr.table_tier({"turns_band": "S", "layers": ["web"]}, "light") == "tier-small"

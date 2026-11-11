@@ -26,6 +26,10 @@ EXPERIMENT = {
     "eligible": {"turns_band": ["S"], "max_layers": 1, "exclude_layers": ["db", "contract"]},
     "back_to_default_on": ["incomplete"],
 }
+# ステップ × 厚み × 帯 → モデルの表（ADR 0038 の追記 2026-11-11。definitions/workflow.yaml の models の写し）。
+# プランナーが似た過去のチケットの実績から見積もった帯（size.turns_band）と、宣言した実装の厚み（effort）で引く。
+# 当たれば試しの割合によらずその tier で流し（arm=table）、途中終了したら既定の tier に戻す（back_to_default_on）。当たらなければ下の試し
+MODEL_TABLE = {"implement": {"S": {"light": "tier-small"}}}
 UNCOUNTED_LAYERS = ("docs", "other")   # planner.yaml の sizing.uncounted_layers と同じ（切る基準と同じ数え方）
 
 
@@ -72,6 +76,24 @@ def latest_size(cur, corr: str) -> tuple[dict | None, int | None]:
     return (r["payload"] or {}).get("size"), r["id"]
 
 
+def latest_effort(cur, corr: str, step: str = "implement") -> str | None:
+    """最新の Plan の宣言の、そのステップの厚み（light・standard・deep）"""
+    cur.execute("select payload->'workflow'->'steps' as s from artifacts where type='Plan' and correlation_id=%s order by id desc limit 1", (corr,))
+    r = cur.fetchone()
+    for st in (r or {}).get("s") or []:
+        if isinstance(st, dict) and st.get("step") == step and st.get("run") is not False:
+            return st.get("effort")
+    return None
+
+
+def table_tier(size: dict | None, effort: str | None, step: str = "implement") -> str | None:
+    """表で引いた tier。表に当たらない・見積もりが試しの条件（層・db・契約）に外れるなら None"""
+    ok, _ = eligible(size)
+    if not ok or not effort:
+        return None
+    return ((MODEL_TABLE.get(step) or {}).get(size.get("turns_band")) or {}).get(effort)
+
+
 def tier_for(cur, corr: str, default: str, *, reason: str | None = None) -> str:
     """実装のジョブを積むときの tier。最初の 1 回で決めて残し、あとは同じ側を返す。
     reason は続きの理由（continuation.REASONS）。試す側で back_to_default_on に当たれば既定の tier に戻す"""
@@ -85,7 +107,7 @@ def tier_for(cur, corr: str, default: str, *, reason: str | None = None) -> str:
 def _tier_for(cur, corr: str, default: str, reason: str | None) -> str:
     prev = routed(cur, corr)
     if prev is not None:
-        if prev.get("arm") == "trial" and not prev.get("routed_back") and reason in EXPERIMENT["back_to_default_on"]:
+        if prev.get("arm") in ("trial", "table") and not prev.get("routed_back") and reason in EXPERIMENT["back_to_default_on"]:
             cur.execute("insert into events(name, correlation_id, payload) values ('model.routed_back',%s,%s)",
                         (corr, Jsonb({"experiment": EXPERIMENT["id"], "from": prev.get("tier"), "to": default, "reason": reason})))
             cur.execute("insert into events(name, correlation_id, payload) values ('model.routed',%s,%s)",
@@ -95,11 +117,13 @@ def _tier_for(cur, corr: str, default: str, reason: str | None) -> str:
     size, plan_id = latest_size(cur, corr)
     ok, why = eligible(size)
     s = share()
-    arm = ("trial" if bucket(corr) < s else "control") if ok else "out"
-    tier = EXPERIMENT["tier"] if arm == "trial" else default
+    effort = latest_effort(cur, corr)
+    by_table = table_tier(size, effort)
+    arm = "table" if by_table else (("trial" if bucket(corr) < s else "control") if ok else "out")
+    tier = by_table or (EXPERIMENT["tier"] if arm == "trial" else default)
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('model.routed',%s,%s,%s) on conflict (dedupe_key) do nothing",
                 (corr, Jsonb({"experiment": EXPERIMENT["id"], "step": EXPERIMENT["step"], "arm": arm, "eligible": ok, "why_not": why or None,
-                              "tier": tier, "default_tier": default, "share": s, "plan_id": plan_id,
+                              "tier": tier, "default_tier": default, "share": s, "plan_id": plan_id, "effort": effort,
                               "size": {"turns_band": (size or {}).get("turns_band"), "layers": (size or {}).get("layers")} if isinstance(size, dict) else None}),
                  f"model.routed:{corr}"))
     return tier

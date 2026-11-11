@@ -276,3 +276,16 @@ class HeartbeatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BudgetArgsTest(unittest.TestCase):
+    """費用の上限の残り（ADR 0038 の追記）を claude の --max-budget-usd にする。再開した会話は前のジョブまでの累計を足す"""
+
+    def test_budget(self):
+        with mock.patch.dict(os.environ, {"MAX_BUDGET_USD": "2.5"}):
+            self.assertEqual(ar.budget_args(0.0), ["--max-budget-usd", "2.50"])
+            self.assertEqual(ar.budget_args(3.0), ["--max-budget-usd", "5.50"])
+        with mock.patch.dict(os.environ, {"MAX_BUDGET_USD": "0"}):
+            self.assertEqual(ar.budget_args(0.0), ["--max-budget-usd", "0.01"])
+        with mock.patch.dict(os.environ, {"MAX_BUDGET_USD": ""}):
+            self.assertEqual(ar.budget_args(0.0), [])

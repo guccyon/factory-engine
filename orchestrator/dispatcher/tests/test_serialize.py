@@ -50,13 +50,20 @@ def conflict_job(cur, ticket, files, cost):
     process_learn.record_conflict_files(cur, jid, corr, files)
 
 
-def test_hot_files_need_count_and_agent_cost(cur):
-    for t in range(3):
-        conflict_job(cur, t + 1, [LIB], 2.0)
-        conflict_job(cur, t + 10, ["CHANGELOG.md"], 9.0)        # 機械的に解く・断片にしたファイルは並べない
-        conflict_job(cur, t + 20, ["specs/a.yaml"], 0.0)        # 機械的に解けた（費用なし）
-    conflict_job(cur, 30, ["x.ts"], 50.0)                       # 1 回だけ
-    assert serialize.hot_files(cur) == {LIB: {"conflicts": 3, "cost": 6.0}}
+def mark(cur, file, name="hotfile.marked", repo="o/r"):
+    cur.execute("insert into events(name, payload) values (%s,%s)",
+                (name, Jsonb({"repo": repo, "file": file, "changes": 12, "conflicts": 4, "why": "直近 50 件の PR で 12 回変わり（1 位）、その間に 4 回衝突した"})))
+
+
+def test_hot_files_come_from_learn_marks(cur):
+    # 衝突しやすいファイルは Learn ループの印（hot_marks.py、ADR 0038 の追記 2026-11-11）。外した印と CHANGELOG.md は並べない
+    mark(cur, LIB)
+    mark(cur, "CHANGELOG.md")
+    mark(cur, "x.ts")
+    mark(cur, "x.ts", "hotfile.unmarked")
+    conflict_job(cur, 30, ["y.ts"], 50.0)   # 印がなければ、衝突が多くても並べない
+    hot = serialize.hot_files(cur)
+    assert list(hot) == [LIB] and hot[LIB]["conflicts"] == 4 and "12 回変わり" in hot[LIB]["why"]
 
 
 def test_paths_and_touches():
@@ -74,19 +81,18 @@ def test_expected_files_merges_plan_and_body(cur):
 
 
 def test_blocker_and_record(cur):
-    hot = {LIB: {"conflicts": 4, "cost": 8.0}}
+    hot = {LIB: {"conflicts": 4, "changes": 12, "why": "直近 50 件の PR で 12 回変わり（1 位）、その間に 4 回衝突した"}}
     inflight = {"github:o/r#1": {LIB, "a.rs"}, "github:o/r#2": {"b.rs"}}
     assert serialize.blocker({"lib.rs"}, hot, inflight, "github:o/r#9") == (LIB, "github:o/r#1")
     assert serialize.blocker({"lib.rs"}, hot, inflight, "github:o/r#1") is None      # 自分の PR は数えない
     assert serialize.blocker({"b.rs"}, hot, inflight, "github:o/r#9") is None        # よく衝突するファイルでない
     assert serialize.record(cur, "github:o/r#9", LIB, "github:o/r#1", hot[LIB]) is True
     assert serialize.record(cur, "github:o/r#9", LIB, "github:o/r#1", hot[LIB]) is False
-    assert "4 回衝突" in serialize.serialized(cur, "github:o/r#9")[0]["why"]
+    assert "衝突しやすいファイル" in serialize.serialized(cur, "github:o/r#9")[0]["why"]
 
 
 def test_enqueue_step_holds_second_task_on_same_hot_file(cur, monkeypatch):
-    for t in range(3):
-        conflict_job(cur, t + 1, [LIB], 2.0)
+    mark(cur, LIB)
     issues = [{"number": 41, "title": "A", "body": f"{LIB} にルートを足す", "labels": [], "created_at": "1"},
               {"number": 42, "title": "B", "body": f"{LIB} にルートを足す", "labels": [], "created_at": "2"},
               {"number": 43, "title": "C", "body": "apps/admin-web/src/x.ts だけ", "labels": [], "created_at": "3"}]
