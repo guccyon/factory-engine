@@ -16,8 +16,9 @@ from psycopg.types.json import Jsonb
 
 import hot_marks
 
-# 衝突しても機械的に解く・もう衝突しない作りにしたファイル（#148 の union と、ADR 0027 の 1 の断片）。並べる対象にしない
-EXEMPT = {"CHANGELOG.md"}
+# 衝突しても機械的に解く・もう衝突しない作りにしたファイル（#148 の union と、ADR 0027 の 1 の断片）。並べる対象にしない。
+# 製品が取りまとめに宣言したファイルは、hot_marks が印を外す（ADR 0051）
+EXEMPT = hot_marks.EXEMPT
 PATH_RE = re.compile(r"(?<![\w/.\-])((?:[\w.\-]+/)+[\w.\-]+\.[A-Za-z0-9]+|[\w\-]+\.(?:ya?ml|ts|tsx|dart|rs|json|sql|py|md))(?![\w/])")
 
 

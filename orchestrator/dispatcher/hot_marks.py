@@ -13,6 +13,9 @@ PR の変更ファイルは GitHub から引き、pr.files に残して 2 度引
 ADR 0051 の 1（2026-11-12 オーナー）: 同じ集計でファイルの形（追記型・生成物・登録の箇所・中身）を見分け、印に持たせる。
 衝突が閾値に届かなくても、変更回数の上位で同時に開いていた PR が MIN_CONCURRENT 本以上ある追記型・生成物は
 「取りまとめの候補」（hotfile.aggregate_candidate）にする。断片にためて取りまとめる（ADR 0051 の 2）対象を、衝突の前に見つける。
+
+製品が取りまとめに宣言したファイル（.factory-config/aggregates.yaml。宣言がなければ CHANGELOG.md）は、断片で更新するので衝突しない。
+印も候補も付けず、付いている印はその日のうちに外す。宣言の読み口はここ 1 つ（supervisor の取りまとめと起票も使う）。
 """
 from __future__ import annotations
 
@@ -24,18 +27,42 @@ from psycopg.types.json import Jsonb
 import base64
 import os
 
+import yaml
+
 import process_learn
 
 RECENT_PRS = 50
 TOP_FILES = 20
 MIN_CONFLICTS = 3
 UNMARK_AFTER_DAYS = 7
-EXEMPT = {"CHANGELOG.md"}   # 断片（changelog.d/）で衝突しない作りにした。印を付けない
+EXEMPT = {"CHANGELOG.md"}   # 断片（changelog.d/）で衝突しない作りにした。印を付けない（宣言が読めないときも外す）
+DECLARATION = ".factory-config/aggregates.yaml"
+DEFAULT_DECL = [{"path": "CHANGELOG.md", "fragments": "changelog.d/", "compile": "changelog"}]
 MIN_CONCURRENT = 3          # 取りまとめの候補: 同時に開いていた PR の数（ADR 0051 の 1）
 APPEND_RATIO = 0.8          # 差分の行のうち追加がこの割合以上なら追記型
 CODE_EXT = {".ts", ".tsx", ".js", ".mjs", ".cjs", ".rs", ".py", ".dart", ".go", ".kt", ".swift", ".java"}
 GENERATED_MARKS = ("generated", "do not edit", "生成物", "自動生成")
 SHAPE_JA = {"append": "追記型", "generated": "生成物", "registry": "登録の箇所", "content": "中身", "unknown": "不明"}
+
+
+def declarations(gh, repo: str) -> list[dict]:
+    """製品が宣言した共有ファイル（ADR 0051 の 2）。宣言がない（404）・読めなければ CHANGELOG.md だけ（今までの決まり）"""
+    try:
+        c = gh("GET", f"repos/{repo}/contents/{DECLARATION}")
+        data = yaml.safe_load(base64.b64decode(c["content"])) or {}
+        return [a for a in data.get("aggregates") or [] if isinstance(a, dict) and a.get("path")]
+    except Exception:  # noqa: BLE001  宣言がない製品は今までの CHANGELOG だけ
+        return [dict(d) for d in DEFAULT_DECL]
+
+
+def declared(gh, repo: str) -> set[str]:
+    """宣言した共有ファイルのパス"""
+    return {a["path"] for a in declarations(gh, repo)}
+
+
+def _top(changes: Counter, exempt: set[str]) -> list[str]:
+    """変更回数の上位（印と候補の対象外を除く）"""
+    return [f for f, _ in sorted(changes.items(), key=lambda kv: (-kv[1], kv[0])) if f not in exempt][:TOP_FILES]
 
 
 def recent_merged(gh, repo: str, n: int = RECENT_PRS) -> list[dict]:
@@ -142,16 +169,18 @@ def profile(per_pr: list[tuple[dict, dict]]) -> dict[str, dict]:
     return out
 
 
-def aggregate_candidates(changes: Counter, prof: dict[str, dict], shapes: dict[str, str], marked: set[str]) -> dict[str, dict]:
-    """取りまとめの候補: 変更回数の上位で、同時に開いていた PR が MIN_CONCURRENT 本以上ある追記型・生成物（印のあるものも含む）"""
-    top = [f for f, _ in sorted(changes.items(), key=lambda kv: (-kv[1], kv[0])) if f not in EXEMPT][:TOP_FILES]
+def aggregate_candidates(changes: Counter, prof: dict[str, dict], shapes: dict[str, str], marked: set[str],
+                         exempt: set[str] = EXEMPT) -> dict[str, dict]:
+    """取りまとめの候補: 変更回数の上位で、同時に開いていた PR が MIN_CONCURRENT 本以上ある追記型・生成物（印のあるものも含む）。
+    exempt（宣言済み）は除く"""
+    top = _top(changes, exempt)
     return {f: {"changes": changes[f], "rank": top.index(f) + 1, "concurrent": prof[f]["concurrent"], "shape": shapes[f]}
             for f in top if shapes.get(f) in ("append", "generated") and (prof[f]["concurrent"] >= MIN_CONCURRENT or f in marked)}
 
 
-def candidates(changes: Counter, conflicts: dict[str, dict]) -> dict[str, dict]:
-    """変更回数の上位のうち、衝突が MIN_CONFLICTS 回以上のファイル"""
-    top = [f for f, _ in sorted(changes.items(), key=lambda kv: (-kv[1], kv[0])) if f not in EXEMPT][:TOP_FILES]
+def candidates(changes: Counter, conflicts: dict[str, dict], exempt: set[str] = EXEMPT) -> dict[str, dict]:
+    """変更回数の上位のうち、衝突が MIN_CONFLICTS 回以上のファイル。exempt（宣言済み）は除く"""
+    top = _top(changes, exempt)
     return {f: {"changes": changes[f], "rank": top.index(f) + 1, "conflicts": conflicts[f]["conflicts"]}
             for f in top if conflicts.get(f, {}).get("conflicts", 0) >= MIN_CONFLICTS}
 
@@ -185,11 +214,13 @@ def step(cur, gh, repos: list[str], now: datetime | None = None, log=lambda *a: 
             per_pr.append((p, st))
             changes.update(set(st))
         prof = profile(per_pr)
-        top = [f for f, _ in sorted(changes.items(), key=lambda kv: (-kv[1], kv[0])) if f not in EXEMPT][:TOP_FILES]
+        decl = declared(gh, repo)
+        exempt = EXEMPT | decl
+        top = _top(changes, exempt)
         shapes = {f: shape(f, prof[f]["added"], prof[f]["deleted"], is_generated(gh, repo, f)) for f in top}
         frm = datetime.fromisoformat(prs[-1]["merged_at"].replace("Z", "+00:00"))
         conf = conflicts_by_file(cur, repo, frm, now)
-        cand = candidates(changes, conf)
+        cand = candidates(changes, conf, exempt)
         last = latest(cur, repo)
         marks = {f: m for f, m in last.items() if m["name"] == "hotfile.marked"}
         for f, c in cand.items():
@@ -206,16 +237,20 @@ def step(cur, gh, repos: list[str], now: datetime | None = None, log=lambda *a: 
             log("hot file marked", repo, f, c)
         recent = conflicts_by_file(cur, repo, now - timedelta(days=UNMARK_AFTER_DAYS), now)
         for f, m in marks.items():
-            if recent.get(f, {}).get("conflicts", 0) > 0 or now - m["at"] < timedelta(days=UNMARK_AFTER_DAYS):
+            if f in exempt:
+                why = "取りまとめに宣言した（断片で更新するので衝突しない）"
+            elif recent.get(f, {}).get("conflicts", 0) > 0 or now - m["at"] < timedelta(days=UNMARK_AFTER_DAYS):
                 continue
-            payload = {"repo": repo, "file": f, "why": f"{UNMARK_AFTER_DAYS} 日間衝突しなかった",
+            else:
+                why = f"{UNMARK_AFTER_DAYS} 日間衝突しなかった"
+            payload = {"repo": repo, "file": f, "why": why,
                        "marked_at": m["at"].isoformat() if hasattr(m["at"], "isoformat") else m["at"]}
             cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('hotfile.unmarked',null,%s,%s) on conflict (dedupe_key) do nothing",
                         (Jsonb(payload), f"hotfile.unmarked:{repo}:{f}:{day}"))
             res["unmarked"].append(f"{repo}:{f}")
             log("hot file unmarked", repo, f)
         # 取りまとめの候補（ADR 0051 の 1）。日ごとに 1 回記録し、レポートは直近の日の記録を読む
-        for f, c in aggregate_candidates(changes, prof, shapes, set(marks) | set(cand)).items():
+        for f, c in aggregate_candidates(changes, prof, shapes, set(marks) | set(cand), exempt).items():
             payload = {"repo": repo, "file": f, **c, "shape_ja": SHAPE_JA[c["shape"]], "prs": len(prs), "since": prs[-1]["merged_at"],
                        "conflicts": conf.get(f, {}).get("conflicts", 0),
                        "why": f"直近 {len(prs)} 件の PR で {c['changes']} 回変わり（{c['rank']} 位）、同時に {c['concurrent']} 本開いていた{SHAPE_JA[c['shape']]}"}

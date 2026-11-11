@@ -887,14 +887,8 @@ def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:
 def aggregate_fragments(repo: str) -> dict[str, int]:
     """製品が宣言した共有ファイルごとの、まだ取りまとめていない断片の数（ADR 0051 の 2）。宣言がなければ CHANGELOG.md（changelog.d/）だけ。
     断片の置き場がない（404）・読めないファイルは 0。宣言が読めなければ既定"""
-    decl = [{"path": "CHANGELOG.md", "fragments": "changelog.d/", "compile": "changelog"}]
-    try:
-        c = gh("GET", f"repos/{repo}/contents/.factory-config/aggregates.yaml")
-        decl = [a for a in (yaml.safe_load(base64.b64decode(c["content"])) or {}).get("aggregates") or [] if isinstance(a, dict)]
-    except Exception:  # noqa: BLE001, S110  宣言がない製品（404）は今までの CHANGELOG だけ
-        pass
     out = {}
-    for a in decl:
+    for a in hot_marks.declarations(gh, repo):
         if a.get("compile") == "generate" or not a.get("fragments") or not a.get("path"):
             continue
         try:
@@ -1177,12 +1171,8 @@ def aggregate_issue_step(cur, now: datetime | None = None):
 
 
 def aggregate_declared(repo: str) -> set[str]:
-    """製品が宣言した共有ファイル（.factory-config/aggregates.yaml）。読めなければ CHANGELOG.md だけ"""
-    try:
-        c = gh("GET", f"repos/{repo}/contents/.factory-config/aggregates.yaml")
-        return {a["path"] for a in (yaml.safe_load(base64.b64decode(c["content"])) or {}).get("aggregates") or [] if isinstance(a, dict) and a.get("path")}
-    except Exception:  # noqa: BLE001
-        return {"CHANGELOG.md"}
+    """製品が宣言した共有ファイル（.factory-config/aggregates.yaml）。読めなければ CHANGELOG.md だけ。読み口は hot_marks.declarations"""
+    return hot_marks.declared(gh, repo)
 
 
 def process_issue_step(cur, now: datetime | None = None):
