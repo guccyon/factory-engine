@@ -280,7 +280,8 @@ def charter_of(defs: dict, cid: str | None) -> dict:
     return next((c for c in cs if c["id"] == cid), cs[0])
 
 
-def validate_explore(doc, defs: dict, charter: dict, story_ids: set[str], out_dir: Path | None = None) -> list[str]:
+def validate_explore(doc, defs: dict, charter: dict, story_ids: set[str], out_dir: Path | None = None,
+                     open_numbers: set[int] | None = None) -> list[str]:
     if not isinstance(doc, dict):
         return ["explore.yaml の最上位は対応表（charter・tried・findings・interpretation・confidence）"]
     errs = []
@@ -315,6 +316,11 @@ def validate_explore(doc, defs: dict, charter: dict, story_ids: set[str], out_di
             errs.append(f"findings[{j}].viewpoint は {'・'.join(sorted(defs['viewpoints']))} のどれか")
         if d.get("story_id") not in (None, "") and d["story_id"] not in story_ids:
             errs.append(f"findings[{j}].story_id {d['story_id']!r} は specs/stories/ にない（近いものがなければ null）")
+        sa = d.get("same_as")
+        if sa is not None and (not isinstance(sa, int) or isinstance(sa, bool) or sa <= 0):
+            errs.append(f"findings[{j}].same_as は開いている不具合の Issue の番号（数）か null")
+        elif sa is not None and open_numbers is not None and sa not in open_numbers:
+            errs.append(f"findings[{j}].same_as #{sa} は渡した開いている不具合の一覧にない（同じものがなければ null）")
     for j, f in enumerate(doc.get("flags") or []):
         if not isinstance(f, dict) or f.get("viewpoint") not in ("aesthetic", "tone") or not f.get("note"):
             errs.append(f"flags[{j}] は viewpoint（aesthetic・tone）と note")
@@ -326,6 +332,21 @@ def validate_explore(doc, defs: dict, charter: dict, story_ids: set[str], out_di
     return errs
 
 
+def open_defects_text(inp: dict) -> str:
+    """製品で開いている QA の不具合（dispatcher が積むときに渡す）。同じ不具合を別の Issue に起票し直さないために same_as を書いてもらう"""
+    ods = inp.get("open_defects") or []
+    if not ods:
+        return ""
+    rows = "\n".join(f"- #{o.get('number')} [{o.get('severity') or '-'}] {o.get('title')}" + (f"（ストーリー {o['story_id']}）" if o.get("story_id") else "")
+                     for o in ods)
+    return f"""## すでに開いている不具合（{len(ods)} 件）
+見つけたものが下のどれかと同じ不具合（利用者から見て同じ症状。題の言い方や再現の細部が違ってもよい）なら、その見つけたものの same_as に番号を書いてください。
+見つけたものからは消さない（工場が既存の Issue に「また見つかった」と書き、新しく起票しない）。違う不具合か、同じか迷うものは same_as を null に。
+{rows}
+
+"""
+
+
 def explore_prompt(defs: dict, charter: dict, stories: list[dict], env: dict, inp: dict, mobile: bool = False) -> str:
     accounts = ((inp.get("touchable") or {}).get("accounts") or [])
     ex = {"charter": charter["id"], "confidence": 0.7,
@@ -333,7 +354,7 @@ def explore_prompt(defs: dict, charter: dict, stories: list[dict], env: dict, in
                      "story_id": stories[0]["id"] if stories else None}],
           "findings": [{"title": "利用者の言葉で 1 行", "viewpoint": charter["viewpoint"], "severity": "s3", "where": "画面と場所",
                         "reproduce": ["手順 1", "手順 2"], "expected": "利用者が期待すること", "actual": "見えたもの（03-cancel-back.png）",
-                        "story_id": None, "known_gap": False}],
+                        "story_id": None, "known_gap": False, "same_as": None}],
           "flags": [{"viewpoint": "aesthetic", "where": "画面と場所", "note": "人に見てほしい違和感"}],
           "interpretation": "何を試し、どこが食い違っていて、どれを重く見たか"}
     smap = [{"id": s["id"], "title": s.get("title"), "actor": s.get("actor"), "goal": s.get("goal"), "entry": s.get("entry"),
@@ -373,7 +394,7 @@ QA の定義は「プロダクトの利用者（エンドユーザー、カス�
 ログインの手がかり（モックのトークン。画面のログインに使う）:
 {json.dumps(accounts, ensure_ascii=False, indent=1)}
 
-{focus_text(inp)}
+{focus_text(inp)}{open_defects_text(inp)}
 ## 地図（ストーリーの要点。{len(smap)} 本）
 {yaml.safe_dump(smap, allow_unicode=True, sort_keys=False)}
 ## 出力の形（out/explore.yaml）
@@ -415,7 +436,9 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
                 if isinstance(v, (int, float)):
                     usage[k] = usage.get(k, 0) + v
             doc = _load(root / "out" / "explore.yaml")
-            errs = validate_explore(doc, defs, charter, {s["id"] for s in stories}, root / "out") if not isinstance(doc, str) else [doc]
+            errs = (validate_explore(doc, defs, charter, {s["id"] for s in stories}, root / "out",
+                                     {o["number"] for o in inp.get("open_defects") or [] if isinstance(o.get("number"), int)} or None)
+                    if not isinstance(doc, str) else [doc])
             if not errs:
                 break
             text = "out/explore.yaml に次の崩れがあります。直してください。\n" + "\n".join(f"- {e}" for e in errs)
