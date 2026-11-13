@@ -242,3 +242,128 @@ def test_nightly_explore_moves_to_explore_issue(cur):
     gh = FakeGH()
     got = qa_line.enqueue_explore(cur, gh, REPO, "2026-11-10")
     assert got["issue"] == 8
+
+
+# ------------------------------------------------------------------ 版ごとのチケットとシナリオごとのジョブ（ADR 0054）
+STORY = "type: UserStory\nid: {id}\nstatus: {status}\n"
+
+
+class ReleaseGH(FakeGH):
+    """製品の specs/stories/ に active が 3 本（a・b・c）と、止めた 1 本、ストーリーでない 1 本。版ごとの Issue は 50 から"""
+    def __init__(self):
+        super().__init__()
+        self.next_issue = 50
+
+    def __call__(self, method, path, body=None):
+        import base64
+        if method == "GET" and path.endswith("/contents/specs/stories"):
+            self.calls.append((method, path, body))
+            return [{"name": n} for n in ("a.yaml", "b.yaml", "c.yaml", "old.yaml", "actors.yaml", "README.md")]
+        if method == "GET" and "/contents/specs/stories/" in path:
+            name = path.rsplit("/", 1)[1].removesuffix(".yaml")
+            text = "type: Actors\n" if name == "actors" else STORY.format(id=name, status="retired" if name == "old" else "active")
+            return {"content": base64.b64encode(text.encode()).decode()}
+        if method == "POST" and path.endswith("/issues") and (body or {}).get("labels") == ["factory:qa-release"]:
+            self.calls.append((method, path, body))
+            self.next_issue += 1
+            return {"number": self.next_issue}
+        return super().__call__(method, path, body)
+
+    def closed(self):
+        return [int(p.rsplit("/", 1)[1]) for m, p, b in self.calls if m == "PATCH" and (b or {}).get("state") == "closed"]
+
+
+def units_of(cur, rid):
+    return {u: [j["job_id"] for j in js] for u, js in qa_gate.gate(cur, rid)["units"].items()}
+
+
+def run_all_verdicts(cur, gh, rid, rows):
+    """判定は同時に 1 本ずつ。積まれた順に終わらせ、次の周回で次を積ませる"""
+    for story, decision, defects in rows:
+        jid = units_of(cur, rid)[f"verdict:{story}"][-1]
+        finish(cur, jid)
+        verdicts(cur, jid, [(story, decision, defects)])
+        qa_gate.step(cur, gh, REPO, now=NOW)
+
+
+def test_release_ticket_gets_one_job_per_scenario(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    plan = qa_gate.gate(cur, rid)["plan"]
+    assert plan["legacy"] is False and plan["issue"] == 51 and plan["corr"] == "github:o/app#51"
+    assert [u["unit"] for u in plan["units"]] == ["verdict:a", "verdict:b", "verdict:c", "explore:detour"]   # 止めたストーリーは数えない
+    assert plan["cap_usd"] == (3 * 3 + 5) * 1.5
+    assert sorted(x["unit"] for x in out["enqueued"]) == ["explore:detour", "verdict:a"]   # 判定は同時に 1 本、探索は並ぶ
+    cur.execute("select issue_number, unit from jobs order by id")
+    assert [(r["issue_number"], r["unit"]) for r in cur.fetchall()] == [(51, "verdict:a"), (51, "explore:detour")]   # 同じ Issue に並ぶ
+    cur.execute("select payload->'input' as i from events where name='job.enqueued' order by id")
+    v, x = [r["i"] for r in cur.fetchall()]
+    assert v["stories"] == ["a"] and v["max_turns"] == 40 and v["max_budget_usd"] == 3 and v["gate"] == rid
+    assert x["mode"] == "explore" and x["max_budget_usd"] == 5
+    assert qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"] == []   # a が終わるまで b は積まない
+
+
+def test_release_ticket_reports_and_closes(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    ex = units_of(cur, rid)["explore:detour"][0]
+    finish(cur, ex)
+    explored(cur, ex, [{"title": "他人の予約が見える", "severity": "s1"}])
+    run_all_verdicts(cur, gh, rid, [("a", "pass", []), ("b", "hold", [{"title": "入口がない", "severity": "s2", "known_gap": False}])])
+    assert qa_gate.gate(cur, rid)["state"] == "open"   # c を待つ
+    jid = units_of(cur, rid)["verdict:c"][-1]
+    finish(cur, jid)
+    verdicts(cur, jid, [("c", "blocked", [])])
+    assert qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"][0]["unit"] == "verdict:c"   # 確かめられなかった 1 本だけ積み直す
+    assert len(units_of(cur, rid)["verdict:a"]) == 1
+    jid = units_of(cur, rid)["verdict:c"][-1]
+    finish(cur, jid)
+    verdicts(cur, jid, [("c", "blocked", [])])
+    d = qa_gate.step(cur, gh, REPO, now=NOW)["decided"]
+    assert d["candidates"] == 2 and d["issue"] == 51 and d["verdict"]["stories"] == {"pass": 1, "hold": 1, "blocked": 1}
+    assert [m["story_id"] for m in d["verdict"]["missing"]] == ["c"]
+    text = " ".join(r["text"] for r in d["report"])
+    assert "c（" in text
+    assert "出荷の QA の関門" in gh.comments(51)[0] and gh.closed() == [51] and gh.comments(7) == []   # 報告は版の Issue に書いて閉じる
+
+
+def test_release_ticket_cost_cap_reports_without_human_stoppage(cur):
+    import workflow_guard
+    import workflow_shadow
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    corr = "github:o/app#51"
+    assert workflow_shadow.gate_caps(cur, corr) == {"ticket.cost_usd": 21.0, "retries.qa_rerun": None}
+    assert not workflow_shadow.standing_qa(cur, corr)
+    u = units_of(cur, rid)
+    for jid in (u["verdict:a"][0], u["explore:detour"][0]):
+        finish(cur, jid)
+    cur.execute("update jobs set result=%s where id=%s", (Jsonb({"cost_usd": 22.0}), u["verdict:a"][0]))
+    verdicts(cur, u["verdict:a"][0], [("a", "pass", [])])
+    explored(cur, u["explore:detour"][0], [])
+    assert workflow_guard.cost_gate(cur, corr)["hit"] == ["ticket.cost_usd"]
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert out["enqueued"] == [] and out["decided"]["capped"] is True   # 残りを積まず、そろった分で報告を作る
+    assert [m["story_id"] for m in out["decided"]["verdict"]["missing"]] == ["b", "c"]
+    assert any(r["label"] == "費用の上限" for r in out["decided"]["report"])
+
+
+def test_release_ticket_supersede_closes_issue(cur):
+    gh = ReleaseGH()
+    deploy(cur, "o/app@0.9.0")
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    deploy(cur, "o/app@0.10.0", "0.10.0")
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert out["opened"] == "o/app@0.10.0" and gh.closed() == [51]
+    assert qa_gate.gate(cur, "o/app@0.10.0")["plan"]["issue"] == 52
+
+
+def test_plan_falls_back_to_fixed_issues(cur):
+    gh, rid = FakeGH(), "o/app@0.9.0"   # ストーリーを数えられない製品
+    deploy(cur, rid)
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert qa_gate.gate(cur, rid)["plan"]["legacy"] is True
+    assert sorted(x["which"] for x in out["enqueued"]) == ["explore", "verdict"]

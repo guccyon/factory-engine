@@ -8,9 +8,17 @@
   → 両方の結果がそろうか、開いてから definitions/qa.yaml の gate.hoursたったら decide: qa.gate_decided（報告つき）と、判定の固定 Issue へのまとめ
   → 本番を立てる段階の製品は、受信トレイの「本番待ち」に報告を添える（inbox._release_item）。承認者は「本番に出す」か「見送る」（qa.gate_blocked）
 
+版ごとのチケットとシナリオごとのジョブ（ADR 0054）:
+  関門を開いたとき、製品のストーリーを数えて計画（qa.gate_plan）を残す。版ごとの Issue（factory:qa-release、題「QA: <版>」）を 1 つ作り、
+  判定はストーリー 1 本につき 1 ジョブ、探索はチャーター 1 つにつき 1 ジョブを、単位（jobs.unit）を付けてその Issue に積む。
+  確かめられなかった単位だけを 1 回積み直す。そろったら報告をその Issue に書いて閉じる。版のチケットの費用の上限（ジョブの上限の合計 × 係数）に
+  当たったら、残りを積まずにそろった分で報告を作る（人への停止は開かない）。
+  単位の列がない DB（009_job_unit.sql の前）と、ストーリーを数えられなかった版は、今までの形（固定 Issue に 2 本）で動く。
+
 記録（events）:
   qa.gate_opened      {release_id, repo, env}
-  qa.gate_job         {release_id, repo, which: verdict|explore, job_id, attempt, charter?}
+  qa.gate_plan        {release_id, repo, legacy, why?, issue?, corr?, cap_usd?, units?: [{unit, which, story? | charter?}]}
+  qa.gate_job         {release_id, repo, which: verdict|explore, job_id, attempt, charter?, unit?}
   qa.gate_superseded  {release_id, repo, by_release}
   qa.gate_decided     {release_id, repo, candidates, verdict: {...}, explore: {...}, report: [{label, text}], timed_out}
   qa.gate_blocked     {release_id, repo, by, via, note}
@@ -22,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from psycopg.types.json import Jsonb
 
 import qa_line
+import workflow_guard
 
 WHICH = ("verdict", "explore")
 RECORD_GRACE = timedelta(minutes=10)   # ジョブが終わってから dispatcher が結果を記録するまでの猶予
@@ -45,11 +54,15 @@ def gate(cur, release_id: str) -> dict | None:
     if not rows or rows[0]["name"] != "qa.gate_opened":
         return None
     g = {"release_id": release_id, "repo": rows[0]["payload"]["repo"], "opened_at": rows[0]["occurred_at"], "state": "open",
-         "jobs": {w: [] for w in WHICH}, "decided": None, "blocked": None}
+         "jobs": {w: [] for w in WHICH}, "units": {}, "plan": None, "decided": None, "blocked": None}
     for r in rows[1:]:
         p = r["payload"]
         if r["name"] == "qa.gate_job":
             g["jobs"][p["which"]].append(p)
+            if p.get("unit"):
+                g["units"].setdefault(p["unit"], []).append(p)
+        elif r["name"] == "qa.gate_plan":
+            g["plan"] = p
         elif r["name"] == "qa.gate_decided":
             g["state"], g["decided"] = "decided", {**p, "at": r["occurred_at"]}
         elif r["name"] == "qa.gate_superseded" and g["state"] == "open":
@@ -165,12 +178,160 @@ def next_charter(cur, repo: str, defs: dict) -> str:
     return cs[(cs.index(last) + 1) % len(cs)] if last in cs else cs[0]
 
 
-def open_gate(cur, repo: str, release_id: str, now: datetime | None = None) -> bool:
-    """関門を開く。前の版の開いた関門は superseded で閉じる（承認の対象は staging にいまある版だけ）"""
+def open_gate(cur, repo: str, release_id: str, now: datetime | None = None, gh=None) -> bool:
+    """関門を開く。前の版の開いた関門は superseded で閉じる（承認の対象は staging にいまある版だけ）。版ごとの Issue があれば閉じる"""
     for old in open_gates(cur, repo):
         if old != release_id:
-            _ev(cur, "qa.gate_superseded", {"release_id": old, "repo": repo, "by_release": release_id}, f"qa.gate_superseded:{old}", now)
+            plan = (gate(cur, old) or {}).get("plan") or {}
+            if _ev(cur, "qa.gate_superseded", {"release_id": old, "repo": repo, "by_release": release_id}, f"qa.gate_superseded:{old}", now) \
+                    and gh and plan.get("issue"):
+                close_issue(gh, repo, plan["issue"], f"次の版 {release_id} が staging に出たので、この版の QA は打ち切りました。")
     return _ev(cur, "qa.gate_opened", {"release_id": release_id, "repo": repo, "env": "staging"}, f"qa.gate_opened:{release_id}", now)
+
+
+# ------------------------------------------------------------------ 版ごとのチケットとシナリオごとのジョブ（ADR 0054）
+def close_issue(gh, repo: str, issue: int, body: str | None = None):
+    """版ごとの Issue に書いて閉じる。失敗しても関門は進める（記録は events にある）"""
+    try:
+        if body:
+            gh("POST", f"repos/{repo}/issues/{issue}/comments", {"body": body})
+        gh("PATCH", f"repos/{repo}/issues/{issue}", {"state": "closed"})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def story_ids(gh, repo: str) -> list[str]:
+    """製品の specs/stories/ の active なユーザーストーリーの id（ワーカーの core-gates/qa.py の load_stories と同じ条件。既定のブランチ）"""
+    import base64
+
+    import yaml
+    out = []
+    for f in gh("GET", f"repos/{repo}/contents/specs/stories") or []:
+        if not isinstance(f, dict) or not str(f.get("name") or "").endswith(".yaml"):
+            continue
+        got = gh("GET", f"repos/{repo}/contents/specs/stories/{f['name']}") or {}
+        try:
+            doc = yaml.safe_load(base64.b64decode(got.get("content") or "").decode("utf-8"))
+        except Exception:  # noqa: BLE001  読めないファイルは飛ばす（ワーカーと同じ）
+            continue
+        if isinstance(doc, dict) and doc.get("type") == "UserStory" and (doc.get("status") or "active") == "active" and doc.get("id"):
+            out.append(str(doc["id"]))
+    return sorted(set(out))
+
+
+def ticket_cap(units: list[dict], gd: dict) -> float:
+    """版のチケットの費用の上限 = ジョブの上限の合計 × 係数（積み直しの分）"""
+    total = sum(float(gd["story_cost_usd"]) if u["which"] == "verdict" else float(gd["explore_cost_usd"]) for u in units)
+    return round(total * float(gd["ticket_cap_factor"]), 2)
+
+
+def make_plan(cur, gh, repo: str, release_id: str, defs: dict, gd: dict, now: datetime) -> dict:
+    """関門を開いたときに 1 回だけ。シナリオを数え、版ごとの Issue を作り、計画を残す。できなければ今までの形（legacy）と理由を残す"""
+    def legacy(why: str) -> dict:
+        p = {"release_id": release_id, "repo": repo, "legacy": True, "why": why}
+        _ev(cur, "qa.gate_plan", p, f"qa.gate_plan:{release_id}", now)
+        return p
+    if not qa_line.unit_ready(cur):
+        return legacy("jobs に単位の列がない（009_job_unit.sql の前）")
+    try:
+        stories = story_ids(gh, repo)
+    except Exception as e:  # noqa: BLE001
+        return legacy(f"ストーリーを数えられなかった: {repr(e)[:120]}")
+    if not stories:
+        return legacy("active なストーリーが見つからなかった")
+    charter = next_charter(cur, repo, defs)
+    units = [{"unit": f"verdict:{s}", "which": "verdict", "story": s} for s in stories]
+    units.append({"unit": f"explore:{charter}", "which": "explore", "charter": charter})
+    cap = ticket_cap(units, gd)
+    try:
+        body = (f"工場の QA 役が、staging に出た版 {release_id} をシナリオごとに確かめます（factory-engine の ADR 0049・0054）。\n\n"
+                f"- 判定: ストーリー {len(stories)} 本（1 本につき 1 ジョブ）\n- 探索: チャーター {charter}\n- 費用の上限: ${cap:.2f}\n\n"
+                "結果がそろったら、ここに報告を書いて閉じます。見つけた Defect は別の Issue（factory:qa-defect）に起票します。")
+        issue = gh("POST", f"repos/{repo}/issues", {"title": f"QA: {release_id.split('@')[-1]}", "body": body,
+                                                     "labels": [gd["release_issue_label"]]})["number"]
+    except Exception as e:  # noqa: BLE001
+        return legacy(f"版ごとの Issue を作れなかった: {repr(e)[:120]}")
+    p = {"release_id": release_id, "repo": repo, "legacy": False, "issue": issue, "corr": f"github:{repo}#{issue}", "cap_usd": cap, "units": units}
+    _ev(cur, "qa.gate_plan", p, f"qa.gate_plan:{release_id}", now)
+    return p
+
+
+def enqueue_unit(cur, gh, repo: str, plan: dict, u: dict, attempt: int, defs: dict, gd: dict, now: datetime) -> dict:
+    """計画の単位を 1 つ、版ごとの Issue に積む。ジョブごとの上限（ターン・費用）は入力で渡す（ワーカーの core-gates/qa.py が守らせる）"""
+    rid = plan["release_id"]
+    common = dict(by="qa_gate", priority=gd["priority"], defs=defs, issue=plan["issue"], unit=u["unit"], title=f"QA: {rid}")
+    if u["which"] == "verdict":
+        got = qa_line.enqueue(cur, gh, repo, stories=[u["story"]], **common,
+                              extra={"gate": rid, "max_turns": int(gd["story_max_turns"]), "max_budget_usd": float(gd["story_cost_usd"])})
+        extra = {"story": u["story"]}
+    else:
+        got = qa_line.enqueue(cur, gh, repo, **common,
+                              extra={"mode": "explore", "charter": u["charter"], "night": qa_line.night_of(now), "unattended": False, "gate": rid,
+                                     "max_budget_usd": float(gd["explore_cost_usd"])})
+        extra = {"charter": u["charter"]}
+    _ev(cur, "qa.gate_job", {"release_id": rid, "repo": repo, "which": u["which"], "unit": u["unit"], "job_id": got["job_id"], "attempt": attempt, **extra},
+        f"qa.gate_job:{rid}:{u['unit']}:{attempt}", now)
+    return got
+
+
+def merge_verdicts(units: list[dict], res: dict) -> dict | None:
+    """ストーリーごとの判定の結果を、今までの判定 1 本の形にまとめる。missing は結果のそろわなかったストーリー"""
+    vs = [(u, res.get(u["unit"])) for u in units if u["which"] == "verdict"]
+    if not vs:
+        return None
+    out = {"status": "unconfirmed", "why": None, "candidates": [], "notes": [], "stories": {}, "missing": []}
+    for u, r in vs:
+        if not r or r["status"] != "done":
+            out["missing"].append({"story_id": u["story"], "why": (r or {}).get("why") or "結果がそろわなかった（時間切れ）"})
+        if not r:
+            continue
+        if r["status"] == "done":
+            out["status"] = "done"
+        out["candidates"] += r.get("candidates") or []
+        out["notes"] += r.get("notes") or []
+        for k, n in (r.get("stories") or {}).items():
+            out["stories"][k] = out["stories"].get(k, 0) + n
+    if out["status"] != "done":
+        out["why"] = "どのストーリーも確かめられなかった"
+    return out
+
+
+def step_units(cur, gh, repo: str, g: dict, defs: dict, gd: dict, now: datetime, may_enqueue: bool, on_enqueued, log, outcome: dict) -> tuple[list, dict | None]:
+    """計画のある関門の 1 周。返り値（積んだもの, そろったときの結果 {verdict, explore} か None）"""
+    import psycopg
+    plan, enq, res = g["plan"], [], {}
+    left = workflow_guard.cost_left(cur, plan["corr"])["ticket.cost_usd"]
+    capped = left["cap"] > 0 and left["left"] <= 0   # 版のチケットの費用の上限。残りを積まず、そろった分で報告を作る
+    last = {u["unit"]: (g["units"].get(u["unit"]) or [None])[-1] for u in plan["units"]}
+    done = {k: (outcome[k.split(":", 1)[0]](cur, j["job_id"], now) if j else None) for k, j in last.items()}
+    running = sum(1 for u in plan["units"] if u["which"] == "verdict" and last[u["unit"]] and done[u["unit"]] is None)
+    for u in plan["units"]:
+        k, tried, r = u["unit"], len(g["units"].get(u["unit"]) or []), done[u["unit"]]
+        retry = bool(r) and r["status"] == "unconfirmed" and tried < int(gd["attempts"])
+        if (tried == 0 or retry) and capped:
+            r = r or {"status": "unconfirmed", "why": "費用の上限で流せなかった", "candidates": [], "notes": [], "stories": {}, "tried": 0}
+        elif (tried == 0 or retry) and may_enqueue and (u["which"] != "verdict" or running < int(gd["parallel"])):
+            # 判定は同時に parallel 本まで（iOS のシミュレーターは Mac ランナーの端末の数まで。ADR 0054 の決定 3）。探索は別に並ぶ
+            try:
+                got = enqueue_unit(cur, gh, repo, plan, u, tried + 1, defs, gd, now)
+                enq.append({"which": u["which"], "unit": k, **got})
+                running += u["which"] == "verdict"
+                if on_enqueued:
+                    on_enqueued(got)
+                r = None
+            except psycopg.errors.UniqueViolation:
+                r = None   # 同じ単位のジョブが待ち・実行中（手で積み直したなど）。次の周回で
+            except Exception as e:  # noqa: BLE001  次の周回でやり直す
+                log("qa gate enqueue failed", repo, plan["release_id"], k, repr(e)[:200])
+                r = None
+        elif tried == 0 or retry:
+            r = None   # 順番待ち（同時に流す数・予算の枠）
+        res[k] = r
+    timed_out = now - g["opened_at"] > timedelta(hours=float(gd["hours"]))
+    if not timed_out and any(v is None for v in res.values()):
+        return enq, None
+    ex = next((res.get(u["unit"]) for u in plan["units"] if u["which"] == "explore"), None)
+    return enq, {"verdict": merge_verdicts(plan["units"], res), "explore": ex, "capped": capped, "timed_out": timed_out}
 
 
 def enqueue_job(cur, gh, repo: str, release_id: str, which: str, attempt: int, defs: dict, now: datetime) -> dict:
@@ -201,10 +362,17 @@ def step(cur, gh, repo: str, *, defs: dict | None = None, now: datetime | None =
                "explore": lambda c, j, n: explore_outcome(c, j, n, tuple(gd["blocker_severities"]))}
     out = {"opened": None, "enqueued": [], "decided": None}
     rid = to_open(cur, repo)
-    if rid and may_enqueue and open_gate(cur, repo, rid, now):
+    if rid and may_enqueue and open_gate(cur, repo, rid, now, gh):
         out["opened"] = rid
+        make_plan(cur, gh, repo, rid, defs, gd, now)
     for rid in open_gates(cur, repo):
         g = gate(cur, rid)
+        if g["plan"] and not g["plan"].get("legacy"):   # 版ごとのチケットとシナリオごとのジョブ（ADR 0054）
+            enq, results = step_units(cur, gh, repo, g, defs, gd, now, may_enqueue, on_enqueued, log, outcome)
+            out["enqueued"] += enq
+            if results:
+                out["decided"] = decide(cur, gh, repo, rid, results, results.pop("timed_out"), now, plan=g["plan"])
+            continue
         results = {}
         for which in WHICH:
             jobs = g["jobs"][which]
@@ -244,6 +412,9 @@ def report(results: dict, timed_out: bool) -> list[dict]:
     if v:
         st = "・".join(f"{qa_line.DECISION_JA.get(k, k)} {n}" for k, n in sorted(v.get("stories", {}).items()))
         rows.append({"label": "判定（E2E）", "text": (st or "-") if v["status"] == "done" else f"確かめられなかった: {v.get('why')}"})
+        if v.get("missing"):   # シナリオごとのジョブ（ADR 0054）: 結果のそろわなかったストーリーを名前で書く
+            rows.append({"label": "そろわなかったシナリオ", "text": "；".join(f"{m['story_id']}（{str(m['why'])[:60]}）" for m in v["missing"][:8])
+                         + (f" ほか {len(v['missing']) - 8} 件" if len(v["missing"]) > 8 else "")})
     else:
         rows.append({"label": "判定（E2E）", "text": "結果がそろわなかった（時間切れ）" if timed_out else "まだ"})
     if x:
@@ -251,6 +422,8 @@ def report(results: dict, timed_out: bool) -> list[dict]:
                      f"{len(x['candidates']) + len(x['notes'])} 件" if x["status"] == "done" else f"確かめられなかった: {x.get('why')}"})
     else:
         rows.append({"label": "探索（推論）", "text": "結果がそろわなかった（時間切れ）" if timed_out else "まだ"})
+    if results.get("capped"):
+        rows.append({"label": "費用の上限", "text": "版のチケットの費用の上限に当たったので、残りのシナリオは流していない"})
     notes = [n for w in WHICH for n in (results.get(w) or {}).get("notes") or []]
     if notes:
         rows.append({"label": "参考", "text": "；".join((f"[{n['what']}] " + (n.get("title") or n.get("story_id") or ""))[:100] for n in notes[:6])
@@ -258,19 +431,23 @@ def report(results: dict, timed_out: bool) -> list[dict]:
     return rows
 
 
-def decide(cur, gh, repo: str, release_id: str, results: dict, timed_out: bool, now: datetime | None = None) -> dict:
+def decide(cur, gh, repo: str, release_id: str, results: dict, timed_out: bool, now: datetime | None = None, plan: dict | None = None) -> dict:
     cands = [c for w in WHICH for c in (results.get(w) or {}).get("candidates") or []]
     rep = report(results, timed_out)
     payload = {"release_id": release_id, "repo": repo, "candidates": len(cands), "blockers": cands,
-               "verdict": results.get("verdict"), "explore": results.get("explore"), "report": rep, "timed_out": timed_out}
+               "verdict": results.get("verdict"), "explore": results.get("explore"), "report": rep, "timed_out": timed_out,
+               **({"capped": True} if results.get("capped") else {}), **({"issue": plan["issue"]} if plan else {})}
     if not _ev(cur, "qa.gate_decided", payload, f"qa.gate_decided:{release_id}", now):
+        return payload
+    body = [f"## 出荷の QA の関門（版 {release_id}、factory-engine の ADR 0049）", ""]
+    body += [f"- **{r['label']}**: {r['text']}" for r in rep]
+    body += ["", "関門は合否を決めません。ブロッカーにするかは承認者が決めます（本番を立てない段階の製品では記録だけ）。"]
+    if plan:   # 版ごとの Issue に報告を書いて閉じる（ADR 0054 の決定 2）。チケットの費用の集計もここで締まる
+        close_issue(gh, repo, plan["issue"], "\n".join(body))
         return payload
     try:   # 判定の固定 Issue にもまとめを書く（本番を立てない製品はここと記録だけが見える先）
         n = qa_line.find_issue(gh, repo, qa_line.DEFS["act"]["issue_label"])
         if n:
-            body = [f"## 出荷の QA の関門（版 {release_id}、factory-engine の ADR 0049）", ""]
-            body += [f"- **{r['label']}**: {r['text']}" for r in rep]
-            body += ["", "関門は合否を決めません。ブロッカーにするかは承認者が決めます（本番を立てない段階の製品では記録だけ）。"]
             gh("POST", f"repos/{repo}/issues/{n}/comments", {"body": "\n".join(body)})
     except Exception:  # noqa: BLE001  まとめは events に残っている
         pass

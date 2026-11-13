@@ -739,7 +739,11 @@ events:
   qa.gate_job:
     source: control_plane
     required: [release_id, repo, which, job_id, attempt]
-    note: "ADR 0049。関門のジョブを積んだ。which は verdict（判定、固定 Issue factory:qa）か explore（探索、factory:qa-explore。charter を足す）。確かめられなかったときの積み直しは attempt 2。dedupe は qa.gate_job:<release_id>:<which>:<attempt>"
+    note: "ADR 0049。関門のジョブを積んだ。which は verdict（判定、固定 Issue factory:qa）か explore（探索、factory:qa-explore。charter を足す）。確かめられなかったときの積み直しは attempt 2。dedupe は qa.gate_job:<release_id>:<which>:<attempt>。計画のある関門（ADR 0054）では unit（verdict:<story_id>・explore:<charter>）と story を足し、版ごとの Issue に積む。dedupe は qa.gate_job:<release_id>:<unit>:<attempt>"
+  qa.gate_plan:
+    source: control_plane
+    required: [release_id, repo, legacy]
+    note: "ADR 0054。関門を開いたときに 1 回だけ残す計画。legacy が偽なら、版ごとの Issue（issue、corr）と、シナリオごとの単位（units: [{unit, which, story か charter}]）と、版のチケットの費用の上限（cap_usd = ジョブの上限の合計 × 係数）。legacy が真なら、今までの形（固定 Issue に判定と探索の 2 本）で動かし、why に理由（単位の列がない・ストーリーを数えられなかった）。dedupe は qa.gate_plan:<release_id>"
   qa.gate_superseded:
     source: control_plane
     required: [release_id, repo, by_release]

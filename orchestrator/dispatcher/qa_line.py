@@ -36,7 +36,9 @@ DEFS = {
     "worker": {"env_host": "host.docker.internal"},
     "explore": {"hours": [1, 5], "through_pause": True, "priority": "p2", "defects_per_night_max": 3, "file_severities": ["s1", "s2", "s3"],
                 "charters": ["detour", "other-user", "come-back", "reader-words", "first-time"]},
-    "gate": {"priority": "p1", "hours": 6, "attempts": 2, "blocker_severities": ["s1", "s2"]},
+    "gate": {"priority": "p1", "hours": 6, "attempts": 2, "blocker_severities": ["s1", "s2"],
+             "release_issue_label": "factory:qa-release", "parallel": 1, "story_max_turns": 40, "story_cost_usd": 3, "explore_cost_usd": 5,
+             "ticket_cap_factor": 1.5},
     "synthetic": {"weekday": 6, "hours": [5, 7], "through_pause": True, "priority": "p2",
                   "slow_p95_ms": 1500, "slow_min_calls": 2, "hard_entry_attempts": 3, "opportunities_max": 4, "friction_env": "SYNTH_FRICTION",
                   "friction_example": {"slow": {"path": "/api/bookings", "method": "GET", "delay_ms": 2500},
@@ -104,28 +106,42 @@ def learned_focus(cur, repo: str, scenarios_max: int = 5) -> dict:
     return out
 
 
+def unit_ready(cur) -> bool:
+    """jobs に単位の列がある（postgres/init/009_job_unit.sql を当てた）か。なければ、同じ Issue に並べて積めない"""
+    cur.execute("select 1 from information_schema.columns where table_name='jobs' and column_name='unit' and table_schema=current_schema()")
+    return cur.fetchone() is not None
+
+
 def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | None = None, by: str = "factoryctl",
             priority: str = "p1", tier: str = "tier-judge", env_host: str | None = None, defs: dict | None = None,
-            extra: dict | None = None, issue_label: str | None = None) -> dict:
+            extra: dict | None = None, issue_label: str | None = None, issue: int | None = None, unit: str = "",
+            title: str | None = None) -> dict:
     """QA のジョブを固定 Issue に積む。返り値 {job_id, issue, release_id}。同じ Issue に動いているジョブがあれば psycopg の UniqueViolation。
-    extra はワーカーへの入力に足すもの（夜間の探索の mode・charter・night、出荷の関門の gate）。issue_label は積む固定 Issue（既定は判定の factory:qa）"""
+    extra はワーカーへの入力に足すもの（夜間の探索の mode・charter・night、出荷の関門の gate）。issue_label は積む固定 Issue（既定は判定の factory:qa）。
+    issue と unit を渡すと、その Issue（版ごとの QA のチケット。ADR 0054）に、その単位のジョブとして積む（同じ単位で動いているジョブがあれば UniqueViolation）"""
     defs = defs or load_defs()
-    issue = ensure_issue(gh, repo, issue_label or defs["act"]["issue_label"])
+    issue = issue or ensure_issue(gh, repo, issue_label or defs["act"]["issue_label"])
     corr = f"github:{repo}#{issue}"
     inp = build_input(cur, repo, env, list(stories or []), env_host or os.environ.get("QA_ENV_HOST") or defs["worker"]["env_host"])
     inp.update(extra or {})
     if inp.get("mode") == "explore":   # 探索は開いている Defect を見て、同じ不具合なら same_as を書く（重複起票を防ぐ）
         inp["open_defects"] = open_defects_for_worker(gh, repo, defs)
-    t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=EXPLORE_TITLE if issue_label == DEFS["act"]["explore_issue_label"] else TITLE, priority=ops.LEVELS[priority][0], state="active")
-    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority) "
-                "values (%s,%s,%s,%s,%s,%s,%s,%s) returning id", (corr, repo, issue, by, tier, KIND, t["id"], t["priority"]))
+    t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo,
+                          title=title or (EXPLORE_TITLE if issue_label == DEFS["act"]["explore_issue_label"] else TITLE),
+                          priority=ops.LEVELS[priority][0], state="active")
+    if unit:   # 単位の列は 009_job_unit.sql から。空のまま（今までの積み方）なら列に触らない
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority, unit) "
+                    "values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id", (corr, repo, issue, by, tier, KIND, t["id"], t["priority"], unit))
+    else:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority) "
+                    "values (%s,%s,%s,%s,%s,%s,%s,%s) returning id", (corr, repo, issue, by, tier, KIND, t["id"], t["priority"]))
     jid = cur.fetchone()["id"]
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', %s, %s, %s)",
                 (corr, jid, Jsonb({"by": by, "kind": KIND, "input": inp})))
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('qa.enqueued', %s, %s, %s)",
                 (corr, jid, Jsonb({"repo": repo, "issue": issue, "release_id": inp["release_id"], "env": env,
                                    "stories": inp["stories"], "job_id": jid, "by": by, "mode": inp.get("mode") or "verdict",
-                                   **({"gate": inp["gate"]} if inp.get("gate") else {})})))
+                                   **({"gate": inp["gate"]} if inp.get("gate") else {}), **({"unit": unit} if unit else {})})))
     return {"job_id": jid, "issue": issue, "release_id": inp["release_id"], "corr": corr}
 
 

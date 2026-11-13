@@ -1533,6 +1533,8 @@ def cost_cap_step(cur):
         cur.execute("select id, repo, source_ref, held, state from tickets where source='github' and state='active'")
         for t in cur.fetchall():
             corr = f"github:{t['source_ref']}"
+            if workflow_shadow.gate_caps(cur, corr):
+                continue   # 版ごとの QA のチケット（ADR 0054 の決定 5）。上限に当たったら関門が残りを積まずに報告を作る。人への停止は開かない
             hit = workflow_guard.cost_gate(cur, corr)
             if not hit:
                 continue

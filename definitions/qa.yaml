@@ -113,6 +113,13 @@ gate:
   hours: 6                      # 開いてから結果がそろうのを待つ時間。過ぎたらそろった分だけで報告を作る
   attempts: 2                   # 確かめられなかったジョブ（失敗・結果なし・判定が blocked だけ）は 1 回だけ積み直す
   blocker_severities: [s1, s2]  # 探索の見つけたもののうち、ブロッカーの候補に挙げる重要度（判定は known_gap でない Defect の hold を全部挙げる）
+  # 版ごとのチケットとシナリオごとのジョブ（ADR 0054）。数値は運用パラメータ。実績を見て直す
+  release_issue_label: "factory:qa-release"   # 版ごとの Issue（題「QA: <版>」）。関門が作り、報告を書いて閉じる
+  parallel: 1                   # 判定のジョブを同時に流す数（iOS のシミュレーターは Mac ランナーの端末の数まで）。探索は別に並ぶ
+  story_max_turns: 40           # 判定のジョブ（ストーリー 1 本）のターンの上限
+  story_cost_usd: 3             # 判定のジョブの費用の上限（ドル）
+  explore_cost_usd: 5           # 探索のジョブ（チャーター 1 つ）の費用の上限（ドル）。ターンは explore.max_turns
+  ticket_cap_factor: 1.5        # 版のチケットの費用の上限 = ジョブの上限の合計 × これ（積み直しの分）。当たったら残りを積まず、そろった分で報告を作る
 
 # 合成の利用者（ADR 0043 の O4 synthetic_users_loop。ADR 0023 の決めどころ 3）。夜間の探索の道具（ワーカー・触れる環境・Chromium）を流用し、
 # ユーザーストーリーに沿って合成の利用者が staging を一定量歩き、行動ログ（製品の specs/analytics/events.yaml の名前）と応答時間を残す。
