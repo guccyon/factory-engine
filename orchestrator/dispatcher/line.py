@@ -24,7 +24,7 @@ GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "case_review", "inci
 GOVERNANCE_WHERE = ("(q.kind = any(%(gov_kinds)s) or q.correlation_id like 'committee:%%' "
                     "or q.correlation_id in (select f.correlation_id from events f where f.name='knowledge.case_filed'))")
 # 窓口の相談のジョブ（ADR 0030 の 6）。ラインにも委員会の枠にも数えない
-DESK_KINDS = ("desk_consult", "desk_answer")
+DESK_KINDS = ("desk_consult", "desk_answer", "desk_task")
 DESK_WHERE = "(q.kind = any(%(desk_kinds)s))"
 LINE_WHERE = f"(not {GOVERNANCE_WHERE} and not {DESK_WHERE})"
 # 知見の委員会は同時に 1 つだけ（2026-11-08 オーナー）。並べて流すと知見が競合・矛盾する。後の検討が前の議決を直すこともあるので、

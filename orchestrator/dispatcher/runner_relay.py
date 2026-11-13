@@ -82,7 +82,8 @@ INVESTIGATE_TOOLS = {t["name"]: t for t in [
 ]}
 LOCAL_TOOLS.update(INVESTIGATE_TOOLS)
 # ジョブの種類ごとに通す道具（definitions/qa.yaml の runner_tools と env_tools、definitions/investigate.yaml の sources と同じ）
-KIND_TOOLS = {"qa": tuple(TOOLS) + ("env_restart", "env_clock"), "investigate": tuple(INVESTIGATE_TOOLS)}
+KIND_TOOLS = {"qa": tuple(TOOLS) + ("env_restart", "env_clock"), "investigate": tuple(INVESTIGATE_TOOLS),
+              "desk_task": ("inv_sql", "inv_github")}   # 窓口の依頼の実行役（ADR 0037 の決定 5）。工場の記録のビューと製品の GitHub を読むだけ（ジョブのログは渡さない）
 CALL_TIMEOUT = {"app_build": 60, "build_status": 30}   # ビルドは build_status で待つので、呼び出し自体は短い
 
 

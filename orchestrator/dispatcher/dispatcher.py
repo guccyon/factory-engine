@@ -44,6 +44,7 @@ import defect
 import runner_relay
 import design_system_line
 import desk_answer
+import desk_task
 import desk_investigate
 import investigate_bench
 import desk_line
@@ -168,18 +169,18 @@ def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
 # 始めるときに Issue のラベルを替えない種類（ADR 0004 / 0006 / 0022 / 0024 / 0025 / 0030 / 0048）。issue_number は PR か固定 Issue の番号か、
 # Issue のない仮の負の数（窓口の会話・一次調査とその評価セット）。仮の番号のラベルを替えると GitHub が 404 を返してジョブが落ちる（2026-11-10）
 NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
-                  "ui_design_review", "desk_consult", "desk_answer", "investigate")
+                  "ui_design_review", "desk_consult", "desk_answer", "desk_task", "investigate")
 # ジョブ専用の空の DB を作らない種類（製品のテストを流さない）。一次調査は制御プレーンを調査用の接続（INVESTIGATE_DATABASE_URL）で読むだけ。
 # 中継（relay_env）を使う種類は --network を中継の側で付けるので、ここに入れないと --network が 2 回付いて docker run が 125 で落ちる（2026-11-10）
 NO_JOB_DB_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
-                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa", "investigate", "spike")
+                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike")
 # 入力（job.enqueued の input）を標準入力で渡す種類。ワーカーの入口が最初に標準入力を読む
 PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan",
-               "design_system", "desk_consult", "desk_answer", "qa", "investigate", "spike")
+               "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike")
 # PR を作らない種類で、終了コード 0 と結果の ok で成功とみなすもの
 OK_RESULT_KINDS = ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan",
-                   "design_system", "desk_consult", "desk_answer", "qa", "investigate", "spike")
-ISSUELESS_KINDS = ("desk_consult", "desk_answer", "investigate")   # issue_number が仮の負の数の種類
+                   "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike")
+ISSUELESS_KINDS = ("desk_consult", "desk_answer", "desk_task", "investigate")   # issue_number が仮の負の数の種類
 
 
 def image_for(repo: str, issue: int) -> str:
@@ -502,6 +503,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
+                   *(["-i", "--entrypoint", "/usr/local/bin/desk_task.sh"] if kind == "desk_task" else []),   # 窓口の依頼の実行役（ADR 0037 の決定 5）。道具は中継（relay_env）で渡す
                    *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh", "-e", f"ENGINE_REF={_investigate_ref(cur, job_id)}"] if kind == "investigate" else []),   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
@@ -725,6 +727,14 @@ def run_job(job: dict, reattaching: bool = False):
                         desk_investigate.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
                     log("investigate record failed", job_id, repr(e))
+            elif kind == "desk_task":
+                # 窓口の依頼の実行役（ADR 0037 の決定 5 の quick）: 結果を成果物に残し、会話に提出する。失敗も提出する
+                if state == "succeeded" and result:
+                    record_preferences_used(cur, corr, job_id, judge_inp, role="desk.task")
+                try:
+                    desk_task.record(cur, job, result, state, err)
+                except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
+                    log("desk task record failed", job_id, repr(e))
             elif kind == "desk_answer":
                 # 窓口の回答役（ADR 0030 の 4）: 問い返しか根拠つきの回答を会話に書く。失敗も会話で依頼者に知らせる
                 if state == "succeeded" and result:
@@ -998,6 +1008,11 @@ def desk_loop():
                 log(f"enqueued desk answer job {jid}")
         except Exception as e:  # noqa: BLE001
             log("desk answer enqueue failed", repr(e))
+        try:   # 窓口の依頼の実行役（ADR 0037 の決定 5）。積むのも取り出すのも窓口の枠
+            for jid in desk_task.enqueue(cur, REPOS):
+                log(f"enqueued desk task job {jid}")
+        except Exception as e:  # noqa: BLE001
+            log("desk task enqueue failed", repr(e))
         try:   # 工場の中での一次調査（ADR 0048）。積むのは窓口の周回、取り出すのは governance の枠
             for jid in desk_investigate.enqueue(cur, REPOS, engine_ref=version.engine_version(ENV)):
                 log(f"enqueued investigate job {jid}")

@@ -182,3 +182,20 @@ def test_stated_preferences_are_shaped_and_in_the_schema():
     sch = desk_consult.stated_schema()
     assert "desk.converse" in sch["items"]["properties"]["work"]["items"]["enum"]
     assert "STATED" not in desk_consult.STATED_PROMPT and "quote" in desk_consult.STATED_PROMPT
+
+
+def test_quick_route_for_work_that_needs_no_code():
+    """コードを変えない依頼（文面・要約・表・見立て）はその場で答える仕事に振り分ける（ADR 0037 の決定 5）。断る範囲を絞った"""
+    out = {**O(tasks=[]), "route": {"path": "quick", "op": "", "params": [], "why": "仕様を読めば書ける",
+                                    "task": {"what": "新機能のお知らせの文面を 3 案", "form": "text"}}}
+    d = dc.decide(out, {"operations": OPS}, DEFS)
+    assert d["outcome"] == "route" and d["route"] == {"path": "quick", "task": {"what": "新機能のお知らせの文面を 3 案", "form": "text"},
+                                                      "why": "仕様を読めば書ける"}
+    odd = {**out, "route": {**out["route"], "task": {"what": "表に", "form": "slides"}}}
+    assert dc.decide(odd, {"operations": OPS}, DEFS)["route"]["task"]["form"] == "answer"
+    empty = {**out, "route": {**out["route"], "task": {"what": " ", "form": "text"}}}
+    assert dc.decide(empty, {"operations": OPS}, DEFS)["outcome"] == "failed"
+    s = dc.schema(DEFS, OPS)["properties"]["route"]
+    assert "quick" in s["properties"]["path"]["enum"] and "task" in s["required"]
+    p = dc.prompt(DEFS, {"operations": OPS})
+    assert "quick（その場で答える）" in p and "読んで考えれば作れるものは断らずに quick" in p

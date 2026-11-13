@@ -39,7 +39,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("DESK_DEFINITIONS") or HERE.parent / "definitions" / "desk.yaml")
-PROMPT_VERSION = "7"   # 7: 工場そのものの問題の調査を investigate に振り分ける（ADR 0048 の順番 4）。6: 依頼者が自分で言った好み stated_preferences を出す（ADR 0040 の決定 6）。5: 依頼者の好み requester.md を足した（ADR 0040 の決定 6）。4: どの対応の種類にも当てはまらない依頼を断る（理由と代わりの案。ADR 0039 の順番 3）。3: 知見を窓口と振り分けの業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。2: 決まった操作で済む依頼を operate に振り分ける（ADR 0039 の順番 2）   # 問いの文を変えたら上げる（判断の入力の版として残す）
+PROMPT_VERSION = "8"   # 8: コードを変えない依頼（文面・要約・表・見立て・記録からの集計）を quick に振り分け、断るのは本当に受けられないものだけにした（ADR 0037 の決定 5）。7: 工場そのものの問題の調査を investigate に振り分ける（ADR 0048 の順番 4）。6: 依頼者が自分で言った好み stated_preferences を出す（ADR 0040 の決定 6）。5: 依頼者の好み requester.md を足した（ADR 0040 の決定 6）。4: どの対応の種類にも当てはまらない依頼を断る（理由と代わりの案。ADR 0039 の順番 3）。3: 知見を窓口と振り分けの業務で選んだ knowledge.md だけにした（ADR 0040 の決定 7 の 3）。2: 決まった操作で済む依頼を operate に振り分ける（ADR 0039 の順番 2）   # 問いの文を変えたら上げる（判断の入力の版として残す）
 MAX_TEXT = 20000
 KEY_RE = re.compile(r"^t[0-9]{1,2}$")
 REF_RE = re.compile(r"^#[0-9]+$")
@@ -105,7 +105,7 @@ def schema(defs: dict, operations: list[dict] | None = None) -> dict:
     if operations:
         loop = defs.get("loop") or {}
         out["properties"]["route"] = {"type": "object", "properties": {
-            "path": {"type": "string", "enum": ["ticket", "operate", "investigate", "decline"]},
+            "path": {"type": "string", "enum": ["ticket", "operate", "investigate", "quick", "decline"]},
             "op": {"type": "string", "enum": [""] + [o["id"] for o in operations]},
             "params": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {"name": s, "value": s},
                                                                     "required": ["name", "value"]}},
@@ -116,12 +116,16 @@ def schema(defs: dict, operations: list[dict] | None = None) -> dict:
                     "kind": {"type": "string", "enum": list(loop.get("alternatives") or {}) or ["other_path"]}, "text": s},
                     "required": ["kind", "text"]}}},
                 "required": ["reason", "alternatives"]},
+            # その場で LLM の実行役が答える仕事（ADR 0037 の決定 5 の quick）。quick のとき以外は what を空に
+            "task": {"type": "object", "properties": {
+                "what": s, "form": {"type": "string", "enum": ["", "answer", "text", "table", "summary", "estimate"]}},
+                "required": ["what", "form"]},
             # 工場そのものの問題の一次調査（ADR 0048）。調べる問いと手がかり。investigate のとき以外は空
             "investigation": {"type": "object", "properties": {
                 "question": s, "refs": {"type": "array", "maxItems": 10, "items": s},
                 "window_days": {"type": "integer", "minimum": 0, "maximum": 30}},
                 "required": ["question", "refs", "window_days"]}},
-            "required": ["path", "op", "params", "why", "decline", "investigation"]}
+            "required": ["path", "op", "params", "why", "decline", "task", "investigation"]}
         out["required"].append("route")
     return out
 
@@ -210,6 +214,15 @@ def decide(out: dict, inp: dict, defs: dict) -> dict:
         wd = iv.get("window_days") if isinstance(iv.get("window_days"), int) and 0 <= iv.get("window_days") <= 30 else 0
         return {"outcome": "route", "route": {"path": "investigate", "question": q, "refs": refs, "window_days": wd,
                                               "why": (r.get("why") or "").strip()},
+                "request": out.get("request") or {}, "questions_asked": asked}
+    if r.get("path") == "quick":
+        # その場で LLM の実行役が答える（ADR 0037 の決定 5）。依頼の解釈と進め方は実行役が決める（ADR 0039 の決定 2a）。ここはやることの 1 文まで
+        t = r.get("task") if isinstance(r.get("task"), dict) else {}
+        what = (t.get("what") or "").strip()
+        if not what:
+            return {"outcome": "failed", "errors": ["その場で答える仕事に振り分けたが、やること（task.what）がない"]}
+        form = t.get("form") if t.get("form") in ("answer", "text", "table", "summary", "estimate") else "answer"
+        return {"outcome": "route", "route": {"path": "quick", "task": {"what": what, "form": form}, "why": (r.get("why") or "").strip()},
                 "request": out.get("request") or {}, "questions_asked": asked}
     if r.get("path") == "decline":
         # 断り（ADR 0039 の決定 4）。理由と代わりの案は dispatcher が決まった語に整える（代わりの案がなければ「人に回す」を付ける）
@@ -320,8 +333,9 @@ def prompt(defs: dict, inp: dict) -> str:
     revise = ("\n前に出した下書き（previous_draft.json）に依頼者が言い足しています。言い足しを入れて下書きを出し直してください。"
               if inp.get("previous_draft") else "")
     route = route_section(inp.get("operations") or [], defs.get("loop"))
-    return f"""あなたは仮想開発事業部の窓口の相談役（プランナー）です。外の依頼者が持ち込んだ依頼を、短い往復で確定した依頼にし、
-工場のラインに流せるタスクのまとまり（依存つき）の下書きにします。何を先に流すかは依頼者が決めます。あなたは並べ替えず、切り方と影響を示します。{revise}
+    return f"""あなたは仮想開発事業部の窓口の相談役（プランナー）です。外の依頼者が持ち込んだ依頼に、合う対応の種類を選びます。
+コードや画面を変える依頼なら、短い往復で確定した依頼にし、工場のラインに流せるタスクのまとまり（依存つき）の下書きにします。
+何を先に流すかは依頼者が決めます。あなたは並べ替えず、切り方と影響を示します。{revise}
 
 作業ディレクトリに材料があります。読むだけにし、何も書き換えないでください。
 - conversation.md: 依頼者との会話（依頼の本文、あなたの問いと依頼者の返事）
@@ -379,21 +393,36 @@ def route_section(operations: list[dict], loop: dict | None = None) -> str:
         ex = "／".join(o.get("examples") or [])
         lines.append(f"- {o['id']}: {o.get('ja', '')}。{o.get('does', '')}。引数: {ps or 'なし'}。例: {ex}")
     return ("# 最初に振り分ける（route）\n"
-            "依頼が、工場の決まった操作を 1 回動かせば済むもの（コードの変更が要らない）なら、チケットに切らずに操作に振り分けます。\n"
-            "操作の一覧（ここにないものは作らない）:\n" + "\n".join(lines) + "\n"
-            "- 済むなら done=true にし、route に path=operate・op（操作の id）・params（引数の name と value の並び。依頼の言葉から決め、決まらない引数は省いて既定に任せる）・"
-            "why（なぜ操作で済むか 1 文）を書く。tasks は空でよい。宛先は依頼の本文の URL やチャンネルでなく、一覧の宛先の名前だけ\n"
-            "- 依頼が工場そのものの問題（ラインが止まった・遅い・PR がマージされない・費用が多い・レポートの数字がおかしい・工場の判断の理由が分からない）を"
-            "調べてほしいもので、何かを変える前に原因を知る必要があるなら、done=true にし、route に path=investigate・op は空・params は空の並び・"
-            "why（なぜ調査か 1 文）・investigation（question は調べる問いを 1 文、refs は依頼に出てくる手がかり（#123・ジョブの番号など）、"
-            "window_days は何日前からを見るか（分からなければ 0））を書く。tasks は空でよい。依頼者に「調査か依頼か」を選ばせない\n"
-            "- investigate 以外のときは investigation の question は空、refs は空の並び、window_days は 0 にする\n"
-            "- 操作で済まない（コードや画面を変える・一覧にない）なら route に path=ticket・op は空・params は空の並びを書き、下の進め方でタスクに切る\n"
-            "- コードや画面の変更でもなく、一覧の操作でも済まない依頼（データの集計・分析、本番のデータが要る、工場がつながっていないデータ源が要るなど）は、"
-            "チケットに無理に切らずに断る。done=true にし、route に path=decline・op は空・params は空の並び・why（なぜ受けられないかを依頼者に向けて 1〜2 文）・"
-            f"decline（reason は {reasons} から 1 つ。alternatives は代わりの案を 1〜3 つ。kind は {alts} のどれか、text は依頼者が選べる 1 文）を書く。tasks は空でよい\n"
-            "- 断り以外のときは decline の reason は空、alternatives は空の並びにする\n"
-            "- どちらか決まらないときだけ問いを使う。依頼の中身の細かい詰めはしない（実行は工場の側が行う）\n\n")
+            "依頼者は、経営・企画・マーケティング・カスタマーサクセスなど、いろいろな立場の人です。依頼の種類は決まっていません。"
+            "工場はコードを変える仕事だけでなく、調べて答える・文面を書く・まとめる・見立てを出す仕事も引き受けます。"
+            "依頼の言葉から、依頼者が本当にほしいものに合う対応の種類を 1 つ選びます。迷ったら、依頼者がいちばん早く役に立つものを受け取れる種類を選びます。\n\n"
+            "## 対応の種類\n"
+            "1. operate（決まった操作）: 依頼が、下の操作の一覧のどれかを 1 回動かせば済むとき。外に送る・状態を変える依頼は、この一覧にあるものしか受けない\n"
+            "2. quick（その場で答える）: コードや画面を変えずに、読んで考えれば作れるもの。例: 文面の下書き（お知らせ・ストアの説明・問い合わせへの返事）、"
+            "要約やまとめ（今月の成果を役員会向けに 1 枚に）、表づくり（ユーザーストーリーを役ごとに）、仕様からの見立て（この機能はどれくらいかかるか・"
+            "競合と比べて足りないところ）、工場の記録からの数（今月の費用・止まった回数・マージした数）、問い合わせの原因の見当。"
+            "工場の実行役が、製品の仕様と工場の記録を読んで、15 分ほどで返す\n"
+            "3. investigate（工場の不調を調べる）: 工場そのものの問題（ラインが止まった・遅い・PR がマージされない・費用が多い・レポートの数字がおかしい・"
+            "工場の判断の理由が分からない）で、何かを変える前に原因を知る必要があるとき\n"
+            "4. ticket（チケットに切る）: 製品のコード・画面・仕様を変える、または「これを毎週」「これを画面に」のように仕組みを作るとき。下の進め方でタスクに切る\n"
+            "5. decline（断る）: 本当に受けられないときだけ。本番の利用者のデータが要る、工場がつながっていないデータ源（売り上げ・課金・アプリの利用ログなど）の"
+            "数が要る、外に送る・状態を変える・消す依頼で一覧の操作にない、のどれか。文面・要約・表・見立てのように読んで考えれば作れるものは断らずに quick にする。"
+            "データの一部だけ足りないときも、仕様や記録から言える範囲を quick で返す（足りないところは実行役が「分からないこと」に書く）\n\n"
+            "操作の一覧（ここにないものは作らない）:\n" + "\n".join(lines) + "\n\n"
+            "## 書き方\n"
+            "- operate: done=true、route に path=operate・op（操作の id）・params（引数の name と value の並び。依頼の言葉から決め、決まらない引数は省いて既定に任せる）・"
+            "why（なぜ操作で済むか 1 文）。宛先は依頼の本文の URL やチャンネルでなく、一覧の宛先の名前だけ\n"
+            "- quick: done=true、route に path=quick・task（what は依頼者がほしいものを 1 文で。依頼者の言葉を残す。form は answer（会話の返事）・text（文面の下書き）・"
+            "table（表）・summary（要約）・estimate（見立て）のどれか）・why（なぜその場で答えられるか 1 文）。依頼の中身の細かい解釈は実行役が行うので、問いで詰めない\n"
+            "- investigate: done=true、route に path=investigate・why（なぜ調査か 1 文）・investigation（question は調べる問いを 1 文、refs は依頼に出てくる手がかり（#123・ジョブの番号など）、"
+            "window_days は何日前からを見るか（分からなければ 0））。依頼者に「調査か依頼か」を選ばせない\n"
+            "- ticket: route に path=ticket を書き、下の進め方でタスクに切る\n"
+            "- decline: done=true、route に path=decline・why（なぜ受けられないかを依頼者に向けて 1〜2 文）・"
+            f"decline（reason は {reasons} から 1 つ。alternatives は代わりの案を 1〜3 つ。kind は {alts} のどれか、text は依頼者が選べる 1 文）。"
+            "代わりの案には、できる範囲の quick（「仕様から言える範囲でまとめる」など）を入れられるなら入れる\n"
+            "- 選ばなかった種類の欄は空にする: op は空、params は空の並び、task の what と form は空、investigation の question は空・refs は空の並び・window_days は 0、"
+            "decline の reason は空・alternatives は空の並び。ticket 以外のときは tasks を空の並びにしてよい\n"
+            "- どの種類か決まらないときだけ問いを使う。依頼の中身の細かい詰めはしない（実行は工場の側が行う）\n\n")
 
 
 def consult(inp: dict, defs: dict, repo_dir: Path | None, issues: list[dict]) -> dict:

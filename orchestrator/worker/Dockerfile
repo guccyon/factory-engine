@@ -40,6 +40,8 @@ COPY --chown=worker:worker spike.sh /usr/local/bin/spike.sh
 COPY --chown=worker:worker desk_consult.sh /usr/local/bin/desk_consult.sh
 # 窓口の回答役のジョブ（ADR 0030 の 4。問い合わせに根拠つきで答える。読むだけ）
 COPY --chown=worker:worker desk_answer.sh /usr/local/bin/desk_answer.sh
+# 窓口の依頼の実行役のジョブ（ADR 0037 の決定 5 の quick。その場で答え・文面・表を作る。読むだけ。道具は dispatcher の中継で受ける）
+COPY --chown=worker:worker desk_task.sh /usr/local/bin/desk_task.sh
 # QA 役（ADR 0028 の決定 2）。画面を動かすので factory-worker:design の上で動かす（playwright-core は Dockerfile.design）
 COPY --chown=worker:worker qa.sh /usr/local/bin/qa.sh
 # 知見の委員会のジョブ（ADR 0024）
