@@ -4,26 +4,36 @@
 流れ（supervisor の qa_gate_step が周回ごとに step を呼ぶ。判断は持たず、記録を見て次の手を打つだけ）:
   release.deployed（staging・ok）→ open: qa.gate_opened。前の版の開いた関門は qa.gate_superseded
   → fill: 判定は固定 Issue factory:qa、探索は factory:qa-explore に積む（qa.gate_job。同じ Issue に動くジョブがあれば次の周回で）
+  → 時刻をまたぐストーリー（specs/stories の time があるもの）は判定から外し、判定と探索が両方終わってから
+    「時刻の判定」（which: verdict_time）として同じ判定の固定 Issue に積む（ADR 0055 の決定 3。時計を合わせる間、環境を 1 つのジョブだけが使う）。
+    どれを外すかは開いた最初の周回で 1 回だけ決めて qa.gate_plan に残す
   → 確かめられなかったジョブ（失敗・結果なし・判定が blocked だけ）は 1 回だけ積み直す
   → 両方の結果がそろうか、開いてから definitions/qa.yaml の gate.hoursたったら decide: qa.gate_decided（報告つき）と、判定の固定 Issue へのまとめ
   → 本番を立てる段階の製品は、受信トレイの「本番待ち」に報告を添える（inbox._release_item）。承認者は「本番に出す」か「見送る」（qa.gate_blocked）
 
 記録（events）:
   qa.gate_opened      {release_id, repo, env}
-  qa.gate_job         {release_id, repo, which: verdict|explore, job_id, attempt, charter?}
+  qa.gate_plan        {release_id, repo, time_stories, other_stories?, error?}
+  qa.gate_job         {release_id, repo, which: verdict|explore|verdict_time, job_id, attempt, charter?, stories?}
   qa.gate_superseded  {release_id, repo, by_release}
-  qa.gate_decided     {release_id, repo, candidates, verdict: {...}, explore: {...}, report: [{label, text}], timed_out}
+  qa.gate_decided     {release_id, repo, candidates, verdict: {...}, explore: {...}, verdict_time?: {...}, report: [{label, text}], timed_out}
   qa.gate_blocked     {release_id, repo, by, via, note}
 """
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 
+import yaml
 from psycopg.types.json import Jsonb
 
 import qa_line
 
-WHICH = ("verdict", "explore")
+WHICH = ("verdict", "explore")   # 並行に流すもの
+TIME = "verdict_time"             # 時刻をまたぐストーリーの判定。WHICH が終わってから 1 つだけで流す（ADR 0055）
+ALL = WHICH + (TIME,)
+LABEL_JA = {"verdict": "判定（E2E）", "explore": "探索（推論）", TIME: "判定（時刻をまたぐ）"}
+STORIES_DIR = "specs/stories"
 RECORD_GRACE = timedelta(minutes=10)   # ジョブが終わってから dispatcher が結果を記録するまでの猶予
 TERMINAL = ("succeeded", "failed", "cancelled")
 SEV_JA = {"s1": "S1", "s2": "S2", "s3": "S3", "s4": "S4"}
@@ -38,18 +48,20 @@ def _ev(cur, name: str, payload: dict, dedupe: str | None = None, now: datetime 
 
 # ------------------------------------------------------------------ 読む
 def gate(cur, release_id: str) -> dict | None:
-    """その版の関門の状態。{release_id, repo, opened_at, state: open|decided|superseded, jobs: {which: [qa.gate_job...]}, decided, blocked}"""
+    """その版の関門の状態。{release_id, repo, opened_at, state: open|decided|superseded, jobs: {which: [qa.gate_job...]}, plan, decided, blocked}"""
     cur.execute("select name, payload, occurred_at from events where correlation_id=%s and name like 'qa.gate_%%' order by id",
                 (f"qa_gate:{release_id}",))
     rows = cur.fetchall()
     if not rows or rows[0]["name"] != "qa.gate_opened":
         return None
     g = {"release_id": release_id, "repo": rows[0]["payload"]["repo"], "opened_at": rows[0]["occurred_at"], "state": "open",
-         "jobs": {w: [] for w in WHICH}, "decided": None, "blocked": None}
+         "jobs": {w: [] for w in ALL}, "plan": None, "decided": None, "blocked": None}
     for r in rows[1:]:
         p = r["payload"]
         if r["name"] == "qa.gate_job":
             g["jobs"][p["which"]].append(p)
+        elif r["name"] == "qa.gate_plan":
+            g["plan"] = p
         elif r["name"] == "qa.gate_decided":
             g["state"], g["decided"] = "decided", {**p, "at": r["occurred_at"]}
         elif r["name"] == "qa.gate_superseded" and g["state"] == "open":
@@ -155,6 +167,41 @@ def explore_outcome(cur, job_id: int, now: datetime, blocker_severities=("s1", "
 
 
 
+# ------------------------------------------------------------------ 時刻をまたぐストーリーを分ける（ADR 0055 の決定 3）
+def time_stories(gh, repo: str) -> tuple[list[str], list[str]]:
+    """製品の specs/stories/ の active なユーザーストーリーを、time があるもの・ないものに分ける（id の並び）。読めなければ例外"""
+    listing = gh("GET", f"repos/{repo}/contents/{STORIES_DIR}") or []
+    if not isinstance(listing, list):
+        raise RuntimeError(f"{STORIES_DIR} の一覧が読めない")
+    with_time, without = [], []
+    for f in sorted((x for x in listing if isinstance(x, dict) and x.get("type") == "file"), key=lambda x: x.get("name") or ""):
+        if not str(f.get("name") or "").endswith(".yaml") or f["name"] == "actors.yaml":
+            continue
+        got = gh("GET", f"repos/{repo}/contents/{f['path']}") or {}
+        doc = yaml.safe_load(base64.b64decode(got.get("content") or "").decode("utf-8")) if isinstance(got, dict) else None
+        if not isinstance(doc, dict) or doc.get("type") != "UserStory" or doc.get("status", "active") != "active" or not doc.get("id"):
+            continue
+        (with_time if doc.get("time") else without).append(str(doc["id"]))
+    return with_time, without
+
+
+def plan(cur, gh, g: dict, now: datetime, log=print) -> dict:
+    """その版の関門で、時刻をまたぐストーリーをどれにするか。最初の周回で 1 回だけ決めて qa.gate_plan に残す。
+    読めなかったときは分けない（time_stories が空、other_stories は None＝判定は今までどおり全部）"""
+    if g.get("plan") is not None:
+        return g["plan"]
+    rid, repo = g["release_id"], g["repo"]
+    try:
+        with_time, without = time_stories(gh, repo)
+        p = {"release_id": rid, "repo": repo, "time_stories": with_time, "other_stories": without}
+    except Exception as e:  # noqa: BLE001  分けられないだけで、関門は今までどおり流す
+        log("qa gate plan failed", repo, rid, repr(e)[:200])
+        p = {"release_id": rid, "repo": repo, "time_stories": [], "other_stories": None, "error": repr(e)[:200]}
+    _ev(cur, "qa.gate_plan", p, f"qa.gate_plan:{rid}", now)
+    g["plan"] = p
+    return p
+
+
 # ------------------------------------------------------------------ 動かす
 def next_charter(cur, repo: str, defs: dict) -> str:
     """その製品で最後に使ったチャーターの次（夜間の探索と同じ 5 種を回す）"""
@@ -173,12 +220,14 @@ def open_gate(cur, repo: str, release_id: str, now: datetime | None = None) -> b
     return _ev(cur, "qa.gate_opened", {"release_id": release_id, "repo": repo, "env": "staging"}, f"qa.gate_opened:{release_id}", now)
 
 
-def enqueue_job(cur, gh, repo: str, release_id: str, which: str, attempt: int, defs: dict, now: datetime) -> dict:
-    """関門のジョブを 1 つ積む。同じ固定 Issue に動いているジョブがあれば psycopg の UniqueViolation（次の周回で）"""
-    if which == "verdict":
+def enqueue_job(cur, gh, repo: str, release_id: str, which: str, attempt: int, defs: dict, now: datetime,
+                stories: list[str] | None = None) -> dict:
+    """関門のジョブを 1 つ積む。stories は判定で流すストーリー（なければ全部）。同じ固定 Issue に動いているジョブがあれば
+    psycopg の UniqueViolation（次の周回で）"""
+    if which in ("verdict", TIME):
         got = qa_line.enqueue(cur, gh, repo, by="qa_gate", priority=(defs.get("gate") or qa_line.DEFS["gate"])["priority"], defs=defs,
-                              extra={"gate": release_id})
-        extra = {}
+                              stories=stories, extra={"gate": release_id})
+        extra = {"stories": list(stories)} if stories else {}
     else:
         charter = next_charter(cur, repo, defs)
         got = qa_line.enqueue(cur, gh, repo, by="qa_gate", priority=(defs.get("gate") or qa_line.DEFS["gate"])["priority"], defs=defs,
@@ -197,7 +246,7 @@ def step(cur, gh, repo: str, *, defs: dict | None = None, now: datetime | None =
     defs = defs or qa_line.load_defs()
     now = now or datetime.now(timezone.utc)
     gd = {**qa_line.DEFS["gate"], **(defs.get("gate") or {})}   # hours（結果を待つ時間）・attempts（積み直しを含む回数）・priority・blocker_severities
-    outcome = {"verdict": verdict_outcome,
+    outcome = {"verdict": verdict_outcome, TIME: verdict_outcome,
                "explore": lambda c, j, n: explore_outcome(c, j, n, tuple(gd["blocker_severities"]))}
     out = {"opened": None, "enqueued": [], "decided": None}
     rid = to_open(cur, repo)
@@ -205,15 +254,18 @@ def step(cur, gh, repo: str, *, defs: dict | None = None, now: datetime | None =
         out["opened"] = rid
     for rid in open_gates(cur, repo):
         g = gate(cur, rid)
+        pl = plan(cur, gh, g, now, log) if may_enqueue else (g.get("plan") or {"time_stories": [], "other_stories": None})
+        time_ids, other_ids = list(pl.get("time_stories") or []), pl.get("other_stories")
         results = {}
-        for which in WHICH:
+
+        def run(which, stories=None):
             jobs = g["jobs"][which]
             res = outcome[which](cur, jobs[-1]["job_id"], now) if jobs else None
             if res and res["status"] == "unconfirmed" and len(jobs) < int(gd["attempts"]) and may_enqueue:
                 jobs, res = jobs + [None], None   # 積み直す（下で）
             if (not jobs or jobs[-1] is None) and may_enqueue:
                 try:
-                    got = enqueue_job(cur, gh, repo, rid, which, len([j for j in jobs if j]) + 1, defs, now)
+                    got = enqueue_job(cur, gh, repo, rid, which, len([j for j in jobs if j]) + 1, defs, now, stories=stories)
                     out["enqueued"].append({"which": which, **got})
                     if on_enqueued:
                         on_enqueued(got)
@@ -221,9 +273,19 @@ def step(cur, gh, repo: str, *, defs: dict | None = None, now: datetime | None =
                     pass   # 同じ固定 Issue の QA のジョブが待ち・実行中。次の周回で
                 except Exception as e:  # noqa: BLE001  次の周回でやり直す
                     log("qa gate enqueue failed", repo, rid, which, repr(e)[:200])
-            results[which] = res
+            return res
+
+        for which in WHICH:
+            if which == "verdict" and time_ids and not other_ids:
+                results[which] = {"status": "done", "why": None, "candidates": [], "notes": [], "stories": {}}   # 全部が時刻をまたぐ
+                continue
+            results[which] = run(which, other_ids if which == "verdict" and time_ids else None)
+        need = WHICH
+        if time_ids:   # 時刻をまたぐストーリーは、判定と探索が終わってから 1 つだけで流す（ADR 0055 の決定 3）
+            need = ALL
+            results[TIME] = run(TIME, time_ids) if all(results.get(w) for w in WHICH) else None
         timed_out = now - g["opened_at"] > timedelta(hours=float(gd["hours"]))
-        if all(results.get(w) for w in WHICH) or timed_out:
+        if all(results.get(w) for w in need) or timed_out:
             out["decided"] = decide(cur, gh, repo, rid, results, timed_out, now)
     return out
 
@@ -237,7 +299,7 @@ def _line(c: dict) -> str:
 
 def report(results: dict, timed_out: bool) -> list[dict]:
     """受信トレイの detail（{label, text}）の形の報告"""
-    cands = [c for w in WHICH for c in (results.get(w) or {}).get("candidates") or []]
+    cands = [c for w in ALL for c in (results.get(w) or {}).get("candidates") or []]
     v, x = results.get("verdict"), results.get("explore")
     rows = [{"label": "ブロッカーの候補", "text": f"{len(cands)} 件" + ("。ブロッカーにするかは承認者が決める" if cands else "（見つからなかった）")}]
     rows += [{"label": f"候補 {i + 1}", "text": _line(c)} for i, c in enumerate(cands[:8])]
@@ -251,7 +313,14 @@ def report(results: dict, timed_out: bool) -> list[dict]:
                      f"{len(x['candidates']) + len(x['notes'])} 件" if x["status"] == "done" else f"確かめられなかった: {x.get('why')}"})
     else:
         rows.append({"label": "探索（推論）", "text": "結果がそろわなかった（時間切れ）" if timed_out else "まだ"})
-    notes = [n for w in WHICH for n in (results.get(w) or {}).get("notes") or []]
+    if TIME in results:   # 時刻をまたぐストーリーを分けた版だけ（ADR 0055）
+        t = results[TIME]
+        if t:
+            st = "・".join(f"{qa_line.DECISION_JA.get(k, k)} {n}" for k, n in sorted(t.get("stories", {}).items()))
+            rows.append({"label": LABEL_JA[TIME], "text": (st or "-") if t["status"] == "done" else f"確かめられなかった: {t.get('why')}"})
+        else:
+            rows.append({"label": LABEL_JA[TIME], "text": "結果がそろわなかった（時間切れ）" if timed_out else "まだ"})
+    notes = [n for w in ALL for n in (results.get(w) or {}).get("notes") or []]
     if notes:
         rows.append({"label": "参考", "text": "；".join((f"[{n['what']}] " + (n.get("title") or n.get("story_id") or ""))[:100] for n in notes[:6])
                      + (f" ほか {len(notes) - 6} 件" if len(notes) > 6 else "")})
@@ -259,10 +328,12 @@ def report(results: dict, timed_out: bool) -> list[dict]:
 
 
 def decide(cur, gh, repo: str, release_id: str, results: dict, timed_out: bool, now: datetime | None = None) -> dict:
-    cands = [c for w in WHICH for c in (results.get(w) or {}).get("candidates") or []]
+    cands = [c for w in ALL for c in (results.get(w) or {}).get("candidates") or []]
     rep = report(results, timed_out)
     payload = {"release_id": release_id, "repo": repo, "candidates": len(cands), "blockers": cands,
                "verdict": results.get("verdict"), "explore": results.get("explore"), "report": rep, "timed_out": timed_out}
+    if TIME in results:
+        payload[TIME] = results[TIME]
     if not _ev(cur, "qa.gate_decided", payload, f"qa.gate_decided:{release_id}", now):
         return payload
     try:   # 判定の固定 Issue にもまとめを書く（本番を立てない製品はここと記録だけが見える先）

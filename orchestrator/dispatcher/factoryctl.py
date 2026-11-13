@@ -1146,7 +1146,8 @@ def qa_cmd(cur, argv) -> int:
         gates = qa_gate.recent(cur, repo, int(opt(argv, "--limit", "5")))
         state_ja = {"open": "結果を待っている", "decided": "報告済み", "superseded": "次の版に替わった"}
         for g in gates:
-            jobs = "・".join(f"{'判定' if w == 'verdict' else '探索'} " + ",".join(str(j["job_id"]) for j in g["jobs"][w]) for w in qa_gate.WHICH if g["jobs"][w])
+            names = {"verdict": "判定", "explore": "探索", qa_gate.TIME: "時刻の判定"}
+            jobs = "・".join(f"{names[w]} " + ",".join(str(j["job_id"]) for j in g["jobs"][w]) for w in qa_gate.ALL if g["jobs"][w])
             print(f"{g['opened_at']:%m-%d %H:%M} {g['release_id']}: {state_ja.get(g['state'], g['state'])}（ジョブ {jobs or 'まだ'}）")
             if g["decided"]:
                 for r in g["decided"].get("report") or []:
