@@ -177,3 +177,28 @@ def test_skips_recorded_and_inspect_skipped_only_for_docs(cur):
 def test_inspect_not_skipped_without_declaration(cur):
     plan_with(cur, [{"step": "inspect", "run": True}])
     assert wg.skip_inspect(cur, CORR, ["docs_only"], PR, "c" * 40) is None
+
+
+def test_standing_qa_issue_has_no_ticket_cap(cur):
+    """QA の固定 Issue は、回を重ねても チケット全体の費用で止めない（ADR 0054 の決定 6）。上乗せの記録が残っていても同じ"""
+    for _ in range(12):
+        spend(cur, "qa", 3.0)
+    assert wg.cost_gate(cur, CORR)["hit"] == ["ticket.cost_usd"]      # QA を積んだ記録がなければ、ふつうのチケットとして数える
+    assert not wg.cost_cleared(cur, CORR)
+    wg.release_cost(cur, CORR, 1, "test")
+    cur.execute("insert into events(name, correlation_id, payload) values ('qa.enqueued',%s,%s)", (CORR, Jsonb({"repo": "o/r", "issue": 5})))
+    assert wg.workflow_shadow.standing_qa(cur, CORR)
+    assert wg.cost_gate(cur, CORR) is None and wg.cost_cleared(cur, CORR)
+    assert wg.cost_left(cur, CORR)["ticket.cost_usd"] == {"cap": 0.0, "spent": 36.0, "left": -36.0}
+    assert wg.workflow_shadow.evaluate(cur, CORR) == []              # 記録だけの突き合わせにも、上限を超えたと残さない
+
+
+def test_qa_ticket_with_declared_caps_is_capped(cur):
+    """上限を宣言した QA のチケット（版ごとのチケット。ADR 0054 の決定 2）は、宣言どおりに守らせる"""
+    cur.execute("insert into events(name, correlation_id, payload) values ('qa.enqueued',%s,%s)", (CORR, Jsonb({"repo": "o/r", "issue": 5})))
+    cur.execute("insert into artifacts(type, correlation_id, payload) values ('Plan',%s,%s)",
+                (CORR, Jsonb({"decision": "ready", "workflow": {"caps": {"ticket.cost_usd": 10}}})))
+    assert not wg.workflow_shadow.standing_qa(cur, CORR)
+    for _ in range(4):
+        spend(cur, "qa", 3.0)
+    assert wg.cost_gate(cur, CORR)["hit"] == ["ticket.cost_usd"]
