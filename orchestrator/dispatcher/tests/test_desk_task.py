@@ -26,7 +26,7 @@ import runner_relay  # noqa: E402
 
 def test_values_match_definition():
     t = DESK["task"]
-    assert dt.LIMITS == t["limits"] and set(dt.FORMS) == set(t["forms"])
+    assert dt.LIMITS == t["limits"] and set(dt.FORMS) == set(t["forms"]) and dt.TIERS == t["tiers"]
     assert set(runner_relay.KIND_TOOLS[dt.KIND]) == set(t["relay_tools"])
     agents = yaml.safe_load((ROOT / "definitions" / "agents.yaml").read_text(encoding="utf-8"))
     assert agents["steps"]["desk.task"]["tier"] == dt.MODEL_TIER and agents["steps"]["desk.task"]["mode"] == "agentic"
@@ -186,3 +186,48 @@ def test_task_cost_does_not_eat_consult_budget(cur):
     jid = dt.enqueue(cur, [REPO])[0]
     finish(cur, jid, {**GOOD, "cost_usd": desk_line.MAX_USD + 1})
     assert dt.spent_on(cur, cid) == pytest.approx(desk_line.MAX_USD + 1)
+
+
+def test_verify_matches_numbers_in_rerun():
+    def q(sql):
+        if "boom" in sql:
+            raise RuntimeError("timeout")
+        return {"columns": ["day", "n", "usd"], "rows": [["2026-11-01", 12, "3.40"], ["2026-11-02", 7, 1.0]], "truncated": False}
+    out = dt.verify([{"id": "q1", "purpose": "マージ数", "sql": "select 1", "used": "12, 3.4"},
+                     {"id": "q2", "purpose": "費用", "sql": "select 2", "used": "$1,234"},
+                     {"id": "q3", "purpose": "落ちる", "sql": "select boom"}, {"sql": 5}], query=q)
+    assert [c["id"] for c in out] == ["q1", "q2", "q3"]
+    assert out[0]["matched"] and out[0]["row_count"] == 2
+    assert not out[1]["matched"] and out[1]["missing"] == ["1234"]
+    assert out[2]["checked"] is False and "timeout" in out[2]["error"]
+    t = "\n".join(dt.verify_text(out))
+    assert "合った 1・ずれた 1・動かせなかった 1" in t and "⚠ 問い q2" in t
+
+
+ANALYSIS = {"path": "analysis", "task": {"what": "この 1 か月で生産性が落ちていないか", "form": "report"}, "why": "記録を数える"}
+
+
+@needs_db
+def test_analysis_route_runs_with_deliver_by_and_verifies(cur):
+    _, cid = open_request(cur, "この 1 か月で生産性が落ちていないか見て")
+    consult_route(cur, ANALYSIS)
+    c = state(cur, cid)
+    assert (c["state"], c["path"]) == ("running", "analysis")
+    cur.execute("select payload from events where correlation_id=%s and name='desk.routed'", (desk.corr(cid),))
+    assert cur.fetchone()["payload"]["deliver_by"]
+    jid = dt.enqueue(cur, [REPO])[0]
+    cur.execute("select model_tier from jobs where id=%s", (jid,))
+    assert cur.fetchone()["model_tier"] == dt.TIERS["analysis"]
+    cur.execute("select payload from events where name='job.enqueued' and job_id=%s", (jid,))
+    inp = cur.fetchone()["payload"]["input"]
+    assert inp["limits"] == dt.LIMITS["analysis"] and inp["tier"] == dt.TIERS["analysis"]
+    res = {**GOOD, "answer": "## 所見\n落ちていない", "queries": [{"id": "q1", "purpose": "マージ数", "sql": "select 1", "used": "40"}]}
+    cur.execute("update jobs set state='succeeded', finished_at=now(), result=%s where id=%s returning *", (Jsonb(res), jid))
+    dt.record(cur, cur.fetchone(), res, "succeeded", None, query=lambda s: {"columns": ["n"], "rows": [[39]], "truncated": False})
+    assert state(cur, cid)["state"] == "delivered"
+    assert "⚠ 問い q1" in delivered(cur, cid)
+    cur.execute("select payload from events where name='desk_task.answered'")
+    p = cur.fetchone()["payload"]
+    assert (p["queries"], p["mismatched"], p["unchecked"]) == (1, 1, 0)
+    cur.execute("select payload from artifacts where type=%s", (dt.RESULT_TYPE,))
+    assert cur.fetchone()["payload"]["checks"][0]["rows"] == [["39"]]

@@ -144,7 +144,7 @@ events:
   desk_task.answered:
     source: control_plane
     required: [conversation_id, round, artifact_id, path, cap_hit, evidence, cost_usd]
-    note: "ADR 0037 の決定 5・ADR 0039 の決定 2a。実行役の結果を成果物 DeskTaskResult に残して提出した。cap_hit はターンの上限で途中までを出したか、evidence は根拠の数"
+    note: "ADR 0037 の決定 5・6、ADR 0039 の決定 2a。実行役の結果を成果物 DeskTaskResult に残して提出した。cap_hit はターンの上限で途中までを出したか、evidence は根拠の数。analysis は queries（動かし直した問いの数）・mismatched（報告の数が結果に見当たらなかった問い）・unchecked（動かし直せなかった問い）も"
   desk_task.failed:
     source: control_plane
     required: [conversation_id, round, error]

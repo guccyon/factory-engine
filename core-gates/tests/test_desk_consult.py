@@ -199,3 +199,12 @@ def test_quick_route_for_work_that_needs_no_code():
     assert "quick" in s["properties"]["path"]["enum"] and "task" in s["required"]
     p = dc.prompt(DEFS, {"operations": OPS})
     assert "quick（その場で答える）" in p and "読んで考えれば作れるものは断らずに quick" in p
+
+
+def test_analysis_route_for_new_aggregation():
+    out = {**O(tasks=[]), "route": {"path": "analysis", "op": "", "params": [], "why": "記録を数える",
+                                    "task": {"what": "生産性は落ちていないか", "form": ""}}}
+    d = dc.decide(out, {"operations": OPS}, DEFS)
+    assert d["outcome"] == "route" and d["route"]["path"] == "analysis" and d["route"]["task"]["form"] == "report"
+    assert "analysis" in dc.schema(DEFS, OPS)["properties"]["route"]["properties"]["path"]["enum"]
+    assert "analysis（集計して報告書にする）" in dc.prompt(DEFS, {"operations": OPS})

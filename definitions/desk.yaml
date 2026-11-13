@@ -34,13 +34,15 @@ labels:
 
 # 単発の依頼のループ（ADR 0039）。数値は仮置き（2026-11-08）。運用パラメータとして工場が調整してよい
 # dispatcher のコンテナには definitions/ がないので、使う値を dispatcher/desk.py の LOOP に写す（食い違いはテストで見る）
-# その場で答える仕事（ADR 0037 の決定 5 の quick、ADR 0039 の決定 2a）。窓口の実行役（core-gates/desk_task.py、工程 desk.task）が読むだけで作る。
+# 実行役が答える仕事（ADR 0037 の決定 5 の quick と analysis、ADR 0039 の決定 2a）。窓口の実行役（core-gates/desk_task.py、工程 desk.task）が読むだけで作る。
 # 文面・要約・表・見立て・工場の記録からの数・問い合わせの原因の見当など、コードを変えない依頼。読むだけで結果は依頼者にだけ返すので確認を飛ばす。
 # dispatcher の desk_task.py が値を写して持つ（食い違いはテストで見る）
 task:
   limits:
-    quick: { turns: 16, usd: 0.5 }   # 1 回のターンと費用の目安（仮置き。運用で直す）。費用は目安の 3 倍で claude を止める
-  forms: [answer, text, table, summary, estimate]   # 返すものの形（会話の返事・文面の下書き・表・要約・見立て）
+    quick:    { turns: 16, usd: 0.5, max_usd: 1.5 }   # 1 回のターンと費用の目安（仮置き。運用で直す）。max_usd で claude を止める
+    analysis: { turns: 40, usd: 3.0, max_usd: 5.0 }   # 集計して報告書にする（ADR 0037 の決定 5 の上限 $5）。数は dispatcher が動かし直して突き合わせる
+  forms: [answer, text, table, summary, estimate, report]   # 返すものの形（会話の返事・文面の下書き・表・要約・見立て・報告書）
+  tiers: { quick: tier-small, analysis: tier-judge }      # 実行役のモデル（analysis は集計の問いを組み、数を解釈するので強いモデル）
   relay_tools: [inv_sql, inv_github]                # 中継の道具（工場の記録のビューと製品の GitHub を読むだけ）
 
 loop:
