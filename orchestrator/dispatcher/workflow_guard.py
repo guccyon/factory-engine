@@ -122,7 +122,7 @@ def cost_left(cur, corr: str) -> dict:
     _, extra = released(cur, corr)
     out = {}
     for k in COST_KINDS:
-        cap = float(caps.get(k) or 0) + extra
+        cap = float(caps[k]) + extra if caps.get(k) else 0.0   # 上限のない種類（QA の固定 Issue のチケット全体。ADR 0054）は上乗せがあっても 0（守らせない）
         out[k] = {"cap": round(cap, 2), "spent": round(float(led.get(k) or 0), 2), "left": round(cap - float(led.get(k) or 0), 4)}
     return out
 
@@ -140,6 +140,13 @@ def cost_gate(cur, corr: str) -> dict | None:
     payload = {"kind": "cost_human", "hit": hit, "costs": left, "round": n, "plan_id": (wf or {}).get("plan_id"), "default": wf is None}
     _record(cur, corr, "cost_human", {k: v for k, v in payload.items() if k != "kind"}, f"cost_human:{corr}:{n}")
     return payload
+
+
+def cost_cleared(cur, corr: str) -> bool:
+    """費用の停止が開いているチケットで、上限に当たっている種類がもうない（上限を掛けなくなった。ADR 0054 の決定 6 で QA の固定 Issue）。
+    supervisor が停止を閉じ、保留を外す"""
+    left = cost_left(cur, corr)
+    return not any(left[k]["cap"] > 0 and left[k]["left"] <= 0 for k in COST_KINDS)
 
 
 def job_budget(cur, corr: str) -> float | None:

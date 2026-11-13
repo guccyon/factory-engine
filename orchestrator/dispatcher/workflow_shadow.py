@@ -65,12 +65,30 @@ def latest_workflow(cur, corr: str) -> dict | None:
     return {"plan_id": r["id"], "at": r["created_at"], **r["payload"]["workflow"]}
 
 
+STANDING_QA_UNCAPPED = ("ticket.cost_usd", "retries.qa_rerun")   # QA の固定 Issue に掛けない上限（ADR 0054 の決定 6）
+
+
+def standing_qa(cur, corr: str) -> bool:
+    """QA の固定 Issue（判定・探索の「毎回更新」。閉じない記録の置き場）か。QA のジョブを積んだ記録があり、上限の宣言がないチケット。
+    版ごとの QA のチケット（ADR 0054 の決定 2）は関門が上限を宣言するので、ここには当たらない"""
+    cur.execute("select 1 from events where name='qa.enqueued' and correlation_id=%s limit 1", (corr,))
+    if cur.fetchone() is None:
+        return False
+    wf = latest_workflow(cur, corr)
+    return not (wf and isinstance(wf.get("caps"), dict))
+
+
 def caps_of(cur, corr: str) -> tuple[dict, dict | None]:
-    """そのチケットの上限と宣言。宣言がなければ既定値（any と M）で、宣言は None"""
+    """そのチケットの上限と宣言。宣言がなければ既定値（any と M）で、宣言は None。
+    QA の固定 Issue は終わりのないチケットなので、チケット全体の費用と QA のやり直しの上限を掛けない（None。ADR 0054 の決定 6）。
+    費用はジョブごとの上限と 1 日の予算の枠（ADR 0029）で抑える"""
     wf = latest_workflow(cur, corr)
     if wf and isinstance(wf.get("caps"), dict):
         return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND], **wf["caps"]}, wf
-    return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND]}, wf
+    caps = {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND]}
+    if standing_qa(cur, corr):
+        caps.update({k: None for k in STANDING_QA_UNCAPPED})
+    return caps, wf
 
 
 def ledger(cur, corr: str) -> dict:

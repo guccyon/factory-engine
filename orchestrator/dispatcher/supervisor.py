@@ -1551,6 +1551,13 @@ def cost_cap_step(cur):
             cur.execute("select 1 from tickets where source='github' and 'github:' || source_ref = %s and state='active'", (corr,))
             if cur.fetchone() is None:
                 stoppage.close_stoppage(cur, key, remedy="チケットを閉じた", closed_by="supervisor", quiet=True)
+            elif workflow_shadow.standing_qa(cur, corr) and workflow_guard.cost_cleared(cur, corr):
+                # QA の固定 Issue にはチケット全体の費用の上限を掛けなくなった（ADR 0054 の決定 6）。前に開いた停止を閉じ、保留を外す
+                stoppage.close_stoppage(cur, key, remedy="QA の固定 Issue にはチケット全体の費用の上限を掛けない（ADR 0054）", closed_by="supervisor", quiet=True)
+                cur.execute("select id from tickets where source='github' and 'github:' || source_ref = %s and held", (corr,))
+                for t in cur.fetchall():
+                    if not DRY_RUN:
+                        ops.set_held(cur, t["id"], False, "supervisor", "費用の上限を掛けない（ADR 0054）")
     except Exception as e:  # noqa: BLE001
         log("cost cap step failed", repr(e)[:200])
 
