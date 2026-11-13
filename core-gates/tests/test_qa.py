@@ -123,6 +123,7 @@ def test_relay_config_and_mobile_prompt(tmp_path, monkeypatch):
     assert "mcp__macrunner__" not in qa.prompt(DEFS, [STORY], {"entries": []}, {})
     # 時間をまたぐ手順（scenario_time）: 中継があれば env_restart で起こし、最後に時計を戻させる。なければ skipped
     assert "mcp__macrunner__env_restart" in text and "reset_clock: true" in text
+    assert "set_to" in text and "mcp__macrunner__env_clock" in text and "page.clock" in text   # 時刻を指定して合わせる（ADR 0055）
     assert "サーバーの再起動も時計の進めもできない" in qa.prompt(DEFS, [STORY], {"entries": []}, {})
     d = product(tmp_path / "p")
     seen = {}

@@ -165,10 +165,13 @@ def _last_request(cur, name: str, rid: str) -> int:
 
 
 def restart(cur, repo: str, env: str = "staging", advance_hours: float = 0, reset_clock: bool = False, by: str = "builder",
-            via: str = "factoryctl env restart", timeout: float = 600, do_wait: bool = True, log=print) -> tuple[bool, str, int | None]:
+            via: str = "factoryctl env restart", timeout: float = 600, do_wait: bool = True, log=print,
+            advance_seconds: int | None = None, offset_seconds: int | None = None) -> tuple[bool, str, int | None]:
     """触れる環境を再起動し、サーバーの時計を進める（ADR 0028 の scenario_time）。DB は残す。
+    advance_seconds があれば advance_hours より先に使う。offset_seconds は進める量そのもの（ADR 0055 の set_to）。
     返り値 (ok, 説明, 進めている秒数)。QA のワーカーには dispatcher の中継（runner_relay の env_restart）からも呼ばれる"""
-    ok, m = ship.request_restart(cur, repo, env, by, via, advance_seconds=int(round(float(advance_hours) * 3600)), reset_clock=reset_clock)
+    adv = advance_seconds if advance_seconds is not None else int(round(float(advance_hours) * 3600))
+    ok, m = ship.request_restart(cur, repo, env, by, via, advance_seconds=adv, reset_clock=reset_clock, offset_seconds=offset_seconds)
     log(m)
     if not ok:
         return False, m, None
@@ -180,4 +183,4 @@ def restart(cur, repo: str, env: str = "staging", advance_hours: float = 0, rese
     if not ok:
         return False, m, None
     offset = ship.clock_offset(cur, repo, env)
-    return True, f"{env}（{rid}）を再起動した。サーバーの時計は実際より {offset / 3600:g} 時間進んでいる", offset
+    return True, f"{env}（{rid}）を再起動した。サーバーの時計は実際より {offset / 3600:g} 時間進んでいる（{offset} 秒）", offset

@@ -870,6 +870,7 @@ def run_job(job: dict, reattaching: bool = False):
             reattach.remove(job.get("container_id") or f"factory-job-{job_id}")   # 記録を終えてから片付ける（ADR 0020）
             if RELAY is not None:
                 RELAY.revoke(job_id)   # 中継の合言葉はジョブの終わりで捨てる
+            _qa_clock_cleanup(cur, job)   # 時計を動かしたままなら 0 に戻す（ADR 0055）
             if JOB_DB_ENABLED:
                 try:
                     cur.execute(f'drop database if exists "job_{job_id}" with (force)')   # ワーカーの状態を残さない
@@ -1601,19 +1602,44 @@ def _relay_local(tool: str, arguments: dict, grant: dict) -> dict:
         import investigate_tools
         return investigate_tools.handle(tool, arguments, grant, blob_key_of=_job_blob_key, store_get=store_get,
                                         gh_get=lambda path: ghapi.request("GET", path))
+    import scenario_clock
     import touch
-    if tool != "env_restart" or not grant.get("repo"):
+    if tool not in ("env_restart", "env_clock") or not grant.get("repo"):
         raise RuntimeError(f"知らない道具か、製品の分からないジョブ: {tool}")
-    hours = arguments.get("advance_hours") or 0
-    if not isinstance(hours, (int, float)) or isinstance(hours, bool):
-        return runner_relay._err("advance_hours は数")
+    repo, job_id = grant["repo"], grant["job_id"]
     with db() as conn, conn.cursor() as cur:
-        cur.execute("select payload->>'env' as env from events where name='qa.enqueued' and job_id=%s order by id limit 1", (grant["job_id"],))
-        r = cur.fetchone()
-        env = (r or {}).get("env") or "staging"
-        ok, msg, _ = touch.restart(cur, grant["repo"], env, advance_hours=float(hours), reset_clock=bool(arguments.get("reset_clock")),
-                                   by=f"qa:{grant['job_id']}", via="runner_relay", timeout=480, log=lambda m: None)
+        env = _qa_env(cur, job_id)
+        if tool == "env_clock":   # 読むだけ（ADR 0055）
+            return {"content": [{"type": "text", "text": scenario_clock.describe(cur, repo, env, datetime.now(timezone.utc))}], "isError": False}
+        args, why = scenario_clock.parse(arguments, datetime.now(timezone.utc))
+        if why is None:
+            why = scenario_clock.refuse(cur, repo, job_id, args, int(qa_line.load_defs()["clock"]["max_restarts_per_job"]))
+        if why is not None:
+            return runner_relay._err(why)
+        ok, msg, _ = touch.restart(cur, repo, env, by=scenario_clock.by_of(job_id), via="runner_relay", timeout=480, log=lambda m: None, **args)
+        if ok:
+            msg = scenario_clock.after_restart(cur, repo, env, datetime.now(timezone.utc), msg)
     return {"content": [{"type": "text", "text": msg}], "isError": not ok}
+
+
+def _qa_env(cur, job_id: int) -> str:
+    """QA を積んだときの環境（qa.enqueued の env。なければ staging）"""
+    cur.execute("select payload->>'env' as env from events where name='qa.enqueued' and job_id=%s order by id limit 1", (job_id,))
+    r = cur.fetchone()
+    return (r or {}).get("env") or "staging"
+
+
+def _qa_clock_cleanup(cur, job: dict):
+    """時計を動かした QA のジョブが終わったら、戻し忘れを 0 に戻す（ADR 0055 の決定 4）。失敗してもジョブの記録は止めない"""
+    if job.get("kind") != "qa":
+        return
+    import scenario_clock
+    try:
+        m = scenario_clock.cleanup(cur, job["repo"], _qa_env(cur, job["id"]), job["id"])
+        if m:
+            log(f"job {job['id']} の時計を戻す: {m}")
+    except Exception as e:  # noqa: BLE001
+        log("qa clock cleanup failed", job["id"], repr(e))
 
 
 def _job_blob_key(job_id: int) -> str | None:
