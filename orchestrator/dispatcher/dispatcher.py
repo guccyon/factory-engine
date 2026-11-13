@@ -62,6 +62,7 @@ import pr_events
 import process_learn
 import patrol_watch
 import reattach
+import spike_line
 import stoppage
 import swap
 import swap_mailbox
@@ -76,11 +77,14 @@ REQUEST_LABEL = ENV.get("REQUEST_LABEL", "factory:request")   # intake: 要求�
 DESIGN_LABEL = ENV.get("DESIGN_LABEL", design_line.TRIGGER_LABEL)   # 画面を含むタスク: 実装の前にデザインの線を通す（ADR 0025）
 PLAN_LABEL = ENV.get("PLAN_LABEL", planner.TRIGGER_LABEL)   # チケットの入口: プランナーが着手判定と経路を決める（ADR 0025・0026）
 DESIGN_SYSTEM_LABEL = ENV.get("DESIGN_SYSTEM_LABEL", design_system_line.TRIGGER_LABEL)   # デザインシステムのデザイナー役（ADR 0025・0026）
-TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify", DESIGN_LABEL: "ui_design", PLAN_LABEL: "plan", DESIGN_SYSTEM_LABEL: "design_system"}
+SPIKE_LABEL = ENV.get("SPIKE_LABEL", spike_line.TRIGGER_LABEL)   # スパイクのレーン（ADR 0055）: 方針が決まっていないチケットの原因と直し方
+TRIGGERS = {TRIGGER_LABEL: "implement", REQUEST_LABEL: "clarify", DESIGN_LABEL: "ui_design", PLAN_LABEL: "plan", DESIGN_SYSTEM_LABEL: "design_system",
+            SPIKE_LABEL: "spike"}
 TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "要求を確かめる質問をこの Issue に書きます（最大 3 往復）",
               "ui_design": "実装の前に、画面の要素と振る舞い（UXSpec）と案のモックを作り、デザイン検査役に見せます",
               "design_system": "デザインシステムのデザイナー役が、コンセプトとトーン＆マナーの案か、デザインシステムの正本を作ります",
-              "plan": "着手できるかを判定し、実装役・プロダクトデザイナー・デザインシステムのデザイナーのどれに回すかを決めます"}
+              "plan": "着手できるかを判定し、実装役・プロダクトデザイナー・デザインシステムのデザイナーのどれに回すかを決めます",
+              "spike": "スパイクのレーンの System Architect が、原因と直し方の方針を決めて設計書に書きます（ADR 0055）"}
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
@@ -168,13 +172,13 @@ NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review"
 # ジョブ専用の空の DB を作らない種類（製品のテストを流さない）。一次調査は制御プレーンを調査用の接続（INVESTIGATE_DATABASE_URL）で読むだけ。
 # 中継（relay_env）を使う種類は --network を中継の側で付けるので、ここに入れないと --network が 2 回付いて docker run が 125 で落ちる（2026-11-10）
 NO_JOB_DB_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
-                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa", "investigate")
+                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "qa", "investigate", "spike")
 # 入力（job.enqueued の input）を標準入力で渡す種類。ワーカーの入口が最初に標準入力を読む
 PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan",
-               "design_system", "desk_consult", "desk_answer", "qa", "investigate")
+               "design_system", "desk_consult", "desk_answer", "qa", "investigate", "spike")
 # PR を作らない種類で、終了コード 0 と結果の ok で成功とみなすもの
 OK_RESULT_KINDS = ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan",
-                   "design_system", "desk_consult", "desk_answer", "qa", "investigate")
+                   "design_system", "desk_consult", "desk_answer", "qa", "investigate", "spike")
 ISSUELESS_KINDS = ("desk_consult", "desk_answer", "investigate")   # issue_number が仮の負の数の種類
 
 
@@ -435,7 +439,7 @@ def run_job(job: dict, reattaching: bool = False):
                 image = prov.get("worker_image") or WORKER_IMAGE
             elif kind in NO_LABEL_KINDS:   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける。窓口と一次調査（ADR 0048）は Issue がない（issue_number は仮の負の数）
                 image = WORKER_IMAGE
-            elif kind == "plan":   # プランナー（ADR 0025・0026）。読むだけなので製品によらず基本のイメージ
+            elif kind in ("plan", "spike"):   # プランナー（ADR 0025・0026）とスパイク（ADR 0055）。読むだけなので製品によらず基本のイメージ
                 swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
                 image = WORKER_IMAGE
             elif kind in ("ui_design", "design_system"):   # デザイナー役（ADR 0025・0026）。製品によらず Chromium つきのイメージ
@@ -494,6 +498,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design.sh"] if kind == "ui_design" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design_review.sh"] if kind == "ui_design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/plan.sh"] if kind == "plan" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/spike.sh"] if kind == "spike" else []),   # スパイクの System Architect（ADR 0055）
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
@@ -519,6 +524,8 @@ def run_job(job: dict, reattaching: bool = False):
                                 obj.release_conn()
                         except Exception as e:  # noqa: BLE001
                             log("case archive read failed", key, repr(e))
+                if kind == "spike" and not reattaching:   # スパイクで決めること・開いている QA の不具合（ADR 0055）
+                    judge_inp = {**(judge_inp or {}), **spike_line.input_for(cur, gh, repo, issue, corr)}
                 if kind == "plan" and not reattaching:   # 製品の実績の表（ADR 0036 の 1。見積もりの材料）
                     judge_inp = planner.attach_sizes(cur, repo, judge_inp)
                     judge_inp = planner.attach_context(cur, repo, corr, judge_inp)   # 流れているタスクと知見（ADR 0038 の 4b）
@@ -741,6 +748,19 @@ def run_job(job: dict, reattaching: bool = False):
                 else:
                     swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
                     comment(repo, issue, f"ジョブ {job_id}（プランナー）は {state}（{err}）。`factoryctl rerun {job_id}` で再実行できます。")
+            elif kind == "spike":
+                # スパイクのレーンの System Architect（ADR 0055）: 設計書を残して Issue に書き、束ね、出口（人か着手判定）へ
+                if state == "succeeded":
+                    try:
+                        did = spike_line.record(cur, repo, issue, corr, job_id, result)
+                        spike_line.act(cur, repo, issue, corr, job_id, did, result, swap_label, comment, gh)
+                    except Exception as e:  # noqa: BLE001  設計書は残っている。タスクは止めて人に知らせる
+                        log("spike act failed", job_id, repr(e))
+                        swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
+                        comment(repo, issue, f"ジョブ {job_id}（スパイク）の後処理に失敗しました（{repr(e)[:300]}）。`factoryctl rerun {job_id}` で再実行できます。")
+                else:
+                    swap_label(repo, issue, [LABELS["running"]], [LABELS["failed"]])
+                    comment(repo, issue, f"ジョブ {job_id}（スパイク）は {state}（{err}）。`factoryctl rerun {job_id}` で再実行できます。")
             elif kind == "design_system":
                 # デザインシステムのデザイナー役（ADR 0025・0026）: concept は案を人の選択に回す、spec は正本を Issue に足して実装役へ
                 if state == "succeeded":

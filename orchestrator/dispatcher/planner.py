@@ -6,6 +6,7 @@
               デザインシステムの仕事の後にほかの役が続く経路は、デザインシステムの仕事を別のチケットに切り（plan.split）、
               このチケットは factory:waiting-steps で待つ。そのチケットが閉じたら advance_steps が次の役のラベルを付ける
     ask:      理由と選択肢つきの問いを Issue のコメントに書き、factory:needs-info。返信が付いたら poll_answers が判定し直しを積む
+    spike:    方針が要る（ADR 0055）。スパイクで決めることを Issue のコメントに書き、factory:spike（スパイクのレーン。spike_line.py）
     escalate: factory:plan-human を付けて人に回す
     split:    大きすぎる（ADR 0036 の 2）。タスクのまとまりを子のチケットとして起票し（窓口と同じ起票。依存のないものから factory:plan）、
               このチケットは factory:waiting-steps で待つ。子がすべて閉じたら advance_steps がこのチケットを閉じる
@@ -37,9 +38,11 @@ MAX_ROUNDS = 2
 MARKER = "<!-- factory:plan-questions -->"
 RUNNING_LABEL, QUEUED_LABEL = "factory:running", "factory:queued"
 WAITING_LABEL = "factory:waiting-steps"   # 経路の前の役（別のチケット）が終わるのを待っている
+SPIKE_LABEL = "factory:spike"   # 方針が要るのでスパイクのレーンへ（ADR 0055。definitions/planner.yaml の labels.spike）
 GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方の指定がない", "low_confidence": "プランナーの確信度が低い",
             "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった",
-            "oversized": "大きすぎる（切る基準に当たる）"}
+            "oversized": "大きすぎる（切る基準に当たる）", "spike_exhausted": "スパイクの設計書があるのに、また方針が要ると答えた",
+            "spike_no_questions": "スパイクへ回すのに、決めることが出なかった"}
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
                "design_after_implement": "実装の後にデザインの役がある", "no_size": "大きさの見積もりがない",
                "split_after_design": "大きいので、画面が決まってから実装の手前で切る", "no_requirements": "要件（受け入れ条件）がない",
@@ -411,6 +414,17 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
         body += [f"- #{f['number']} {f['title']}" + (f"（{' '.join(f'#{d}' for d in f['depends_on'])} の後）" if f["depends_on"] else "") for f in filed]
         body += ["", p.get("summary") or "", "", f"見積もりの根拠: {sz.get('basis') or '-'}"] + note + ["", f"<sub>Plan {plan_id}</sub>"]
         comment(repo, issue, "\n".join(body))
+        return
+    if decision == "spike":
+        sp = p.get("spike") or {}
+        qs = [str(q).strip() for q in sp.get("questions") or [] if str(q).strip()]
+        comment(repo, issue, "\n".join([f"プランナー（ジョブ {job_id}）: 直し方の方針が決まっていないので、まだ着手できません。"
+                                        "スパイクのレーン（System Architect）で方針を決めてから、着手判定をし直します（ADR 0055）。", "",
+                                        sp.get("why") or p.get("summary") or "", "", "スパイクで決めること:"] + [f"- {q}" for q in qs]
+                                       + ["", f"<sub>Plan {plan_id}</sub>"]))
+        swap_label(repo, issue, [RUNNING_LABEL], [SPIKE_LABEL])
+        cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.spiked',%s,%s,%s)",
+                    (corr, job_id, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "questions": qs})))
         return
     if decision == "ask":
         round_ = int(result.get("round") or 1)

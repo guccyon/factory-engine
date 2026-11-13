@@ -32,7 +32,7 @@ PLAN_WEEKLY_LIMIT_USD = float(ENV["PLAN_WEEKLY_LIMIT_USD"]) if ENV.get("PLAN_WEE
 
 KIND_JA = {
     "implement": "実装", "review_fix": "指摘の直し", "conflict": "衝突の解消", "body_fix": "PR 本文の直し",
-    "inspect": "検査", "judge": "判定（judge）", "clarify": "要求の確認", "plan": "プランナー",
+    "inspect": "検査", "judge": "判定（judge）", "clarify": "要求の確認", "plan": "プランナー", "spike": "スパイク",
     "ui_design": "デザイナー", "ui_design_review": "デザイン検査", "design_system": "デザインシステム",
     "design_review": "設計の診断", "case_review": "事例の分析", "committee_review": "知見の委員会",
     "committee_weekly": "委員会の定例",
