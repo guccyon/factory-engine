@@ -165,6 +165,23 @@ def test_validate_explore(tmp_path):
     assert any("02-dup.png" in e for e in qa.validate_explore(explore_doc(), DEFS, ch, {"coach-replies"}, tmp_path / "none"))
 
 
+def test_explore_same_as_and_open_defects_in_prompt(tmp_path):
+    """開いている不具合を探索に渡し、同じものは same_as に番号を書いてもらう（rally #1373 と #1402 の重複起票）"""
+    ch = qa.charter_of(DEFS, "detour")
+    f = {"title": "x", "actual": "y", "severity": "s2", "viewpoint": "flow"}
+    ok = explore_doc(findings=[{**f, "same_as": 1373}, {**f, "same_as": None}])
+    assert qa.validate_explore(ok, DEFS, ch, set(), None, {1373}) == []
+    assert qa.validate_explore(ok, DEFS, ch, set(), None, None) == []   # 一覧がなければ数かだけ見る
+    assert any("#1402" in e for e in qa.validate_explore(explore_doc(findings=[{**f, "same_as": 1402}]), DEFS, ch, set(), None, {1373}))
+    assert any("same_as" in e for e in qa.validate_explore(explore_doc(findings=[{**f, "same_as": "#1373"}]), DEFS, ch, set(), None))
+    inp = {"open_defects": [{"number": 1373, "title": "月額契約の画面へ進めない", "story_id": "student-subscription-persists", "severity": "s2"}]}
+    text = qa.open_defects_text(inp)
+    assert "#1373 [s2] 月額契約の画面へ進めない（ストーリー student-subscription-persists）" in text and "same_as" in text
+    assert qa.open_defects_text({}) == ""
+    prompt = qa.explore_prompt(DEFS, ch, [], {}, inp)
+    assert "すでに開いている不具合（1 件）" in prompt and "same_as" in prompt
+
+
 def test_run_explore(tmp_path, monkeypatch):
     d = product(tmp_path)
     calls = []
