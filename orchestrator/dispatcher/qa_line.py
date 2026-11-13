@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 
 from psycopg.types.json import Jsonb
@@ -113,6 +114,8 @@ def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | No
     corr = f"github:{repo}#{issue}"
     inp = build_input(cur, repo, env, list(stories or []), env_host or os.environ.get("QA_ENV_HOST") or defs["worker"]["env_host"])
     inp.update(extra or {})
+    if inp.get("mode") == "explore":   # 探索は開いている Defect を見て、同じ不具合なら same_as を書く（重複起票を防ぐ）
+        inp["open_defects"] = open_defects_for_worker(gh, repo, defs)
     t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo, title=EXPLORE_TITLE if issue_label == DEFS["act"]["explore_issue_label"] else TITLE, priority=ops.LEVELS[priority][0], state="active")
     cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, ticket_id, priority) "
                 "values (%s,%s,%s,%s,%s,%s,%s,%s) returning id", (corr, repo, issue, by, tier, KIND, t["id"], t["priority"]))
@@ -207,6 +210,7 @@ STORY_RE = re.compile(r"ユーザーストーリー `([A-Za-z0-9_-]+)` を止め
 EXPLORE_MARK = "探索で見つけた Defect"   # 夜間の探索・出荷の関門の探索の起票の本文に入る（「夜間の探索で見つけた Defect」の時期の Issue にも当たる）
 STEP_RE = re.compile(r"歩: (\S+)")
 SEV_RE = re.compile(r"重要度: (s[1-4])")
+NEAR_STORY_RE = re.compile(r"近いストーリー: `([A-Za-z0-9_-]+)`")
 
 
 def defect_key(story_id: str, step, title: str = "", severity: str | None = None) -> str:
@@ -220,10 +224,24 @@ def defect_key(story_id: str, step, title: str = "", severity: str | None = None
     return f"{key}#{severity}" if severity in incident.HOLD_SEVERITIES else key
 
 
-def open_defects(gh, repo: str, label: str) -> dict[str, str]:
+def open_defect_issues(gh, repo: str, label: str) -> list[dict]:
+    """開いている QA の Defect の Issue。gh が返したものをそのまま（open_defects と same_issue が読む）"""
+    return list(gh("GET", f"repos/{repo}/issues?state=open&labels={label}&per_page=100") or [])
+
+
+def defect_issue_facts(it: dict) -> dict:
+    """Defect の Issue の番号・URL・題・ストーリー・重要度。本文の決まった行から読む（判定の「ユーザーストーリー」か探索の「近いストーリー」）"""
+    body = it.get("body") or ""
+    m = STORY_RE.search(body) or NEAR_STORY_RE.search(body)
+    sv = SEV_RE.search(body)
+    return {"number": it.get("number"), "url": it.get("html_url") or f"#{it.get('number')}",
+            "title": (it.get("title") or "").removeprefix("QA: "), "story_id": m.group(1) if m else None, "severity": sv.group(1) if sv else None}
+
+
+def open_defects(gh, repo: str, label: str, issues: list[dict] | None = None) -> dict[str, str]:
     """開いている QA の Defect の Issue を、目印 → URL で。本文の決まった行から読む（中身の文は使わない）"""
     out = {}
-    for it in gh("GET", f"repos/{repo}/issues?state=open&labels={label}&per_page=100") or []:
+    for it in issues if issues is not None else open_defect_issues(gh, repo, label):
         body = it.get("body") or ""
         m, st, sv = STORY_RE.search(body), STEP_RE.search(body), SEV_RE.search(body)
         title = (it.get("title") or "").removeprefix("QA: ")
@@ -332,6 +350,59 @@ def explore_key(title: str) -> str:
     return f"explore#title:{str(title)[:90]}"
 
 
+# 探索の見つけたものが、開いている Defect の Issue と同じ不具合か（rally #1373 と #1402: 題の末尾だけ違う同じ不具合を 2 回起票した）。
+# 1. QA 役が same_as に書いた番号（開いている Defect の一覧を入力で渡す。言い方が違っても症状で見分けられる）
+# 2. 書いていなければ題の近さ（文字の 2-gram の Dice 係数）。同じストーリーなら SIMILAR_SAME_STORY、ストーリーが分からなければ SIMILAR_NO_STORY 以上
+# どちらも、S1 を S1 でない Issue にはまとめない（defect_key と同じ。重い不具合が軽い Issue に吸われないように）
+SIMILAR_SAME_STORY = 0.75
+SIMILAR_NO_STORY = 0.85
+OPEN_DEFECTS_TO_WORKER = 40   # ワーカーに渡す開いている Defect の数（新しい順）
+
+
+def _bigrams(title: str) -> set[str]:
+    t = "".join(c for c in unicodedata.normalize("NFKC", str(title or "")).lower() if c.isalnum())
+    return {t[i:i + 2] for i in range(len(t) - 1)} or ({t} if t else set())
+
+
+def title_similarity(a: str, b: str) -> float:
+    """題の近さ（0〜1）。空白・記号・全角半角の違いは見ない"""
+    x, y = _bigrams(a), _bigrams(b)
+    return 2 * len(x & y) / (len(x) + len(y)) if x and y else 0.0
+
+
+def same_issue(d: dict, issues: list[dict]) -> tuple[dict | None, str | None]:
+    """見つけたもの d と同じ不具合の開いている Issue（defect_issue_facts の形）と、見分けた理由（same_as・similar）"""
+    def mergeable(it):
+        return not (d.get("severity") in incident.HOLD_SEVERITIES and it.get("severity") not in incident.HOLD_SEVERITIES)
+    n = d.get("same_as")
+    if isinstance(n, int) and not isinstance(n, bool):
+        for it in issues:
+            if it.get("number") == n and mergeable(it):
+                return it, "same_as"
+    best, score = None, 0.0
+    for it in issues:
+        if not mergeable(it):
+            continue
+        same_story = bool(d.get("story_id")) and it.get("story_id") == d.get("story_id")
+        if d.get("story_id") and it.get("story_id") and not same_story:
+            continue   # 別のストーリーと分かっているものにはまとめない
+        s = title_similarity(d.get("title") or "", it.get("title") or "")
+        if s >= (SIMILAR_SAME_STORY if same_story else SIMILAR_NO_STORY) and s > score:
+            best, score = it, s
+    return (best, "similar") if best else (None, None)
+
+
+def open_defects_for_worker(gh, repo: str, defs: dict | None = None) -> list[dict]:
+    """探索のジョブの入力に渡す、開いている Defect の一覧（番号・題・ストーリー・重要度）。読めなければ空"""
+    defs = defs or load_defs()
+    try:
+        its = [defect_issue_facts(it) for it in open_defect_issues(gh, repo, defs["act"]["defect_labels"][0])]
+    except Exception:  # noqa: BLE001  読めなければ渡さない（dispatcher が題の近さで見る）
+        return []
+    its.sort(key=lambda x: -(x["number"] or 0))
+    return [{k: x[k] for k in ("number", "title", "story_id", "severity")} for x in its[:OPEN_DEFECTS_TO_WORKER]]
+
+
 def explore_defect_body(repo: str, ex: dict, f: dict, eid: int, qa_issue: int) -> str:
     rep = f.get("reproduce") or []
     lines = [(f"出荷の関門の{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・版 {ex['gate']}。factory-engine の ADR 0049）。" if ex.get("gate")
@@ -384,14 +455,20 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
                 (corr, job_id, Jsonb(payload)))
     eid = cur.fetchone()["id"]
     try:
-        known = open_defects(gh, repo, defs["act"]["defect_labels"][0])
+        raw = open_defect_issues(gh, repo, defs["act"]["defect_labels"][0])
+        known, issues = open_defects(gh, repo, "", raw), [defect_issue_facts(it) for it in raw]
     except Exception:  # noqa: BLE001  読めなければまとめずに起票する
-        known = {}
+        known, issues = {}, []
     defects, filed, seen, skipped = [], [], [], []
     for f in ex.get("findings") or []:
         d = {"title": str(f.get("title"))[:120], "severity": f.get("severity"), "viewpoint": f.get("viewpoint"),
              "story_id": f.get("story_id"), "known_gap": bool(f.get("known_gap")), "issue": None}
         key = explore_key(d["title"])
+        if key not in known and not (d["known_gap"] or d["severity"] not in xd["file_severities"]):
+            hit, why = same_issue({**d, "same_as": f.get("same_as")}, issues)
+            if hit:   # 題の言い方が違う同じ不具合（QA 役の same_as か題の近さ）
+                known[key] = hit["url"]
+                d["matched_by"] = why
         if d["known_gap"] or d["severity"] not in xd["file_severities"]:
             d["not_filed"] = True
         elif key in known:
@@ -410,6 +487,7 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
                                                       "labels": list(defs["act"]["defect_labels"])})
             d["issue"] = got.get("html_url") or f"#{got.get('number')}"
             known[key] = d["issue"]
+            issues.append({"number": got.get("number"), "url": d["issue"], "title": d["title"], "story_id": d["story_id"], "severity": d["severity"]})
             filed.append(d["issue"])
             to_incident(cur, gh, comment, repo, d, d["issue"], ex, corr, job_id)
         defects.append(d)

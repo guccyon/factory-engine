@@ -101,7 +101,7 @@ explore:
   result:
     required: [charter, tried, findings, interpretation, confidence]
     tried: "試したこと 1 件以上。{actor, where, did, saw, story_id（近いストーリーがあれば）}"
-    findings: "見つけたもの（なければ []）。{title, viewpoint, severity, where, reproduce, expected, actual, story_id, known_gap}"
+    findings: "見つけたもの（なければ []）。{title, viewpoint, severity, where, reproduce, expected, actual, story_id, known_gap, same_as}。same_as は入力の open_defects（開いている不具合）と同じなら、その Issue の番号（dispatcher が既存の Issue にまとめ、起票し直さない）"
     flags: "任意。判定と同じ印 {viewpoint: aesthetic | tone, where, note}"
 
 # 出荷の QA の関門（ADR 0049）。staging に配備した版に、判定（mode: verdict、全ストーリーの E2E）と探索（mode: explore、チャーター 1 つ）を

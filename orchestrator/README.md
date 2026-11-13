@@ -494,7 +494,7 @@ docker compose exec dispatcher factoryctl qa show guccyon/rally                 
 - supervisor が JST の `explore.hours`（既定 1〜5 時）に、`NIGHTLY_EXPLORE` の製品（既定は `RELEASE_TRAIN` と同じ。空で止める）ごとに 1 晩 1 回、固定 Issue（`factory:qa`）に QA のジョブ（入力の `mode: explore`、優先度 p2）を積む。チャーターは夜ごとに順番に替える（寄り道・別の利用者・戻ってくる・読み手の言葉・初めての人）
 - 予算の枠を使い切っていれば積まずに次の枠を待つ。ラインの一時停止中は `explore.through_pause` が真ならこのジョブだけ流す（`drain allow`）。積まなかった理由は `supervisor.nightly_explore_skipped` に 1 晩 1 回
 - ワーカーは判定と同じ `worker/qa.sh` → `core-gates/qa.py`（Mac ランナーの中継があれば生徒アプリは iOS でも）。結果は `out/explore.yaml`（試したこと・見つけたもの・印）
-- dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。同じ題の開いた Defect があれば起票せずにその Issue に書く）。固定 Issue にまとめを書く
+- dispatcher が artifacts の `QAExplore` と events の `qa.explore`（1 晩 1 件。roadmap の `nightly_explore` は supervisor が積んだ夜の数を数える）を残す。見つけたもののうち s1〜s3 で known_gap でないものを判定と同じラベルで起票する（1 晩 3 件まで。開いた Defect と同じ不具合なら起票せずにその Issue に書く。同じかは、積むときに開いている Defect の一覧を入力の `open_defects` で渡して QA 役が書く `same_as` の番号か、題の近さ（同じストーリーで文字の 2-gram の Dice 係数 0.75 以上、ストーリーが分からなければ 0.85 以上）で見る。S1 は S1 でない Issue にまとめない）。固定 Issue にまとめを書く
 - 朝 5 時の日報（`health/daily/status_report.py`）とページに「夜間の探索（昨夜）」として、Defect（s1・s2 は太字）と印、回らなかった理由を出す。印は人が採点して Golden Set に入れる材料
 
 ### 週次の KPI の Report ライン（P5b の report_line・kpi_error_signal、ADR 0043 の O2・O3）

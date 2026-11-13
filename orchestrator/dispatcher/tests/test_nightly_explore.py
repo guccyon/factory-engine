@@ -130,6 +130,46 @@ def test_enqueue_explore_and_record(cur):
     assert cur.fetchone()["count"] == 1   # roadmap の nightly_explore の数え方
 
 
+# rally #1373 と #1402: 出荷の関門の探索が、題の末尾だけ違う同じ不具合を 2 回起票した
+T1373 = "ホームの「まだ月額契約はありません」から月額契約の画面へ進めない（R-2026-W46-1 がまだ起きる）"
+T1402 = "ホームの「まだ月額契約はありません」から月額契約の画面へ進めない（R-2026-W46-1 が直っていない）"
+SUB = "student-subscription-persists"
+
+
+def test_same_issue_by_similar_title_and_same_as():
+    assert qa_line.title_similarity(T1373, T1402) >= qa_line.SIMILAR_SAME_STORY
+    assert qa_line.title_similarity("予約を取り消すと一覧に残る", "予約を変更すると一覧に残る") < qa_line.SIMILAR_SAME_STORY
+    assert qa_line.title_similarity("Ａ Ｂ", "ab") == 1.0   # 全角半角・空白は見ない
+    it = {"number": 1373, "url": "u1373", "title": T1373, "story_id": SUB, "severity": "s2"}
+    other = {"number": 9, "url": "u9", "title": "予約の一覧が空のまま", "story_id": "booking", "severity": "s2"}
+    d = {"title": T1402, "story_id": SUB, "severity": "s2"}
+    assert qa_line.same_issue(d, [other, it]) == (it, "similar")
+    assert qa_line.same_issue({**d, "story_id": "booking"}, [it]) == (None, None)   # 別のストーリーと分かっているものにはまとめない
+    assert qa_line.same_issue({**d, "story_id": None}, [it]) == (it, "similar")      # ストーリーが分からなければ高い線で
+    assert qa_line.same_issue({**d, "title": "まったく違う言い方", "same_as": 1373}, [other, it]) == (it, "same_as")
+    assert qa_line.same_issue({**d, "title": "まったく違う言い方", "same_as": 1}, [it]) == (None, None)   # 一覧にない番号は使わない
+    assert qa_line.same_issue({**d, "severity": "s1"}, [it]) == (None, None)   # S1 は軽い Issue に吸わせない
+    assert qa_line.same_issue({**d, "severity": "s1"}, [{**it, "severity": "s1"}]) == ({**it, "severity": "s1"}, "similar")
+
+
+def test_explore_does_not_refile_same_defect(cur):
+    """開いている Defect を探索の入力に渡し、言い方の違う同じ不具合は既存の Issue に「また見つかった」と書く"""
+    body = qa_line.explore_defect_body(REPO, {"charter": "other-user", "gate": "o/app@0.16.0"}, F(T1373, story_id=SUB), 1, 7)
+    gh = FakeGH(defects=[{"number": 1373, "title": f"QA: {T1373}", "html_url": f"https://github.com/{REPO}/issues/1373", "body": body}])
+    got = qa_line.enqueue_explore(cur, gh, REPO, "2026-11-08")
+    cur.execute("select payload from events where name='job.enqueued'")
+    assert cur.fetchone()["payload"]["input"]["open_defects"] == [{"number": 1373, "title": T1373, "story_id": SUB, "severity": "s2"}]
+    findings = [F(T1402, story_id=SUB), F("言い方がまったく違う", same_as=1373), F("予約の一覧で取り消した予約が残る", story_id=SUB), F("予約の一覧に取り消した予約が残る", story_id=SUB)]
+    said = []
+    out = qa_line.record_explore(cur, gh, lambda r, n, t: said.append((n, t)), REPO, 7, got["corr"], got["job_id"], explore_result(findings), {})
+    titles = [c[2]["title"] for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")]
+    assert titles == ["QA: 予約の一覧で取り消した予約が残る"]   # 同じ実行の中で起票したものにも当てる
+    assert out["seen"] == [f"https://github.com/{REPO}/issues/1373"] * 2 + out["filed"]
+    assert sum("また見つかりました" in t for n, t in said if n == 1373) == 2
+    cur.execute("select payload from events where name='qa.explore'")
+    assert [d.get("matched_by") for d in cur.fetchone()["payload"]["defects"]] == ["similar", "same_as", None, "similar"]
+
+
 def test_supervisor_step(cur, monkeypatch):
     monkeypatch.setattr(supervisor, "NIGHTLY_EXPLORE", [REPO])
     monkeypatch.setattr(supervisor, "QA_DEFS", str(ROOT / "definitions" / "qa.yaml"))
