@@ -193,4 +193,8 @@ def prompt_section(defs: dict) -> str:
   重なるなら mode を after にして after にそのチケットの番号、files に重なるファイル、why に理由を書く。重ならなければ now。
   ただし、ほぼすべてのタスクが触るファイル（CHANGELOG のようなもの）は並べ方では解かない（並べるとラインが 1 本になる）。そのファイルだけの重なりなら now にしてよい。
   basis: 宣言の根拠。どの知見（knowledge/）と実績（sizes.md・caps.md）を見たかを書く
+- QA だけのチケット（コードを変えず、今の製品を確かめることだけを求める）は、path を verify にする（ADR 0056）。ひな形は {' → '.join(defs['paths'].get('verify') or [])}。
+  経路（上の steps の役）は空にする。stage は「QA の前に、マージ済みでまだ版にしていない変更を staging に出す」（出す変更がなければ何もしない）。
+  本文が「今の staging のまま」と求めるときだけ stage を false にする。qa の scope に流すストーリーの id（specs/stories/ の id）を書く。空なら全ストーリー。
+  qa の effort は light・standard なら判定（ストーリーどおり）だけ、deep なら探索（推論）も 1 つ足す。handoff.ship は none（本番にはつなげない）。
 """

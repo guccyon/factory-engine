@@ -21,6 +21,7 @@ create "factory:fix-proposed" "d4c5f9" "差し戻しの提案。流すときは 
 create "factory:qa" "0e8a16" "QA 役の判定のまとめ（固定 Issue。閉じない。ADR 0028 の決定 2）"
 create "factory:qa-explore" "0e8a16" "QA 役の探索的テストのまとめ（固定 Issue。閉じない。ADR 0049）"
 create "factory:qa-release" "0e8a16" "版ごとの QA のチケット（出荷の QA の関門が作り、報告を書いて閉じる。ADR 0054）"
+create "factory:qa-ticket" "0e8a16" "QA だけのチケット（プランナーが道 verify で計画し、工場が QA だけを流して結果を返して閉じる。ADR 0056）"
 create "factory:qa-defect" "b60205" "QA 役がユーザーストーリーを止めた Defect（ADR 0028 の決定 2）"
 create "factory:status" "5319e7" "工場の状況（番人が操業停止を通知する Issue。ADR 0005）"
 create "factory:design" "d4c5f9" "画面を含むタスク: 実装の前にデザイナー役とデザイン検査役を通す（ADR 0025。決まると factory:planned に戻る）"

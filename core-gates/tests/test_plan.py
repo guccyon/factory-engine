@@ -63,6 +63,29 @@ def test_decide_spike(out, facts, want):
     assert pl.decide(out, facts, 1, DEFS)[0] == want
 
 
+VERIFY = {"path": "verify", "steps": [{"step": "qa", "run": "true", "why": "確かめるだけ", "scope": ["a-prejoin"]}], "start": {"mode": "now"}, "basis": "本文"}
+
+
+@pytest.mark.parametrize("out,want", [
+    ({**O(steps=[], scale="none"), "workflow": VERIFY}, ("ready", [], [], [])),                         # QA だけ（ADR 0056）。経路が空でよい
+    ({**O(steps=["implement"], scale="none"), "workflow": VERIFY}, ("escalate", ["implement"], ["verify_with_roles"], [])),
+    ({**O(steps=[], scale="none", conf=0.4), "workflow": VERIFY}, ("escalate", [], ["low_confidence"], [])),
+    ({**O(steps=[], scale="none", ready=False, questions=Q), "workflow": VERIFY}, ("ask", [], [], [])),   # 何を確かめるか読めなければ問う
+])
+def test_decide_verify(out, want):
+    assert pl.decide(out, DS, 1, DEFS) == want
+
+
+def test_verify_workflow_has_no_build_steps():
+    import workflow
+    wd = workflow.load()
+    wf, marks = workflow.normalize(VERIFY, [], [], [], None, wd)
+    assert [s["step"] for s in wf["steps"]] == ["stage", "qa", "respond", "learn"]
+    assert wf["steps"][1]["scope"] == ["a-prejoin"] and wf["steps"][0]["run"] is True and marks == []
+    assert not {"implement", "checks", "merge", "ship"} & set(wd["paths"]["verify"])
+    assert "verify" in workflow.prompt_section(wd)
+
+
 def test_designdocs_counts_marked_comments():
     issue = {"comments": [{"body": "<!-- factory:designdoc -->\n## 設計書"}, {"body": "ふつうのコメント"}]}
     assert pl.designdocs(issue, DEFS) == 1
@@ -107,7 +130,7 @@ def test_schema_matches_definitions():
     assert s["steps"]["items"]["properties"]["effort"]["enum"] == list(DEFS["efforts"])
     assert "alternatives" in pl.schema(DEFS)["required"]
     assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized",
-                                   "spike_exhausted", "spike_no_questions"}
+                                   "spike_exhausted", "spike_no_questions", "verify_with_roles"}
     assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design",
                                        "no_requirements", "no_stories", "unknown_story", "story_exists", "unknown_kpi",
                                        "unknown_adr", "unknown_contract", "breaking_contract", "no_contract_diff"}

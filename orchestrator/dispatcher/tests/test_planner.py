@@ -128,6 +128,22 @@ def run(cur, c, r, gh=None):
 
 
 @needs_db
+def test_ready_verify_labels_qa_ticket(cur):
+    """QA だけ（ADR 0056）: 経路が空でも、道 verify なら factory:qa-ticket を付ける"""
+    c = Calls()
+    r = res(steps=())
+    r["workflow"] = {"path": "verify", "steps": [{"step": "stage", "run": False, "effort": "standard", "why": "今のまま"},
+                                                 {"step": "qa", "run": True, "effort": "standard", "why": "確かめる", "scope": ["a-prejoin"]},
+                                                 {"step": "respond", "run": True, "effort": "standard", "why": ""},
+                                                 {"step": "learn", "run": True, "effort": "standard", "why": ""}],
+                     "caps": {}, "caps_declared": {}, "handoff": {"ship": "none", "learn": "signals"}, "start": {"mode": "now"}}
+    run(cur, c, r)
+    assert c.labels == [(ISSUE, ("factory:running",), ("factory:qa-ticket",))]
+    assert "QA だけ" in c.comments[0] and "a-prejoin" in c.comments[0] and "今の版のまま" in c.comments[0]
+    assert pn.verify_scope(r["workflow"]) == {"stage": False, "stories": ["a-prejoin"], "explore": False, "cap_usd": None}
+
+
+@needs_db
 @pytest.mark.parametrize("steps,label", [(["implement"], "factory:planned"), (["ui_design", "implement"], "factory:design"),
                                          (["design_system", "ui_design", "implement"], "factory:design-system"), (["ui_design"], "factory:design")])
 def test_ready_labels_the_first_role_and_keeps_rationale(cur, steps, label):

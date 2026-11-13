@@ -43,7 +43,8 @@ def events(cur, cid):
 
 def test_paths_match_workflow_definition():
     wf = yaml.safe_load((ROOT / "definitions" / "workflow.yaml").read_text())
-    assert set(desk.PATHS) == set(wf["paths"])
+    # verify（QA だけ、ADR 0056）は窓口が選ぶ道ではない。窓口はチケットに切り、プランナーが verify を選ぶ
+    assert set(desk.PATHS) == set(wf["paths"]) - {"verify"}
 
 
 def test_states_match_schema(cur):
