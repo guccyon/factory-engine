@@ -68,11 +68,21 @@ def latest_workflow(cur, corr: str) -> dict | None:
 STANDING_QA_UNCAPPED = ("ticket.cost_usd", "retries.qa_rerun")   # QA の固定 Issue に掛けない上限（ADR 0054 の決定 6）
 
 
+def gate_caps(cur, corr: str) -> dict | None:
+    """版ごとの QA のチケット（ADR 0054 の決定 2）なら、関門が宣言した上限。チケット全体の費用はジョブの上限の合計から決まる。
+    QA のやり直しの回数は関門が単位ごとに数えるので、チケットでは数えない"""
+    cur.execute("select payload->>'cap_usd' as cap from events where name='qa.gate_plan' and payload->>'corr'=%s order by id desc limit 1", (corr,))
+    r = cur.fetchone()
+    if not r or r["cap"] is None:
+        return None
+    return {"ticket.cost_usd": float(r["cap"]), "retries.qa_rerun": None}
+
+
 def standing_qa(cur, corr: str) -> bool:
     """QA の固定 Issue（判定・探索の「毎回更新」。閉じない記録の置き場）か。QA のジョブを積んだ記録があり、上限の宣言がないチケット。
     版ごとの QA のチケット（ADR 0054 の決定 2）は関門が上限を宣言するので、ここには当たらない"""
     cur.execute("select 1 from events where name='qa.enqueued' and correlation_id=%s limit 1", (corr,))
-    if cur.fetchone() is None:
+    if cur.fetchone() is None or gate_caps(cur, corr):
         return False
     wf = latest_workflow(cur, corr)
     return not (wf and isinstance(wf.get("caps"), dict))
@@ -86,7 +96,10 @@ def caps_of(cur, corr: str) -> tuple[dict, dict | None]:
     if wf and isinstance(wf.get("caps"), dict):
         return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND], **wf["caps"]}, wf
     caps = {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND]}
-    if standing_qa(cur, corr):
+    gc = gate_caps(cur, corr)
+    if gc:
+        caps.update(gc)
+    elif standing_qa(cur, corr):
         caps.update({k: None for k in STANDING_QA_UNCAPPED})
     return caps, wf
 

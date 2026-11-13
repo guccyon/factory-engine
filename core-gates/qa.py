@@ -663,12 +663,15 @@ def run_synthetic(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
 # ------------------------------------------------------------------ 本体
 def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
     defs = with_product_severities(defs, repo_dir)   # 製品の S1 の条件と S2〜S4 の基準（ADR 0043 の O5）
+    if inp.get("max_budget_usd"):   # ジョブの費用の上限（ADR 0054 の決定 5）。agent_runner が claude の --max-budget-usd にする
+        os.environ["MAX_BUDGET_USD"] = str(inp["max_budget_usd"])
     if inp.get("mode") == "explore":   # 夜間の探索（nightly_explore）
         return run_explore(repo_dir, inp, out_dir, defs)
     if inp.get("mode") == "synthetic":   # 合成の利用者（ADR 0043 の O4）
         return run_synthetic(repo_dir, inp, out_dir, defs)
     import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
     stories = load_stories(repo_dir, inp.get("stories") or None)[: defs["worker"]["stories_max"]]
+    max_turns = int(inp.get("max_turns") or defs["worker"]["max_turns"])   # シナリオごとのジョブは、関門がジョブの上限を入力で渡す（ADR 0054 の決定 5）
     if not stories:
         return {"ok": False, "errors": ["流すストーリーがない（specs/stories/ の active なもの）"]}
     env = env_entries(repo_dir, inp.get("env") or "staging", inp.get("env_host") or defs["worker"]["env_host"])
@@ -689,7 +692,7 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
         errs: list[str] = []
         doc = None
         for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
-            res = agent_runner.run_agentic("qa", text, max_turns=defs["worker"]["max_turns"], cwd=str(root), state_dir=state,
+            res = agent_runner.run_agentic("qa", text, max_turns=max_turns, cwd=str(root), state_dir=state,
                                            **({"mcp_config": mcp} if mcp else {}))
             cost += res.cost_usd or 0
             turns += res.num_turns or 0

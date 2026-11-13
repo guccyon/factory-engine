@@ -263,8 +263,10 @@ class StoriesGH(FakeGH):
         return super().__call__(method, path, body)
 
 
-def test_time_stories_run_last_alone(cur):
-    """ADR 0055 の決定 3: 時刻をまたぐストーリーは判定から外し、判定と探索が終わってから 1 つだけで流す"""
+def test_time_stories_run_last_alone(cur, monkeypatch):
+    """ADR 0055 の決定 3: 時刻をまたぐストーリーは判定から外し、判定と探索が終わってから 1 つだけで流す。
+    単位の列がない DB（009_job_unit.sql の前）での、固定 Issue に積む形"""
+    monkeypatch.setattr(qa_line, "unit_ready", lambda cur: False)
     gh, rid = StoriesGH(), "o/app@0.9.0"
     deploy(cur, rid)
     out = qa_gate.step(cur, gh, REPO, now=NOW)
@@ -307,3 +309,120 @@ def test_plan_falls_back_when_stories_cannot_be_read(cur):
     assert p["time_stories"] == [] and p["other_stories"] is None and p["error"]
     cur.execute("select payload->'input'->'stories' as s from events where name='job.enqueued' order by id limit 1")
     assert cur.fetchone()["s"] == []
+
+
+# ------------------------------------------------------------------ 版ごとのチケットとシナリオごとのジョブ（ADR 0054）
+class ReleaseGH(StoriesGH):
+    """StoriesGH のストーリー（またがない b-chat・d-cs、時刻をまたぐ a-prejoin）。版ごとの Issue は 51 から"""
+    def __init__(self):
+        super().__init__()
+        self.next_issue = 50
+
+    def __call__(self, method, path, body=None):
+        if method == "POST" and path.endswith("/issues") and (body or {}).get("labels") == ["factory:qa-release"]:
+            self.calls.append((method, path, body))
+            self.next_issue += 1
+            return {"number": self.next_issue}
+        return super().__call__(method, path, body)
+
+    def closed(self):
+        return [int(p.rsplit("/", 1)[1]) for m, p, b in self.calls if m == "PATCH" and (b or {}).get("state") == "closed"]
+
+
+def units_of(cur, rid):
+    return {u: [j["job_id"] for j in js] for u, js in qa_gate.gate(cur, rid)["units"].items()}
+
+
+def judged(cur, gh, rid, unit, decision, defects=()):
+    """その単位のいまのジョブを終わらせて判定を残し、次の周回を回す"""
+    jid = units_of(cur, rid)[unit][-1]
+    finish(cur, jid)
+    verdicts(cur, jid, [(unit.split(":", 1)[1], decision, list(defects))])
+    return qa_gate.step(cur, gh, REPO, now=NOW)
+
+
+def test_release_ticket_gets_one_job_per_scenario(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    plan = qa_gate.gate(cur, rid)["plan"]
+    assert plan["issue"] == 51 and plan["corr"] == "github:o/app#51" and plan["time_stories"] == ["a-prejoin"]
+    assert [u["unit"] for u in plan["units"]] == ["verdict:b-chat", "verdict:d-cs", "explore:detour", "verdict_time:a-prejoin"]
+    assert plan["cap_usd"] == (3 + 3 + 5 + 5) * 1.5
+    assert sorted(x["unit"] for x in out["enqueued"]) == ["explore:detour", "verdict:b-chat"]   # 判定は同時に 1 本、探索は並ぶ
+    cur.execute("select issue_number, unit from jobs order by id")
+    assert [(r["issue_number"], r["unit"]) for r in cur.fetchall()] == [(51, "verdict:b-chat"), (51, "explore:detour")]   # 同じ Issue に並ぶ
+    cur.execute("select payload->'input' as i from events where name='job.enqueued' order by id")
+    v, x = [r["i"] for r in cur.fetchall()]
+    assert v["stories"] == ["b-chat"] and v["max_turns"] == 40 and v["max_budget_usd"] == 3 and v["gate"] == rid
+    assert x["mode"] == "explore" and x["max_budget_usd"] == 5
+    assert qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"] == []   # b-chat が終わるまで d-cs は積まない
+    assert len([p for m, p, b in gh.calls if m == "GET" and p.endswith("/contents/specs/stories")]) == 1
+
+
+def test_release_ticket_runs_time_story_last_then_reports_and_closes(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    out = judged(cur, gh, rid, "verdict:b-chat", "pass")
+    assert [x["unit"] for x in out["enqueued"]] == ["verdict:d-cs"]
+    out = judged(cur, gh, rid, "verdict:d-cs", "blocked")
+    assert [x["unit"] for x in out["enqueued"]] == ["verdict:d-cs"]   # 確かめられなかった 1 本だけ積み直す
+    out = judged(cur, gh, rid, "verdict:d-cs", "blocked")
+    assert out["enqueued"] == [] and out["decided"] is None             # 探索が動いている間は、時刻をまたぐものを積まない
+    ex = units_of(cur, rid)["explore:detour"][0]
+    finish(cur, ex)
+    explored(cur, ex, [{"title": "他人の予約が見える", "severity": "s1"}])
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert [x["unit"] for x in out["enqueued"]] == ["verdict_time:a-prejoin"]
+    cur.execute("select payload->'input' as i from events where name='job.enqueued' order by id desc limit 1")
+    assert cur.fetchone()["i"]["max_turns"] == 80
+    d = judged(cur, gh, rid, "verdict_time:a-prejoin", "hold", [{"title": "入室のボタンが押せない", "severity": "s2"}])["decided"]
+    assert d["candidates"] == 2 and d["issue"] == 51
+    assert d["verdict"]["stories"] == {"pass": 1, "blocked": 1} and d[qa_gate.TIME]["stories"] == {"hold": 1}
+    assert [m["story_id"] for m in d["verdict"]["missing"]] == ["d-cs"]
+    assert any(r["label"] == "そろわなかったシナリオ" and "d-cs（" in r["text"] for r in d["report"])
+    assert len(units_of(cur, rid)["verdict:b-chat"]) == 1
+    assert "出荷の QA の関門" in gh.comments(51)[0] and gh.closed() == [51] and gh.comments(7) == []   # 報告は版の Issue に書いて閉じる
+
+
+def test_release_ticket_cost_cap_reports_without_human_stoppage(cur):
+    import workflow_guard
+    import workflow_shadow
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    corr = "github:o/app#51"
+    assert workflow_shadow.gate_caps(cur, corr) == {"ticket.cost_usd": 24.0, "retries.qa_rerun": None}
+    assert not workflow_shadow.standing_qa(cur, corr)
+    u = units_of(cur, rid)
+    for jid in (u["verdict:b-chat"][0], u["explore:detour"][0]):
+        finish(cur, jid)
+    cur.execute("update jobs set result=%s where id=%s", (Jsonb({"cost_usd": 25.0}), u["verdict:b-chat"][0]))
+    verdicts(cur, u["verdict:b-chat"][0], [("b-chat", "pass", [])])
+    explored(cur, u["explore:detour"][0], [])
+    assert workflow_guard.cost_gate(cur, corr)["hit"] == ["ticket.cost_usd"]
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert out["enqueued"] == [] and out["decided"]["capped"] is True   # 残りを積まず、そろった分で報告を作る
+    assert [m["story_id"] for m in out["decided"]["verdict"]["missing"]] == ["d-cs"]
+    assert [m["story_id"] for m in out["decided"][qa_gate.TIME]["missing"]] == ["a-prejoin"]
+    assert any(r["label"] == "費用の上限" for r in out["decided"]["report"])
+
+
+def test_release_ticket_supersede_closes_issue(cur):
+    gh = ReleaseGH()
+    deploy(cur, "o/app@0.9.0")
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    deploy(cur, "o/app@0.10.0", "0.10.0")
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert out["opened"] == "o/app@0.10.0" and gh.closed() == [51]
+    assert qa_gate.gate(cur, "o/app@0.10.0")["plan"]["issue"] == 52
+
+
+def test_plan_without_stories_stays_on_fixed_issues(cur):
+    gh, rid = FakeGH(), "o/app@0.9.0"   # ストーリーを数えられない製品
+    deploy(cur, rid)
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    p = qa_gate.gate(cur, rid)["plan"]
+    assert "units" not in p and p["legacy_why"]
+    assert sorted(x["which"] for x in out["enqueued"]) == ["explore", "verdict"]
