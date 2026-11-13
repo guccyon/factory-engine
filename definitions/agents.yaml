@@ -52,6 +52,9 @@ steps:
     mode: agentic
   ui_design_review:           # デザイン検査役（core-gates/ui_design_review.py。案と規範の写しを読むだけ。ADR 0025）
     tier: tier-judge
+  spike:                      # スパイクのレーンの System Architect（core-gates/spike.py。製品と Issue を読むだけ。原因と方針の設計書。ADR 0055）
+    tier: tier-large
+    tools: [Read, Grep, Glob]
   plan:                       # プランナー（core-gates/plan.py。チケットと規範の写しを読むだけ。着手判定と経路。ADR 0025・0026）
     tier: tier-small
   desk.consult:               # 窓口の相談役（core-gates/desk_consult.py。会話と規範の写しを読むだけ。問いか、Request とタスクのまとまりの下書き。ADR 0030 の 3）

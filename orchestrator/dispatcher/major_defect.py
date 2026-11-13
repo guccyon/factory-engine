@@ -5,7 +5,7 @@
 工場は人の承認を待たずに、修正 → 再リリースまでを自分で進める。
 
 - 起票: メジャーの Defect の Issue は factory:fix-proposed（人が流す 1 タップ）ではなく factory:plan にし、p0 を付ける（incident.from_qa から呼ぶ）。
-  直し方はプランナーが決める。プランナーは開いている不具合（defects.md）を見て、同じ原因のものを 1 本にまとめて原因から直す
+  プランナーは着手判定だけをし、方針が要ればスパイクのレーン（System Architect）が原因と直し方を決め、同じ原因の不具合を束ねる（ADR 0055）
 - 再リリース: メジャーの Incident の Defect の Issue が閉じ（修正の PR がマージされ）、まだ Release に入っていないマージ済みの PR があれば、
   supervisor が緊急便（train.emergency）を出す。Incident ごとに 1 回（major.rereleased）
 - 本番の承認: その緊急便に本番を立てる段階の製品の Release が載っていれば、staging に出た後に supervisor が承認する
