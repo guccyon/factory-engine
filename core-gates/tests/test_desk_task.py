@@ -60,3 +60,12 @@ def test_settle_drops_unknown_refs(tmp_path):
 def test_settle_without_answer_and_cap(tmp_path):
     assert dt.settle(None, tmp_path, 0, 16, 16) == {"ok": False, "errors": ["答えの本体がない（上限に当たったか、形の誤り）"], "cap_hit": True}
     assert dt.settle({"answer": "途中"}, tmp_path, 0, 16, 16)["cap_hit"] is True
+
+
+def test_analysis_prompt_and_queries(tmp_path):
+    inp = {**INP, "path": "analysis", "task": {"what": "生産性は落ちていないか", "form": "report"}, "limits": {"turns": 40, "usd": 3, "max_usd": 5}}
+    p = dt.prompt(inp, 40, tools=True)
+    assert "報告書" in p and "queries" in p and "所見" in p and "集計の問いはここで書いて動かす" in p and "36 ターン" in p
+    assert "queries" not in dt.prompt(INP, 16, tools=True)
+    out = dt.settle({"answer": "a", "queries": [{"id": "q1", "sql": "select 1", "used": "1"}, {"sql": None}, "x"]}, tmp_path, 0, 3, 40)
+    assert out["queries"] == [{"id": "q1", "purpose": "", "sql": "select 1", "used": "1"}]
