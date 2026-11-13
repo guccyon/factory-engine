@@ -37,6 +37,7 @@ DEFS = {
     "explore": {"hours": [1, 5], "through_pause": True, "priority": "p2", "defects_per_night_max": 3, "file_severities": ["s1", "s2", "s3"],
                 "charters": ["detour", "other-user", "come-back", "reader-words", "first-time"]},
     "gate": {"priority": "p1", "hours": 6, "attempts": 2, "blocker_severities": ["s1", "s2"]},
+    "clock": {"max_restarts_per_job": 8},
     "synthetic": {"weekday": 6, "hours": [5, 7], "through_pause": True, "priority": "p2",
                   "slow_p95_ms": 1500, "slow_min_calls": 2, "hard_entry_attempts": 3, "opportunities_max": 4, "friction_env": "SYNTH_FRICTION",
                   "friction_example": {"slow": {"path": "/api/bookings", "method": "GET", "delay_ms": 2500},

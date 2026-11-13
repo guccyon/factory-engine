@@ -130,7 +130,7 @@ phases:
         measure: { db: { target: 5, sql: "select count(*) from events where name = 'qa.verdict'" } }   # 2026-11-06 QA 役（definitions/qa.yaml、factoryctl qa run）。Web の触れる環境で流す。Mac ランナーの中継は one_orchestrator
       - id: scenario_time
         ja: "時間をまたぐシナリオ（契約 → 再起動 → 翌日の再ログイン → 契約が残っている）が 1 本回る"
-        measure: { db: { target: 1, sql: "select count(*) from events v where v.name = 'qa.verdict' and v.payload->>'decision' in ('pass', 'hold') and exists (select 1 from events r where r.name = 'release.restarted' and r.payload->>'by' = 'qa:' || v.job_id and (r.payload->>'advance_seconds')::int > 0)" } }   # 2026-11-08 QA が時計を進めて再起動したジョブ（env_restart）で、ストーリーを exit まで判定した数（blocked は数えない）。道具は factoryctl env restart と中継の env_restart、製品は ship.yaml の touch.restart・touch.clock_env
+        measure: { db: { target: 1, sql: "select count(*) from events v where v.name = 'qa.verdict' and v.payload->>'decision' in ('pass', 'hold') and exists (select 1 from events r where r.name = 'release.restarted' and r.payload->>'by' = 'qa:' || v.job_id and (r.payload->>'clock_offset_seconds')::int > 0)" } }   # 2026-11-08 QA が時計を進めて再起動したジョブ（env_restart）で、ストーリーを exit まで判定した数（blocked は数えない）。道具は factoryctl env restart と中継の env_restart、製品は ship.yaml の touch.restart・touch.clock_env
       - id: nightly_explore
         ja: "夜間に無人で探索テストが回り、朝の報告に Defect と印が出た夜"
         measure: { db: { target: 3, sql: "select count(distinct payload->>'night') from events where name = 'qa.explore' and (payload->>'unattended')::boolean" } }   # unattended。supervisor が夜（definitions/qa.yaml の explore.hours）に積んだものだけ数える（factoryctl qa explore で人が積んだものは数えない）。朝の日報の「夜間の探索」に Defect と印が出る。印は人が採点して Golden Set へ

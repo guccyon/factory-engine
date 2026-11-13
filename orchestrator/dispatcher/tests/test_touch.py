@@ -359,3 +359,77 @@ def test_up_same_version_without_touch_does_not_restart(cur, docker, monkeypatch
     assert touch.up(cur, REPO, release_id=rid, log=lambda m: None) == 0
     cur.execute("select count(*) as n from events where name='release.restart_requested'")
     assert cur.fetchone()["n"] == 0
+
+
+# ------------------------------------------------------------------ 時刻を指定して合わせる（ADR 0055）
+def test_restart_sets_the_clock_to_an_offset(cur, docker):
+    """set_to: 進める量を足すのではなく、その値にする（前より小さくもできる）。足す・戻すとは一緒に使わない"""
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    ship.request_restart(cur, REPO, "staging", "t", "test", advance_seconds=86400)
+    run_pending(cur)
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", offset_seconds=600)[0] is True
+    run_pending(cur)
+    assert ship.clock_offset(cur, REPO, "staging") == 600
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", offset_seconds=-1)[0] is False
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", offset_seconds=ship.OFFSET_MAX_SECONDS + 1)[0] is False
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", offset_seconds=60, reset_clock=True)[0] is False
+    assert ship.request_restart(cur, REPO, "staging", "t", "test", offset_seconds=60, advance_seconds=60)[0] is False
+
+
+def _running_qa(cur, job_id):
+    cur.execute("insert into jobs(id, correlation_id, repo, issue_number, kind, state) values (%s,%s,%s,%s,'qa','running')",
+                (job_id, f"github:{REPO}#{job_id}", REPO, job_id))
+
+
+def test_clock_refuses_while_other_qa_jobs_run(cur, docker):
+    """決定 3: 同じ製品でほかの QA のジョブが動いていれば、時計を動かさない。0 に戻すのは通す。回数の上限も守る"""
+    import scenario_clock
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    _running_qa(cur, 7)
+    assert scenario_clock.refuse(cur, REPO, 7, {"offset_seconds": 60}, 8) is None
+    _running_qa(cur, 8)
+    why = scenario_clock.refuse(cur, REPO, 7, {"offset_seconds": 60}, 8)
+    assert why and "8" in why and "skipped" in why
+    assert scenario_clock.refuse(cur, REPO, 7, {"advance_seconds": 0}, 8)            # 再起動だけでも止まるので断る
+    assert scenario_clock.refuse(cur, REPO, 7, {"reset_clock": True, "advance_seconds": 0}, 8) is None
+    cur.execute("update jobs set state='succeeded' where id=8")
+    ship.request_restart(cur, REPO, "staging", "qa:7", "runner_relay", advance_seconds=60)
+    ship.request_restart(cur, REPO, "staging", "qa:7", "runner_relay", advance_seconds=60)
+    assert "使い切った" in scenario_clock.refuse(cur, REPO, 7, {"advance_seconds": 60}, 2)
+
+
+def test_clock_cleanup_resets_only_what_the_job_left(cur, docker):
+    """決定 4: 時計を動かしたまま終わったジョブの分だけ、工場が 0 に戻す"""
+    import scenario_clock
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    assert scenario_clock.cleanup(cur, REPO, "staging", 7) is None                   # 触っていない
+    ship.request_restart(cur, REPO, "staging", "qa:7", "runner_relay", offset_seconds=3600)
+    run_pending(cur)
+    assert scenario_clock.cleanup(cur, REPO, "staging", 9) is None                   # ほかのジョブの分は戻さない
+    assert scenario_clock.cleanup(cur, REPO, "staging", 7)
+    run_pending(cur)
+    assert ship.clock_offset(cur, REPO, "staging") == 0
+    cur.execute("select payload from events where name='release.restarted' order by id desc limit 1")
+    assert cur.fetchone()["payload"]["by"] == "qa:7:cleanup"
+    assert scenario_clock.cleanup(cur, REPO, "staging", 7) is None                   # もう戻した（最後の依頼が戻し）
+    ship.request_restart(cur, REPO, "staging", "qa:7", "runner_relay", reset_clock=True)
+    run_pending(cur)
+    assert scenario_clock.cleanup(cur, REPO, "staging", 7) is None                   # 自分で戻した
+
+
+def test_clock_describe_says_server_time(cur, docker):
+    import scenario_clock
+    from datetime import datetime, timezone
+    rid = release(cur, "1.0.0")
+    ship.request_ship(cur, rid, "t", "test")
+    run_pending(cur)
+    ship.request_restart(cur, REPO, "staging", "qa:7", "runner_relay", offset_seconds=3600)
+    run_pending(cur)
+    text = scenario_clock.describe(cur, REPO, "staging", datetime(2026, 11, 13, 10, 0, tzinfo=timezone.utc))
+    assert "2026-11-13T20:00:00+09:00" in text and "3600 秒" in text

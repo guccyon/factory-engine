@@ -20,6 +20,7 @@ def test_defs_copy_matches_definitions():
     for k, v in qa_line.DEFS["act"].items():
         assert defs["act"][k] == v, k
     assert defs["worker"]["env_host"] == qa_line.DEFS["worker"]["env_host"]
+    assert defs["clock"] == qa_line.DEFS["clock"]
     assert set(qa_line.DECISION_JA) == set(defs["decisions"])
 
 

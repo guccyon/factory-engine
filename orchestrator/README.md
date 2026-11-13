@@ -445,6 +445,7 @@ docker compose exec dispatcher factoryctl env restart guccyon/rally --reset-cloc
 - `--fresh` は検証の環境だけ（ship.yaml の `touch.environments` と `seed.environments` の両方に入っている環境）。本番の DB は入れ直さない
 - iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
 - 時間をまたぐシナリオ（ADR 0028 の `scenario_time`）: `env restart` は ship.yaml の `touch.restart` の部品（なければ `verify` の部品）を作り直して再起動し、`touch.clock_env` の変数にサーバーの時計を進める秒数を渡す（rally は backend の `CLOCK_OFFSET_SECONDS`）。DB は残す。進めた量は前の再起動に足していき、1 回 7 日・合計 62 日まで。次に版を出す・戻す・入れ直すと 0 に戻る。本番は受け付けない。依頼は events の `release.restart_requested`、結果は `release.restarted`（`clock_offset_seconds`）
+- QA が時刻を合わせる（ADR 0055）: QA のジョブには中継で `env_restart`（`set_to` で時刻を指定して合わせる・`advance_minutes`・`advance_hours`・`reset_clock`）と読むだけの `env_clock` を渡す。決まりは `dispatcher/scenario_clock.py`。同じ製品でほかの QA のジョブが動いていれば時計を動かさない（0 に戻すのは通す）。1 ジョブの再起動は `definitions/qa.yaml` の `clock.max_restarts_per_job` 回まで。時計を動かしたまま終わったジョブは、dispatcher が 0 に戻す（`by` が `qa:<job_id>:cleanup`）。製品の約束: `touch.clock_env` を宣言する製品は、応答の `Date` ヘッダーを進めた時計で付け、時刻で振る舞いが変わる画面はサーバーに合わせた時計で決める
 
 
 ## PR ごとの使い捨て環境（ADR 0043 の O7 ephemeral_env）

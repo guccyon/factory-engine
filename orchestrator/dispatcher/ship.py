@@ -10,7 +10,7 @@
   release.reseed_requested    {env, by, via}          触れる環境の DB を空にして合成シードから入れ直す（ADR 0028 の touchable_env。release_id はいまその環境の版）
   release.drill_requested     {repo, env, drill, by, via} 演習の仕込み（ADR 0043 の O5）。ship.yaml の touch.drills のコマンドを触れる環境で 1 回流す。
                                                       元に戻すのは入れ直し（release.reseed_requested）
-  release.restart_requested   {repo, env, advance_seconds, reset_clock, by, via}
+  release.restart_requested   {repo, env, advance_seconds, reset_clock, offset_seconds?, by, via}
                                                       触れる環境の部品を再起動し、サーバーの時計を進める（ADR 0028 の scenario_time。DB は残す）
   release.kpi_requested       {repo, env, week, by, via}
                                                       その環境で製品の KPI を測る（ADR 0043 の O2 の週次の Report。ship.yaml の kpi のコマンドを読むだけで、環境を変えない）
@@ -260,8 +260,10 @@ def clock_offset(cur, repo: str, env: str) -> int:
     return int(r["payload"].get("clock_offset_seconds") or 0)
 
 
-def request_restart(cur, repo: str, env: str, by: str, via: str, advance_seconds: int = 0, reset_clock: bool = False) -> tuple[bool, str]:
+def request_restart(cur, repo: str, env: str, by: str, via: str, advance_seconds: int = 0, reset_clock: bool = False,
+                    offset_seconds: int | None = None) -> tuple[bool, str]:
     """触れる環境の部品（ship.yaml の touch.restart）を再起動し、サーバーの時計を advance_seconds 進める（reset_clock なら 0 に戻す）依頼。
+    offset_seconds を渡すと、足すのではなく進める量そのものをその値にする（ADR 0055 の set_to。時刻を指定して合わせる）。
     DB は残す。どの環境で何を進められるかは shipper が ship.yaml の touch で確かめる"""
     if env == "prod":
         return False, "本番は再起動しない・時計を進めない"
@@ -269,14 +271,22 @@ def request_restart(cur, repo: str, env: str, by: str, via: str, advance_seconds
         return False, f"1 回に進める時計は 0〜{ADVANCE_MAX_SECONDS // 3600} 時間"
     if reset_clock and advance_seconds:
         return False, "時計を戻すときは進めない（別々に依頼する）"
-    if not reset_clock and clock_offset(cur, repo, env) + advance_seconds > OFFSET_MAX_SECONDS:
+    if offset_seconds is not None:
+        if reset_clock or advance_seconds:
+            return False, "時刻を指定するときは、進める量や戻すと一緒に使わない"
+        if not isinstance(offset_seconds, int) or isinstance(offset_seconds, bool) or not 0 <= offset_seconds <= OFFSET_MAX_SECONDS:
+            return False, f"指定の時刻は、実際の時刻から {OFFSET_MAX_SECONDS // 86400} 日先までの間にする（前には戻せない）"
+    elif not reset_clock and clock_offset(cur, repo, env) + advance_seconds > OFFSET_MAX_SECONDS:
         return False, f"進めた時計の合計が {OFFSET_MAX_SECONDS // 86400} 日を超える。reset_clock で 0 に戻してから進める"
     rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
     if not rid:
         return False, f"{env} にまだ版が出ていない"
     record(cur, "release.restart_requested", rid, {"repo": repo, "env": env, "advance_seconds": advance_seconds,
-                                                   "reset_clock": bool(reset_clock), "by": by, "via": via})
-    what = "時計を 0 に戻して" if reset_clock else (f"時計を {advance_seconds // 3600} 時間進めて" if advance_seconds else "")
+                                                   "reset_clock": bool(reset_clock), "offset_seconds": offset_seconds, "by": by, "via": via})
+    if offset_seconds is not None:
+        what = f"時計を実際より {offset_seconds} 秒進んだ状態に合わせて"
+    else:
+        what = "時計を 0 に戻して" if reset_clock else (f"時計を {advance_seconds} 秒進めて" if advance_seconds else "")
     return True, f"{env}（{rid}）を{what}再起動する依頼をした"
 
 
@@ -620,7 +630,10 @@ def handle(cur, ev: dict):
             env = p["env"]
             if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:
                 raise RuntimeError(f"{env} の版が依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
-            offset = 0 if p.get("reset_clock") else clock_offset(cur, repo, env) + int(p.get("advance_seconds") or 0)
+            if p.get("offset_seconds") is not None:   # 時刻を指定して合わせる（ADR 0055）
+                offset = int(p["offset_seconds"])
+            else:
+                offset = 0 if p.get("reset_clock") else clock_offset(cur, repo, env) + int(p.get("advance_seconds") or 0)
             path, _ = source(repo, rel["app_version"])
             cfg = ship_config(path)
             secs, services = restart(cfg, path, repo, env, rel, offset)

@@ -8,7 +8,7 @@ QA のワーカー（エージェント）に、iOS シミュレーターの道�
 - 通す道具はジョブの種類ごとの一覧（QA は見る・操作する・ビルドする道具。sim_erase・sim_shutdown は通さない）。知らない道具・一覧の外は断る
 - 呼んだ道具は events の runner.relayed に残す（引数は道具と長さだけ。打った文字は残さない）
 - 道具の形（inputSchema）はランナーの一覧（macrunner/runner.py の TOOLS）の写し。test_runner_relay.py が食い違いを見る
-- 工場の側の道具（LOCAL_TOOLS）も同じ口で渡す。いまは触れる環境の再起動と時計の進め（env_restart。ADR 0028 の scenario_time）だけで、
+- 工場の側の道具（LOCAL_TOOLS）も同じ口で渡す。いまは触れる環境の再起動と時計の合わせ（env_restart・env_clock。ADR 0028 の scenario_time、ADR 0055）だけで、
   Mac には送らず dispatcher が shipper に依頼する（local）。どの製品かは grant のときに決め、エージェントには選ばせない
 """
 from __future__ import annotations
@@ -57,10 +57,15 @@ TOOLS = {t["name"]: t for t in [
 ]}
 # 工場の側の道具（definitions/qa.yaml の env_tools と同じ）。Mac ランナーではなく dispatcher が受ける
 LOCAL_TOOLS = {t["name"]: t for t in [
-    _tool("env_restart", "触れる環境のサーバーを再起動する（DB は残す）。advance_hours を渡すと、サーバーの時計をその時間だけ進めて再起動する"
-          "（翌日を確かめるなら 24）。reset_clock で進めた時計を 0 に戻す。終わるまで数十秒かかる。進めた時計は、次に版を出すと 0 に戻る",
-          {"advance_hours": {"type": "number", "minimum": 0, "maximum": 168, "description": "進める時間（0〜168）。0 なら再起動だけ"},
-           "reset_clock": {"type": "boolean", "description": "進めた時計を 0 に戻して再起動する（advance_hours とは一緒に使わない）"}}),
+    _tool("env_restart", "触れる環境のサーバーを再起動する（DB は残す）。set_to を渡すと、サーバーの時計をその時刻に合わせて再起動する"
+          "（例: 枠の開始 5 分前の 1 分後）。advance_minutes・advance_hours は今の進めた量に足す（翌日なら advance_hours 24）。"
+          "reset_clock で進めた時計を 0 に戻す。どれか 1 つだけ渡す。終わるまで数十秒かかり、答えに再起動のあとのサーバーの時刻が付く。"
+          "同じ環境でほかの QA のジョブが動いているときと、1 ジョブの回数の上限を超えたときは断る（0 に戻すのはいつでもできる）。進めた時計は、次に版を出すと 0 に戻る",
+          {"set_to": {"type": "string", "description": "合わせる時刻（ISO 8601、タイムゾーン付き。例 2026-11-13T20:06:00+09:00）。実際の時刻より前にはできない"},
+           "advance_minutes": {"type": "number", "minimum": 0, "maximum": 10080, "description": "進める分（今の進めた量に足す）"},
+           "advance_hours": {"type": "number", "minimum": 0, "maximum": 168, "description": "進める時間（0〜168。今の進めた量に足す）。何も渡さなければ再起動だけ"},
+           "reset_clock": {"type": "boolean", "description": "進めた時計を 0 に戻して再起動する（ほかと一緒に使わない）"}}),
+    _tool("env_clock", "触れる環境のサーバーの今の時刻と、実際より何秒進めているかを返す（再起動しない）", {}),
 ]}
 # 工場の中での一次調査の道具（ADR 0048 の決定 2・3、definitions/investigate.yaml の sources）。読むだけ。中身は investigate_tools.py
 INVESTIGATE_TOOLS = {t["name"]: t for t in [
@@ -77,7 +82,7 @@ INVESTIGATE_TOOLS = {t["name"]: t for t in [
 ]}
 LOCAL_TOOLS.update(INVESTIGATE_TOOLS)
 # ジョブの種類ごとに通す道具（definitions/qa.yaml の runner_tools と env_tools、definitions/investigate.yaml の sources と同じ）
-KIND_TOOLS = {"qa": tuple(TOOLS) + ("env_restart",), "investigate": tuple(INVESTIGATE_TOOLS)}
+KIND_TOOLS = {"qa": tuple(TOOLS) + ("env_restart", "env_clock"), "investigate": tuple(INVESTIGATE_TOOLS)}
 CALL_TIMEOUT = {"app_build": 60, "build_status": 30}   # ビルドは build_status で待つので、呼び出し自体は短い
 
 
