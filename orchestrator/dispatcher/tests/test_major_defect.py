@@ -59,12 +59,12 @@ def finish_ship(cur):
                     {"repo": ship.release_of(cur, ev["payload"]["release_id"])["repo"], "env": "staging", "ok": True, "request_id": ev["id"]})
 
 
-def s1(cur, gh, *, drill=False):
+def s1(cur, gh, *, drill=False, severity="s1", issue=ISSUE):
     if drill:
         cur.execute("insert into events(name, payload) values ('incident.drill_started', %s)", (Jsonb({"repo": REPO, "drill": "d1"}),))
     comments = []
-    inc = incident.from_qa(cur, gh, lambda r, n, b: comments.append(b), REPO, key=f"{ISSUE}#s1", severity="s1", title="完了を記録できない",
-                           issue_url=ISSUE, env="staging", release_id=None, qa_corr=f"github:{REPO}#5", job_id=None,
+    inc = incident.from_qa(cur, gh, lambda r, n, b: comments.append(b), REPO, key=f"{issue}#{severity}", severity=severity, title="完了を記録できない",
+                           issue_url=issue, env="staging", release_id=None, qa_corr=f"github:{REPO}#5", job_id=None,
                            policy={"error_budget": {}})
     return inc, comments
 
@@ -74,7 +74,7 @@ def test_s1_defect_is_planned_without_waiting_for_a_human(cur):
     inc, comments = s1(cur, gh)
     assert inc and incident.held(cur)
     posted = [c[2]["labels"] for c in gh.calls if c[0] == "POST"]
-    assert [incident.HOLD_PRIORITY_LABEL] in posted and [major_defect.PLANNED] in posted
+    assert [incident.HOLD_PRIORITY_LABEL] in posted and [major_defect.PLAN, incident.HOLD_PRIORITY_LABEL] in posted
     assert any(c[0] == "DELETE" and c[1].endswith("factory%3Afix-proposed") for c in gh.calls)
     assert "ADR 0053" in comments[0]
 
@@ -82,7 +82,7 @@ def test_s1_defect_is_planned_without_waiting_for_a_human(cur):
 def test_drill_is_not_planned(cur):
     gh = FakeGh()
     s1(cur, gh, drill=True)
-    assert not [c for c in gh.calls if c[0] == "POST" and c[2]["labels"] == [major_defect.PLANNED]]
+    assert not [c for c in gh.calls if c[0] == "POST" and major_defect.PLAN in c[2]["labels"]]
 
 
 def test_rerelease_once_after_the_fix_issue_closes(cur):
@@ -127,3 +127,39 @@ def test_launch_stage_is_approved_after_staging_without_the_qa_report(cur):
     p = cur.fetchone()["payload"]
     assert p["by"] == "supervisor" and p.get("qa_skipped")
     assert major_defect.approve_step(cur) == []                        # 2 回目はない
+
+
+def test_s2_is_major_but_does_not_hold_the_line(cur):
+    gh = FakeGh()
+    inc, comments = s1(cur, gh, severity="s2")
+    assert inc and not incident.held(cur)
+    assert [major_defect.PLAN, incident.HOLD_PRIORITY_LABEL] in [c[2]["labels"] for c in gh.calls if c[0] == "POST"]
+    assert "ADR 0053" in comments[0]
+
+
+def test_s3_is_not_major(cur):
+    gh = FakeGh()
+    s1(cur, gh, severity="s3")
+    assert not [c for c in gh.calls if c[0] == "POST"]
+
+
+def test_defects_fixed_together_ride_one_train(cur):
+    gh = FakeGh("closed")
+    s1(cur, gh)
+    s1(cur, gh, severity="s2", issue=f"https://github.com/{REPO}/issues/8")
+    merged(cur, 1)
+    tids = major_defect.rerelease_step(cur, gh)
+    assert len(tids) == 1
+    cur.execute("select count(*) as n from events where name=%s and payload->>'train_id'=%s", (major_defect.REREL, tids[0]))
+    assert cur.fetchone()["n"] == 2
+    finish_ship(cur)
+    assert major_defect.rerelease_step(cur, gh) == []
+
+
+def test_planner_sees_other_open_defects(cur):
+    import planner
+    gh = FakeGh()
+    s1(cur, gh, severity="s2")
+    s1(cur, gh, severity="s2", issue=f"https://github.com/{REPO}/issues/8")
+    rows = planner.open_defects(cur, REPO, f"github:{REPO}#8")
+    assert rows == [{"issue": 7, "severity": "s2", "title": "完了を記録できない"}]

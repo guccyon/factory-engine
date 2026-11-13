@@ -231,7 +231,7 @@ def check_budget(cur, repo: str, policy: dict, now: datetime | None = None) -> l
 # ------------------------------------------------------------------ QA 役から
 def from_qa(cur, gh, comment, repo: str, *, key: str, severity: str, title: str, issue_url: str | None, env: str | None,
             release_id: str | None, qa_corr: str, job_id: int | None, policy: dict | None = None, log=None) -> dict | None:
-    """QA 役が起票した Defect を Incident にし、S1 ならラインを差し止めて Issue に p0 を付け、エラーバジェットを確かめる。
+    """QA 役が起票した Defect を Incident にし、メジャー（S1・S2）なら直しに流し（ADR 0053）、S1 ならラインを差し止めて Issue に p0 を付け、エラーバジェットを確かめる。
     失敗しても呼び出し元（起票とまとめ）は止めない。返り値は新しく開いた Incident（なければ None）"""
     try:
         inc = open_incident(cur, repo, key, severity, title, env=env, release_id=release_id, issue=issue_url,
@@ -240,25 +240,32 @@ def from_qa(cur, gh, comment, repo: str, *, key: str, severity: str, title: str,
             return None
         num = (issue_url or "").rstrip("/").rsplit("/", 1)[-1].lstrip("#")
         defect_corr = f"github:{repo}#{num}" if num.isdigit() else None
+        import major_defect
+        planned = False
+        if num.isdigit() and major_defect.is_major(severity) and not inc["drill"]:
+            # メジャー不具合（S1・S2）は人の 1 タップを待たずに流す。直し方はプランナーが決める（ADR 0053）。演習は直すコードがないので流さない
+            try:
+                major_defect.plan_fix(gh, repo, int(num))
+                planned = True
+            except Exception as e:  # noqa: BLE001
+                if log:
+                    log("major label failed", issue_url, repr(e))
+        flow = ("メジャー不具合（先に進めない・業務が止まる）なので、工場が承認を待たずに直し方を決めて直し、修正がマージされたら緊急便で出し直します"
+                "（ADR 0053。同じ原因の不具合があればまとめて直します）。" if planned else "")
         if severity in HOLD_SEVERITIES:
             hold(cur, inc, qa_corr=qa_corr, defect_corr=defect_corr)
             if num.isdigit():
-                planned = False
                 try:
                     gh("POST", f"repos/{repo}/issues/{num}/labels", {"labels": [HOLD_PRIORITY_LABEL]})
-                    if not inc["drill"]:
-                        # メジャー不具合は人の 1 タップを待たずに流す（ADR 0053）。演習は直すコードがないので流さない
-                        import major_defect
-                        major_defect.plan_fix(gh, repo, int(num))
-                        planned = True
                 except Exception as e:  # noqa: BLE001
                     if log:
                         log("s1 label failed", issue_url, repr(e))
                 comment(repo, int(num), f"重要度 {severity.upper()} の Incident（`{inc['incident_id']}`）として、QA 役がラインを差し止めました"
                                         f"（factory-engine の ADR 0043 の O5）。{'**これは演習です**（staging に仕込んだもの。直すコードはありません）。' if inc['drill'] else ''}\n\n"
-                                        "差し止めの間も、この Issue（p0）と QA の確かめ直しは流れます。ほかのチケットは止まっています。"
-                                        + ("メジャー不具合なので、工場が承認を待たずに直し、修正がマージされたら緊急便で出し直します（ADR 0053）。" if planned else "")
+                                        "差し止めの間も、この Issue（p0）と QA の確かめ直しは流れます。ほかのチケットは止まっています。" + flow
                                         + "解除は手動で行います（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
+        elif planned:
+            comment(repo, int(num), f"重要度 {severity.upper()} の不具合です。" + flow)
         if policy is None:
             policy = fetch_policy(gh, repo)
         check_budget(cur, repo, policy)

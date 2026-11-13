@@ -115,11 +115,11 @@ def test_record_and_act(cur):
     assert cur.fetchone()["n"] == 3
     gh, said = FakeGH(), []
     out = qa_line.act(cur, gh, lambda repo, issue, text: said.append((issue, text)), REPO, 5, "github:o/app#5", 9, result(), recorded, keys)
-    posts = [c for c in gh.calls if c[0] == "POST"]
+    posts = [c for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")]
     assert len(posts) == 1 and posts[0][2]["title"] == "QA: 一覧が古い"   # known_gap の Defect は起票しない
     assert posts[0][2]["labels"] == ["factory:qa-defect", "factory:fix-proposed"] and "s-hold" in posts[0][2]["body"]
     assert out["filed"] == [f"https://github.com/{REPO}/issues/101"]
-    issue, text = said[0]
+    issue, text = [x for x in said if x[0] == 5][0]   # 101 にはメジャー不具合（S2）の直しの知らせ（ADR 0053）
     assert issue == 5 and "🛑 `s-hold`" in text and "known_gaps" in text and "硬い" in text and "⏸ `s-blocked`" in text
     cur.execute("select payload from events where name='qa.defect_filed'")
     assert cur.fetchone()["payload"]["severity"] == "s2"
@@ -152,8 +152,8 @@ def test_act_does_not_refile_same_story_and_step(cur):
     gh, said = FakeGH(defects=[{"number": 50, "html_url": f"https://github.com/{REPO}/issues/50", "body": body}]), []
     out = qa_line.act(cur, gh, lambda *a: said.append(a), REPO, 5, "c", 2, r, recorded, {})
     assert out["filed"] == [] and out["seen"] == [f"https://github.com/{REPO}/issues/50"] * 2
-    assert not [c for c in gh.calls if c[0] == "POST"]
-    assert [a[1] for a in said] == [50, 50, 5] and "また止まりました" in said[0][2]
+    assert not [c for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")]   # 起票し直さない
+    assert [a[1] for a in said if a[1] == 5] == [5] and any("また止まりました" in a[2] for a in said if a[1] == 50)
     cur.execute("select count(*) as n from events where name='qa.defect_seen'")
     assert cur.fetchone()["n"] == 2
     cur.execute("select count(*) as n from events where name='defect.recorded' and payload->>'issue' like '%/issues/50'")

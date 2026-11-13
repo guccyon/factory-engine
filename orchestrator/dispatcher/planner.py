@@ -259,6 +259,20 @@ def attach_sizes(cur, repo: str, inp: dict) -> dict:
 INFLIGHT_LIMIT = 30
 
 
+def open_defects(cur, repo: str, corr: str) -> list[dict]:
+    """その製品で開いている QA の不具合（Incident。演習と、修正を出し直したものを除く）。このチケット自身も除く"""
+    import incident
+    cur.execute("select payload->>'incident_id' as iid from events where name='major.rereleased'")
+    done = {r["iid"] for r in cur.fetchall()}
+    rows = []
+    for i in incident.open_incidents(cur, repo):
+        num = str(i.get("issue") or "").rstrip("/").rsplit("/", 1)[-1]
+        if i.get("drill") or i["incident_id"] in done or not num.isdigit() or f"github:{repo}#{num}" == corr:
+            continue
+        rows.append({"issue": int(num), "severity": i.get("severity"), "title": i.get("title")})
+    return rows[:30]
+
+
 def attach_context(cur, repo: str, corr: str, inp: dict) -> dict:
     """プランナーの入力に、流れている・待っているタスクと触る（見込みの）ファイル、よく衝突するファイル、上限に当たった過去の事例を足す
     （ADR 0038 の 4b。着手のしかた start を決める材料と、知見の蓄積）。制御プレーンの記録だけで組み立てる（GitHub を呼ばない）"""
@@ -280,6 +294,7 @@ def attach_context(cur, repo: str, corr: str, inp: dict) -> dict:
         cur.execute("select title from tickets where source='github' and 'github:' || source_ref = %s order by id desc limit 1", (corr,))
         t = cur.fetchone()
         out["similar"] = plan_outcome.similar(cur, repo, corr, (t or {}).get("title") or "")   # 似た過去のチケットの実績（見積もりの材料）
+        out["open_defects"] = open_defects(cur, repo, corr)   # 開いている QA の不具合（同じ原因をまとめて直す材料。ADR 0053 の 6）
     except Exception:  # noqa: BLE001  材料がなくても判定はできる
         out.setdefault("inflight", [])
     return out

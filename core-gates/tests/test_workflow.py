@@ -124,7 +124,7 @@ def test_schema_and_prompt_mention_workflow():
     sc = pl.schema(defs)
     assert "workflow" in sc["properties"] and "workflow" not in sc["required"]   # 宣言がなくても判定は通る（ひな形で埋める）
     text = pl.prompt(defs, {"has_design_system": True}, 1)
-    assert "workflow:" in text and "inflight.md" in text and "caps.md" in text
+    assert "workflow:" in text and "inflight.md" in text and "caps.md" in text and "defects.md" in text
 
 
 def test_stage_writes_inflight_and_caps(tmp_path):
@@ -132,7 +132,9 @@ def test_stage_writes_inflight_and_caps(tmp_path):
         "inflight": [{"issue": 812, "title": "画面", "state": "active", "files": ["apps/admin-web/src/screens.ts"]}],
         "hot_files": {"apps/admin-web/src/screens.ts": {"conflicts": 4, "why": "直近 50 件の PR で 9 回変わり、その間に 4 回衝突した"}},
         "similar": [{"score": 0.8, "issue": 650, "title": "担保: K-0003 を test で決定論にする", "band": "S", "turns": 18, "cost_usd": 0.9, "tier": "tier-large"}],
-        "cap_hits": [{"issue": 700, "cap": "retries.conflict", "declared": 3, "actual": 5}]})
+        "cap_hits": [{"issue": 700, "cap": "retries.conflict", "declared": 3, "actual": 5}],
+        "open_defects": [{"issue": 1425, "severity": "s2", "title": "確定待ちの画面を離れると | 確定できない"}]})
+    assert "#1425" in (tmp_path / "defects.md").read_text() and "| 確定できない" not in (tmp_path / "defects.md").read_text()
     assert "#812" in (tmp_path / "inflight.md").read_text() and "4 回衝突" in (tmp_path / "inflight.md").read_text()
     assert "#650" in (tmp_path / "similar.md").read_text() and "tier-large" in (tmp_path / "similar.md").read_text()
     assert "retries.conflict" in (tmp_path / "caps.md").read_text()
