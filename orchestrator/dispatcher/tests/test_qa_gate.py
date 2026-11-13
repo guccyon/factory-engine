@@ -33,7 +33,7 @@ def test_defs_copy_matches_definitions():
     assert full["gate"] == qa_line.DEFS["gate"]
     assert full["act"]["explore_issue_label"] == qa_line.DEFS["act"]["explore_issue_label"]
     names = yaml.safe_load((ROOT / "definitions" / "events.yaml").read_text(encoding="utf-8"))["events"]
-    for n in ("qa.gate_opened", "qa.gate_job", "qa.gate_superseded", "qa.gate_decided", "qa.gate_blocked"):
+    for n in ("qa.gate_opened", "qa.gate_plan", "qa.gate_job", "qa.gate_superseded", "qa.gate_decided", "qa.gate_blocked"):
         assert n in names, n
     assert "factory:qa-explore" in (ROOT / "orchestrator" / "scripts" / "labels.sh").read_text(encoding="utf-8")
 
@@ -91,7 +91,7 @@ def explored(cur, job_id, defects, charter="detour", gate="o/app@0.9.0"):
 
 def jobs_of(cur, rid):
     g = qa_gate.gate(cur, rid)
-    return {w: [j["job_id"] for j in g["jobs"][w]] for w in qa_gate.WHICH}
+    return {w: [j["job_id"] for j in g["jobs"][w]] for w in qa_gate.ALL}
 
 
 def test_opens_on_staging_deploy_and_enqueues_both_on_separate_issues(cur):
@@ -242,3 +242,68 @@ def test_nightly_explore_moves_to_explore_issue(cur):
     gh = FakeGH()
     got = qa_line.enqueue_explore(cur, gh, REPO, "2026-11-10")
     assert got["issue"] == 8
+
+
+class StoriesGH(FakeGH):
+    """製品の specs/stories/ に、時刻をまたぐストーリー 1 本とまたがないストーリー 2 本がある"""
+    STORIES = {"a-prejoin.yaml": {"type": "UserStory", "id": "a-prejoin", "status": "active", "time": ["開始 5 分前をまたぐ"]},
+               "b-chat.yaml": {"type": "UserStory", "id": "b-chat", "status": "active"},
+               "c-old.yaml": {"type": "UserStory", "id": "c-old", "status": "retired", "time": ["翌日"]},
+               "d-cs.yaml": {"type": "UserStory", "id": "d-cs"}}
+
+    def __call__(self, method, path, body=None):
+        import base64
+        if method == "GET" and path.endswith("/contents/specs/stories"):
+            self.calls.append((method, path, body))
+            return [{"type": "file", "name": n, "path": f"specs/stories/{n}"} for n in [*self.STORIES, "actors.yaml", "README.md"]]
+        if method == "GET" and "/contents/specs/stories/" in path:
+            self.calls.append((method, path, body))
+            doc = self.STORIES[path.rsplit("/", 1)[1]]
+            return {"content": base64.b64encode(yaml.safe_dump(doc, allow_unicode=True).encode()).decode()}
+        return super().__call__(method, path, body)
+
+
+def test_time_stories_run_last_alone(cur):
+    """ADR 0055 の決定 3: 時刻をまたぐストーリーは判定から外し、判定と探索が終わってから 1 つだけで流す"""
+    gh, rid = StoriesGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert sorted(x["which"] for x in out["enqueued"]) == ["explore", "verdict"]   # 時刻の判定はまだ積まない
+    g = qa_gate.gate(cur, rid)
+    assert g["plan"]["time_stories"] == ["a-prejoin"] and g["plan"]["other_stories"] == ["b-chat", "d-cs"]
+    cur.execute("select payload->'input'->'stories' as s from events where name='job.enqueued' order by id limit 1")
+    assert cur.fetchone()["s"] == ["b-chat", "d-cs"]
+    j = jobs_of(cur, rid)
+    finish(cur, j["verdict"][0])
+    verdicts(cur, j["verdict"][0], [("b-chat", "pass", []), ("d-cs", "pass", [])])
+    assert qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"] == []                  # 探索が動いている間は積まない
+    finish(cur, j["explore"][0])
+    explored(cur, j["explore"][0], [])
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert [x["which"] for x in out["enqueued"]] == [qa_gate.TIME] and out["decided"] is None
+    cur.execute("select payload->'input'->'stories' as s from events where name='job.enqueued' order by id desc limit 1")
+    assert cur.fetchone()["s"] == ["a-prejoin"]
+    t = jobs_of(cur, rid)[qa_gate.TIME][0]
+    finish(cur, t)
+    verdicts(cur, t, [("a-prejoin", "hold", [{"title": "入室のボタンが押せない", "severity": "s2"}])])
+    d = qa_gate.step(cur, gh, REPO, now=NOW)["decided"]
+    assert d["candidates"] == 1 and d[qa_gate.TIME]["stories"] == {"hold": 1}
+    assert any(r["label"] == "判定（時刻をまたぐ）" and "止める" in r["text"] for r in d["report"])
+    lists = [p for m, p, b in gh.calls if m == "GET" and p.endswith("/contents/specs/stories")]
+    assert len(lists) == 1                                                          # 分け方は 1 回だけ読む
+
+
+def test_plan_falls_back_when_stories_cannot_be_read(cur):
+    """製品のストーリーを読めなければ分けない（今までどおり判定は全部、時刻の判定は積まない）"""
+    class Broken(FakeGH):
+        def __call__(self, method, path, body=None):
+            if "/contents/" in path:
+                raise RuntimeError("404")
+            return super().__call__(method, path, body)
+    gh, rid = Broken(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW, log=lambda *a: None)
+    p = qa_gate.gate(cur, rid)["plan"]
+    assert p["time_stories"] == [] and p["other_stories"] is None and p["error"]
+    cur.execute("select payload->'input'->'stories' as s from events where name='job.enqueued' order by id limit 1")
+    assert cur.fetchone()["s"] == []

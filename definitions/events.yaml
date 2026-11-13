@@ -736,10 +736,14 @@ events:
     source: control_plane
     required: [release_id, repo, env]
     note: "ADR 0049。staging に配備した版（release.deployed、ok）に、supervisor が出荷の QA の関門を開いた。版ごとに 1 回（dedupe は qa.gate_opened:<release_id>）。correlation_id は qa_gate:<release_id>"
+  qa.gate_plan:
+    source: control_plane
+    required: [release_id, repo, time_stories]
+    note: "ADR 0055 の決定 3。関門を開いた最初の周回で、時刻をまたぐストーリー（specs/stories の time があるもの）を判定から外して、判定と探索のあとに流すと決めた。other_stories は判定で流す残り。製品のストーリーを読めなかったときは time_stories が空で other_stories が null（分けない）と error。dedupe は qa.gate_plan:<release_id>"
   qa.gate_job:
     source: control_plane
     required: [release_id, repo, which, job_id, attempt]
-    note: "ADR 0049。関門のジョブを積んだ。which は verdict（判定、固定 Issue factory:qa）か explore（探索、factory:qa-explore。charter を足す）。確かめられなかったときの積み直しは attempt 2。dedupe は qa.gate_job:<release_id>:<which>:<attempt>"
+    note: "ADR 0049。関門のジョブを積んだ。which は verdict（判定、固定 Issue factory:qa）か explore（探索、factory:qa-explore。charter を足す）か verdict_time（時刻をまたぐストーリーの判定。判定と探索が終わってから判定の固定 Issue に積む。ADR 0055）。stories は流すストーリーを絞ったとき。確かめられなかったときの積み直しは attempt 2。dedupe は qa.gate_job:<release_id>:<which>:<attempt>"
   qa.gate_superseded:
     source: control_plane
     required: [release_id, repo, by_release]
