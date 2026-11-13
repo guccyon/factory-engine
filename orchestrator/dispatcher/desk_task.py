@@ -148,12 +148,15 @@ def enqueue(cur, repos: list[str]) -> list[int]:
 
 
 NUM = re.compile(r"-?\d+(?:\.\d+)?")
+THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")   # 1,234 の桁区切りだけ外す（74,44,45 のような並びの区切りは残す）
+NOT_A_VALUE = re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?|(?<![\d.])\d{1,2}[-/]\d{1,2}(?![\d.])|(?<![\d.])\d{1,2}:\d{2}(?![\d.])"
+                         r"|[qQ]\d+|W-?\d+|#\d+")      # 日付・時刻・問いの id・週の名前・番号は数として見ない
 
 
 def _numbers(v) -> set[str]:
-    """値から数を取り出して正規化する（12・12.0・"$12.00" を同じに見る）"""
+    """値から数を取り出して正規化する（12・12.0・"$12.00"・"1,234" を同じに見る）。日付・時刻・番号は外す"""
     out = set()
-    for m in NUM.findall(str(v).replace(",", "")):
+    for m in NUM.findall(NOT_A_VALUE.sub(" ", THOUSANDS.sub("", str(v)))):
         try:
             f = float(m)
         except ValueError:
@@ -172,16 +175,22 @@ def verify(queries: list, query=None) -> list[dict]:
         if not isinstance(q, dict) or not isinstance(q.get("sql"), str):
             continue
         item = {"id": str(q.get("id") or len(out) + 1)[:40], "purpose": str(q.get("purpose") or "")[:200], "sql": q["sql"][:4000],
-                "used": str(q.get("used") or "")[:300]}
+                "used": str(q.get("used") or "")[:300], "derived": str(q.get("derived") or "")[:300]}
         try:
             r = query(q["sql"])
         except Exception as e:  # noqa: BLE001  突き合わせられなかったことを残す（提出は止めない）
             out.append({**item, "checked": False, "error": f"{type(e).__name__}: {str(e)[:200]}"})
             continue
-        seen = set()
-        for row in r.get("rows") or []:
+        rows = r.get("rows") or []
+        seen = {f"{len(rows):g}"}
+        for row in rows:
             for v in row:
                 seen |= _numbers(v)
+        for col in zip(*rows) if rows else []:   # 列の合計（報告で「合わせて」と書く数）も結果の数とみる
+            try:
+                seen.add(f"{round(sum(float(x) for x in col if x is not None), 2):g}")
+            except (TypeError, ValueError):
+                continue
         want = _numbers(item["used"])
         missing = sorted(want - seen)
         out.append({**item, "checked": True, "columns": r.get("columns") or [], "rows": [[str(v) for v in row] for row in (r.get("rows") or [])[:KEEP_ROWS]],
@@ -197,7 +206,7 @@ def verify_text(checks: list[dict]) -> list[str]:
     skipped = [c for c in checks if not c.get("checked")]
     lines = ["", f"数の突き合わせ: 報告に使った問い {len(checks)} 本を工場の側で動かし直しました（合った {len(ok)}・ずれた {len(bad)}・動かせなかった {len(skipped)}）。"]
     for c in bad:
-        lines.append(f"- ⚠ 問い {c['id']}（{c['purpose']}）: 報告の数 {', '.join(c['missing'])} が結果に見当たりません。この数は確かめが要ります")
+        lines.append(f"- ⚠ 問い {c['id']}（{c['purpose']}）: 報告の数 {', '.join(c['missing'])} が結果（行の値・列の合計）に見当たりません。この数は確かめが要ります")
     for c in skipped:
         lines.append(f"- 問い {c['id']}（{c['purpose']}）は動かし直せませんでした（{c.get('error')}）")
     return lines

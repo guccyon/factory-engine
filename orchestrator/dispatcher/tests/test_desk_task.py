@@ -231,3 +231,19 @@ def test_analysis_route_runs_with_deliver_by_and_verifies(cur):
     assert (p["queries"], p["mismatched"], p["unchecked"]) == (1, 1, 0)
     cur.execute("select payload from artifacts where type=%s", (dt.RESULT_TYPE,))
     assert cur.fetchone()["payload"]["checks"][0]["rows"] == [["39"]]
+
+
+def test_verify_ignores_dates_and_ids_and_accepts_column_sums():
+    """実機の 1 本目（2026-11-13、相談 8）で 12 本中 7 本が「ずれ」になった。日付・並びの区切り・列の合計を数え違えていた"""
+    rows = [["2026-10-31", "74", "1234.5"], ["2026-11-01", "44", "0.20"], ["2026-11-02", "45", "0.22"]]
+    out = dt.verify([{"id": "q8", "sql": "s", "used": "10-31〜11-02: 74,44,45、合わせて 163、q8 の #12、$1,234.50、0.20/0.22、行は 3"}],
+                    query=lambda s: {"columns": ["d", "n", "usd"], "rows": rows, "truncated": False})
+    assert out[0]["matched"], out[0]["missing"]
+    miss = dt.verify([{"id": "q1", "sql": "s", "used": "平均 54.3"}], query=lambda s: {"columns": ["n"], "rows": [["1"]], "truncated": False})
+    assert miss[0]["missing"] == ["54.3"]
+
+
+def test_verify_keeps_derived():
+    out = dt.verify([{"id": "q1", "sql": "s", "used": "3", "derived": "−41%（179 ÷ 303 − 1）"}],
+                    query=lambda s: {"columns": ["n"], "rows": [["3"]], "truncated": False})
+    assert out[0]["matched"] and out[0]["derived"].startswith("−41%")

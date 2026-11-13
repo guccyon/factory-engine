@@ -244,7 +244,7 @@ def clock(t: datetime) -> str:
 
 def ack_text(cid: int, ahead: int, by: datetime) -> str:
     wait = f"先に {ahead} 件の相談があるので、{clock(by)} ごろまでに返します" if ahead else f"{clock(by)} ごろまで（5 分ほど）に返します"
-    return (f"依頼 {cid} を受け付けました。次は振り分けです。相談役が、決まった操作で済むか、チケットに切るか、受けられないかを決めて、"
+    return (f"依頼 {cid} を受け付けました。次は振り分けです。相談役が、その場で答えるか、集計して報告書にするか、決まった操作で済むか、チケットに切るか、受けられないかを決めて、"
             f"{wait}（問いがあればそのときに聞きます）。")
 
 
