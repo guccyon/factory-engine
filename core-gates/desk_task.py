@@ -91,9 +91,11 @@ ANALYSIS_STEPS = """2. 何を数えれば問いに答えられるかを決め、
    - 前の期間・目安から外れた数は ⚠ を付けて目立たせ、何と比べてどれだけ外れたかを添える
    - 問題があれば対応の案を、効き目の見込み・手間・誰がやるか（工場で引き受けられるなら窓口の依頼の形）と一緒に書く
    - 推測は推測と書く
-4. 報告に載せた数を出した SQL の問いを queries に全部書く（工場の側で動かし直して、数が合うかを確かめる。used には報告に載せた数をそのまま書く）
+4. 報告に載せた数を出した SQL の問いを queries に全部書く（工場の側で動かし直して、数が合うかを確かめる）。
+   used には、結果の行にそのまま出た値か、列を足しただけの値だけを書く（例: 303, 179）。割合・差・平均の割り算など自分で計算した数は used に入れず、
+   derived に「何を何で割ったか」と一緒に書く（例: −41%（179 ÷ 303 − 1））。日付や番号は書かない
 """
-ANALYSIS_QUERIES = """  "queries": [{"id": "q1", "purpose": "何を数えたか", "sql": "動かした SELECT（inv_sql に渡したものそのまま）", "used": "報告に載せた数（例: 12, 3.4）"}],
+ANALYSIS_QUERIES = """  "queries": [{"id": "q1", "purpose": "何を数えたか", "sql": "動かした SELECT（inv_sql に渡したものそのまま）", "used": "結果の行の値か列の合計で、報告に載せた数（例: 303, 179）", "derived": "計算した数と式（例: −41%（179 ÷ 303 − 1））"}],
 """
 
 
@@ -196,7 +198,7 @@ def settle(raw: dict | None, root: Path, cost_usd: float, turns: int, max_turns:
             "confidence": conf if isinstance(conf, (int, float)) and 0 <= conf <= 1 else None,
             "process": str(raw.get("process") or "").strip()[:600],
             "queries": [{"id": str(q.get("id") or i + 1)[:40], "purpose": str(q.get("purpose") or "")[:200], "sql": q["sql"][:4000],
-                         "used": str(q.get("used") or "")[:300]}
+                         "used": str(q.get("used") or "")[:300], "derived": str(q.get("derived") or "")[:300]}
                         for i, q in enumerate(raw.get("queries") or []) if isinstance(q, dict) and isinstance(q.get("sql"), str)][:MAX_QUERIES]}
 
 

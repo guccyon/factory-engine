@@ -68,4 +68,4 @@ def test_analysis_prompt_and_queries(tmp_path):
     assert "報告書" in p and "queries" in p and "所見" in p and "集計の問いはここで書いて動かす" in p and "36 ターン" in p
     assert "queries" not in dt.prompt(INP, 16, tools=True)
     out = dt.settle({"answer": "a", "queries": [{"id": "q1", "sql": "select 1", "used": "1"}, {"sql": None}, "x"]}, tmp_path, 0, 3, 40)
-    assert out["queries"] == [{"id": "q1", "purpose": "", "sql": "select 1", "used": "1"}]
+    assert out["queries"] == [{"id": "q1", "purpose": "", "sql": "select 1", "used": "1", "derived": ""}]
