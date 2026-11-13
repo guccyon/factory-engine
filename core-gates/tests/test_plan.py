@@ -50,6 +50,25 @@ def test_decide(out, facts, round_, want):
     assert pl.decide(out, facts, round_, DEFS) == want
 
 
+SP = {"why": "原因が分からない", "questions": ["どこで状態を失うか"]}
+
+
+@pytest.mark.parametrize("out,facts,want", [
+    ({**O(ready=False), "spike": SP}, DS, "spike"),                                                   # 方針が要る（ADR 0055）
+    ({**O(ready=False), "spike": {"why": "w", "questions": [" "]}}, DS, "escalate"),                  # 決めることがない
+    ({**O(ready=False), "spike": SP}, {**DS, "designdocs": 1}, "escalate"),                           # スパイクはもう通した
+    ({**O(), "spike": SP}, DS, "ready"),                                                              # 着手できるならスパイクは飛ばす
+])
+def test_decide_spike(out, facts, want):
+    assert pl.decide(out, facts, 1, DEFS)[0] == want
+
+
+def test_designdocs_counts_marked_comments():
+    issue = {"comments": [{"body": "<!-- factory:designdoc -->\n## 設計書"}, {"body": "ふつうのコメント"}]}
+    assert pl.designdocs(issue, DEFS) == 1
+    assert "spike" in pl.schema(DEFS)["properties"] and "spike:" in pl.prompt(DEFS, DS, 1)
+
+
 def test_steps_of_drops_unknown_and_repeats():
     out = {"steps": [{"role": "bogus"}, {"role": "ui_design"}, {"role": "ui_design"}, "x", {"role": "implement"}]}
     assert pl.steps_of(out, DEFS) == ["ui_design", "implement"]
@@ -87,7 +106,8 @@ def test_schema_matches_definitions():
     assert s["steps"]["items"]["properties"]["role"]["enum"] == list(DEFS["roles"])
     assert s["steps"]["items"]["properties"]["effort"]["enum"] == list(DEFS["efforts"])
     assert "alternatives" in pl.schema(DEFS)["required"]
-    assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized"}
+    assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized",
+                                   "spike_exhausted", "spike_no_questions"}
     assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design",
                                        "no_requirements", "no_stories", "unknown_story", "story_exists", "unknown_kpi",
                                        "unknown_adr", "unknown_contract", "breaking_contract", "no_contract_diff"}

@@ -54,7 +54,11 @@ worker:
 # ランナーの鍵と窓口の合言葉はワーカーに渡さない。通すのは下の道具だけ（sim_erase・sim_shutdown は通さない）。呼んだ道具は events の runner.relayed
 # 工場の側の道具（ADR 0028 の scenario_time）。Mac には送らず dispatcher が受け、shipper に依頼する（runner_relay.py の LOCAL_TOOLS）。
 # env_restart は QA を積んだときの環境（staging）だけを再起動し、サーバーの時計を進める。製品の .factory-config/ship.yaml の touch.restart と touch.clock_env が要る
-env_tools: [env_restart]
+env_tools: [env_restart, env_clock]
+# 時刻を合わせる決まり（ADR 0055）。env_restart の set_to で時刻を指定して合わせる。同じ製品でほかの QA のジョブが動いていれば断る（0 に戻すのは通す）。
+# 時計を動かしたジョブが終わったら、戻し忘れを dispatcher が 0 に戻す（release.restart_requested の by が qa:<job_id>:cleanup）
+clock:
+  max_restarts_per_job: 8       # 1 ジョブで再起動してよい回数（0 に戻すのは数えても断らない）。運用パラメータ
 runner_tools: [sim_devices, sim_boot, app_build, build_status, app_install, app_launch, app_terminate, screenshot, open_url, push, logs,
                ui_describe, ui_tap, ui_swipe, ui_text, ui_key]
 
@@ -119,6 +123,8 @@ gate:
   story_max_turns: 40           # 判定のジョブ（ストーリー 1 本）のターンの上限
   story_cost_usd: 3             # 判定のジョブの費用の上限（ドル）
   explore_cost_usd: 5           # 探索のジョブ（チャーター 1 つ）の費用の上限（ドル）。ターンは explore.max_turns
+  time_story_max_turns: 80      # 時刻をまたぐストーリー（ADR 0055）の判定のジョブのターンの上限。時計を合わせる再起動の分だけ多い
+  time_story_cost_usd: 5        # 時刻をまたぐストーリーの判定のジョブの費用の上限（ドル）
   ticket_cap_factor: 1.5        # 版のチケットの費用の上限 = ジョブの上限の合計 × これ（積み直しの分）。当たったら残りを積まず、そろった分で報告を作る
 
 # 合成の利用者（ADR 0043 の O4 synthetic_users_loop。ADR 0023 の決めどころ 3）。夜間の探索の道具（ワーカー・触れる環境・Chromium）を流用し、

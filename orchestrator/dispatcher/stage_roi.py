@@ -47,7 +47,7 @@ MIN_N = 5   # 比べる側ごとにこれより少なければ「参考」
 STAGE_JA = {
     "implement": "実装", "implement:ci_failed": "直し（CI 落ち）", "implement:review_fix": "直し（指摘）",
     "implement:conflict": "衝突の解消", "implement:incomplete": "続き（途中終了）",
-    "body_fix": "PR 本文の直し", "inspect": "検査", "judge": "判定（judge）", "plan": "プランナー", "clarify": "要求の確認",
+    "body_fix": "PR 本文の直し", "inspect": "検査", "judge": "判定（judge）", "plan": "プランナー", "spike": "スパイク", "clarify": "要求の確認",
     "ui_design": "デザイナー", "ui_design_review": "デザイン検査", "design_system": "デザインシステム", "qa": "QA",
     "design_review": "設計の診断", "case_review": "事例の分析", "committee_review": "知見の委員会", "committee_weekly": "委員会の定例", "incident_review": "事故の見回り",
     "desk_consult": "窓口の相談役", "desk_answer": "窓口の回答役",

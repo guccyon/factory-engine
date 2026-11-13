@@ -206,6 +206,16 @@ deadline: 2026-11-06T18:00+09:00   # 記録だけ（時刻の提案は順番 4�
 - spec の工程（選ばれた案か、いまのデザインシステムへの追加）: デザインガイドラインの必須の節を `specs/design/` のファイル（principles・concept_tone・tokens・components・patterns・content・accessibility・governance）として書く。正本は `DesignSystemSpec` に残し、Issue の本文に足して `factory:planned`。実装役がファイルを置き、両アプリのテーマと基本の部品をトークンに合わせる（PR は今の検査と judge を通る）
 - events: `design_system.concepts_drafted`・`awaiting_choice`・`choice_applied`（推す案との一致 `agreed`）・`handed_off`
 
+## スパイクのレーン（ADR 0055。Gen1 のプロトタイプ）
+
+方針（原因・直し方・どの層をどう変えるか）が決まっていないチケットは、ビルドのレーンに入れずにスパイクで方針を決める。飛ばすかを決めるのは着手判定（プランナー）。
+
+- プランナーが `spike`（着手できない、方針が要る）と判定すると、スパイクで決めることを Issue に書いて `factory:spike` を付ける（`plan.spiked`）
+- dispatcher が `spike` のジョブに積む。System Architect（`worker/spike.sh` → `core-gates/spike.py`、tier-large、読むだけ）が、プランナーの問い・開いている QA の不具合・製品のコードを読み、設計書（原因と証拠・方針 fix / revert / redesign・触る層とファイル・束ね・体験や仕様が変わるか・確信度）を返す
+- 後処理（`dispatcher/spike_line.py`）: 設計書を artifacts（`DesignDoc`）と Issue のコメント（印 `<!-- factory:designdoc -->`）に残す（`spike.decided`）。束ねた Issue は `factory:bundled`。体験や仕様が変わる方針か確信度 0.6 未満なら `factory:spike-human`（受信トレイの po。確かめたら `factory:plan` に替える）、そうでなければ `factory:plan` に戻してプランナーが設計書に従って着手判定し直す
+- 同じチケットでスパイクは 1 回まで（`definitions/planner.yaml` の `spike.max_rounds`）。設計書があるのにまた方針が要ると答えたら人へ（guard `spike_exhausted`）
+- Gen1.5 への持ち越し: 振り分けとレーンの計画の役を分ける、スパイクのプランナーと複数の役（プロダクトデザイナー・ドメインモデラー）、設計書を製品のリポジトリに置く
+
 ## デザインの線（ADR 0025。デザイナー役とデザイン検査役）
 
 画面を含むタスクは、実装の前に画面の要素と振る舞い（UXSpec）と案を決める。数値と観点は `definitions/ui_design.yaml`。
@@ -412,7 +422,7 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 合成シード: 製品の ship.yaml に `seed` があれば、その環境（rally は staging だけ）に起動を確かめたあと 1 回だけ書く（`release.seeded`）。環境のボリュームを消したら、その記録も消してから出し直す。
 
-出荷の列車（定期便。ADR 0043 の O6）: supervisor が 1 日 1 便、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出し、その日の便（`release.train`）にまとめて残す。prod への承認は便ごとに 1 回（`factoryctl release train-approve <train_id>`。本番を立てない段階の製品だけの便は承認が要らない）。S1 の修正だけは緊急便で待たずに出す。メジャー不具合（S1・S2）の Defect の Issue は起票と同時に `factory:plan`・p0 で流れ（直し方はプランナーが決め、開いている同じ原因の不具合はまとめて直す）、その Issue が閉じたら supervisor が緊急便を出し、本番を立てる製品なら staging に出た後に supervisor が承認する（ADR 0053）。人も `factoryctl release train <repo> --emergency --reason ..` で出せる。最近の便は `factoryctl release trains`。便は Release の束として持ち、Gen1.5 で製品が複数のリポジトリに分かれたら 1 便に複数の Release を載せる。
+出荷の列車（定期便。ADR 0043 の O6）: supervisor が 1 日 1 便、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出し、その日の便（`release.train`）にまとめて残す。prod への承認は便ごとに 1 回（`factoryctl release train-approve <train_id>`。本番を立てない段階の製品だけの便は承認が要らない）。S1 の修正だけは緊急便で待たずに出す。メジャー不具合（S1・S2）の Defect の Issue は起票と同時に `factory:plan`・p0 で流れ（方針が要ればプランナーがスパイクのレーンに回し、System Architect が直し方と同じ原因の不具合の束ねを決める。ADR 0055）、その Issue が閉じたら supervisor が緊急便を出し、本番を立てる製品なら staging に出た後に supervisor が承認する（ADR 0053）。人も `factoryctl release train <repo> --emergency --reason ..` で出せる。最近の便は `factoryctl release trains`。便は Release の束として持ち、Gen1.5 で製品が複数のリポジトリに分かれたら 1 便に複数の Release を載せる。
 
 操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
 
@@ -445,6 +455,7 @@ docker compose exec dispatcher factoryctl env restart guccyon/rally --reset-cloc
 - `--fresh` は検証の環境だけ（ship.yaml の `touch.environments` と `seed.environments` の両方に入っている環境）。本番の DB は入れ直さない
 - iOS のネイティブのビルドを入れるのは Mac ランナー（`mac_runner`）の側。この入口はブラウザで触れる Web 版まで
 - 時間をまたぐシナリオ（ADR 0028 の `scenario_time`）: `env restart` は ship.yaml の `touch.restart` の部品（なければ `verify` の部品）を作り直して再起動し、`touch.clock_env` の変数にサーバーの時計を進める秒数を渡す（rally は backend の `CLOCK_OFFSET_SECONDS`）。DB は残す。進めた量は前の再起動に足していき、1 回 7 日・合計 62 日まで。次に版を出す・戻す・入れ直すと 0 に戻る。本番は受け付けない。依頼は events の `release.restart_requested`、結果は `release.restarted`（`clock_offset_seconds`）
+- QA が時刻を合わせる（ADR 0055）: QA のジョブには中継で `env_restart`（`set_to` で時刻を指定して合わせる・`advance_minutes`・`advance_hours`・`reset_clock`）と読むだけの `env_clock` を渡す。決まりは `dispatcher/scenario_clock.py`。同じ製品でほかの QA のジョブが動いていれば時計を動かさない（0 に戻すのは通す）。1 ジョブの再起動は `definitions/qa.yaml` の `clock.max_restarts_per_job` 回まで。時計を動かしたまま終わったジョブは、dispatcher が 0 に戻す（`by` が `qa:<job_id>:cleanup`）。製品の約束: `touch.clock_env` を宣言する製品は、応答の `Date` ヘッダーを進めた時計で付け、時刻で振る舞いが変わる画面はサーバーに合わせた時計で決める。出荷の QA の関門（ADR 0049）は、時刻をまたぐストーリー（`specs/stories` の `time` があるもの）を判定から外し、判定と探索が終わってから「時刻の判定」（`qa.gate_job` の `which: verdict_time`）として 1 つだけで流す。分け方は `qa.gate_plan`
 
 
 ## PR ごとの使い捨て環境（ADR 0043 の O7 ephemeral_env）

@@ -243,7 +243,7 @@ def from_qa(cur, gh, comment, repo: str, *, key: str, severity: str, title: str,
         import major_defect
         planned = False
         if num.isdigit() and major_defect.is_major(severity) and not inc["drill"]:
-            # メジャー不具合（S1・S2）は人の 1 タップを待たずに流す。直し方はプランナーが決める（ADR 0053）。演習は直すコードがないので流さない
+            # メジャー不具合（S1・S2）は人の 1 タップを待たずに流す。方針が要ればスパイクで決める（ADR 0053・0055）。演習は直すコードがないので流さない
             try:
                 major_defect.plan_fix(gh, repo, int(num))
                 planned = True
