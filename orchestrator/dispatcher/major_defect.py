@@ -1,10 +1,12 @@
 """メジャー不具合の即時修正と再リリース（ADR 0053）。
 
-メジャー不具合 = 利用者が先に進めない・業務が止まるレベルの不具合。Gen1 では QA 役の重要度 S1（incident.HOLD_SEVERITIES）がこれに当たる。
+メジャー不具合 = 利用者が先に進めない・業務が止まるレベルの不具合。QA 役の重要度 S1（止める）と S2（流れが exit まで通らない）がこれに当たる
+（ADR 0053 の 1 の改訂。ラインの差し止めは今までどおり S1 だけ）。
 工場は人の承認を待たずに、修正 → 再リリースまでを自分で進める。
 
-- 起票: S1 の Defect の Issue は factory:fix-proposed（人が流す 1 タップ）ではなく factory:planned にし、p0 を付ける（incident.from_qa から呼ぶ）
-- 再リリース: S1 の Incident の Defect の Issue が閉じ（修正の PR がマージされ）、まだ Release に入っていないマージ済みの PR があれば、
+- 起票: メジャーの Defect の Issue は factory:fix-proposed（人が流す 1 タップ）ではなく factory:plan にし、p0 を付ける（incident.from_qa から呼ぶ）。
+  直し方はプランナーが決める。プランナーは開いている不具合（defects.md）を見て、同じ原因のものを 1 本にまとめて原因から直す
+- 再リリース: メジャーの Incident の Defect の Issue が閉じ（修正の PR がマージされ）、まだ Release に入っていないマージ済みの PR があれば、
   supervisor が緊急便（train.emergency）を出す。Incident ごとに 1 回（major.rereleased）
 - 本番の承認: その緊急便に本番を立てる段階の製品の Release が載っていれば、staging に出た後に supervisor が承認する
   （QA の関門の報告は待たない。release.approved の qa_skipped に理由が残る）
@@ -20,8 +22,8 @@ import incident
 import ship
 import train
 
-MAJOR_SEVERITIES = incident.HOLD_SEVERITIES
-FIX_PROPOSED, PLANNED = "factory:fix-proposed", "factory:planned"
+MAJOR_SEVERITIES = ("s1", "s2")
+FIX_PROPOSED, PLAN = "factory:fix-proposed", "factory:plan"
 REREL = "major.rereleased"
 APPROVE_VIA = "メジャー不具合の即時再リリース（ADR 0053）"
 
@@ -36,8 +38,8 @@ def issue_number(url: str | None) -> int | None:
 
 
 def plan_fix(gh, repo: str, num: int) -> None:
-    """メジャー不具合の Issue を人の 1 タップなしで流す（fix-proposed を外して planned を付ける）"""
-    gh("POST", f"repos/{repo}/issues/{num}/labels", {"labels": [PLANNED]})
+    """メジャー不具合の Issue を人の 1 タップなしで流す（fix-proposed を外し、p0 とプランナーの着手判定を付ける）"""
+    gh("POST", f"repos/{repo}/issues/{num}/labels", {"labels": [PLAN, incident.HOLD_PRIORITY_LABEL]})
     try:
         gh("DELETE", f"repos/{repo}/issues/{num}/labels/{FIX_PROPOSED.replace(':', '%3A')}")
     except Exception:  # noqa: BLE001, S110  付いていなければ 404
@@ -54,14 +56,23 @@ def issue_closed(gh, repo: str, num: int) -> bool:
     return (gh("GET", f"repos/{repo}/issues/{num}") or {}).get("state") == "closed"
 
 
+def mark(cur, inc: dict, repo: str, tid: str) -> None:
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values (%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
+                (REREL, tid, Jsonb({"incident_id": inc["incident_id"], "repo": repo, "issue": inc.get("issue"), "train_id": tid}),
+                 f"{REREL}:{inc['incident_id']}"))
+
+
 def rerelease_step(cur, gh, log=None) -> list[str]:
-    """S1 の Incident のうち、Defect の Issue が閉じたものを緊急便で出す。返り値は出した便の id"""
-    out = []
+    """メジャーの Incident のうち、Defect の Issue が閉じたものを緊急便で出す。返り値は出した便の id"""
+    out, shipped = [], {}
     for inc in incident.open_incidents(cur):
         if not is_major(inc.get("severity")) or inc.get("drill") or rereleased(cur, inc["incident_id"]):
             continue
         repo, num = inc["repo"], issue_number(inc.get("issue"))
         if num is None or not issue_closed(gh, repo, num):
+            continue
+        if repo in shipped:   # 同じ原因をまとめて直した PR で閉じたもの: この周回の便に載っている
+            mark(cur, inc, repo, shipped[repo])
             continue
         ok, msg = train.emergency(cur, repo, "supervisor", f"メジャー不具合の修正: {inc.get('issue')}（{inc.get('title') or ''}）")
         if not ok:
@@ -71,9 +82,8 @@ def rerelease_step(cur, gh, log=None) -> list[str]:
         cur.execute("select payload->>'train_id' as tid from events where name='release.train' and payload->>'kind'='emergency' "
                     "and payload->'repos' ? %s order by id desc limit 1", (repo,))
         tid = cur.fetchone()["tid"]
-        cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values (%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
-                    (REREL, tid, Jsonb({"incident_id": inc["incident_id"], "repo": repo, "issue": inc.get("issue"), "train_id": tid}),
-                     f"{REREL}:{inc['incident_id']}"))
+        mark(cur, inc, repo, tid)
+        shipped[repo] = tid
         out.append(tid)
         if log:
             log("major rerelease", inc["incident_id"], msg)

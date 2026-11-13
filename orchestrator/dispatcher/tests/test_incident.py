@@ -165,7 +165,8 @@ def test_qa_s2_defect_is_incident_without_hold(cur):
     qa_line.act(cur, gh, lambda *a: None, REPO, 5, QA_CORR, 1, res, recorded, {})
     assert not incident.held(cur)
     assert [i["severity"] for i in incident.open_incidents(cur, REPO)] == ["s2"]
-    assert not any(c[1].endswith("/labels") for c in gh.calls)
+    # S2 は差し止めないが、メジャー不具合として直しに流す（ADR 0053。プランナーの着手判定と p0）
+    assert [c[2]["labels"] for c in gh.calls if c[1].endswith("/labels")] == [["factory:plan", "factory:priority:p0"]]
 
 
 def test_drill_does_not_plant_while_qa_is_busy(cur, capsys):
