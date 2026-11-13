@@ -235,6 +235,15 @@ def decide(out: dict, f: dict, round_: int, defs: dict) -> tuple[str, list[str],
         if not [q for q in sp.get("questions") or [] if str(q).strip()]:
             return "escalate", roles, ["spike_no_questions"], marks
         return "spike", roles, [], marks
+    wf = out.get("workflow") if isinstance(out.get("workflow"), dict) else {}
+    if wf.get("path") == "verify":   # QA だけ（ADR 0056）。経路の役は持たない
+        if roles:
+            return "escalate", roles, ["verify_with_roles"], marks
+        if ready:
+            conf = out.get("confidence")
+            if not isinstance(conf, (int, float)) or conf < a["human_below_confidence"]:
+                return "escalate", roles, ["low_confidence"], marks
+            return "ready", roles, [], marks
     if ready and not roles:
         return "escalate", roles, ["empty_steps"], marks
     if ready and "ui_design" in roles and "design_system" not in roles and not f.get("has_design_system") and not out.get("design_direction_given"):

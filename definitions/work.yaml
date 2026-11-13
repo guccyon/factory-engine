@@ -100,6 +100,7 @@ from_workflow_steps:          # workflow.yaml の steps。道（paths）によ�
   merge: null
   qa: [ops.qa]
   ship: [ops.release]
+  stage: [ops.release]        # QA だけの道（ADR 0056）で staging に最新を出す
   learn: null
   confirm: null
   execute:

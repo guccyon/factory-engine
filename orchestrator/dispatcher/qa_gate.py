@@ -63,7 +63,7 @@ def gate(cur, release_id: str) -> dict | None:
     rows = cur.fetchall()
     if not rows or rows[0]["name"] != "qa.gate_opened":
         return None
-    g = {"release_id": release_id, "repo": rows[0]["payload"]["repo"], "opened_at": rows[0]["occurred_at"], "state": "open",
+    g = {"release_id": release_id, "repo": rows[0]["payload"]["repo"], "opened_at": rows[0]["occurred_at"], "state": "open", "opened": rows[0]["payload"],
          "jobs": {w: [] for w in ALL}, "units": {}, "plan": None, "decided": None, "blocked": None}
     for r in rows[1:]:
         p = r["payload"]
@@ -84,8 +84,8 @@ def gate(cur, release_id: str) -> dict | None:
 
 def open_gates(cur, repo: str) -> list[str]:
     cur.execute("select payload->>'release_id' as rid from events o where name='qa.gate_opened' and payload->>'repo'=%s and not exists "
-                "(select 1 from events e where e.correlation_id=o.correlation_id and e.name in ('qa.gate_decided','qa.gate_superseded')) order by id",
-                (repo,))
+                "(select 1 from events e where e.correlation_id=o.correlation_id and e.name in ('qa.gate_decided','qa.gate_superseded')) "
+                "and o.payload->>'ticket' is null order by id", (repo,))   # QA だけのチケットの関門（ADR 0056）は ticket_step が進める
     return [r["rid"] for r in cur.fetchall()]
 
 
@@ -284,7 +284,7 @@ def plan_units(cur, gh, p: dict, defs: dict, gd: dict) -> dict:
 def enqueue_unit(cur, gh, repo: str, pl: dict, u: dict, attempt: int, defs: dict, gd: dict, now: datetime) -> dict:
     """計画の単位を 1 つ、版ごとの Issue に積む。ジョブごとの上限（ターン・費用）は入力で渡す（ワーカーの core-gates/qa.py が守らせる）"""
     rid = pl["release_id"]
-    common = dict(by="qa_gate", priority=gd["priority"], defs=defs, issue=pl["issue"], unit=u["unit"], title=f"QA: {rid}")
+    common = dict(by="qa_gate", priority=gd["priority"], defs=defs, issue=pl["issue"], unit=u["unit"], title=pl.get("title") or f"QA: {rid}")
     if u["which"] == "explore":
         got = qa_line.enqueue(cur, gh, repo, **common,
                               extra={"mode": "explore", "charter": u["charter"], "night": qa_line.night_of(now), "unattended": False, "gate": rid,
@@ -438,6 +438,7 @@ def step(cur, gh, repo: str, *, defs: dict | None = None, now: datetime | None =
         timed_out = now - g["opened_at"] > timedelta(hours=float(gd["hours"]))
         if all(results.get(w) for w in need) or timed_out:
             out["decided"] = decide(cur, gh, repo, rid, results, timed_out, now)
+    out["tickets"] = ticket_step(cur, gh, repo, defs=defs, gd=gd, now=now, may_enqueue=may_enqueue, on_enqueued=on_enqueued, log=log, outcome=outcome)
     return out
 
 
@@ -532,3 +533,251 @@ def approval_check(cur, release_id: str, skip_qa: str | None) -> tuple[bool, str
             return False, "QA の関門の報告がまだ（判定と探索の結果を待っている）。待たずに出すときは --skip-qa --reason .. で理由を付ける", {}
         return True, "", {"qa_skipped": skip_qa.strip()[:300]}
     return True, "", ({"qa_skipped": skip_qa.strip()[:300]} if (skip_qa or "").strip() else {"qa_gate": None})
+
+
+# ------------------------------------------------------------------ QA だけのチケット（ADR 0056）
+# プランナーが道 verify（stage → qa → respond → learn）で着手できると決めたチケットに、dispatcher が factory:qa-ticket を付ける。
+# 指示役（supervisor）は周回ごとに、宣言（Plan の workflow）を読んで次の手を打つだけ。判断は持たない（ADR 0004）。
+#   stage: 宣言が動かす（既定）で、マージ済みで版にしていない変更があれば、版を切って staging に出す。出した版の関門（ADR 0049）の結果を使う
+#   qa: 新しい版を出さなかった（か、出した版の関門が使えなかった）ら、いまの staging に、このチケットを入れ物にした関門を開き、
+#       scope のストーリー 1 本につき 1 ジョブ（ADR 0054。時刻をまたぐものは最後に 1 本ずつ、ADR 0055）、deep なら探索 1 つを積む
+#   respond: 結果をチケットにコメントして閉じる。承認・本番にはつなげない
+# 記録の鍵は qa_gate:ticket:<repo>#<番号>（release_id の欄にこの鍵を入れる。payload の ticket で版の関門と見分ける）
+#   qa.gate_opened {release_id: 鍵, repo, env, ticket, staged_release?, on_release?, decl}
+TICKET_LABEL = "factory:qa-ticket"
+
+
+def ticket_key(repo: str, n: int) -> str:
+    return f"ticket:{repo}#{n}"
+
+
+def verify_decl(cur, corr: str) -> dict | None:
+    """最後の着手できる判定が道 verify なら、その宣言（stage・stories・explore・cap_usd）。dispatcher の planner.verify_scope と同じ読み方"""
+    cur.execute("select payload from artifacts where type='Plan' and correlation_id=%s and payload->>'decision'='ready' order by id desc limit 1", (corr,))
+    r = cur.fetchone()
+    wf = ((r or {}).get("payload") or {}).get("workflow") or {}
+    if wf.get("path") != "verify":
+        return None
+    steps = {s.get("step"): s for s in wf.get("steps") or [] if isinstance(s, dict)}
+    qa = steps.get("qa") or {}
+    return {"stage": (steps.get("stage") or {}).get("run", True) is True, "stories": [str(x) for x in qa.get("scope") or []],
+            "explore": qa.get("effort") == "deep", "cap_usd": (wf.get("caps_declared") or {}).get("ticket.cost_usd")}
+
+
+def _staging_release(cur, repo: str) -> str | None:
+    import ship
+    return (ship.status(cur, repo)["environments"].get("staging") or {}).get("release_id")
+
+
+def _comment(gh, repo: str, n: int, body: str):
+    try:
+        gh("POST", f"repos/{repo}/issues/{n}/comments", {"body": body})
+    except Exception:  # noqa: BLE001  記録は events にある
+        pass
+
+
+def stage_release(cur, repo: str, n: int, log=print) -> str | None:
+    """マージ済みで版にしていない変更があれば、版を切って staging への出荷を依頼する（factoryctl env up と同じ）。出した版の id"""
+    import ship
+    if not ship.unreleased(cur, repo):
+        return None
+    try:
+        rid, _prs = ship.create_release(cur, repo, ship.next_version(cur, repo))
+        if not rid:
+            return None
+        ok, m = ship.request_ship(cur, rid, f"qa_ticket:{repo}#{n}", "QA だけのチケット（ADR 0056）")
+        return rid if ok else None
+    except Exception as e:  # noqa: BLE001  出せなければ今の staging で流す
+        log("qa ticket stage failed", repo, n, repr(e)[:200])
+        return None
+
+
+def open_ticket(cur, gh, repo: str, n: int, decl: dict, now: datetime, log=print) -> bool:
+    key = ticket_key(repo, n)
+    staged = stage_release(cur, repo, n, log) if decl["stage"] else None
+    on = _staging_release(cur, repo)
+    if not _ev(cur, "qa.gate_opened", {"release_id": key, "repo": repo, "env": "staging", "ticket": n, "staged_release": staged,
+                                       "on_release": on, "decl": decl}, f"qa.gate_opened:{key}", now):
+        return False
+    stories = "、".join(decl["stories"]) if decl["stories"] else "全部"
+    if staged:
+        _comment(gh, repo, n, f"工場の QA 役: マージ済みの変更を版 {staged.split('@')[-1]} にして staging に出します。"
+                              f"出た版の QA（出荷の関門）の結果から、このチケットのストーリー（{stories}）の結果を抜き出して返します（ADR 0056）。")
+    else:
+        _comment(gh, repo, n, f"工場の QA 役: いま staging にある版 {(on or '-').split('@')[-1]} で、ストーリー（{stories}）を流します"
+                              + ("。探索（推論）も 1 つ流します" if decl["explore"] else "") + "（ADR 0056）。")
+    return True
+
+
+def ticket_plan(cur, gh, g: dict, n: int, decl: dict, defs: dict, gd: dict, now: datetime, log=print, note: str | None = None) -> dict:
+    """このチケットで流す単位。最初の周回で 1 回だけ決めて qa.gate_plan に残す。チケットの上限は ジョブの上限の合計 × 係数 と宣言の小さいほう"""
+    if g.get("plan") is not None:
+        return g["plan"]
+    key, repo = g["release_id"], g["repo"]
+    p = {"release_id": key, "repo": repo, "ticket": n, "issue": n, "corr": f"github:{repo}#{n}", "title": f"QA だけ: #{n}",
+         "time_stories": [], "other_stories": None}
+    if note:
+        p["note"] = note
+    try:
+        with_time, without = time_stories(gh, repo)
+        want = set(decl["stories"])
+        if want:
+            p["unknown"] = sorted(want - set(with_time) - set(without))
+            with_time, without = [s for s in with_time if s in want], [s for s in without if s in want]
+        p["time_stories"], p["other_stories"] = with_time, without
+    except Exception as e:  # noqa: BLE001  数えられなければ宣言のまま 1 ジョブで流す
+        p["error"] = repr(e)[:200]
+        p["other_stories"] = list(decl["stories"]) or None
+    units = [{"unit": f"verdict:{s}", "which": "verdict", "story": s} for s in p["other_stories"] or []]
+    if decl["explore"]:
+        c = next_charter(cur, repo, defs)
+        units.append({"unit": f"explore:{c}", "which": "explore", "charter": c})
+    units += [{"unit": f"{TIME}:{s}", "which": TIME, "story": s} for s in p["time_stories"]]
+    if units and qa_line.unit_ready(cur) and not p.get("error"):
+        cap = ticket_cap(units, gd)
+        if isinstance(decl.get("cap_usd"), (int, float)) and decl["cap_usd"] > 0:
+            cap = min(cap, float(decl["cap_usd"]))
+        p.update({"units": units, "cap_usd": cap})
+    else:
+        p["legacy_why"] = "jobs に単位の列がない（009_job_unit.sql の前）" if units else "流すストーリーがない"
+        p["cap_usd"] = round(float(gd["story_cost_usd"]) * max(1, len(units)) * float(gd["ticket_cap_factor"]), 2)
+    _ev(cur, "qa.gate_plan", p, f"qa.gate_plan:{key}", now)
+    g["plan"] = p
+    return p
+
+
+def staged_results(cur, rg: dict, decl: dict, now: datetime, outcome: dict) -> dict:
+    """出した版の関門の結果から、このチケットのストーリーの分を抜き出す。版の関門が単位の形でなければ、まとめをそのまま使う"""
+    pl = rg.get("plan") or {}
+    if not pl.get("units"):
+        d = rg["decided"] or {}
+        return {"verdict": d.get("verdict"), "explore": d.get("explore"), **({TIME: d[TIME]} if d.get(TIME) else {}), "whole": True}
+    want = set(decl["stories"])
+    units = [u for u in pl["units"] if u["which"] != "explore" and (not want or u["story"] in want)]
+    if decl["explore"]:
+        units += [u for u in pl["units"] if u["which"] == "explore"]
+    res = {}
+    for u in units:
+        jobs = rg["units"].get(u["unit"]) or []
+        res[u["unit"]] = outcome[u["which"]](cur, jobs[-1]["job_id"], now) if jobs else None
+    out = {"verdict": merge_verdicts(units, res, "verdict"), "explore": next((res.get(u["unit"]) for u in units if u["which"] == "explore"), None)}
+    if any(u["which"] == TIME for u in units):
+        out[TIME] = merge_verdicts(units, res, TIME)
+    if out["verdict"] is None:
+        out["verdict"] = {"status": "done", "why": None, "candidates": [], "notes": [], "stories": {}}
+    return out
+
+
+def legacy_ticket(cur, gh, repo: str, g: dict, pl: dict, defs: dict, gd: dict, now: datetime, may_enqueue: bool, on_enqueued, log) -> tuple[list, dict | None]:
+    """単位の列がない DB では、流すストーリーを 1 ジョブでこのチケットに積む（同じ Issue に動けるジョブは 1 つ）"""
+    import psycopg
+    jobs, enq = g["jobs"]["verdict"], []
+    res = verdict_outcome(cur, jobs[-1]["job_id"], now) if jobs else None
+    retry = bool(res) and res["status"] == "unconfirmed" and len(jobs) < int(gd["attempts"])
+    if (not jobs or retry) and may_enqueue:
+        stories = list(pl.get("other_stories") or []) + list(pl.get("time_stories") or [])   # 空なら全ストーリー
+        try:
+            got = qa_line.enqueue(cur, gh, repo, stories=stories or None, by="qa_ticket", priority=gd["priority"], defs=defs, issue=pl["issue"],
+                                  title=pl.get("title"), extra={"gate": g["release_id"]})
+            _ev(cur, "qa.gate_job", {"release_id": g["release_id"], "repo": repo, "which": "verdict", "job_id": got["job_id"], "attempt": len(jobs) + 1,
+                                     "stories": stories}, f"qa.gate_job:{g['release_id']}:verdict:{len(jobs) + 1}", now)
+            enq.append({"which": "verdict", **got})
+            if on_enqueued:
+                on_enqueued(got)
+            res = None
+        except psycopg.errors.UniqueViolation:
+            res = None
+        except Exception as e:  # noqa: BLE001
+            log("qa ticket enqueue failed", repo, g["release_id"], repr(e)[:200])
+            res = None
+    elif retry:
+        res = None
+    timed_out = now - g["opened_at"] > timedelta(hours=float(gd["hours"]))
+    if res is None and not timed_out:
+        return enq, None
+    return enq, {"verdict": res, "explore": None, "timed_out": timed_out, "capped": False}
+
+
+def ticket_decide(cur, gh, repo: str, g: dict, results: dict, timed_out: bool, now: datetime, via: str | None = None) -> dict:
+    """チケットに報告を書いて閉じる。承認・受信トレイにはつなげない"""
+    n, key = g["opened"]["ticket"], g["release_id"]
+    on = _staging_release(cur, repo)
+    began = g["opened"].get("staged_release") or g["opened"].get("on_release")
+    rep = report(results, timed_out)
+    if (g.get("plan") or {}).get("unknown"):
+        rep.append({"label": "製品にないストーリー", "text": "、".join(g["plan"]["unknown"]) + "（流していない）"})
+    if (g.get("plan") or {}).get("note"):
+        rep.append({"label": "メモ", "text": g["plan"]["note"]})
+    if results.get("whole"):
+        rep.append({"label": "注", "text": "出した版の QA がストーリーごとの形でなかったので、版全体の結果をそのまま載せた"})
+    if began and on and began != on and not via:
+        rep.append({"label": "注", "text": f"流している間に staging の版が {began.split('@')[-1]} から {on.split('@')[-1]} に替わった"})
+    cands = [c for w in ALL for c in (results.get(w) or {}).get("candidates") or []]
+    payload = {"release_id": key, "repo": repo, "ticket": n, "candidates": len(cands), "blockers": cands, "verdict": results.get("verdict"),
+               "explore": results.get("explore"), "report": rep, "timed_out": timed_out, "on_release": began, **({"via_release": via} if via else {})}
+    if TIME in results:
+        payload[TIME] = results[TIME]
+    if not _ev(cur, "qa.gate_decided", payload, f"qa.gate_decided:{key}", now):
+        return payload
+    rep[0] = {"label": "見つけた不具合（S1・S2 の候補）", "text": f"{len(cands)} 件" + ("" if cands else "（見つからなかった）")}
+    body = [f"## QA だけのチケットの結果（staging の版 {(began or '-').split('@')[-1]}、factory-engine の ADR 0056）", ""]
+    body += [f"- **{r['label']}**: {r['text']}" for r in rep]
+    if via:
+        body += ["", f"結果は、出した版の QA（出荷の関門）から抜き出しました。"]
+    body += ["", "見つけた不具合は別のチケット（factory:qa-defect）に起票しています。本番への出荷には何もしていません。"]
+    close_issue(gh, repo, n, "\n".join(body))
+    return payload
+
+
+def ticket_step(cur, gh, repo: str, *, defs: dict, gd: dict, now: datetime, may_enqueue: bool, on_enqueued, log, outcome: dict) -> list[dict]:
+    """QA だけのチケットを 1 周進める。返り値は動いたこと（開いた・積んだ・閉じた）"""
+    import urllib.parse
+    try:
+        issues = gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(TICKET_LABEL)}&per_page=50") or []
+    except Exception as e:  # noqa: BLE001
+        log("qa ticket list failed", repo, repr(e)[:200])
+        return []
+    out = []
+    for it in issues:
+        n = it.get("number")
+        if not n or it.get("pull_request"):
+            continue
+        key = ticket_key(repo, n)
+        g = gate(cur, key)
+        if g is None:
+            decl = verify_decl(cur, f"github:{repo}#{n}")
+            if not decl:
+                continue   # 道 verify の計画がない（人が手でラベルを付けたなど）。何もしない
+            if may_enqueue and open_ticket(cur, gh, repo, n, decl, now, log):
+                out.append({"ticket": n, "opened": True})
+            continue
+        if g["state"] != "open":
+            continue
+        decl, staged = g["opened"].get("decl") or {}, g["opened"].get("staged_release")
+        note = None
+        if staged and g.get("plan") is None:   # 出した版の関門の結果を使う
+            rg = gate(cur, staged)
+            if rg and rg["state"] == "decided":
+                out.append({"ticket": n, "decided": ticket_decide(cur, gh, repo, g, staged_results(cur, rg, decl, now, outcome), False, now, via=staged)})
+                continue
+            cur.execute("select 1 from events where name='release.ship_failed' and payload->>'release_id'=%s limit 1", (staged,))
+            failed = cur.fetchone() is not None
+            waited = now - g["opened_at"] > timedelta(hours=2 * float(gd["hours"]))
+            if not (failed or (rg and rg["state"] == "superseded") or waited):
+                continue   # 出荷と版の関門を待つ
+            note = (f"版 {staged.split('@')[-1]} を staging に出せなかった" if failed else
+                    f"版 {staged.split('@')[-1]} の QA が使えなかった（" + ("次の版に置き換わった" if rg and rg["state"] == "superseded" else "時間切れ") + "）") \
+                + "ので、いまの staging で流した"
+        pl = ticket_plan(cur, gh, g, n, decl, defs, gd, now, log, note) if may_enqueue or g.get("plan") else None
+        if not pl:
+            continue
+        if pl.get("units"):
+            enq, results = step_units(cur, gh, repo, g, defs, gd, now, may_enqueue, on_enqueued, log, outcome)
+        else:
+            enq, results = legacy_ticket(cur, gh, repo, g, pl, defs, gd, now, may_enqueue, on_enqueued, log)
+        if enq:
+            out.append({"ticket": n, "enqueued": [x["job_id"] for x in enq]})
+        if results:
+            timed_out = results.pop("timed_out")
+            out.append({"ticket": n, "decided": ticket_decide(cur, gh, repo, g, results, timed_out, now)})
+    return out

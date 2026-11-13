@@ -426,3 +426,95 @@ def test_plan_without_stories_stays_on_fixed_issues(cur):
     p = qa_gate.gate(cur, rid)["plan"]
     assert "units" not in p and p["legacy_why"]
     assert sorted(x["which"] for x in out["enqueued"]) == ["explore", "verdict"]
+
+
+# ------------------------------------------------------------------ QA だけのチケット（ADR 0056）
+class TicketGH(ReleaseGH):
+    """QA だけのチケット #30（factory:qa-ticket）"""
+    def __call__(self, method, path, body=None):
+        if method == "GET" and "factory%3Aqa-ticket" in path:
+            self.calls.append((method, path, body))
+            return [{"number": 30}]
+        return super().__call__(method, path, body)
+
+
+def verify_plan(cur, n=30, stage=False, scope=("a-prejoin", "b-chat"), effort="standard"):
+    wf = {"path": "verify", "steps": [{"step": "stage", "run": stage}, {"step": "qa", "run": True, "effort": effort, "scope": list(scope)},
+                                      {"step": "respond", "run": True}, {"step": "learn", "run": True}],
+          "caps": {"ticket.cost_usd": 15}, "caps_declared": {}}
+    cur.execute("insert into artifacts(type, correlation_id, job_id, produced_by, payload) values ('Plan',%s,null,'plan',%s)",
+                (f"github:{REPO}#{n}", Jsonb({"decision": "ready", "steps": [], "workflow": wf})))
+
+
+def tickets(out):
+    return {k: [t[k] for t in out.get("tickets") or [] if k in t] for k in ("opened", "enqueued", "decided")}
+
+
+def test_qa_ticket_runs_scope_on_current_staging_and_closes(cur):
+    gh, rid = TicketGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)                      # 版の関門は別に開く（このテストでは見ない）
+    assert tickets(qa_gate.step(cur, gh, REPO, now=NOW))["opened"] == []   # 道 verify の計画がなければ何もしない
+    verify_plan(cur)
+    assert tickets(qa_gate.step(cur, gh, REPO, now=NOW))["opened"] == [True]
+    assert "いま staging にある版 0.9.0" in gh.comments(30)[0]
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    key = qa_gate.ticket_key(REPO, 30)
+    pl = qa_gate.gate(cur, key)["plan"]
+    assert [u["unit"] for u in pl["units"]] == ["verdict:b-chat", "verdict_time:a-prejoin"] and pl["issue"] == 30   # 範囲のストーリーだけ。探索なし
+    assert pl["cap_usd"] == (3 + 5) * 1.5
+    cur.execute("select issue_number, unit from jobs where issue_number=30 order by id")
+    assert [(r["issue_number"], r["unit"]) for r in cur.fetchall()] == [(30, "verdict:b-chat")]
+    assert key not in qa_gate.open_gates(cur, REPO)          # 版の関門の一覧には出ない
+    jid = units_of(cur, key)["verdict:b-chat"][0]
+    finish(cur, jid)
+    verdicts(cur, jid, [("b-chat", "pass", [])])
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert tickets(out)["enqueued"] == [[units_of(cur, key)["verdict_time:a-prejoin"][0]]]   # 時刻をまたぐものは最後
+    t = units_of(cur, key)["verdict_time:a-prejoin"][0]
+    finish(cur, t)
+    verdicts(cur, t, [("a-prejoin", "hold", [{"title": "入室のボタンが押せない", "severity": "s2"}])])
+    d = tickets(qa_gate.step(cur, gh, REPO, now=NOW))["decided"][0]
+    assert d["candidates"] == 1 and d["ticket"] == 30 and d["on_release"] == rid
+    assert 30 in gh.closed() and "QA だけのチケットの結果" in gh.comments(30)[-1] and "本番への出荷には何もしていません" in gh.comments(30)[-1]
+    assert qa_gate.gate(cur, key)["state"] == "decided"
+    cur.execute("select count(*) as n from events where name='release.approved'")
+    assert cur.fetchone()["n"] == 0
+
+
+def test_qa_ticket_stage_ships_and_reuses_release_gate(cur):
+    gh = TicketGH()
+    deploy(cur, "o/app@0.9.0")
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    cur.execute("insert into events(name, correlation_id, payload) values ('pr.merged','c',%s)",
+                (Jsonb({"pr_url": f"https://github.com/{REPO}/pull/9"}),))
+    verify_plan(cur, stage=True, scope=("b-chat",))
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    key = qa_gate.ticket_key(REPO, 30)
+    staged = qa_gate.gate(cur, key)["opened"]["staged_release"]
+    assert staged and staged != "o/app@0.9.0"
+    cur.execute("select payload from events where name='release.ship_requested' and payload->>'release_id'=%s", (staged,))
+    assert cur.fetchone()["payload"]["by"] == "qa_ticket:o/app#30"
+    assert tickets(qa_gate.step(cur, gh, REPO, now=NOW)) == {"opened": [], "enqueued": [], "decided": []}   # 出荷を待つ（自分では積まない）
+    ship.record(cur, "release.deployed", staged, {"repo": REPO, "env": "staging", "ok": True, "request_id": 0})
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert out["opened"] == staged
+    g = qa_gate.gate(cur, staged)
+    for u in g["plan"]["units"]:   # 版の関門をすべて終わらせる
+        while True:
+            jid = units_of(cur, staged).get(u["unit"], [None])[-1]
+            if jid is None:
+                qa_gate.step(cur, gh, REPO, now=NOW)
+                jid = units_of(cur, staged)[u["unit"]][-1]
+            finish(cur, jid)
+            if u["which"] == "explore":
+                explored(cur, jid, [], gate=staged)
+            else:
+                verdicts(cur, jid, [(u["story"], "pass" if u["story"] == "b-chat" else "hold", [] if u["story"] == "b-chat" else [{"title": "x", "severity": "s2"}])])
+            break
+        qa_gate.step(cur, gh, REPO, now=NOW)
+    assert qa_gate.gate(cur, staged)["state"] == "decided"
+    d = qa_gate.gate(cur, key)["decided"]
+    assert d["via_release"] == staged and d["verdict"]["stories"] == {"pass": 1} and d["candidates"] == 0   # 範囲の b-chat だけを抜き出す
+    cur.execute("select count(*) as n from jobs where issue_number=30")
+    assert cur.fetchone()["n"] == 0 and 30 in gh.closed()   # このチケットには積まない（同じ版を 2 回流さない）

@@ -21,6 +21,7 @@ steps:                               # ステップのカタログ。役を足�
   merge:         {ja: マージ（autonomy の表）, kind: safety}
   qa:            {ja: QA（ユーザーストーリーを流す）, kind: review}
   ship:          {ja: 出荷, kind: handoff}
+  stage:         {ja: staging に最新を出す（版を切って配備。出す変更がなければ何もしない）, kind: handoff}
   learn:         {ja: Learn（信号の記録）, kind: handoff}
   confirm:       {ja: 依頼者の確認（ADR 0037 の 4）, kind: safety}
   execute:       {ja: 実行, kind: build}
@@ -34,6 +35,7 @@ paths:                               # 道（ADR 0037）ごとのひな形。プ
   quick:       [execute, respond]
   analysis:    [execute, reconcile, respond]
   investigate: [execute, respond]       # 工場の中での一次調査（ADR 0048）。読むだけなので確認を飛ばす
+  verify:      [stage, qa, respond, learn]   # QA だけ（ADR 0056）。コードを変えない。実装・CI・検査・マージ・出荷はこの道にない。承認・本番にはつなげない
 
 mandatory:                           # 飛ばせないステップ（決定 3）。always は常に、when は条件に当たるとき。プランナーの宣言で飛ばしても run: true に戻す
   checks:    {always: true, min_effort: standard}

@@ -38,9 +38,10 @@ MAX_ROUNDS = 2
 MARKER = "<!-- factory:plan-questions -->"
 RUNNING_LABEL, QUEUED_LABEL = "factory:running", "factory:queued"
 WAITING_LABEL = "factory:waiting-steps"   # 経路の前の役（別のチケット）が終わるのを待っている
+QA_TICKET_LABEL = "factory:qa-ticket"   # QA だけのチケット（ADR 0056）。指示役がチケットの関門で QA を積む
 SPIKE_LABEL = "factory:spike"   # 方針が要るのでスパイクのレーンへ（ADR 0055。definitions/planner.yaml の labels.spike）
 GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方の指定がない", "low_confidence": "プランナーの確信度が低い",
-            "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった",
+            "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった", "verify_with_roles": "QA だけの道なのに経路に役がある",
             "oversized": "大きすぎる（切る基準に当たる）", "spike_exhausted": "スパイクの設計書があるのに、また方針が要ると答えた",
             "spike_no_questions": "スパイクへ回すのに、決めることが出なかった"}
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
@@ -303,6 +304,21 @@ def attach_context(cur, repo: str, corr: str, inp: dict) -> dict:
     return out
 
 
+def verify_scope(wf: dict) -> dict:
+    """道 verify（ADR 0056）の宣言から、指示役が使うもの: stage を動かすか・流すストーリー（空なら全部）・探索を足すか・チケットの上限の宣言"""
+    steps = {s.get("step"): s for s in wf.get("steps") or [] if isinstance(s, dict)}
+    qa = steps.get("qa") or {}
+    return {"stage": (steps.get("stage") or {}).get("run", True) is True, "stories": [str(x) for x in qa.get("scope") or []],
+            "explore": qa.get("effort") == "deep", "cap_usd": (wf.get("caps_declared") or {}).get("ticket.cost_usd")}
+
+
+def verify_lines(wf: dict) -> list[str]:
+    v = verify_scope(wf)
+    return [f"- 流すストーリー: {'、'.join(v['stories']) if v['stories'] else '全部'}" + ("（探索も 1 つ足す）" if v["explore"] else ""),
+            "- staging: " + ("マージ済みで版にしていない変更があれば、先に出す（出した版は版の QA の結果を使う）" if v["stage"] else "今の版のまま流す"),
+            "- 結果はこのチケットにコメントして閉じます。不具合は別のチケットに起票します"]
+
+
 def workflow_summary(wf: dict) -> dict:
     """plan.decided に載せる宣言の要約（飛ばすステップ・厚くするステップ・上限・着手のしかた・渡し先）"""
     steps = [s for s in wf.get("steps") or [] if isinstance(s, dict)]
@@ -387,6 +403,16 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
     p, guards, marks = result.get("plan") or {}, result.get("guards") or [], result.get("advisories") or []
     wrote = decision in ("ready", "split") and bool(steps) and write_requirements(gh, repo, issue, plan_id, result)   # 子を切る前に書く（子は親の本文を正として読む）
     note = [""] + [upstream_note(result)] if wrote else []
+    wf = result.get("workflow") if isinstance(result.get("workflow"), dict) else {}
+    if decision == "ready" and not steps and wf.get("path") == "verify":   # QA だけ（ADR 0056）。指示役がチケットの関門で QA を積む
+        swap_label(repo, issue, [RUNNING_LABEL], [QA_TICKET_LABEL])
+        body = [f"プランナー（ジョブ {job_id}）: 着手できます。経路は **QA だけ**（実装・マージ・本番への出荷はしません）です。", "",
+                p.get("summary") or "", ""] + verify_lines(wf)
+        if marks:
+            body += ["", "見返すための印: " + _ja(marks)]
+        body += workflow_lines(wf, result.get("workflow_marks"))
+        comment(repo, issue, "\n".join(body + ["", f"<sub>Plan {plan_id}</sub>"]))
+        return
     if decision == "ready" and steps:
         if steps[0] == "design_system" and len(steps) > 1 and gh:   # デザインシステムの仕事は別のチケットにして、このチケットは待つ
             child = split_design_system(cur, gh, repo, issue, corr, plan_id, title, steps, p)

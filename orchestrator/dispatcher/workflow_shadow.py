@@ -93,8 +93,8 @@ def caps_of(cur, corr: str) -> tuple[dict, dict | None]:
     QA の固定 Issue は終わりのないチケットなので、チケット全体の費用と QA のやり直しの上限を掛けない（None。ADR 0054 の決定 6）。
     費用はジョブごとの上限と 1 日の予算の枠（ADR 0029）で抑える"""
     wf = latest_workflow(cur, corr)
-    if wf and isinstance(wf.get("caps"), dict):
-        return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND], **wf["caps"]}, wf
+    if wf and isinstance(wf.get("caps"), dict):   # QA だけのチケット（ADR 0056）は、関門が宣言した上限が宣言の上に乗る
+        return {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND], **wf["caps"], **(gate_caps(cur, corr) or {})}, wf
     caps = {**DEFAULT_CAPS["any"], **DEFAULT_CAPS[DEFAULT_BAND]}
     gc = gate_caps(cur, corr)
     if gc:
