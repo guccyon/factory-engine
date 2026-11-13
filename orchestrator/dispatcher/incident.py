@@ -243,15 +243,22 @@ def from_qa(cur, gh, comment, repo: str, *, key: str, severity: str, title: str,
         if severity in HOLD_SEVERITIES:
             hold(cur, inc, qa_corr=qa_corr, defect_corr=defect_corr)
             if num.isdigit():
+                planned = False
                 try:
                     gh("POST", f"repos/{repo}/issues/{num}/labels", {"labels": [HOLD_PRIORITY_LABEL]})
+                    if not inc["drill"]:
+                        # メジャー不具合は人の 1 タップを待たずに流す（ADR 0053）。演習は直すコードがないので流さない
+                        import major_defect
+                        major_defect.plan_fix(gh, repo, int(num))
+                        planned = True
                 except Exception as e:  # noqa: BLE001
                     if log:
                         log("s1 label failed", issue_url, repr(e))
                 comment(repo, int(num), f"重要度 {severity.upper()} の Incident（`{inc['incident_id']}`）として、QA 役がラインを差し止めました"
                                         f"（factory-engine の ADR 0043 の O5）。{'**これは演習です**（staging に仕込んだもの。直すコードはありません）。' if inc['drill'] else ''}\n\n"
                                         "差し止めの間も、この Issue（p0）と QA の確かめ直しは流れます。ほかのチケットは止まっています。"
-                                        "解除は手動で行います（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
+                                        + ("メジャー不具合なので、工場が承認を待たずに直し、修正がマージされたら緊急便で出し直します（ADR 0053）。" if planned else "")
+                                        + "解除は手動で行います（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
         if policy is None:
             policy = fetch_policy(gh, repo)
         check_budget(cur, repo, policy)

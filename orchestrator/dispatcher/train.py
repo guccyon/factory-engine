@@ -3,8 +3,8 @@
 便は「承認の単位」と「Release のまとめ方」だけを変える。staging への出し方（ship.py）は今のまま。
 - 定期便: supervisor が 1 日 1 便（JST の RELEASE_TRAIN_HOUR 時を過ぎて）、製品ごとにまだ Release に入っていないマージ済みの PR を Release に切り、
   まとめて 1 つの便（release.train）に載せて staging に出す
-- 緊急便: S1 の修正だけは便を待たずに出す。Gen1 は人か QA 役が factoryctl release train <repo> --emergency --reason .. で出す
-  （S1 の Incident から自動で出すのは O5 の Incident ができてから）
+- 緊急便: S1 の修正だけは便を待たずに出す。S1 の Defect の Issue が閉じたら supervisor が出す（ADR 0053、major_defect.py）。
+  人も factoryctl release train <repo> --emergency --reason .. で出せる
 - 承認: 本番に出す承認は便ごとに 1 回（factoryctl release train-approve <train_id>）。便に載った Release をまとめて承認する。
   本番を立てない段階（development）の製品だけの便は承認が要らない（approval.required が偽）
 

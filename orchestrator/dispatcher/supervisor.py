@@ -59,6 +59,7 @@ import ephemeral
 import factory_incident
 import judgment
 import line
+import major_defect
 import ticket_sync
 import learn
 import version
@@ -877,6 +878,18 @@ def release_train_step(cur):
         log("release train", tid, [r["release_id"] for r in rels])
 
 
+def major_defect_step(cur):
+    """メジャー不具合（S1）の修正がマージされたら緊急便で出し直し、本番を立てる製品なら staging に出た後に承認する（ADR 0053）。
+    判断は持たず、条件を見るだけ（中身は major_defect.py）"""
+    if DRY_RUN:
+        return
+    try:
+        major_defect.rerelease_step(cur, gh, log=log)
+        major_defect.approve_step(cur, log=log)
+    except Exception as e:  # noqa: BLE001  周回は止めない
+        log("major defect step failed", repr(e))
+
+
 def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:
     """取りまとめの Issue を起こすか。断片が CHANGELOG_COMPILE_EVERY 件以上、または出荷の列車の 1 時間前を過ぎて断片があり、今日まだ取りまとめていない"""
     if n <= 0:
@@ -1601,6 +1614,7 @@ def tick():
         notify_report_step(cur)
         changelog_step(cur)
         release_train_step(cur)
+        major_defect_step(cur)
         qa_gate_step(cur)
         ephemeral_step(cur)
         nightly_explore_step(cur)

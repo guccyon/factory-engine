@@ -89,6 +89,10 @@ events:
     source: control_plane
     required: [incident_id, by]
     note: "直った・演習を終えた（factoryctl incident close / drill-end）"
+  major.rereleased:
+    source: control_plane
+    required: [incident_id, repo, issue, train_id]
+    note: "ADR 0053。メジャー不具合（S1）の Defect の Issue が閉じたので、supervisor が緊急便を出した。Incident ごとに 1 回。本番を立てる製品なら staging に出た後に supervisor が便を承認する（dispatcher/major_defect.py）"
   fincident.patrolled:
     source: control_plane
     required: [at, day, llm_tokens, plan_quota, cloud_metered, external_api, signs, opened]
