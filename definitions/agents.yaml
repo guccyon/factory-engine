@@ -71,6 +71,10 @@ steps:
     tier: tier-judge
   incident.review:            # 事故の調査委員会の査読役（同上。書いた役とは別の呼び出し。割り出せないか・一般か・重複かを見る）
     tier: tier-judge
+  desk.task:                  # 窓口の依頼の実行役（core-gates/desk_task.py。ADR 0037 の決定 5 の quick）。会話・製品の仕様・工場の記録の写しと中継の道具を読むだけ。答え・文面・表・見立てを作る
+    tier: tier-small            # 読むだけで工場を変えず、結果は依頼者にだけ返す。日報の工程ごとの ROI で見直す
+    mode: agentic
+    tools: [Read, Grep, Glob]   # シェルも書く道具も渡さない。工場の記録と製品の Issue・PR は中継の inv_sql・inv_github
   investigate:                # 工場の中での一次調査の調査役（core-gates/investigate.py。dispatcher の中継の道具と Engine の定義・文書を読むだけ。ADR 0048）
     tier: tier-judge
     mode: agentic

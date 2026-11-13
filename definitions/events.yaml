@@ -133,6 +133,22 @@ events:
     source: control_plane
     required: [key, week, issue, duplicate]
     note: "ADR 0046 の 6。Engine の改善 Issue を起票した（同じ題が開いていれば duplicate で、それを指す）"
+  desk_task.enqueued:
+    source: control_plane
+    required: [conversation_id, round, job_id, path]
+    note: "ADR 0037 の決定 5 の quick。窓口の依頼の実行役のジョブ（kind=desk_task、窓口の枠）を積んだ。1 回の振り分けに 1 本"
+  desk_task.skipped:
+    source: control_plane
+    required: [conversation_id, round, reason]
+    note: "ADR 0037 の決定 5。この工場が受け持たない製品なので実行役を動かさなかった"
+  desk_task.answered:
+    source: control_plane
+    required: [conversation_id, round, artifact_id, path, cap_hit, evidence, cost_usd]
+    note: "ADR 0037 の決定 5・ADR 0039 の決定 2a。実行役の結果を成果物 DeskTaskResult に残して提出した。cap_hit はターンの上限で途中までを出したか、evidence は根拠の数"
+  desk_task.failed:
+    source: control_plane
+    required: [conversation_id, round, error]
+    note: "ADR 0037 の決定 5。実行役のジョブが失敗した（失敗も会話に提出し、依頼者が続きか差し戻しを選べる）"
   investigate.enqueued:
     source: control_plane
     required: [conversation_id, round, job_id]

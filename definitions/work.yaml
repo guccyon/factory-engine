@@ -125,6 +125,7 @@ from_agent_steps:             # agents.yaml の steps（ワークフローの外
   spike: null                         # スパイクの System Architect（ADR 0055。プロトタイプ。知見を渡す業務は Gen1.5 でスパイクの業務を足すときに）
   desk.consult: [desk.converse, plan.route]
   desk.answer: [desk.converse]
+  desk.task: [desk.converse]
   committee_review: [learn.committee]
   committee_weekly: [learn.committee]
   incident.patrol: [govern.patrol]
