@@ -160,6 +160,8 @@ Learn ループ（ADR 0013）:
   factoryctl report process [--days 7]            # 工程の信号の束（ADR 0027 の 3。衝突の解消・やり直し・費用の外れ値・待ち・停止）。前の窓との比較つき
   factoryctl committee reopen <PR の URL>...      # 人に回した知見の PR を委員会にかけ直す（承認待ちのラベルを外す）
   factoryctl learn backfill-conflicts [--days 7]  # 衝突の解消のジョブのログ（オブジェクトストア）から、衝突したファイルの記録（conflict.files）を埋める
+  docker exec factory-dispatcher-1 factoryctl export learning [--since YYYY-MM-DD] [--repo owner/repo] > learning.json
+                                                  # 学習の観測データ（知見・委員会・ルールの成績と移り変わり・教師信号・流量）を JSON で書き出す。読むだけ。次の世代の工場で観測を続ける材料
 """
 import json
 import os
@@ -187,6 +189,7 @@ import usage
 import ghapp
 import judgment
 import learn
+import learn_export
 import ops
 import plan_outcome
 import planner
@@ -1432,6 +1435,9 @@ def main(argv):
         retro = process_learn.retrospect(cur, window_days=int(opt(argv, "--days", str(process_learn.WINDOW_DAYS))))
         print("\n".join([f"# 工程の信号（{retro['from'][:10]} 〜 {retro['to'][:10]}、制御プレーンから生成）", "",
                          "生成: `factoryctl report process`（ADR 0027 の 3）", ""] + process_learn.report_lines(retro)))
+    elif cmd == "export" and len(argv) > 2 and argv[2] == "learning":
+        since = datetime.fromisoformat(opt(argv, "--since", "2026-10-01")).replace(tzinfo=timezone.utc)
+        print(json.dumps(learn_export.export(cur, since, opt(argv, "--repo")), ensure_ascii=False, indent=1, default=str))
     elif cmd == "learn" and len(argv) > 2 and argv[2] == "backfill-conflicts":
         return backfill_conflicts(cur, int(opt(argv, "--days", str(process_learn.WINDOW_DAYS))))
     elif cmd == "report" and len(argv) > 2 and argv[2] == "learning":
