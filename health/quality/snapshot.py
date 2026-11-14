@@ -139,6 +139,7 @@ def measure(root: str, config: dict, defs: dict, clippy: str | None, extra: dict
     funcs: list[dict] = []
     tests = 0
     measurable_langs, file_max_ccn = [], {}
+    unmeasured: dict[str, list[str]] = {"tests": [], "complexity": []}   # 数え方を持たない言語（#234）。0 と区別して残す
     for lang, spec in (config.get("languages") or {}).items():
         test_re = TEST_FN.get(lang)
         src = [f for f in expand(root, spec.get("src")) if not exclude.search(f)]
@@ -146,6 +147,11 @@ def measure(root: str, config: dict, defs: dict, clippy: str | None, extra: dict
         use_lizard = lizard is not None and lang in LIZARD_LANGS
         if use_lizard:
             measurable_langs.append(lang)
+        if src or tst:
+            if test_re is None:
+                unmeasured["tests"].append(lang)
+            if not use_lizard:
+                unmeasured["complexity"].append(lang)
         for f in src + tst:
             text = open(os.path.join(root, f), encoding="utf-8", errors="replace").read()
             cut = None if f in tst else inline_test_start(text, spec.get("inline_test_marker"))
@@ -176,7 +182,8 @@ def measure(root: str, config: dict, defs: dict, clippy: str | None, extra: dict
         "complex_function_ratio": round(complex_fns / len(funcs), 4) if funcs else None,
         "long_function_ratio": round(sum(1 for n in nloc if n > len_limit) / len(funcs), 4) if funcs else None,
         "duplication_ratio": round(dup / norm_total, 4) if norm_total else None,
-        "tests_per_kloc": round(tests / kloc, 2) if kloc else None,
+        # 数え方を持たない言語があれば、テストがあっても 0 に見えるので「測れない」（null）にする（#234）
+        "tests_per_kloc": round(tests / kloc, 2) if kloc and not unmeasured["tests"] else None,
         "mutation_score": extra.get("mutation_score"),
     }
     hotspots = []
@@ -193,6 +200,7 @@ def measure(root: str, config: dict, defs: dict, clippy: str | None, extra: dict
         "distributions": {"complexity": dist(ccn), "function_length": dist(nloc)},
         "lines": lines,
         "measured_languages": sorted(measurable_langs),
+        "unmeasured_languages": {k: sorted(v) for k, v in unmeasured.items()},
         "hotspots": hotspots,
         "tool_versions": {"lizard": getattr(lizard, "version", None) if lizard else None, "python": sys.version.split()[0]},
     }

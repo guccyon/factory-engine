@@ -59,7 +59,7 @@ metrics:
     ja: "テストの数"
     better: higher
     unit: per_kloc
-    source: "テスト関数の数（Rust の #[test]・#[tokio::test]・#[sqlx::test]、TypeScript の test( / it(、Dart の test( / testWidgets(）"
+    source: "テスト関数の数（Rust の #[test]・#[tokio::test]・#[sqlx::test]、TypeScript の test( / it(、Dart の test( / testWidgets(）。数え方を持たない言語が製品にあれば null（測れない）にし、その言語をスナップショットの unmeasured_languages に残す（#234）"
   mutation_score:
     ja: "テストが振る舞いを縛っている強さ"
     better: higher
