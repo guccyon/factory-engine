@@ -324,7 +324,11 @@ if [ -n "${CONFLICTS}" ] && git grep -qE '^(<<<<<<<|>>>>>>>) ' -- ${CONFLICTS} 2
   echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" --arg pr "${CONTINUE_PR}" '{pr_url:null, reason:"conflict_unresolved", continue_pr:($pr|tonumber), usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
   exit 5
 fi
-if [ -z "$(git status --porcelain)" ] && [ -z "${MERGING}" ] && [ "${AHEAD}" = "0" ]; then
+# 途中終了の続きで、エージェントが最後まで動いた（exit 0）のに足すものがなかったときは、前のジョブの差分で Issue の範囲が満たされている。
+# 失敗にせず、下の続きの道で未完了の印を外してドラフトを外す（2026-11-14 rally #1438 のジョブ 8921。PR #1482 がドラフトのまま止まった）
+FINISH_DRAFT=""
+if [ "${CONTINUE_REASON:-}" = "incomplete" ] && [ -n "${CONTINUE_PR:-}" ] && [ "${CLAUDE_RC}" -eq 0 ]; then FINISH_DRAFT="1"; fi
+if [ -z "$(git status --porcelain)" ] && [ -z "${MERGING}" ] && [ "${AHEAD}" = "0" ] && [ -z "${FINISH_DRAFT}" ]; then
   echo "[worker] no changes produced"
   echo "FACTORY_RESULT:$(jq -nc --argjson usage "${USAGE}" --arg cost "${COST}" --arg model "${MODEL}" --arg turns "${TURNS}" '{pr_url:null, reason:"no_changes", usage:$usage, cost_usd:($cost|tonumber), model:$model, num_turns:($turns|tonumber)}')"
   exit 3
