@@ -32,6 +32,7 @@ ENABLED = ENV.get("DISK_GUARD", "1") != "0"
 INTERVAL_SEC = int(ENV.get("DISK_GUARD_INTERVAL_SEC", "300"))
 CACHE_MAX_GB = float(ENV.get("DISK_BUILD_CACHE_MAX_GB", "20"))
 CACHE_KEEP_GB = float(ENV.get("DISK_BUILD_CACHE_KEEP_GB", "8"))
+CACHE_MIN_AGE_H = int(ENV.get("DISK_BUILD_CACHE_MIN_AGE_H", "24"))   # これより新しいキャッシュは prune しない
 MIN_FREE_GB = float(ENV.get("DISK_MIN_FREE_GB", "15"))
 HOST_PATH = ENV.get("DISK_HOST_PATH", "/definitions")   # ホストから bind mount したパス（statvfs がホストのディスクを返す）
 KEEP_RELEASES = int(ENV.get("DISK_KEEP_RELEASES", "3"))
@@ -230,7 +231,10 @@ def step(cur, log=print, *, docker=_docker, free=free_bytes) -> dict | None:
         stoppage.close_stoppage(cur, STOPPAGE_KEY, remedy="ディスクの空きが戻った", closed_by="dispatcher")
         return None
     actions = []
-    r = docker(["builder", "prune", "-f", "--keep-storage", f"{int(CACHE_KEEP_GB * 1000)}MB"])
+    # 作ったばかりの層は消さない（11/15: 更新で作り直した worker の Flutter の層 1.79GB を 7 秒後に消し、次の更新でまた作っていた）。
+    # 空きが下限を割っているときは新しい層も消す（止まるよりは作り直す方がよい）
+    r = docker(["builder", "prune", "-f", "--keep-storage", f"{int(CACHE_KEEP_GB * 1000)}MB"]
+               + ([] if low else ["--filter", f"until={CACHE_MIN_AGE_H}h"]))
     actions.append({"cmd": "builder prune", "ok": r.returncode == 0, "out": (r.stdout or r.stderr or "").strip()[-200:]})
     actions.append(remove_stale_images(docker))
     if free() < MIN_FREE_GB * GB:
