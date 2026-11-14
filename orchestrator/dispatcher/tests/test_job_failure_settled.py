@@ -88,3 +88,17 @@ def test_rerun_not_started_does_not_close(cur):
     cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued', 'github:o/r#0', %s, %s)",
                 (b, Jsonb({"by": "rerun", "previous": a, "attempt": 2})))
     assert dispatcher.job_failure_settled(cur, a) is None
+
+
+def test_lock_key_separates_units_on_one_issue(cur):
+    """版ごとの QA のチケットに並べて積んだシナリオごとのジョブ（ADR 0054）は、単位ごとに錠を分ける。
+    2026-11-14: 同じ Issue の 2 本目（探索）が、判定の動いている間に lock_held で落ちた"""
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, unit) values ('c','o/r',9,'qa','running','verdict:a') returning *")
+    a = cur.fetchone()
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, unit) values ('c','o/r',9,'qa','running','explore:detour') returning *")
+    b = cur.fetchone()
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('c','o/r',10,'implement','running') returning *")
+    c = cur.fetchone()
+    assert dispatcher.lock_key_of(a) == "o/r#9#verdict:a" and dispatcher.lock_key_of(b) == "o/r#9#explore:detour"
+    assert dispatcher.lock_key_of(c) == "o/r#10"                       # 単位のないジョブは今までどおり Issue ごと
+    assert dispatcher.lock_key_of({"repo": "o/r", "issue_number": 10}) == "o/r#10"   # 単位の列を持たない行（つなぎ直しなど）
