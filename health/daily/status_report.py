@@ -373,7 +373,9 @@ def db_value(conn, sql: str, args: tuple = ()):
     if conn is None:
         raise Unknown("制御プレーンに届かない")
     with conn.cursor() as cur:
-        cur.execute(sql, args)
+        # 引数がないときは None で渡す。空のタプルでも psycopg は % を置き換えの印として読むので、
+        # LIKE 'ui\_%' を含む測り方（P5a の mac_runner）が ProgrammingError になり「不明」と出ていた（2026-11-13 の日報）
+        cur.execute(sql, args or None)
         row = cur.fetchone()
         return row[0] if row else None
 
