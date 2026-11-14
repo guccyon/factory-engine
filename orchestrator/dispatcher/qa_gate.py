@@ -292,7 +292,7 @@ def enqueue_unit(cur, gh, repo: str, pl: dict, u: dict, attempt: int, defs: dict
         extra = {"charter": u["charter"]}
     else:
         turns = gd["time_story_max_turns"] if u["which"] == TIME else gd["story_max_turns"]
-        got = qa_line.enqueue(cur, gh, repo, stories=[u["story"]], **common,
+        got = qa_line.enqueue(cur, gh, repo, stories=[u["story"]], **common, exclusive_env=(u["which"] == TIME),
                               extra={"gate": rid, "max_turns": int(turns), "max_budget_usd": float(gd[UNIT_COST[u["which"]]])})
         extra = {"story": u["story"], "stories": [u["story"]]}
     _ev(cur, "qa.gate_job", {"release_id": rid, "repo": repo, "which": u["which"], "unit": u["unit"], "job_id": got["job_id"], "attempt": attempt, **extra},
@@ -371,7 +371,7 @@ def enqueue_job(cur, gh, repo: str, release_id: str, which: str, attempt: int, d
     psycopg の UniqueViolation（次の周回で）"""
     if which in ("verdict", TIME):
         got = qa_line.enqueue(cur, gh, repo, by="qa_gate", priority=(defs.get("gate") or qa_line.DEFS["gate"])["priority"], defs=defs,
-                              stories=stories, extra={"gate": release_id})
+                              stories=stories, extra={"gate": release_id}, exclusive_env=(which == TIME))
         extra = {"stories": list(stories)} if stories else {}
     else:
         charter = next_charter(cur, repo, defs)
@@ -678,7 +678,7 @@ def legacy_ticket(cur, gh, repo: str, g: dict, pl: dict, defs: dict, gd: dict, n
         stories = list(pl.get("other_stories") or []) + list(pl.get("time_stories") or [])   # 空なら全ストーリー
         try:
             got = qa_line.enqueue(cur, gh, repo, stories=stories or None, by="qa_ticket", priority=gd["priority"], defs=defs, issue=pl["issue"],
-                                  title=pl.get("title"), extra={"gate": g["release_id"]})
+                                  title=pl.get("title"), extra={"gate": g["release_id"]}, exclusive_env=bool(pl.get("time_stories")))
             _ev(cur, "qa.gate_job", {"release_id": g["release_id"], "repo": repo, "which": "verdict", "job_id": got["job_id"], "attempt": len(jobs) + 1,
                                      "stories": stories}, f"qa.gate_job:{g['release_id']}:verdict:{len(jobs) + 1}", now)
             enq.append({"which": "verdict", **got})
