@@ -230,11 +230,26 @@ def open_gate(cur, repo: str, release_id: str, now: datetime | None = None, gh=N
     """関門を開く。前の版の開いた関門は superseded で閉じる（承認の対象は staging にいまある版だけ）。版ごとの Issue があれば閉じる"""
     for old in open_gates(cur, repo):
         if old != release_id:
-            pl = (gate(cur, old) or {}).get("plan") or {}
-            if _ev(cur, "qa.gate_superseded", {"release_id": old, "repo": repo, "by_release": release_id}, f"qa.gate_superseded:{old}", now) \
-                    and gh and pl.get("issue"):
+            og = gate(cur, old) or {}
+            pl = og.get("plan") or {}
+            if not _ev(cur, "qa.gate_superseded", {"release_id": old, "repo": repo, "by_release": release_id}, f"qa.gate_superseded:{old}", now):
+                continue
+            stop_jobs(cur, og, f"次の版 {release_id} が staging に出た")
+            if gh and pl.get("issue"):
                 close_issue(gh, repo, pl["issue"], f"次の版 {release_id} が staging に出たので、この版の QA は打ち切りました。")
     return _ev(cur, "qa.gate_opened", {"release_id": release_id, "repo": repo, "env": "staging"}, f"qa.gate_opened:{release_id}", now)
+
+
+def stop_jobs(cur, g: dict, reason: str) -> list[int]:
+    """打ち切った関門の、順番待ち・実行中のジョブを止める。staging はもう次の版なので、流しても古い版の結果にならない
+    （2026-11-14: 打ち切られた版の順番待ちのジョブが、後から動いて費用と時間を使っていた）"""
+    import ops
+    stopped = []
+    for w in ALL:
+        for j in (g.get("jobs") or {}).get(w) or []:
+            if ops.stop_job(cur, j["job_id"], "qa_gate", f"QA の関門を打ち切った（{reason}）"):
+                stopped.append(j["job_id"])
+    return stopped
 
 
 # ------------------------------------------------------------------ 版ごとのチケットとシナリオごとのジョブ（ADR 0054）

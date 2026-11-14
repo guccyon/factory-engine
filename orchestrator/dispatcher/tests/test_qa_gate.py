@@ -416,6 +416,9 @@ def test_release_ticket_supersede_closes_issue(cur):
     deploy(cur, "o/app@0.10.0", "0.10.0")
     out = qa_gate.step(cur, gh, REPO, now=NOW)
     assert out["opened"] == "o/app@0.10.0" and gh.closed() == [51]
+    cur.execute("select state, cancel_requested from jobs where issue_number=51 order by id")
+    old = cur.fetchall()
+    assert old and all(j["state"] == "cancelled" and j["cancel_requested"] for j in old)   # 打ち切った版の順番待ちのジョブは取り消す
     assert qa_gate.gate(cur, "o/app@0.10.0")["plan"]["issue"] == 52
 
 
