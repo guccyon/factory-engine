@@ -111,6 +111,10 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
   factoryctl investigation bench [--only id,..] < eval-corpus/investigate/cases.yaml   # 評価セットを再生する（1 件 $3 まで。docker exec -i で標準入力に渡す）
   factoryctl investigation bench-status [<回>]        # 評価の回の進みと採点（外れた理由）。特定率が合格線に届くまで窓口の報告に「試行中」と添える
 
+オンボーディングの判定の記録（ADR 0045 の追記。操業コンソールの製品のページ・受信トレイの準備のお願いと稼働 ready の承認が読む）:
+  factoryctl readiness record <file.yaml|-> [--by ..]   # 製品の今の粒度と根拠・満たした条件・技術スタックと外部サービス・取り込み元を記録し、判定を出す（標準入力は docker exec -i で）
+  factoryctl readiness show [<owner/repo>]              # 製品ごとのいちばん新しい判定（レベル・仕事ごとの判定・お願いの数）
+
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
   factoryctl desk token list                               # トークンの一覧（名前・役割・対象の製品。トークンそのものは出ない）
@@ -171,6 +175,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import psycopg
+import yaml
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -1247,6 +1252,43 @@ def qa_cmd(cur, argv) -> int:
     return 0
 
 
+def readiness_cmd(cur, argv) -> int:
+    """オンボーディングの判定の記録（onboarding.py）"""
+    import onboarding
+    import readiness
+    sub = argv[2] if len(argv) > 2 else "show"
+    defs = readiness.load()
+    if sub == "record" and len(argv) > 3:
+        text = sys.stdin.read() if argv[3] == "-" else open(argv[3], encoding="utf-8").read()
+        doc = yaml.safe_load(text)
+        rid, probs = onboarding.record(cur, defs, doc, opt(argv, "--by", (doc or {}).get("by") or "factoryctl") if isinstance(doc, dict) else "factoryctl")
+        if probs:
+            print("記録しなかった:\n" + "\n".join(f"- {p}" for p in probs))
+            return 1
+        sm = onboarding.summaries(cur, defs)
+        s = next(x for x in sm if x["product"] == doc["product"])
+        print(f"記録した（events #{rid}）: {s['product']} L{s['reached']} {s['reached_ja']}・いちばん弱い仕事 {s['weakest']['target_ja']} "
+              f"{s['weakest']['verdict_ja']}・お願い {s['asks']} 件" + ("・稼働 ready の承認を受信トレイに出す" if s["ready_ok"] and not s["past_ready"] else ""))
+        return 0
+    if sub == "show":
+        product = argv[3] if len(argv) > 3 and not argv[3].startswith("--") else None
+        rows = [r for r in onboarding.summaries(cur, defs) if not product or r["product"] == product]
+        if not rows:
+            print("判定の記録がない（factoryctl readiness record で残す）")
+            return 1
+        for r in rows:
+            print(f"{r['product']}  L{r['reached']} {r['reached_ja']}" + (f" → L{r['next']} {r['next_ja']}" if r["next"] else "")
+                  + ("  稼働 ready 承認済み" if r["approved"] else "  稼働 ready を越えた" if r["past_ready"] else "  承認待ち" if r["ready_ok"] else "")
+                  + f"  判定 {r['at'][:16]}")
+            rec = onboarding.latest(cur, r["product"])[0]
+            for t, tj in defs["targets"].items():
+                j = rec["result"]["targets"][t]
+                print(f"  {tj['ja']:<10} {readiness.band_ja(defs, j['verdict'])}（{round(j['ratio'] * 100)}%）お願い {len(j['asks'])} 件")
+        return 0
+    print(__doc__)
+    return 2
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "version":   # サービスごとの版（ADR 0031）。DB を使わない。--expect <コミット> で、ずれたら終了コード 1
         import version
@@ -1565,6 +1607,8 @@ def main(argv):
         t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
         print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")
         return 0 if t else 1
+    elif cmd == "readiness":
+        return readiness_cmd(cur, argv)
     elif cmd == "qa":
         return qa_cmd(cur, argv)
     elif cmd == "incident":

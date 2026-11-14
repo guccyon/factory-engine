@@ -1,14 +1,14 @@
 """操業コンソールの画面（1 枚の HTML。console.py が配る）。
 
 ページは URL で分ける（2026-11-07 オーナー）: / ホーム（ダッシュボード）、/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）、
-/line（ライン）、/ship（出荷）、/usage（使用量。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）と
+/line（ライン）、/ship（出荷）、/products と /products/<owner>/<repo>（製品。中身は products_page.py の断片を読み込む）、/usage（使用量。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）と
 /help/api・/help/cli（API と MCP・factoryctl のリファレンス。中身は GET /api/reference。コードの説明から作る。reference.py）、
 /settings/<項目>（右上の歯車。ランナー・モード・ラインと流量・Mac・工場の版）。
 サーバーはどのページにも同じ HTML を返し、画面の中で URL に合うページを描く。データは /api/state の 1 本（10 秒ごと）
 """
 import re
 
-APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|products(/[\w.-]+/[\w.-]+)?|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
 
 PAGE = r"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -40,6 +40,7 @@ button.danger{color:var(--p0)}button.armed{background:var(--p0);color:#fff}#stop
 #bell .n{min-width:18px;padding:0 5px;border-radius:999px;background:var(--line);color:var(--sub);font-size:11px;font-weight:700;text-align:center}#bell.has .n{background:var(--p0);color:#fff}
 #inbox{padding:0 16px}#inbox[hidden]{display:none}.ib{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.ib h2{font-size:14px;margin:0 0 8px}
 .ib a{color:var(--accent)}.ib ul{list-style:none;margin:0;padding:0}.ib li{padding:8px 0;border-top:1px solid var(--line);display:grid;gap:2px}.ib li:first-child{border-top:0}.who{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--sub);margin-right:6px}
+.v-bad{color:var(--p0)}.v-warn{color:var(--warn)}.v-ok{color:var(--accent)}.v-good{color:var(--ok)}
 .dt{margin:4px 0 0;display:grid;grid-template-columns:max-content 1fr;gap:2px 10px;font-size:12px}.dt dt{color:var(--sub)}.dt dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:560px){.dt{grid-template-columns:1fr}.dt dd{margin-bottom:4px}}
 .ans{margin-top:4px}.ans input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:min(320px,100%)}.ans.done{color:var(--ok);font-size:12px}.ib li.answered{opacity:.7}
@@ -242,14 +243,15 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 // ---------------------------------------------------------------- ページ（11-07 の構成。ADR 0009 の決定 5 の簡易画面）
 // URL がページ: / ホーム（ダッシュボード）・/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）・/line・/ship・/settings/<項目>
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
-const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","使用量の予算"],["mac","Mac"],["version","工場の版"]];
-const LATER=["サービスとの連携（OAuth）","credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
+const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","使用量の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場の版"]];
+const LATER=["credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
 let S=null,view="",gi={},ibTab="open",ibKind="",ibWho="";
 const enc=k=>encodeURIComponent(k);
 const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if(p==="/line"||p==="/ship"||p==="/usage")return[p.slice(1),""];
+ if((m=p.match(/^\/products(?:\/([\w.-]+\/[\w.-]+))?$/)))return["products",m[1]||""];
  if((m=p.match(/^\/help(?:\/(api|cli|mobile))?$/)))return["help",m[1]||""];
  if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
  return["home",""]}
@@ -268,6 +270,11 @@ function todoView(ib){const xs=ib.items.filter(i=>!i.answered);
  if(!xs.length)return `<h2>判断待ち<span class="m"> プロダクトの判断（受信トレイ）</span></h2><div class="m">いまはありません</div>`;
  return `<h2>判断待ち（${xs.length} 件）<span class="m"> プロダクトの判断（受信トレイ）</span></h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
   <a class="more" href="/inbox" data-nav>受信トレイをすべて見る →</a>`}
+// 製品の準備（ADR 0045 の追記）。稼働 ready を越えた製品は出さない。届いたレベルと次のレベル、いちばん弱い仕事の判定、お願いと確かめてほしい読みの件数
+const VCLS={blocked:"bad",weak:"warn",ready:"ok",enough:"good"};
+function prodCard(ps){const xs=(ps||[]).filter(p=>!p.past_ready);if(!xs.length)return"";
+ return `<h2>製品の準備（${xs.length}）<span class="m"> オンボーディングのレベルと準備度</span></h2><ul class="rows">${xs.map(p=>`<li><a href="/products/${esc(p.product)}" data-nav><span class="who">L${p.reached} ${esc(p.reached_ja)}</span><span class="g">${esc(p.product)}${p.next?` <span class="m">→ L${p.next} ${esc(p.next_ja)}</span>`:""}</span><span class="m"><b class="v-${VCLS[p.weakest.verdict]}">${esc(p.weakest.target_ja)}: ${esc(p.weakest.verdict_ja)}</b> · お願い ${p.asks} 件${p.confirms?` · 確かめてほしい読み ${p.confirms} 件`:""}${p.ready_ok?" · 稼働 ready の承認待ち":""}</span></a></li>`).join("")}</ul>
+  <a class="more" href="/products" data-nav>製品をすべて見る →</a>`}
 function spark(series){const v=(series||[]).map(x=>typeof x==="number"?x:null),ns=v.filter(x=>x!=null);if(ns.length<2)return '<div class="m">推移はまだない</div>';
  const lo=Math.min(...ns),hi=Math.max(...ns),W=140,H=34,X=i=>(i*(W-4)/(v.length-1)+2).toFixed(1),Y=x=>(hi===lo?H/2:H-3-(x-lo)*(H-6)/(hi-lo)).toFixed(1);
  let d="",pen=false;v.forEach((x,i)=>{if(x==null){pen=false;return}d+=(pen?"L":"M")+X(i)+" "+Y(x)+" ";pen=true});
@@ -534,25 +541,40 @@ document.addEventListener("change",e=>{if(e.target.name!=="md-mode")return;docum
 document.addEventListener("click",e=>{if(!e.target.closest("button[data-mode]"))return;const mode=(document.querySelector('input[name="md-mode"]:checked')||{}).value;if(!mode)return;
  const u=(document.getElementById("md-until")||{}).value,body={mode,reason:(document.getElementById("md-reason")||{}).value||"操業コンソール"};
  if(u&&mode!=="schedule")body.until=new Date(u).toISOString();post("/api/factory/mode",body)});
+// 設定の「サービスとの連携」（ADR 0045 の追記）。工場の生産に使う間接のサービス（バックログ管理・デザインの資料・社内の文書など）の取り込み元。
+// 鍵の値は出さない。鍵番（個人の権限とトークンの管理）ができるまでは、オンボーディングの判定の記録に書いた取り込み元を並べるだけ
+function connView(cs){if(!cs.length)return '<div class="m">取り込み元の記録がない。オンボーディングの判定の記録（factoryctl readiness record）の sources に書くとここに出る</div>';
+ const d=x=>x?esc(String(x).slice(0,10)):"—",bad=c=>c.state==="expired"||c.state==="revoked";
+ return `<div class="rn"><table><tr><th>サービス</th><th>使い道</th><th>製品</th><th>取り込みの形</th><th>許可した人</th><th>範囲</th><th>状態</th><th>期限</th><th>最後に使った日</th></tr>${cs.map(c=>`<tr>
+  <td><b>${esc(c.service)}</b></td><td>${esc(c.use||"")}</td><td><a href="/products/${esc(c.product)}" data-nav>${esc(c.product)}</a></td><td>${esc(c.kind_ja)}${c.received_at?`<div class="m">受け取った日 ${d(c.received_at)}</div>`:""}</td><td>${esc(c.granted_by||"—")}</td><td>${esc(c.scope||"—")}</td>
+  <td><span class="dot ${bad(c)?"":"on"}"></span>${esc(c.state_ja)}</td><td>${d(c.expires_at)}</td><td>${d(c.last_used_at)}</td></tr>`).join("")}</table></div>
+  <div class="m" style="margin-top:8px">鍵とトークンの値はここに出さない。つなぎ直す操作（OAuth の流れ）は鍵番ができてから足す。それまでは取り込み元を記録し直して更新する</div>`}
 function settingsBody(sec,s){const f=s.factory;
  if(sec==="runners")return `<h2>ランナー</h2>${pairsView(s.runner_pairs||[])}${runnersView(s.runners||[])||'<div class="m">登録済みのランナーはない（工場の外の機械に入れた常駐プロセス。Mac なら scripts/macrunner.sh）</div>'}`;
  if(sec==="mode")return `<h2>モード</h2>${modeForm(f.mode_spec)}`;
  if(sec==="line")return `<h2>ラインと流量</h2><div class="acts">${lineView(f.line)}</div>${scaleForm(f.scale)}`;
  if(sec==="budget")return `<h2>使用量の予算</h2>${budgetForm(f.budget)}<div class="m"><a href="/usage" data-nav>日ごとの費用と予算（使用量）→</a></div>`;
+ if(sec==="connectors")return `<h2>サービスとの連携</h2>${connView(s.connectors||[])}`;
  if(sec==="mac")return `<h2>Mac</h2>${f.host?`<div class="acts"><label class="stat sw" title="オンの間は工場の稼働中に Mac を眠らせない">起こしたまま <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label></div><div class="m">Mac 上の見張り（keep-awake.sh）が ${dur(f.host.agent_age_sec)}前に連絡</div>`:'<div class="m">Mac 上の見張り（keep-awake.sh）から連絡がない。Mac 以外で動いているか、見張りが止まっている</div>'}`;
  return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
 
 // ---- 描画
-const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"],["/usage","使用量","usage"]];
+const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"],["/products","製品","products"],["/usage","使用量","usage"]];
 function skeleton(v,arg){
- if(v==="home")return `<section class="card" id="h-todo"></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
+ if(v==="home")return `<section class="card" id="h-todo"></section><section class="card" id="h-prod" hidden></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
  if(v==="ship")return `<div id="ship"></div>`;
+ if(v==="products")return `<div id="prod-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
  if(v==="usage")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
  if(v==="help")return `<nav class="htabs">${HTABS.map(([k,n])=>`<a href="/help${k?"/"+k:""}" data-nav class="${k===arg?"on":""}">${n}</a>`).join("")}</nav>`+(arg==="mobile"?`<section class="card help">${HELP_MOBILE}</section>`:arg?`<section class="card help ref"><div class="ref-q"><input id="ref-qi" type="search" placeholder="絞り込み（例 inbox、drain、予算）" value="${esc(refQ)}"><span class="m" id="ref-n"></span></div><div id="ref-b"><div class="m">読み込み中…</div></div></section>`:`<section class="card help">${HELP}</section>`);
  return `<div class="set"><nav class="sn">${SETTINGS.map(([k,n])=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(n)}</a>`).join("")}${LATER.map(n=>`<span class="later" title="今後">${esc(n)}（今後）</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
-let force=false,usageAt=0;
+let force=false,usageAt=0,prodAt=0,prodOf=null,prodTgt="";
+// 製品のページ（ADR 0045 の追記）。使用量と同じく、画面の中に中身（/products/body?p=<製品>）を読み込む。仕事の切り替えは画面の中だけ
+async function loadProd(p){prodAt=Date.now();prodOf=p;try{const h=await (await fetch("/products/body"+(p?"?p="+enc(p):""))).text();put("prod-b",h);prodTab()}catch(e){put("prod-b",'<div class="m">製品のページを読み込めませんでした</div>')}}
+function prodTab(){if(!prodTgt)return;const b=document.querySelector(`#prod-b button[data-tgt-b="${prodTgt}"]`);if(b)b.click()}
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-b]");if(!b)return;const t=b.dataset.tgtB;prodTgt=t;
+ b.parentNode.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));b.closest("section").querySelectorAll("[data-tgt]").forEach(x=>x.hidden=x.dataset.tgt!==t)});
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
 async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
 function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
@@ -563,7 +585,7 @@ function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="setting
  if(v==="settings")document.querySelectorAll(".sn a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="/settings/"+arg));
  const pairs=(s.runner_pairs||[]).length;
  put("banner",pairs&&!(v==="settings"&&arg==="runners")?`<a class="banner" href="/settings/runners" data-nav>新しいランナーの接続の依頼が ${pairs} 件。設定のランナーで許可か拒否を選ぶ →</a>`:"");
- if(v==="home"){put("h-todo",todoView(ib));put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",alertsView(s.alerts))}
+ if(v==="home"){put("h-todo",todoView(ib));{const c=prodCard(s.products),el=document.getElementById("h-prod");if(el){el.hidden=!c;put("h-prod",c)}}put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",alertsView(s.alerts))}
  else if(v==="inbox"){document.querySelector(".ibx").classList.toggle("open",!!arg);put("ib-f",ibFilters(ib));put("ib-list",ibList(ib,arg));
   if(!arg)put("ib-d","");else if(force||!busy("ib-d"))put("ib-d",ibDetail(ib,arg));
   const sel=document.querySelector(".ir.sel");if(sel&&force)sel.scrollIntoView({block:"nearest"})}
@@ -571,6 +593,7 @@ function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="setting
   const xs=s.items.filter(i=>(!lnRepo||repoOf(i)===lnRepo)&&(!lnSrc||i.source===lnSrc));
   put("lanes",LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return `<section class="lane"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join(""))}
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
+ else if(v==="products"){if(prodOf!==arg||Date.now()-prodAt>60000||!document.querySelector("#prod-b .prod"))loadProd(arg)}
  else if(v==="usage"){if(Date.now()-usageAt>60000||!document.querySelector("#usage-b .usage"))loadUsage()}
  else if(v==="help"){if(arg&&arg!=="mobile"&&!document.querySelector("#ref-b section")){if(REF)refPut();else loadRef()}}
  else if(force||!busy("set-b"))put("set-b",settingsBody(arg,s));
