@@ -123,3 +123,7 @@ body{--top-h:49px;--side-w:208px;--tabs-h:0px;display:grid;grid-template-columns
  #tabs{display:grid;position:fixed;left:0;right:0;bottom:0;z-index:6}#tabs a{position:relative}#tabs a .c-count{position:absolute;top:-4px;left:calc(50% + 6px)}
  #top{padding:var(--space-2) var(--space-3)}#top .brand{font-size:14px}#wb-l,#help-i,#gear{display:none}#fs{max-width:62vw}
  .pop{left:var(--space-2);right:var(--space-2);width:auto}}
+/* ホーム（#472） */
+.h-stats,.h-notice{margin-top:12px}.h-stats a.c-tile{color:inherit;text-decoration:none}.h-stats a.c-tile:hover{border-color:var(--line-strong)}
+a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
+.h-notice:empty,.h-stats:empty{display:none}

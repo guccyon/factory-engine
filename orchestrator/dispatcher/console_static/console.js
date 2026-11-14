@@ -155,6 +155,13 @@ function trendView(t){if(!t||!t.items.length)return `<h2>指標の推移</h2><di
  return `<h2>指標の推移 <span class="m">毎朝の操業レポートと同じ数 · ${span}（${t.days.length} 日）</span></h2>
   ${t.summary.length?`<div class="m sumline ${esc(t.level)}">${t.summary.map(esc).join(" ")}</div>`:""}
   <div class="tiles">${t.items.map(i=>`<div class="tile ${esc(i.level)}"><div class="m">${esc(i.title)}</div><div class="v">${num(i.value,i.unit)}${i.delta!=null&&i.delta!==0?`<span class="d">${i.delta>0?"+":""}${Math.round(i.delta*10)/10}</span>`:""}</div>${spark(i.series)}</div>`).join("")}</div>`}
+// ホーム（ADR 0059、#472）。並びはワークベンチごと。1 つの件は 1 か所で片付けるので、ホームは件数とリンクだけ（不調の中身はラインの上、のちに工場の保守）
+const HOME_ORDER={factory:["notice","todo","stats","line","trend","prod","ship"],product:["prod","todo","ship","stats","trend","line","notice"]};
+function homeStats(s){const f=s.factory,hum=s.items.filter(i=>i.stage==="human").length,run=s.items.filter(i=>i.stage==="running").length,low=f.line_low_below>0&&f.planned<f.line_low_below;
+ const t=(k,v,href,cls,d)=>`<a class="c-tile${cls?" "+cls:""}" href="${href}" data-nav><div class="k">${k}</div><div class="v">${v}${d?`<span class="d">${d}</span>`:""}</div></a>`;
+ return `<div class="c-tiles">${t("対応が必要な作業",hum,"/line",hum?"is-bad":"")}${t("作業中",run,"/line")}${t("着手待ちのチケット",f.planned,"/line",low?"is-warn":"",low?`${f.line_low_below} 件を切った`:"")}${t("今日の費用","$"+f.cost_today_usd.toFixed(2),"/usage")}</div>`}
+function homeNotice(s){const xs=((s.alerts||{}).open||[]).filter(a=>!a.inbox);if(!xs.length)return"";
+ return `<a class="c-notice is-warn" href="/line" data-nav><span class="c-g">工場の不調が ${xs.length} 件あります。提供元が対応しています</span><span aria-hidden="true">→</span></a>`}
 function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
  return `<h2><a href="/line" data-nav>ライン →</a></h2><div class="kv">${LANES.map(([k,n])=>`<span>${esc(n)} <b>${c(k)}</b></span>`).join("")}</div>`}
 function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
@@ -471,7 +478,7 @@ function factoryState(s){const f=s.factory,hb=f.heartbeat_age_sec,l=f.line,al=((
  return["","動いている",mode]}
 function factoryView(s){const [c,t,sub]=factoryState(s);fsBtn.className="c-factory "+c;fsBtn.innerHTML=`<i></i><b>${esc(t)}</b><span class="sub">· ${esc(sub)}</span>`;fsBtn.title=`工場の状態: ${t}（${sub}）。押すと詳しく`}
 function skeleton(v,arg){
- if(v==="home")return `<section class="card" id="h-todo"></section><section class="card" id="h-prod" hidden></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
+ if(v==="home")return HOME_ORDER[wb].map(k=>k==="notice"||k==="stats"?`<div id="h-${k}" class="h-${k}"></div>`:`<section class="card" id="h-${k}" hidden></section>`).join("");
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
@@ -487,7 +494,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-
  b.parentNode.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));b.closest("section").querySelectorAll("[data-tgt]").forEach(x=>x.hidden=x.dataset.tgt!==t)});
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
 async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
-function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
+function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));
  document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
@@ -495,7 +502,8 @@ function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="setting
  if(v==="settings")document.querySelectorAll(".sn a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="/settings/"+arg));
  const pairs=(s.runner_pairs||[]).length;
  put("banner",pairs&&!(v==="settings"&&arg==="runners")?`<a class="banner" href="/settings/runners" data-nav>新しいランナーの接続の依頼が ${pairs} 件。設定のランナーで許可か拒否を選ぶ →</a>`:"");
- if(v==="home"){put("h-todo",todoView(ib));{const c=prodCard(s.products),el=document.getElementById("h-prod");if(el){el.hidden=!c;put("h-prod",c)}}put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",alertsView(s.alerts))}
+ if(v==="home"){const H={todo:todoView(ib),prod:prodCard(s.products),trend:trendView(s.trends),line:lineSummary(s.items),ship:shipSummary(s.releases||[]),notice:homeNotice(s),stats:homeStats(s)};
+  for(const k of HOME_ORDER[wb]){const el=document.getElementById("h-"+k);if(!el)continue;el.hidden=!H[k];put("h-"+k,H[k]||"")}}
  else if(v==="inbox"){document.querySelector(".ibx").classList.toggle("open",!!arg);put("ib-f",ibFilters(ib));put("ib-list",ibList(ib,arg));
   if(!arg)put("ib-d","");else if(force||!busy("ib-d"))put("ib-d",ibDetail(ib,arg));
   const sel=document.querySelector(".ir.sel");if(sel&&force)sel.scrollIntoView({block:"nearest"})}
