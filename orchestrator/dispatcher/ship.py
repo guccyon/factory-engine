@@ -19,6 +19,10 @@
   release.ship_failed（payload に request_id。処理済みの印も兼ねる。KPI を測れなかったときは release.kpi_measured の ok: false で、停止には開かない）
   release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ。入れ直しのたびにも）
   release.touchable（触れる環境の入口。ship.yaml の touch の環境に出す・戻す・入れ直すたびに。URL・QR を付ける入口・ログインの手がかり）
+  release.backed_up（本番に出す直前に取った DB の控え。ship.yaml の backup の環境だけ。ADR 0057 の決定 3）
+
+本番を立てる段階の製品の運用（ADR 0057）: 本番に出す前に DB の控えを取り（backup）、本番への出荷が途中で落ちたら前の版に自動で戻す
+（release.rolled_back の auto: true と Incident S2）。本番の見張りは prod_watch.py（shipper の常駐から周回ごとに呼ぶ）。
 
 製品の出荷の形は製品の .factory-config/ship.yaml（compose のファイル、部品ごとのイメージの作り方、環境ごとの値、確かめ方）。
 """
@@ -37,6 +41,7 @@ from psycopg.types.json import Jsonb
 
 import ephemeral
 import ghapp
+import prod_watch
 import stoppage
 
 WORK = os.environ.get("SHIP_WORKDIR", "/ship")
@@ -567,6 +572,91 @@ def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
         "entries": entries, "accounts": accounts, "note": note, "request_id": common.get("request_id")})
 
 
+# ------------------------------------------------------------------ 本番の運用（ADR 0057）
+BACKUP_KEEP = 10
+BACKUP_NAME_RE = re.compile(r"[^0-9A-Za-z._-]")
+
+
+def backup_config(cfg: dict, env: str) -> dict | None:
+    """ship.yaml の backup（DB の控え）。その環境が入っていなければ None"""
+    b = cfg.get("backup") or {}
+    return b if env in (b.get("environments") or []) and b.get("service") and b.get("command") else None
+
+
+def backup_dir(repo: str, env: str) -> str:
+    return os.path.join(WORK, "backups", repo.replace("/", "__"), env)
+
+
+def dump(args: list[str], out_path: str, timeout: int = 1800) -> int:
+    """コマンドの標準出力をそのままファイルに書き、大きさ（バイト）を返す。失敗したら書きかけを消す"""
+    tmp = out_path + ".part"
+    with open(tmp, "wb") as f:
+        r = subprocess.run(args, stdout=f, stderr=subprocess.PIPE, timeout=timeout)
+    if r.returncode != 0:
+        os.remove(tmp)
+        raise RuntimeError(f"{' '.join(args[:4])}… が失敗（{r.returncode}）: {r.stderr.decode(errors='replace')[-800:]}")
+    os.replace(tmp, out_path)
+    return os.path.getsize(out_path)
+
+
+def prune_backups(d: str, keep: int) -> list[str]:
+    """古い控えを消して直近 keep 個だけ残す（名前の先頭が時刻なので名前順＝取った順）。消した名前を返す"""
+    names = sorted(n for n in os.listdir(d) if not n.endswith(".part"))
+    gone = names[:-keep] if keep > 0 and len(names) > keep else []
+    for n in gone:
+        os.remove(os.path.join(d, n))
+    return gone
+
+
+def take_backup(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict, running: str | None) -> dict | None:
+    """本番に出す直前に、いま動いている版の DB の控えを取る（ship.yaml の backup）。本番がまだない（running が None）ときは取らない。
+    控えが取れないときは出荷を止める（控えのないまま DB を前に進めない）"""
+    b = backup_config(cfg, env)
+    if not b or not running:
+        return None
+    d = backup_dir(repo, env)
+    os.makedirs(d, exist_ok=True)
+    stamp = now().strftime("%Y%m%dT%H%M%SZ")
+    name = BACKUP_NAME_RE.sub("_", f"{stamp}-{running.split('@')[-1]}") + str(b.get("suffix") or ".dump")
+    t0 = time.monotonic()
+    size = dump(["docker", "compose", "-p", project(repo, env), "exec", "-T", str(b["service"]), *[str(a) for a in b["command"]]],
+                os.path.join(d, name))
+    gone = prune_backups(d, int(b.get("keep") or BACKUP_KEEP))
+    payload = {**common, "env": env, "of_release": running, "for_release": rel["release_id"], "path": os.path.join(d, name),
+               "bytes": size, "seconds": round(time.monotonic() - t0, 1), "pruned": gone}
+    cur.execute("insert into events(name, correlation_id, payload) values ('release.backed_up',%s,%s)",
+                (f"release:{rel['release_id']}", Jsonb({"release_id": rel["release_id"], **payload})))
+    return payload
+
+
+def auto_rollback(cur, repo: str, rid: str, before: dict, common: dict, error: str) -> str:
+    """本番への出荷が途中で落ちたとき、出す前に動いていた版に戻す（ADR 0057 の決定 2）。Incident（S2）も開く。
+    返り値は失敗の文に足す一文。最初の本番（前の版がない）は戻さない"""
+    target_id = before.get("release_id")
+    note = ""
+    if not target_id or target_id == rid:
+        note = "（前の版がないので戻していない）"
+    else:
+        try:
+            target = release_of(cur, target_id)
+            t0 = time.monotonic()
+            tpath, _ = source(repo, target["app_version"])
+            deploy(ship_config(tpath), tpath, repo, "prod", target)
+            record(cur, "release.rolled_back", target_id, {**common, "env": "prod", "ok": True, "from": rid, "auto": True,
+                                                           "seconds": round(time.monotonic() - t0, 1), "by": "shipper", "via": "auto_rollback"})
+            note = f"（本番は {target_id} に自動で戻した）"
+        except Exception as e2:  # noqa: BLE001  戻しも落ちたら本番は止まっている。見張りが拾う
+            note = f"（{target_id} への自動の戻しも失敗: {str(e2)[-300:]}）"
+    try:
+        import incident
+        incident.open_incident(cur, repo, f"ship-failed:{rid}", "s2", f"本番への出荷が失敗した: {rid}{note}", detected_by="shipper",
+                               env="prod", release_id=rid, impact=f"本番の出荷の途中で落ちた。{error[-200:]}",
+                               correlation_id=f"release:{rid}")
+    except Exception as e3:  # noqa: BLE001  Incident の記録の失敗で出荷の失敗の記録を止めない
+        print(f"shipper: incident: {e3}", flush=True)
+    return note
+
+
 def handle(cur, ev: dict):
     p, name = ev["payload"], ev["name"]
     rid = p["release_id"]
@@ -595,7 +685,13 @@ def handle(cur, ev: dict):
                                                "stage": stage_of(cur, repo)["stage"]})
         elif name == "release.approved":
             path, _ = source(repo, rel["app_version"])
-            secs = deploy(ship_config(path), path, repo, "prod", rel)
+            cfg = ship_config(path)
+            before = status(cur, repo)["environments"].get("prod") or {}
+            take_backup(cur, cfg, repo, "prod", rel, common, running=before.get("release_id"))
+            try:
+                secs = deploy(cfg, path, repo, "prod", rel)
+            except Exception as e:  # noqa: BLE001  本番を壊れたまま残さない（ADR 0057 の決定 2）。失敗そのものは下で停止に開く
+                raise RuntimeError(f"{e}{auto_rollback(cur, repo, rid, before, common, str(e))}") from e
             record(cur, "release.deployed", rid, {**common, "env": "prod", "ok": True, "seconds": secs,
                                                   "approved_by": p.get("by"), "approved_via": p.get("via")})
         elif name == "release.rollback_requested":
@@ -682,6 +778,7 @@ def main():
                     for ev in ephemeral.pending(cur):   # PR ごとの使い捨て環境（ADR 0043 の O7）
                         print(f"shipper: {ev['name']} {ev['payload'].get('repo')}#{ev['payload'].get('pr')}", flush=True)
                         ephemeral.handle(cur, ev)
+                    prod_watch.tick(cur)   # 本番の見張り（ADR 0057 の決定 1）。間隔は prod_watch が持つ
                     time.sleep(interval)
         except Exception as e:  # noqa: BLE001  DB が切れたらつなぎ直す
             print(f"shipper: {e}", flush=True)

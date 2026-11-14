@@ -4,6 +4,8 @@ definitions/events.yaml。
 - Incident: 利用者に影響が出たもの。Gen1 は本番を立てないので（ADR 0012 の追記）、staging を本番の代わりにし、QA 役（判定・夜間の探索）が
   起票した Defect（known_gap を除く）を、その重要度の Incident としても残す（artifacts の Incident と events の incident.opened）。
   同じ Defect の Issue に当たったものは 1 件（見かけるたびに数えない）
+  本番を立てる段階（launch・operating）の製品では、本番の見張り（prod_watch.py）と本番への出荷の失敗（ship.py）も S2 の Incident を開く
+  （detected_by が prod_watch / shipper、env が prod。ADR 0057）
 - 差し止め: 重要度が HOLD_SEVERITIES（S1）の Incident が開いたら、QA 役がラインを差し止める（events の line.held_by_qa）。
   ラインの一時停止（drain。工場の更新のための札）とは別の札で、解除は人だけ（line.hold_released。factoryctl line release か操業コンソール）。
   差し止めの間、dispatcher はラインのジョブのうち、S1 の Defect の Issue と QA の固定 Issue のジョブ、p0 のジョブだけを取り出す

@@ -424,6 +424,18 @@ docker compose exec shipper factoryctl release status guccyon/rally
 
 出荷の列車（定期便。ADR 0043 の O6）: supervisor が 1 日 1 便、`RELEASE_TRAIN_HOUR`（JST、既定 17 時）を過ぎたら、まだ Release に入っていないマージ済みの工場の PR があり、出荷が処理中でも承認待ちでもない製品（`RELEASE_TRAIN`）について、次の版（minor を 1 つ上げる）の Release を切って staging に出し、その日の便（`release.train`）にまとめて残す。prod への承認は便ごとに 1 回（`factoryctl release train-approve <train_id>`。本番を立てない段階の製品だけの便は承認が要らない）。S1 の修正だけは緊急便で待たずに出す。メジャー不具合（S1・S2）の Defect の Issue は起票と同時に `factory:plan`・p0 で流れ（方針が要ればプランナーがスパイクのレーンに回し、System Architect が直し方と同じ原因の不具合の束ねを決める。ADR 0055）、その Issue が閉じたら supervisor が緊急便を出し、本番を立てる製品なら staging に出た後に supervisor が承認する（ADR 0053）。人も `factoryctl release train <repo> --emergency --reason ..` で出せる。最近の便は `factoryctl release trains`。便は Release の束として持ち、Gen1.5 で製品が複数のリポジトリに分かれたら 1 便に複数の Release を載せる。
 
+本番を立てる段階（launch・operating）の製品の運用（ADR 0057）:
+
+- **出す前の DB の控え**: 製品の ship.yaml の `backup` に prod が入っていれば、本番に出す直前に、いま動いている版の DB の控えを shipper の作業場（ボリューム `shipwork` の `/ship/backups/<製品>/prod/`）に取る（`release.backed_up`、直近 `backup.keep` 個）。取れなければ本番に触れずに出荷を止める。控えから戻すのは人の手で、工場は戻さない（下のコマンド）
+- **失敗したら自動で戻す**: 本番への出荷が起動・確かめの途中で落ちたら、出す前に動いていた版に shipper が戻す（`release.rolled_back` の `auto: true`）。失敗は停止と Incident（S2）にも残る
+- **本番の見張り**: shipper が `PROD_WATCH_SEC`（既定 60 秒）ごとに本番に版を聞く（ship.yaml の verify と同じ）。`PROD_WATCH_FAILS`（既定 3）回続けて合わなければ、まずいまの版で起動し直し（`prod.self_healed`）、戻らなければ `prod.down` と Incident（S2）と停止 `prod-down:<製品>` を開く。答えるようになったら `prod.up` で閉じる
+
+```bash
+docker compose exec shipper ls /ship/backups/guccyon__rally/prod                       # 控えの一覧（名前の先頭が取った時刻、続けて控えた版）
+# 控えから本番の DB を戻す（人の手。控えのあとに入ったデータは消える。先に factoryctl line pause などで出荷を止めておく）
+docker compose exec -T shipper cat /ship/backups/guccyon__rally/prod/<名前>.dump | docker compose -p rally-prod exec -T postgres pg_restore -U rally -d rally --clean --if-exists
+```
+
 操業コンソールの上部に製品ごとの検証と本番の版が出て、「本番に出す」（承認ボタン）と「本番を前の版に戻す」を押せる（どちらも 2 度押しで実行）。コンソールは依頼を書くだけで、docker のソケットは持たない。
 
 ## 触れる環境（ADR 0028 の touchable_env）
