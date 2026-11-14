@@ -65,6 +65,7 @@ import ticket_sync
 import learn
 import version
 import ops
+import capture_fix
 import opportunity
 import patrol_watch
 import plan_outcome
@@ -1448,6 +1449,7 @@ def opportunity_ticket_step(cur):
         return
     try:
         opportunity.file_requested(cur, gh, log=log)
+        capture_fix.file_requested(cur, gh, log=log)   # 実装後の画面への「直してほしい」も同じ周期で起票する
     except Exception as e:  # noqa: BLE001  起票の失敗でラインを止めない。次の周回でやり直す
         log("opportunity ticket step error", repr(e)[:300])
 
