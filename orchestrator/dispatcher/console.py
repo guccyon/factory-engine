@@ -9,6 +9,7 @@
   GET  /api/products                      製品の一覧（オンボーディングの判定の記録の製品ごとの最新。ADR 0045 の追記、onboarding.py）。/api/state にも products として入る
   GET  /api/products/<owner>/<repo>       製品のページの中身（レベル・準備度メーター・技術スタックと外部サービス・判定の推移）
   GET  /products と /products/<製品>       同じ中身のページ（中身は GET /products/body?p=<製品> の HTML の断片。products_page.py）
+  GET  /api/stream                      サーバーからの知らせ（SSE）。工場の記録が動いたら event: changed（画面は /api/state を読み直す。console_stream.py）
   GET  /api/ask と /api/ask/<id>          問い合わせ: 窓口の相談の一覧と会話（ADR 0059。POST で開く・返事・確認・閉じる。console_ask.py）
   GET  /api/connectors                    設定の「サービスとの連携」: 工場の生産に使う間接のサービスの取り込み元（鍵の値は出さない）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
@@ -85,6 +86,7 @@ import usage_page
 import version
 from console_page import PAGE, APP_PATH, CATALOG, static_file
 import console_ask
+import console_stream
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -499,6 +501,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur), "trends": trends(cur),
                                         "alerts": alerts.view(cur), "engine_version": version.engine_version(), "products": products(cur),
                                         "connectors": onboarding.sources(cur)})
+        if self.path == "/api/stream":   # サーバーからの知らせ（SSE。ADR 0059、#476。console_stream.py）
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            return console_stream.serve(self.wfile, db)
         if urlsplit(self.path).path.startswith("/api/ask"):   # 問い合わせ（ADR 0059、#474。console_ask.py）
             with db() as conn, conn.cursor() as cur:
                 r = console_ask.get(cur, urlsplit(self.path).path, console_ask.operator(OPERATOR))
