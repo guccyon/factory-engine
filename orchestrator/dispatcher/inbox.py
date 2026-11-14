@@ -317,6 +317,10 @@ def _release_item(cur, repo: str) -> dict | None:
     else:
         detail = [{"label": "QA の関門", "text": "この版は関門を通っていない（判定と探索の報告がない）"}]
         action = "staging で確かめて「本番に出す」を押す"
+    contracts = _contracts_between(cur, repo, pr.get("release_id"), rid)
+    if contracts:   # ADR 0057 の決定 4: 出すと前の版に戻せなくなることを、押す前に知らせる
+        detail.append({"label": "DB の contract", "text": f"この版を出すと DB から列・表を消すマイグレーションが当たり、{pr.get('release_id') or '前の版'} "
+                       f"より前には戻せなくなる（{'・'.join(contracts)}）"})
     return {"key": f"release:{rid}", "kind": "release", "who": "owner", "title": f"{repo} の {ver} が本番待ち",
             "action": action, "detail": detail, "url": "/#ship", "since": d["occurred_at"] if d else None, "ref": repo,
             "processing": pending["payload"] if pending else None,
@@ -324,6 +328,18 @@ def _release_item(cur, repo: str) -> dict | None:
                        "extra": [{"id": "block", "label": "見送る（ブロッカーにする）", "note_required": True}] if g else [],
                        "effect": f"staging で確かめた {ver} を本番に出す", "irreversible": True, "allowed": ["owner"],
                        "target": ("release", rid)}}
+
+
+def _contracts_between(cur, repo: str, prod_rid: str | None, rid: str) -> list[str]:
+    """本番のいまの版の後から rid までの Release で足された contract のマイグレーション（ship.contracts_of の記録）"""
+    import ship
+    cur.execute("select payload->>'release_id' as rid from events where name='release.created' and payload->>'repo'=%s order by id", (repo,))
+    order = [r["rid"] for r in cur.fetchall()]
+    if rid not in order:
+        return []
+    start = order.index(prod_rid) + 1 if prod_rid in order else 0
+    found = ship.contracts_of(cur, repo)
+    return [m for r in order[start:order.index(rid) + 1] for m in found.get(r, [])]
 
 
 def _releases(cur) -> list[dict]:

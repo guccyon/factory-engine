@@ -272,6 +272,8 @@ services:
       GH_APP_PRIVATE_KEY_B64: ${GH_APP_PRIVATE_KEY_B64:-}  # App の秘密鍵（PEM を base64 で 1 行に）
       GH_APP_INSTALLATION_ID: ${GH_APP_INSTALLATION_ID:-}  # 任意。空なら製品の owner から引く
       SHIP_POLL_SEC: ${SHIP_POLL_SEC:-2}                   # Rollback の秒数に効くので短く
+      PROD_WATCH_SEC: ${PROD_WATCH_SEC:-60}                # 本番の見張り（ADR 0057）。本番を立てる段階の製品の本番に版を聞く間隔。0 で止める
+      PROD_WATCH_FAILS: ${PROD_WATCH_FAILS:-3}             # 続けて何回合わなければ止まったとするか
       SHIP_WORKDIR: /ship
       # 触れる環境（ADR 0028 の touchable_env）。端末ごとの値なのでここには書かず .env で渡す（README の「触れる環境」）。
       # SHIP_TOUCH_HOST はスマートフォンから届くこの機械の名前か IP（入口の URL と QR に使う）、SHIP_TOUCH_BIND は画面の待ち受け（例: 0.0.0.0）。

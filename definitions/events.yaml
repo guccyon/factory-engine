@@ -336,6 +336,22 @@ events:
     source: control_plane
     required: [repo, stage, declared, known, by]
     note: "ADR 0028 の決定 4・ADR 0012 の追記（2026-11-05）。supervisor が製品の manifest の product_stage を読み、変わったときだけ書く。stage は効いている段階（知らない値・未宣言は development）、declared は manifest に書かれていた値。最新の 1 件が今の段階"
+  release.backed_up:
+    source: control_plane
+    required: [release_id, repo, env, of_release, for_release, path, bytes, seconds, pruned, request_id]
+    note: "ADR 0057 の決定 3。shipper が本番に出す直前に、いま動いている版（of_release）の DB の控えを取った（製品の ship.yaml の backup）。置き場所は shipper の作業場の backups/<製品>/<環境>/、直近 backup.keep 個だけ残す（pruned は消した名前）。最初の本番では取らない。取れなければ出荷を止める（release.ship_failed）"
+  prod.down:
+    source: control_plane
+    required: [repo, env, release_id, error, fails, incident_id]
+    note: "ADR 0057 の決定 1。本番の見張り（dispatcher/prod_watch.py、shipper の常駐）が、本番が答えない・違う版を答えるのを続けて見て、立て直しても戻らなかった。Incident（S2）と停止 prod-down:<repo> を開く。境目だけ書く"
+  prod.up:
+    source: control_plane
+    required: [repo, env, release_id, down_event_id, down_seconds]
+    note: "ADR 0057 の決定 1。止まっていた本番が答えるようになった。Incident と停止を閉じる。down_seconds が止まっていた時間"
+  prod.self_healed:
+    source: control_plane
+    required: [repo, env, release_id, ok, error, seconds]
+    note: "ADR 0057 の決定 1。本番の見張りが、止まった本番をいまの版で起動し直した（DB は残す）。立て直したあと 30 分（PROD_WATCH_HEAL_COOLDOWN_SEC）のうちにまた止まったら立て直さない"
   release.created:
     source: control_plane
     required: [release_id, repo, app_version, prs]
