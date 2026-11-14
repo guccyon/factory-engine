@@ -46,7 +46,7 @@ function answerView(i,n){const a=i.answer;
  const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.note_hint?esc(a.note_hint):a.extra.some(e=>e.id==="return")?"コメント（理由・違和感。戻す・違和感では必須）":"コメント（任意。違和感では必須）"}" maxlength="300">`:"";
  const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"&&o.id.length<=2?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
  const extra=a.extra.map(e=>`<button class="${e.id==="return"?"danger":""}" data-ib="${k}" data-o="${esc(e.id)}" data-n="${n}" data-need="${e.note_required?1:""}">${esc(e.label)}</button>`).join("");
- return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?``:""}${opts}${extra}${note}</div></div>`}
+ return `<div class="ans dock"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?``:""}${opts}${extra}${note}</div></div>`}
 // 問いの中身（judge が人に回した判断の今の案・他の案・見立てなど）。答える前に読めるように件の下に出す
 function detailView(i){return i.detail&&i.detail.length?`<dl class="dt">${i.detail.map(d=>`<dt>${esc(d.label)}</dt><dd>${esc(d.text)}</dd>`).join("")}</dl>`:""}
 const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
@@ -114,7 +114,7 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
 const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","使用量の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場の版"]];
 const LATER=["credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
-let S=null,view="",gi={},ibTab="open",ibKind="",ibWho="";
+let S=null,view="",gi={},ibTab="open",ibKind="",ibWho=null;   // ibWho が null のときはワークベンチの既定
 const enc=k=>encodeURIComponent(k);
 const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
@@ -135,7 +135,7 @@ const ago=s=>s==null?"":dur(s)+"待ち";
 const busy=id=>{const e=document.getElementById(id);return !!e&&(e.contains(document.activeElement)&&document.activeElement.matches("input,textarea")||[...e.querySelectorAll("input:not([type=checkbox]),textarea")].some(i=>i.value.trim()))};
 
 // ---- ホーム
-function todoView(ib){const xs=ib.items.filter(i=>!i.answered);
+function todoView(ib){const xs=ib.items.filter(i=>!i.answered&&i.kind!=="notice");   // お知らせは判断待ちに数えない（#473）
  if(!xs.length)return `<h2>判断待ち<span class="m"> プロダクトの判断（受信トレイ）</span></h2><div class="m">いまはありません</div>`;
  return `<h2>判断待ち（${xs.length} 件）<span class="m"> プロダクトの判断（受信トレイ）</span></h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
   <a class="more" href="/inbox" data-nav>受信トレイをすべて見る →</a>`}
@@ -292,12 +292,16 @@ function refPut(){const [v,sub]=route();if(v!=="help"||!sub||!REF)return;put("re
 document.addEventListener("input",e=>{if(e.target.id!=="ref-qi")return;refQ=e.target.value;refFilter()});
 
 // ---- 受信トレイ（2 ペイン。選ぶまでは一覧が全面、選ぶと右に詳細）
-function ibItems(ib){return ib.items.filter(i=>(ibTab==="open"?!i.answered:!!i.answered)&&(!ibKind||i.kind===ibKind)&&(!ibWho||i.who===ibWho))}
-function ibFilters(ib){const n=ib.items.filter(i=>!i.answered).length,a=ib.items.length-n,opt=(m,v)=>Object.entries(m).map(([k,t])=>`<option value="${esc(k)}" ${k===v?"selected":""}>${esc(t)}</option>`).join("");
- return `<div class="tabs"><button data-ibtab="open" class="${ibTab==="open"?"on":""}">未回答 ${n}</button><button data-ibtab="answered" class="${ibTab==="answered"?"on":""}">回答済（反映待ち） ${a}</button></div>
-  <label class="m">種類 <select id="ib-kind"><option value="">すべて</option>${opt(ib.kinds,ibKind)}</select></label><label class="m">宛先 <select id="ib-who"><option value="">すべて</option>${opt(ib.who,ibWho)}</select></label>`}
+// 受信トレイ（ADR 0059、#473）。判断待ち・お知らせ・答えた件で絞る。「製品」のワークベンチの既定は提供元（建設者）宛てを除く
+const IB_TABS=[["open","判断待ち",i=>!i.answered&&i.kind!=="notice"],["notice","お知らせ",i=>!i.answered&&i.kind==="notice"],["answered","答えた件",i=>!!i.answered]];
+const ibWhoNow=()=>ibWho===null?(wb==="product"?"!builder":""):ibWho;
+const whoOk=i=>{const w=ibWhoNow();return !w||(w==="!builder"?i.who!=="builder":i.who===w)};
+function ibItems(ib){const t=(IB_TABS.find(x=>x[0]===ibTab)||IB_TABS[0])[2];return ib.items.filter(i=>t(i)&&(!ibKind||i.kind===ibKind)&&whoOk(i))}
+function ibFilters(ib){const opt=(m,v)=>Object.entries(m).map(([k,t])=>`<option value="${esc(k)}" ${k===v?"selected":""}>${esc(t)}</option>`).join(""),w=ibWhoNow();
+ return `<div class="tabs">${IB_TABS.map(([k,n,f])=>`<button data-ibtab="${k}" class="${ibTab===k?"on":""}">${n} ${ib.items.filter(i=>f(i)&&whoOk(i)).length}</button>`).join("")}</div>
+  <label class="m">種類 <select id="ib-kind"><option value="">すべて</option>${opt(ib.kinds,ibKind)}</select></label><label class="m">宛先 <select id="ib-who"><option value="">すべて</option><option value="!builder" ${w==="!builder"?"selected":""}>提供元宛てを除く</option>${opt(ib.who,w)}</select></label>`}
 function ibList(ib,key){const xs=ibItems(ib);
- if(!xs.length)return `<div class="m empty">${ibTab==="open"?"対応が必要なものはありません":"反映待ちの答えはありません"}</div>`;
+ if(!xs.length)return `<div class="c-empty"><b>${{open:"判断待ちはありません",notice:"お知らせはありません",answered:"答えた件はありません"}[ibTab]||""}</b><span>新しく届いたら、ここと通知で知らせます</span></div>`;
  return xs.map(i=>`<a class="ir ${i.key===key?"sel":""}" href="${ibHref(i.key)}" data-nav><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${esc(i.title)}</div>
   <div class="m">${[esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref)].filter(Boolean).join(" · ")}</div><div class="m m2">${esc(i.action)}</div></a>`).join("")}
 function extLink(u){if(!u)return"";if(/^https:\/\//.test(u))return link(u,/github\.com\/[^/]+\/[^/]+\/pull\//.test(u)?"PR を開く":/github\.com/.test(u)?"GitHub で開く":"開く");
