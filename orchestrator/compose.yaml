@@ -257,6 +257,8 @@ services:
       DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory
       DESK_PORT: 8792
       DESK_ALLOWED_HOSTS: ${DESK_ALLOWED_HOSTS:-localhost,127.0.0.1}
+    volumes:
+      - ../definitions:/definitions:ro   # 準備度の定義（onboarding_readiness.yaml）。受信トレイの「準備のお願い」を inbox_read で読むときに使う（ADR 0045 の追記）
     ports:
       - "127.0.0.1:${DESK_HOST_PORT:-8792}:8792"
     restart: unless-stopped
