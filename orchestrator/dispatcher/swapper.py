@@ -178,7 +178,12 @@ class Swapper:
         if self.run(["git", "merge-base", "--is-ancestor", sha, "origin/main"], cwd=self.root, check=False).returncode != 0:
             raise Stop(f"{sha[:7]} は main に入っていない（main に入った版だけ更新する）")
         head = self.git("rev-parse", "HEAD")
-        if self.run(["git", "merge-base", "--is-ancestor", head, sha], cwd=self.root, check=False).returncode != 0:
+        anc = lambda a, b: self.run(["git", "merge-base", "--is-ancestor", a, b], cwd=self.root, check=False).returncode == 0
+        if head != sha and not anc(head, sha) and anc(sha, head):
+            # 頼んだ版より新しい版がもう入っている（11-14 e56feb2 を頼んだまま 51d8a90 が動いていて「作業ツリーが外れている」と人に回り、
+            # その後の更新が止まった）。人に回さず失敗にして、次の依頼（最新の main）を通す
+            raise Stop(f"頼んだ版 {sha[:7]} はもう入っている（今の版 {head[:7]} の方が新しい）。最新にするなら main を頼み直す")
+        if not anc(head, sha):
             raise Stop(f"今の版 {head[:7]} から {sha[:7]} へ早送りできない（作業ツリーが main から外れている）", escalate="human",
                        waiting_for="作業ツリーの版を確かめる（git log）")
         # 前の版は動いているイメージの版から取る（#237）。作業ツリーを先に進めてあると、HEAD から比べたのでは差分が空になり、
