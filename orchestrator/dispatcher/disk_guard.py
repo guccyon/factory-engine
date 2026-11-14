@@ -13,7 +13,7 @@ dispatcher の周回（swap_loop）から DISK_GUARD_INTERVAL_SEC ごとに呼�
 - 空きが DISK_MIN_FREE_GB を割っている間は、dispatcher が新しいジョブを取らない（too_low。_claim_loop が見る）
 - 動いているジョブのコンテナの書き込み層が DISK_JOB_MAX_GB（既定 30）を超えたら、そのコンテナを止めて人へ回す（ジョブは exit=137 で落ち、自動の立て直しはしない）。
   11/14 夜、rust のジョブ 1 本の書き込み層が 54GB になり、Mac の空きが 23GB まで減った
-- 大きさは docker の表記と同じ 10 進の GB で比べる。ビルドのキャッシュはエンジンの API から共有分も含めて測る（CLI が古いと小さく出る）
+- 大きさは docker の表記と同じ 10 進の GB で比べる。ビルドのキャッシュはエンジンの API から、イメージと共有していない（prune で消せる）分を測る
 DISK_GUARD=0 で止める。
 """
 from __future__ import annotations
@@ -56,9 +56,9 @@ def size_bytes(s: str) -> float:
 
 
 def engine_build_cache_bytes(sock: str | None = None) -> float | None:
-    """ビルドのキャッシュの全体（共有分も含む）を Docker Engine の API（/system/df）から。読めなければ None。
-    dispatcher のイメージの docker CLI はエンジンより古く（11/14: CLI 26.1.5・エンジン 29.9.2）、system df が共有分を抜いて
-    小さく出す（21.36GB。ホストの CLI では 45.43GB）。CLI の版に左右されないよう、エンジンに直接聞く"""
+    """ビルドのキャッシュのうち、イメージと共有していない分（`builder prune --keep-storage` で消せる分）を Docker Engine の API（/system/df）から。
+    読めなければ None。CLI の版で数え方が変わる（11/14: CLI 26.1.5 は共有分抜き 21.36GB、ホストの新しい CLI は全体 45.43GB）ので、エンジンに直接聞く。
+    共有分（11/15: 30.17GB のうち 22.32GB）は prune では消えず、古いイメージを外したときに減る。全体で比べると上限を下回れず、5 分ごとに空回りした"""
     import http.client
     import socket
     path = sock or DOCKER_SOCK
@@ -77,14 +77,16 @@ def engine_build_cache_bytes(sock: str | None = None) -> float | None:
         if r.status != 200:
             return None
         rows = json.loads(r.read().decode() or "{}").get("BuildCache") or []
-        return float(sum(int(x.get("Size") or 0) for x in rows))
+        return float(sum(int(x.get("Size") or 0) for x in rows if not x.get("Shared")))
     except (OSError, ValueError, http.client.HTTPException):
         return None
 
 
 def build_cache_bytes(docker=_docker, engine=engine_build_cache_bytes) -> float:
-    """ビルドのキャッシュの大きさ。エンジンの API と CLI の system df の大きい方（どちらかが読めなくても見張りは止めない）"""
-    vals = []
+    """ビルドのキャッシュのうち、prune で消せる分。エンジンの API が読めればそれを、読めなければ CLI の system df を使う"""
+    e = engine() if engine else None
+    if e is not None:
+        return e
     r = docker(["system", "df", "--format", "{{json .}}"], timeout=120)
     for line in (r.stdout or "").splitlines() if r.returncode == 0 else []:
         try:
@@ -92,11 +94,8 @@ def build_cache_bytes(docker=_docker, engine=engine_build_cache_bytes) -> float:
         except ValueError:
             continue
         if row.get("Type") == "Build Cache":
-            vals.append(size_bytes(row.get("Size") or ""))
-    e = engine() if engine else None
-    if e is not None:
-        vals.append(e)
-    return max(vals or [0.0])
+            return size_bytes(row.get("Size") or "")
+    return 0.0
 
 
 def free_bytes() -> float:
