@@ -95,6 +95,28 @@ def test_exit_captures_ack_all(cur):
     assert len(names(cur, "choice.seen")) == 2 and inbox.items(cur) == []
 
 
+def test_exit_capture_fix_files_a_planner_ticket(cur):
+    import capture_fix
+    aid = choice.request(cur, "exit_capture", "github:o/r#7", "画面", [{"id": "s1", "label": "一覧"}, {"id": "s2", "label": "詳細"}],
+                         subject={"repo": "o/r", "ticket": "7", "pr_url": "https://github.com/o/r/pull/8", "app": "admin-web"})
+    key = f"choice:{aid}"
+    assert inbox.answer(cur, key, "fix", "console:t", "console", on="s2")[0] == "invalid"   # コメントが要る
+    res, _ = inbox.answer(cur, key, "fix", "console:t", "console", note="余白が詰まって見える", on="s2")
+    assert res == "noted"   # 件は閉じない
+    assert names(cur, "taste.flagged")[0]["option"] == "s2"
+    [q] = names(cur, "capture.fix_requested")
+    assert q["repo"] == "o/r" and q["option_label"] == "詳細"
+    assert inbox.answer(cur, key, "fix", "console:t", "console", note="余白が詰まって見える", on="s2")[0] == "failed"   # 同じ頼みは 1 回
+    calls = []
+    def gh(method, path, body):
+        calls.append((method, path, body))
+        return {"number": 99, "html_url": "https://github.com/o/r/issues/99"}
+    assert capture_fix.file_requested(cur, gh) == ["https://github.com/o/r/issues/99"]
+    assert calls[0][1] == "repos/o/r/issues" and calls[0][2]["labels"] == ["factory:plan"] and "余白が詰まって見える" in calls[0][2]["body"]
+    assert capture_fix.file_requested(cur, gh) == [] and len(calls) == 1   # 二重に起票しない
+    assert inbox.answer(cur, key, "seen", "console:t", "console")[0] == "answered"
+
+
 def test_resume_line_and_unanswerable_stoppage(cur):
     drain.set_drain(cur, True, "t", "更新")
     stoppage.open_stoppage(cur, "drain:20261105T000000", "human", "ラインが一時停止のまま", quiet=True)

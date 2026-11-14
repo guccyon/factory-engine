@@ -47,7 +47,8 @@ MODEL_TIER = os.environ.get("MODEL_TIER", "tier-large")   # 人が案を戻し�
 ANSWER_TYPES = ("choose", "approve", "ack", "text")
 VIAS = ("console", "review_page", "factoryctl", "mcp", "github", "slack")   # 入口（ADR 0034 の決定 3）
 EXTRA = {"return": {"id": "return", "label": "どれも違う（戻す）", "note_required": True},
-         "flag": {"id": "flag", "label": "違和感の印", "note_required": True, "closes": False}}   # 印は件を閉じない（何度でも付けられる）
+         "flag": {"id": "flag", "label": "違和感の印", "note_required": True, "closes": False},   # 印は件を閉じない（何度でも付けられる）
+         "fix": {"id": "fix", "label": "直してほしい（Issue にする）", "note_required": True, "closes": False}}   # 印＋プランナー宛ての Issue（capture_fix.py）
 CHOICE_EFFECTS = {
     "design_variants": "選んだ体験の案で実装のタスクに切って投入する。戻すとコメントを直しの指摘にしてデザイナー役が作り直す",
     "design_look": "選んだ見た目の案を実装に反映する。戻すとコメントを直しの指摘にしてデザイナー役が作り直す",
@@ -502,8 +503,8 @@ def view(cur, now: datetime | None = None) -> dict:
 # ------------------------------------------------------------------ 答える（ADR 0034 の決定 1・4・5）
 def _choice_answer(aid: int, p: dict, who: str) -> dict:
     if p.get("kind") == "exit_capture":
-        return {"type": "ack", "options": [{"id": "seen", "label": "見た（ほかに違和感なし）"}], "extra": [EXTRA["flag"]],
-                "effect": "印のない画面を違和感のなかった画面として閉じる", "allowed": [who], "target": ("choice", aid)}
+        return {"type": "ack", "options": [{"id": "seen", "label": "見た（ほかに違和感なし）"}], "extra": [EXTRA["flag"], EXTRA["fix"]],
+                "effect": "印のない画面を違和感のなかった画面として閉じる。「直してほしい」は印を付けたうえで、直す Issue をプランナー宛てに起票する（件は閉じない）", "allowed": [who], "target": ("choice", aid)}
     return {"type": "choose", "options": [{"id": o["id"], "label": o.get("label") or o["id"]} for o in p.get("options") or []],
             "recommended": p.get("recommended"), "extra": [EXTRA["return"], EXTRA["flag"]],
             "effect": CHOICE_EFFECTS.get(p.get("kind"), "選んだ案を記録する"), "allowed": [who], "target": ("choice", aid)}
@@ -604,6 +605,9 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
     if kind == "choice":
         if option == "flag":
             return choice.flag(cur, ref, note, by, flag_option, viewpoint)
+        if option == "fix":
+            import capture_fix
+            return capture_fix.request(cur, ref, note, by, flag_option, viewpoint)
         return _answer_choice(cur, ref, option, by, note)
     if kind == "captures":
         n = sum(1 for aid in ref if choice.mark_seen(cur, aid, by, note)[0])

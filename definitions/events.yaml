@@ -824,6 +824,14 @@ events:
     source: control_plane
     required: [opportunity_id, repo, issue]
     note: "起票を頼まれた提案を、プランナー宛ての Issue（factory:plan）にした。correlation_id はその Issue。要否と経路はプランナーが決める。dedupe は opportunity.ticket_filed:<opportunity_id>"
+  capture.fix_requested:
+    source: control_plane
+    required: [artifact_id, repo, note, by]
+    note: "実装後の画面（exit_capture）に受信トレイで「直してほしい（Issue にする）」と答えた（2026-11-15 オーナー）。同じ答えで taste.flagged も残す。確認の件は閉じず、マージも止めない。受信トレイの入口は GitHub のトークンを持たないので頼みだけを残し、supervisor が次の周期に Issue を作る（capture_fix.py）。dedupe は capture.fix_requested:<artifact_id>:<画面とコメントの要約>"
+  capture.fix_filed:
+    source: control_plane
+    required: [request_id, repo, issue]
+    note: "直す頼みを、画面の PR と同じリポジトリのプランナー宛ての Issue（factory:plan）にした。correlation_id はその Issue。dedupe は capture.fix_filed:<request_id>"
   quality.learned:
     source: control_plane
     required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
