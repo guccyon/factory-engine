@@ -518,3 +518,21 @@ def test_qa_ticket_stage_ships_and_reuses_release_gate(cur):
     assert d["via_release"] == staged and d["verdict"]["stories"] == {"pass": 1} and d["candidates"] == 0   # 範囲の b-chat だけを抜き出す
     cur.execute("select count(*) as n from jobs where issue_number=30")
     assert cur.fetchone()["n"] == 0 and 30 in gh.closed()   # このチケットには積まない（同じ版を 2 回流さない）
+
+
+def test_story_id_accepts_paths():
+    assert [qa_gate.story_id(x) for x in ("b-chat", "specs/stories/b-chat.yaml", " a-prejoin.yml")] == ["b-chat", "b-chat", "a-prejoin"]
+
+
+def test_qa_ticket_scope_written_as_files(cur):
+    """プランナーが scope をファイルの道筋で書いても、ストーリーの id として流す（rally#1470）。stage の auto は動かすとして読む"""
+    gh = TicketGH()
+    deploy(cur, "o/app@0.9.0")
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    verify_plan(cur, scope=("specs/stories/b-chat.yaml",))
+    cur.execute("update artifacts set payload = jsonb_set(payload, '{workflow,steps,0,run}', '\"auto\"') where type='Plan'")
+    assert qa_gate.verify_decl(cur, "github:o/app#30")["stage"] is True
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    pl = qa_gate.gate(cur, qa_gate.ticket_key(REPO, 30))["plan"]
+    assert [u["unit"] for u in pl["units"]] == ["verdict:b-chat"] and not pl.get("unknown")

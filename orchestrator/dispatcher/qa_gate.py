@@ -551,6 +551,12 @@ def ticket_key(repo: str, n: int) -> str:
     return f"ticket:{repo}#{n}"
 
 
+def story_id(x) -> str:
+    """scope の書き方（id・specs/stories/<id>.yaml）を id にそろえる"""
+    s = str(x).strip().rsplit("/", 1)[-1]
+    return s[:-5] if s.endswith(".yaml") else s[:-4] if s.endswith(".yml") else s
+
+
 def verify_decl(cur, corr: str) -> dict | None:
     """最後の着手できる判定が道 verify なら、その宣言（stage・stories・explore・cap_usd）。dispatcher の planner.verify_scope と同じ読み方"""
     cur.execute("select payload from artifacts where type='Plan' and correlation_id=%s and payload->>'decision'='ready' order by id desc limit 1", (corr,))
@@ -560,7 +566,7 @@ def verify_decl(cur, corr: str) -> dict | None:
         return None
     steps = {s.get("step"): s for s in wf.get("steps") or [] if isinstance(s, dict)}
     qa = steps.get("qa") or {}
-    return {"stage": (steps.get("stage") or {}).get("run", True) is True, "stories": [str(x) for x in qa.get("scope") or []],
+    return {"stage": (steps.get("stage") or {}).get("run", True) in (True, "auto"), "stories": [story_id(x) for x in qa.get("scope") or []],
             "explore": qa.get("effort") == "deep", "cap_usd": (wf.get("caps_declared") or {}).get("ticket.cost_usd")}
 
 
@@ -620,14 +626,14 @@ def ticket_plan(cur, gh, g: dict, n: int, decl: dict, defs: dict, gd: dict, now:
         p["note"] = note
     try:
         with_time, without = time_stories(gh, repo)
-        want = set(decl["stories"])
+        want = {story_id(x) for x in decl["stories"]}
         if want:
             p["unknown"] = sorted(want - set(with_time) - set(without))
             with_time, without = [s for s in with_time if s in want], [s for s in without if s in want]
         p["time_stories"], p["other_stories"] = with_time, without
     except Exception as e:  # noqa: BLE001  数えられなければ宣言のまま 1 ジョブで流す
         p["error"] = repr(e)[:200]
-        p["other_stories"] = list(decl["stories"]) or None
+        p["other_stories"] = [story_id(x) for x in decl["stories"]] or None
     units = [{"unit": f"verdict:{s}", "which": "verdict", "story": s} for s in p["other_stories"] or []]
     if decl["explore"]:
         c = next_charter(cur, repo, defs)
@@ -652,7 +658,7 @@ def staged_results(cur, rg: dict, decl: dict, now: datetime, outcome: dict) -> d
     if not pl.get("units"):
         d = rg["decided"] or {}
         return {"verdict": d.get("verdict"), "explore": d.get("explore"), **({TIME: d[TIME]} if d.get(TIME) else {}), "whole": True}
-    want = set(decl["stories"])
+    want = {story_id(x) for x in decl["stories"]}
     units = [u for u in pl["units"] if u["which"] != "explore" and (not want or u["story"] in want)]
     if decl["explore"]:
         units += [u for u in pl["units"] if u["which"] == "explore"]

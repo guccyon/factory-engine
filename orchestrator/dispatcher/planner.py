@@ -308,7 +308,8 @@ def verify_scope(wf: dict) -> dict:
     """道 verify（ADR 0056）の宣言から、指示役が使うもの: stage を動かすか・流すストーリー（空なら全部）・探索を足すか・チケットの上限の宣言"""
     steps = {s.get("step"): s for s in wf.get("steps") or [] if isinstance(s, dict)}
     qa = steps.get("qa") or {}
-    return {"stage": (steps.get("stage") or {}).get("run", True) is True, "stories": [str(x) for x in qa.get("scope") or []],
+    import qa_gate
+    return {"stage": (steps.get("stage") or {}).get("run", True) in (True, "auto"), "stories": [qa_gate.story_id(x) for x in qa.get("scope") or []],
             "explore": qa.get("effort") == "deep", "cap_usd": (wf.get("caps_declared") or {}).get("ticket.cost_usd")}
 
 
