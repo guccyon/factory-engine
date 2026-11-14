@@ -554,7 +554,8 @@ def run_job(job: dict, reattaching: bool = False):
                     judge_inp = design_line.review_input(cur, store_get, judge_inp)
             if reattaching:
                 proc = reattach.Attached(name)
-                record_event(cur, "job.reattached", corr, job_id, {"container": name})
+                regranted = relay_regrant(job_id, kind, repo, name)
+                record_event(cur, "job.reattached", corr, job_id, {"container": name, **({"relay_regranted": True} if regranted else {})})
                 log(f"job {job_id} reattached to {name}")
             else:
                 cur.execute("update jobs set container_id=%s where id=%s", (name, job_id))   # 起動の前に書く。上げ直した dispatcher がこの名前でつなぎ直す
@@ -1798,6 +1799,18 @@ def relay_env(job_id: int, kind: str, repo: str | None = None) -> list[str]:
         return []
     token = RELAY.grant(job_id, kind, JOB_TIMEOUT + 300, repo=repo)
     return ["--network", JOB_DB_NETWORK, "-e", f"RUNNER_RELAY_URL=http://{RELAY_HOST}:{RELAY_PORT}/mcp", "-e", f"RUNNER_RELAY_TOKEN={token}"]
+
+
+def relay_regrant(job_id: int, kind: str, repo: str | None, name: str) -> bool:
+    """つなぎ直したジョブの中継の合言葉を認め直す。合言葉は dispatcher の記憶にしかなく、上げ直すと消えて、
+    動いているジョブの道具（Mac ランナー・env_restart など）がすべて 401 になる（2026-11-14 の QA ジョブ 8918）"""
+    if RELAY is None or kind not in runner_relay.KIND_TOOLS:
+        return False
+    token = reattach.env_of(name, "RUNNER_RELAY_TOKEN")
+    if not token:
+        return False
+    RELAY.grant(job_id, kind, JOB_TIMEOUT + 300, repo=repo, token=token)
+    return True
 
 
 def main():

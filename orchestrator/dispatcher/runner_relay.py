@@ -95,8 +95,9 @@ class Relay:
         self.lock = threading.Lock()
         self.grants: dict[str, dict] = {}
 
-    def grant(self, job_id: int, kind: str, ttl_sec: int, repo: str | None = None) -> str:
-        token = secrets.token_urlsafe(32)
+    def grant(self, job_id: int, kind: str, ttl_sec: int, repo: str | None = None, token: str | None = None) -> str:
+        """token を渡すと、その合言葉で認める（dispatcher を上げ直して、動いているジョブにつなぎ直すとき。合言葉は記憶にしかないので消えている）"""
+        token = token or secrets.token_urlsafe(32)
         with self.lock:
             self.grants[token] = {"job_id": job_id, "tools": KIND_TOOLS.get(kind, ()), "expires": self.clock() + ttl_sec, "calls": 0,
                                   "repo": repo}

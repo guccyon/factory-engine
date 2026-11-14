@@ -28,6 +28,18 @@ def killed(name: str) -> bool:
     return status == "exited" and code.lstrip("-").isdigit() and int(code) in KILLED_CODES
 
 
+def env_of(name: str, key: str) -> str | None:
+    """コンテナに渡した環境変数の値（なければ None）。つなぎ直したジョブの中継の合言葉を取り戻すため"""
+    r = subprocess.run(["docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", name], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        k, sep, v = line.partition("=")
+        if sep and k == key:
+            return v
+    return None
+
+
 def remove(name: str):
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
