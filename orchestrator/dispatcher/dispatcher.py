@@ -469,6 +469,7 @@ def run_job(job: dict, reattaching: bool = False):
             if not reattaching:
                 prov = provenance(repo, image)
                 prov["model_tier"] = job["model_tier"] or MODEL_TIER
+                prov["engine_ref"] = (_investigate_ref(cur, job_id) if kind == "investigate" else worker_engine_ref()) or "main"   # ワーカーが取った Engine の版（#235）
                 prov["mode"], prov["mode_basis"] = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))   # 製造を始めた時点のモード（制御プレーンの切り替え > 時間帯 > 既定）
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
@@ -523,7 +524,8 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_task.sh"] if kind == "desk_task" else []),   # 窓口の依頼の実行役（ADR 0037 の決定 5）。道具は中継（relay_env）で渡す
-                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh", "-e", f"ENGINE_REF={_investigate_ref(cur, job_id)}"] if kind == "investigate" else []),   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
+                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh", "-e", f"ENGINE_REF={_investigate_ref(cur, job_id)}"] if kind == "investigate" else []),
+                   *(["-e", f"ENGINE_REF={ref}"] if kind != "investigate" and (ref := worker_engine_ref()) else []),   # ワーカーの版を工場の版にそろえる（#235、WORKER_ENGINE_PIN=1 のとき）   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
                    *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
@@ -1783,6 +1785,18 @@ def _job_blob_key(job_id: int) -> str | None:
         cur.execute("select payload->>'blob_key' as k from events where name='job.finished' and job_id=%s order by id desc limit 1", (job_id,))
         r = cur.fetchone()
     return (r or {}).get("k")
+
+
+WORKER_ENGINE_PIN = ENV.get("WORKER_ENGINE_PIN", "") == "1"
+
+
+def worker_engine_ref(env=None) -> str | None:
+    """ワーカーが取る Engine の版（#235）。WORKER_ENGINE_PIN=1 なら工場の版（dispatcher のイメージの版）にそろえる。
+    既定は渡さない（ワーカーは main を取る。今までどおり）。版が分からなければ渡さない"""
+    if not (WORKER_ENGINE_PIN if env is None else env.get("WORKER_ENGINE_PIN", "") == "1"):
+        return None
+    v = version.engine_version(ENV if env is None else env)
+    return v if re.fullmatch(r"[0-9a-f]{7,40}", v) else None
 
 
 def _investigate_ref(cur, job_id: int) -> str:

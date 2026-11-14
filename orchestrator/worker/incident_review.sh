@@ -11,7 +11,7 @@ ENGINE_REF="${ENGINE_REF:-main}"
 cat > /work/week.json
 echo "[incident_review] job=${JOB_ID} engine=${ENGINE_REPO}@${ENGINE_REF} input_bytes=$(wc -c < /work/week.json)"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 set +e
 python3 /work/engine/core-gates/incident_review.py --input /work/week.json --out /work/review.json --engine-dir /work/engine 2>/work/review.err
 RC=$?

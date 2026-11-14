@@ -47,6 +47,7 @@ App の作り方（builder が 1 回）:
 - `worker/Dockerfile.design`: 基本 ＋ ヘッドレスの Chromium と日本語の書体（Noto CJK）。デザイナー役（ADR 0025）が案のモックを撮る。`docker compose build worker worker-design`（`factory-worker:design`。`.env` の `UI_DESIGN_IMAGE` で替えられる）
 - どのリポジトリにどのイメージを使うかは `.env` の `WORKER_IMAGES`（例: `guccyon/rally=factory-worker:rust`）
 - Issue ごとに変えるときは、Issue に `factory:image:<名前>`（例: `factory:image:flutter`）のラベルを付ける。リポジトリの設定より優先する
+- ワーカーはジョブごとに Engine（`core-gates` など）を `worker/clone_engine.sh` で取る。既定は main。`.env` に `WORKER_ENGINE_PIN=1` を入れると、dispatcher のイメージの版（工場の版）のコミットを取り、工場の版を止めている間はワーカーの動きも変わらない。取った版は `job.started` の来歴の `engine_ref` に残る（#235）
 
 ## 手動操作
 

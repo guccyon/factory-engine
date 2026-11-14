@@ -13,7 +13,7 @@ ENGINE_REF="${ENGINE_REF:-main}"
 echo "[inspect] job=${JOB_ID} pr=${PR_URL} engine=${ENGINE_REPO}@${ENGINE_REF}"
 
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 
 # この製品の知見（ADR 0040 の決定 7 の 5）: 業務は work.yaml の from_agent_steps.inspect。製品の既定ブランチの .factory-config だけを取り、
 # core-gates/knowledge_context.py（決定論）で選ぶ。触ったファイルを軸 files に渡す。取れなくても検査は続ける。KNOWLEDGE_CONTEXT=0 で止める
