@@ -46,7 +46,7 @@ function answerView(i,n){const a=i.answer;
  const k=esc(i.key),note=!agg&&(a.extra.length||a.type==="ack")?`<input data-note="${n}" placeholder="${a.note_hint?esc(a.note_hint):a.extra.some(e=>e.id==="return")?"コメント（理由・違和感。戻す・違和感では必須）":"コメント（任意。違和感では必須）"}" maxlength="300">`:"";
  const opts=a.options.map(o=>`<button class="${o.id===a.recommended||a.type!=="choose"?"go":""}" data-ib="${k}" data-o="${esc(o.id)}" data-n="${n}"${a.irreversible?' data-irrev="1"':""}>${a.type==="choose"&&o.id.length<=2?esc(o.id)+". ":""}${esc(o.label)}${o.id===a.recommended?"（推奨）":""}</button>`).join("");
  const extra=a.extra.map(e=>`<button class="${e.id==="return"?"danger":""}" data-ib="${k}" data-o="${esc(e.id)}" data-n="${n}" data-need="${e.note_required?1:""}">${esc(e.label)}</button>`).join("");
- return `<div class="ans"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?``:""}${opts}${extra}${note}</div></div>`}
+ return `<div class="ans dock"><div class="m">答えると: ${esc(a.effect)}${a.irreversible?"（取り返しがつかない。2 度押しで確定）":""}</div><div class="acts">${agg?``:""}${opts}${extra}${note}</div></div>`}
 // 問いの中身（judge が人に回した判断の今の案・他の案・見立てなど）。答える前に読めるように件の下に出す
 function detailView(i){return i.detail&&i.detail.length?`<dl class="dt">${i.detail.map(d=>`<dt>${esc(d.label)}</dt><dd>${esc(d.text)}</dd>`).join("")}</dl>`:""}
 const KIND={design_variants:"画面の体験の案の選択",design_look:"画面の見た目の案の選択",concept_tone:"コンセプトとトーン＆マナーの選択",taste_sample:"抜き取り",exit_capture:"実装後の画面"};
@@ -114,7 +114,7 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
 const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","使用量の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場の版"]];
 const LATER=["credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
-let S=null,view="",gi={},ibTab="open",ibKind="",ibWho="";
+let S=null,view="",gi={},ibTab="open",ibKind="",ibWho=null;   // ibWho が null のときはワークベンチの既定
 const enc=k=>encodeURIComponent(k);
 const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
@@ -135,7 +135,7 @@ const ago=s=>s==null?"":dur(s)+"待ち";
 const busy=id=>{const e=document.getElementById(id);return !!e&&(e.contains(document.activeElement)&&document.activeElement.matches("input,textarea")||[...e.querySelectorAll("input:not([type=checkbox]),textarea")].some(i=>i.value.trim()))};
 
 // ---- ホーム
-function todoView(ib){const xs=ib.items.filter(i=>!i.answered);
+function todoView(ib){const xs=ib.items.filter(i=>!i.answered&&i.kind!=="notice");   // お知らせは判断待ちに数えない（#473）
  if(!xs.length)return `<h2>判断待ち<span class="m"> プロダクトの判断（受信トレイ）</span></h2><div class="m">いまはありません</div>`;
  return `<h2>判断待ち（${xs.length} 件）<span class="m"> プロダクトの判断（受信トレイ）</span></h2><ul class="rows">${xs.slice(0,5).map(i=>`<li><a href="${ibHref(i.key)}" data-nav><span class="who">${esc(ib.who[i.who]||i.who)}</span><span class="g">${esc(i.title)}</span><span class="m">${esc(ib.kinds[i.kind]||i.kind)} · ${ago(i.age_sec)}</span></a></li>`).join("")}</ul>
   <a class="more" href="/inbox" data-nav>受信トレイをすべて見る →</a>`}
@@ -155,6 +155,13 @@ function trendView(t){if(!t||!t.items.length)return `<h2>指標の推移</h2><di
  return `<h2>指標の推移 <span class="m">毎朝の操業レポートと同じ数 · ${span}（${t.days.length} 日）</span></h2>
   ${t.summary.length?`<div class="m sumline ${esc(t.level)}">${t.summary.map(esc).join(" ")}</div>`:""}
   <div class="tiles">${t.items.map(i=>`<div class="tile ${esc(i.level)}"><div class="m">${esc(i.title)}</div><div class="v">${num(i.value,i.unit)}${i.delta!=null&&i.delta!==0?`<span class="d">${i.delta>0?"+":""}${Math.round(i.delta*10)/10}</span>`:""}</div>${spark(i.series)}</div>`).join("")}</div>`}
+// ホーム（ADR 0059、#472）。並びはワークベンチごと。1 つの件は 1 か所で片付けるので、ホームは件数とリンクだけ（不調の中身はラインの上、のちに工場の保守）
+const HOME_ORDER={factory:["notice","todo","stats","line","trend","prod","ship"],product:["prod","todo","ship","stats","trend","line","notice"]};
+function homeStats(s){const f=s.factory,hum=s.items.filter(i=>i.stage==="human").length,run=s.items.filter(i=>i.stage==="running").length,low=f.line_low_below>0&&f.planned<f.line_low_below;
+ const t=(k,v,href,cls,d)=>`<a class="c-tile${cls?" "+cls:""}" href="${href}" data-nav><div class="k">${k}</div><div class="v">${v}${d?`<span class="d">${d}</span>`:""}</div></a>`;
+ return `<div class="c-tiles">${t("対応が必要な作業",hum,"/line",hum?"is-bad":"")}${t("作業中",run,"/line")}${t("着手待ちのチケット",f.planned,"/line",low?"is-warn":"",low?`${f.line_low_below} 件を切った`:"")}${t("今日の費用","$"+f.cost_today_usd.toFixed(2),"/usage")}</div>`}
+function homeNotice(s){const xs=((s.alerts||{}).open||[]).filter(a=>!a.inbox);if(!xs.length)return"";
+ return `<a class="c-notice is-warn" href="/line" data-nav><span class="c-g">工場の不調が ${xs.length} 件あります。提供元が対応しています</span><span aria-hidden="true">→</span></a>`}
 function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
  return `<h2><a href="/line" data-nav>ライン →</a></h2><div class="kv">${LANES.map(([k,n])=>`<span>${esc(n)} <b>${c(k)}</b></span>`).join("")}</div>`}
 function shipSummary(rs){return `<h2><a href="/ship" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b>${esc(r.repo)}</b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
@@ -285,12 +292,16 @@ function refPut(){const [v,sub]=route();if(v!=="help"||!sub||!REF)return;put("re
 document.addEventListener("input",e=>{if(e.target.id!=="ref-qi")return;refQ=e.target.value;refFilter()});
 
 // ---- 受信トレイ（2 ペイン。選ぶまでは一覧が全面、選ぶと右に詳細）
-function ibItems(ib){return ib.items.filter(i=>(ibTab==="open"?!i.answered:!!i.answered)&&(!ibKind||i.kind===ibKind)&&(!ibWho||i.who===ibWho))}
-function ibFilters(ib){const n=ib.items.filter(i=>!i.answered).length,a=ib.items.length-n,opt=(m,v)=>Object.entries(m).map(([k,t])=>`<option value="${esc(k)}" ${k===v?"selected":""}>${esc(t)}</option>`).join("");
- return `<div class="tabs"><button data-ibtab="open" class="${ibTab==="open"?"on":""}">未回答 ${n}</button><button data-ibtab="answered" class="${ibTab==="answered"?"on":""}">回答済（反映待ち） ${a}</button></div>
-  <label class="m">種類 <select id="ib-kind"><option value="">すべて</option>${opt(ib.kinds,ibKind)}</select></label><label class="m">宛先 <select id="ib-who"><option value="">すべて</option>${opt(ib.who,ibWho)}</select></label>`}
+// 受信トレイ（ADR 0059、#473）。判断待ち・お知らせ・答えた件で絞る。「製品」のワークベンチの既定は提供元（建設者）宛てを除く
+const IB_TABS=[["open","判断待ち",i=>!i.answered&&i.kind!=="notice"],["notice","お知らせ",i=>!i.answered&&i.kind==="notice"],["answered","答えた件",i=>!!i.answered]];
+const ibWhoNow=()=>ibWho===null?(wb==="product"?"!builder":""):ibWho;
+const whoOk=i=>{const w=ibWhoNow();return !w||(w==="!builder"?i.who!=="builder":i.who===w)};
+function ibItems(ib){const t=(IB_TABS.find(x=>x[0]===ibTab)||IB_TABS[0])[2];return ib.items.filter(i=>t(i)&&(!ibKind||i.kind===ibKind)&&whoOk(i))}
+function ibFilters(ib){const opt=(m,v)=>Object.entries(m).map(([k,t])=>`<option value="${esc(k)}" ${k===v?"selected":""}>${esc(t)}</option>`).join(""),w=ibWhoNow();
+ return `<div class="tabs">${IB_TABS.map(([k,n,f])=>`<button data-ibtab="${k}" class="${ibTab===k?"on":""}">${n} ${ib.items.filter(i=>f(i)&&whoOk(i)).length}</button>`).join("")}</div>
+  <label class="m">種類 <select id="ib-kind"><option value="">すべて</option>${opt(ib.kinds,ibKind)}</select></label><label class="m">宛先 <select id="ib-who"><option value="">すべて</option><option value="!builder" ${w==="!builder"?"selected":""}>提供元宛てを除く</option>${opt(ib.who,w)}</select></label>`}
 function ibList(ib,key){const xs=ibItems(ib);
- if(!xs.length)return `<div class="m empty">${ibTab==="open"?"対応が必要なものはありません":"反映待ちの答えはありません"}</div>`;
+ if(!xs.length)return `<div class="c-empty"><b>${{open:"判断待ちはありません",notice:"お知らせはありません",answered:"答えた件はありません"}[ibTab]||""}</b><span>新しく届いたら、ここと通知で知らせます</span></div>`;
  return xs.map(i=>`<a class="ir ${i.key===key?"sel":""}" href="${ibHref(i.key)}" data-nav><div class="t"><span class="who">${esc(ib.who[i.who]||i.who)}</span>${esc(i.title)}</div>
   <div class="m">${[esc(ib.kinds[i.kind]||i.kind),ago(i.age_sec),esc(i.ref)].filter(Boolean).join(" · ")}</div><div class="m m2">${esc(i.action)}</div></a>`).join("")}
 function extLink(u){if(!u)return"";if(/^https:\/\//.test(u))return link(u,/github\.com\/[^/]+\/[^/]+\/pull\//.test(u)?"PR を開く":/github\.com/.test(u)?"GitHub で開く":"開く");
@@ -471,7 +482,7 @@ function factoryState(s){const f=s.factory,hb=f.heartbeat_age_sec,l=f.line,al=((
  return["","動いている",mode]}
 function factoryView(s){const [c,t,sub]=factoryState(s);fsBtn.className="c-factory "+c;fsBtn.innerHTML=`<i></i><b>${esc(t)}</b><span class="sub">· ${esc(sub)}</span>`;fsBtn.title=`工場の状態: ${t}（${sub}）。押すと詳しく`}
 function skeleton(v,arg){
- if(v==="home")return `<section class="card" id="h-todo"></section><section class="card" id="h-prod" hidden></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
+ if(v==="home")return HOME_ORDER[wb].map(k=>k==="notice"||k==="stats"?`<div id="h-${k}" class="h-${k}"></div>`:`<section class="card" id="h-${k}" hidden></section>`).join("");
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
@@ -487,7 +498,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-
  b.parentNode.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));b.closest("section").querySelectorAll("[data-tgt]").forEach(x=>x.hidden=x.dataset.tgt!==t)});
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
 async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
-function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
+function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));
  document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
@@ -495,7 +506,8 @@ function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="setting
  if(v==="settings")document.querySelectorAll(".sn a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="/settings/"+arg));
  const pairs=(s.runner_pairs||[]).length;
  put("banner",pairs&&!(v==="settings"&&arg==="runners")?`<a class="banner" href="/settings/runners" data-nav>新しいランナーの接続の依頼が ${pairs} 件。設定のランナーで許可か拒否を選ぶ →</a>`:"");
- if(v==="home"){put("h-todo",todoView(ib));{const c=prodCard(s.products),el=document.getElementById("h-prod");if(el){el.hidden=!c;put("h-prod",c)}}put("h-trend",trendView(s.trends));put("h-line",lineSummary(s.items));put("h-ship",shipSummary(s.releases||[]));put("h-stops",alertsView(s.alerts))}
+ if(v==="home"){const H={todo:todoView(ib),prod:prodCard(s.products),trend:trendView(s.trends),line:lineSummary(s.items),ship:shipSummary(s.releases||[]),notice:homeNotice(s),stats:homeStats(s)};
+  for(const k of HOME_ORDER[wb]){const el=document.getElementById("h-"+k);if(!el)continue;el.hidden=!H[k];put("h-"+k,H[k]||"")}}
  else if(v==="inbox"){document.querySelector(".ibx").classList.toggle("open",!!arg);put("ib-f",ibFilters(ib));put("ib-list",ibList(ib,arg));
   if(!arg)put("ib-d","");else if(force||!busy("ib-d"))put("ib-d",ibDetail(ib,arg));
   const sel=document.querySelector(".ir.sel");if(sel&&force)sel.scrollIntoView({block:"nearest"})}
