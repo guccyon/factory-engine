@@ -124,7 +124,8 @@ DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一�
 LINE_LOW_BELOW = int(ENV.get("WATCH_LINE_LOW_BELOW", "2"))   # 投入待ちのタスク（planned で保留でないチケット）がこの数を切ったら知らせる。0 で無効
 USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit")
 # 一時的なネットワークの失敗（名前解決・接続）。ワーカーの最初の git clone で落ちることが多い（11-01 job 1350、1640 ほか）
-NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "connection timed out", "temporary failure in name resolution")
+NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "connection timed out", "temporary failure in name resolution",
+                         "something went wrong while executing your query")   # GitHub の GraphQL の一時的なエラー（gh pr create。11-05 job 4954・4958）
 # GitHub 側の一時的な push の拒否（やり直すと通る）。保護ブランチなど理由のある拒否は含めない
 PUSH_TRANSIENT_REASONS = ("(failed)", "(missing necessary objects)")
 NET_RETRY_MAX = int(ENV.get("NET_RETRY_MAX", "3"))   # 同じチケットで 30 分のうちに自動でやり直す上限
@@ -649,8 +650,9 @@ def run_job(job: dict, reattaching: bool = False):
                     log("provisional record failed", job_id, repr(e))
             if preempted_for:
                 requeue_preempted(cur, job, preempted_for, (result or {}).get("cost_usd"))
-            elif state == "failed" and (err or "").startswith("exit=") and net_transient(lines) and requeue_transient(cur, job):
-                pass   # 一時的なネットワークの失敗。同じジョブを積み直した（人の調査に回さない）
+            elif state == "failed" and (err or "").startswith("exit=") and (net_transient(lines) or (cont and push_raced(lines))) \
+                    and requeue_transient(cur, job):
+                pass   # 一時的なネットワークの失敗か、続きのジョブの push がほかの push（委員会の議決など）と重なった。同じジョブを積み直した（人の調査に回さない）
             elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
                              {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars"),
@@ -918,6 +920,13 @@ def transient_exception(e: BaseException) -> bool:
     return isinstance(e, (urllib.error.URLError, ConnectionError, TimeoutError)) or net_transient([repr(e)])
 
 
+def push_raced(lines: list[str]) -> bool:
+    """push が non-fast-forward で弾かれたか。続きのジョブ（工場のブランチ）では、知見の委員会が同じブランチに議決のコミットを
+    push したのと重なっただけなので、積み直せば新しい head から続けられる（2026-11-14 の調査で 5 件。job 5112 など）"""
+    tail = [l.lower() for l in lines[-30:]]
+    return any("[rejected]" in l and ("(non-fast-forward)" in l or "(fetch first)" in l) for l in tail)
+
+
 def requeue_transient(cur, job: dict) -> bool:
     """一時的なネットワークの失敗で落ちたジョブを、そのまま順番待ちに積み直す。同じチケットで 30 分に NET_RETRY_MAX 回まで。
     積み直したら True（番人の job: の停止は、同じ流れの次のジョブが始まると閉じる）"""
@@ -1056,7 +1065,12 @@ def is_body_only(d: dict) -> bool:
     """指摘の箇所が PR の本文だけ（コード・文書のファイルではない）"""
     loc = (d.get("location") or "").strip()
     # 検査は「PR 本文」「PR #97 本文」「PR body」などと書く（番号付きは 2026-10-27 の rally #97 で Issue に化けた）
-    return re.match(r"(?i)^pr\s*(#\d+\s*)?(本文|body)", loc) is not None
+    # PR の説明の観点（PR-002）の指摘と、「PR タイトル・本文 / …」「committee/D-0012.yaml／PR 本文『## 対応内容』」のように
+    # 区切りのあとに PR 本文が来るものも本文の指摘にする。コードの直し（review_fix）に回ると差分が出ず exit=3 で落ち、
+    # 差し戻しの Issue が切られていた（2026-11-14 の調査で 9 件。job 4796 など）
+    if (d.get("rubric_id") or "").upper() == "PR-002":
+        return True
+    return re.search(r"(?i)(^|[／/・]\s*)pr\s*(#\d+\s*)?(本文|body|タイトル|title)", loc) is not None
 
 
 def body_fix_done(cur, pr_url: str) -> int:
