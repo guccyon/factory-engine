@@ -311,3 +311,17 @@ def test_enforce_is_not_filed_again_after_the_first_closed(cur):
     third = PR.replace("/12", "/22")
     committee.record(cur, "o/r", 22, f"committee:{third}", None, result("enforce", pr_url=third, enforce=other, decision="D-0012"), gh, lambda *a: None)
     assert [c[2]["title"] for c in calls if c[0] == "POST"][-1] == "担保: K-0004 を lint で決定論にする"
+
+
+def test_weekly_input_has_used_and_issue_lists_unused(cur):
+    from datetime import datetime, timezone
+
+    from psycopg.types.json import Jsonb
+    cur.execute("insert into events(name, payload) values ('knowledge.used', %s), ('knowledge.used', %s)",
+                (Jsonb({"repo": "o/r", "ids": ["K-0002", "K-0003"]}), Jsonb({"repo": "x/y", "ids": ["K-0009"]})))
+    inp = committee.weekly_input(cur, "o/r", datetime.now(timezone.utc))
+    assert sorted(inp["used"]) == ["K-0002", "K-0003"]
+    res = {**WEEK_RESULT, "facts": {**WEEK_RESULT["facts"], "stale": [], "unused": [{"id": "K-0007", "confidence": "confirmed"}]},
+           "report": {**WEEK_RESULT["report"], "contradictions": [], "enforce": []}}
+    [(key, title, body)] = committee.weekly_issues("2026-W47", res)
+    assert "使われない知見（60 日" in body and "- K-0007" in body
