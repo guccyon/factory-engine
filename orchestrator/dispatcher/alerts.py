@@ -205,7 +205,9 @@ def describe(cur, s: dict) -> dict:
                      todo="何もしなくてよい。PR が進まないときは「判定に進まない PR」の件が別に出る")
         elif prefix == "repeat":   # 繰り返すエラーを束ねた停止（repeat_watch.py、#308）
             a.update(group="工場の不調", who="builder",
-                     todo="建設者が原因を調べて直す。工場は止まらずに回っているが、この工程は同じところで落ち続けている",
+                     todo=("工場を動かしている機械の不調（名前解決・接続）。Docker の VM のディスク・メモリを確かめ、続くなら再起動する。収まれば自動で閉じる"
+                           if rest.startswith("env:") else
+                           "建設者が原因を調べて直す。工場は止まらずに回っているが、この工程は同じところで落ち続けている"),
                      links=[{"label": "受信トレイで見る", "href": f"/inbox/stoppage:{key}", "nav": True}])
         elif prefix == "ship":
             a.update(group="工場の不調", title=_plain(s.get("what")).replace("出荷の失敗", "出荷に失敗した"),

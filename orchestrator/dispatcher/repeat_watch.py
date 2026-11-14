@@ -18,6 +18,7 @@ import re
 from datetime import datetime, timezone
 from typing import Callable
 
+import fault
 import stoppage
 
 ENV = os.environ
@@ -112,9 +113,13 @@ def fault_step(cur) -> list[str]:
             continue
         last = r["last"] or {}
         key = f"{PREFIX}{sig}#{_stamp(r['first_at'] or datetime.now(timezone.utc))}"
-        if stoppage.open_stoppage(cur, key, "factory-bug",
-                                  f"工場の中で同じエラーが繰り返している（{last.get('component')} の「{last.get('label')}」が {last.get('exc')}、直近 {WINDOW_MIN} 分に {r['n']} 回）",
-                                  waiting_for="建設者が原因を調べて直す（工場は止まらずに回っているが、この工程は動いていない）",
+        env = sig == fault.ENV_SIGNATURE
+        if stoppage.open_stoppage(cur, key, "env" if env else "factory-bug",
+                                  (f"工場の環境の不調: 名前解決か、DB・外への接続が繰り返し落ちている（直近 {WINDOW_MIN} 分に {r['n']} 回。最後は {last.get('label')}）"
+                                   if env else
+                                   f"工場の中で同じエラーが繰り返している（{last.get('component')} の「{last.get('label')}」が {last.get('exc')}、直近 {WINDOW_MIN} 分に {r['n']} 回）"),
+                                  waiting_for=("工場を動かしている機械（Docker の VM のディスク・メモリ・再起動）を確かめる。収まれば自動で閉じる" if env else
+                                               "建設者が原因を調べて直す（工場は止まらずに回っているが、この工程は動いていない）"),
                                   cause=last.get("sample") or "",
                                   started_at=datetime.fromtimestamp(r["first_at"], timezone.utc) if r["first_at"] else None):
             opened.append(key)
