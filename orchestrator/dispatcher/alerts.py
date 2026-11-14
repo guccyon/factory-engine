@@ -194,6 +194,10 @@ def describe(cur, s: dict) -> dict:
                      links=[{"label": "ラインで見る", "href": "/line", "nav": True}] + ([{"label": "作業の記録（最後の部分）", "log": int(rest)}] if rest.isdigit() else []))
             t = _ticket(cur, s.get("correlation_id"))
             a["target"] = _target(t)
+        elif prefix == "repeat":   # 繰り返すエラーを束ねた停止（repeat_watch.py、#308）
+            a.update(group="工場の不調", who="builder",
+                     todo="建設者が原因を調べて直す。工場は止まらずに回っているが、この工程は同じところで落ち続けている",
+                     links=[{"label": "受信トレイで見る", "href": f"/inbox/stoppage:{key}", "nav": True}])
         elif prefix == "ship":
             a.update(group="工場の不調", title=_plain(s.get("what")).replace("出荷の失敗", "出荷に失敗した"),
                      todo="出荷のページで状態を見て、もう一度出すか前の版に戻す", links=[{"label": "出荷を開く", "href": "/ship", "nav": True}])

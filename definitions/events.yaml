@@ -253,6 +253,10 @@ events:
     source: control_plane
     required: [id, evidence, evidence_id]
     note: "ADR 0050 の決定 4。見回りの実施の記録。番人が、見回りの動いた記録（patrol_watch.TARGETS）ごとに見回りの id をつけて 1 つ残す（dedupe は patrol.ran:<元の記録の id>、occurred_at は元の記録の時刻）。job_id は見回りが積んだジョブで、費用はその job.finished から読む"
+  factory.fault:
+    source: control_plane
+    required: [signature, component, label, exc, count]
+    note: "factory-engine#308。supervisor と dispatcher が握りつぶした例外（log の「… failed / … error」と例外の repr）の数。fault.py がメモリに貯め、FAULT_FLUSH_SEC（既定 300 秒）に 1 回、印（プロセス:文言:例外の型）ごとに 1 行で書く。番人の repeat_watch が直近 60 分の合計で繰り返しを見て、停止 repeat:<印>#<始まり> を開く"
   github.pr_closed:
     source: pr_events
     required: [pr_url, repo, pr, merged, closed_at]

@@ -123,7 +123,7 @@ def _open_task_keys(cur, key: str | None = None) -> set[str]:
 # ------------------------------------------------------------------ 集める
 # 更新の再開と差し戻しの扱い、ほかの PR を待つ保留（hold:）は建設者。マージ・judge の判断はオーナー
 # （hold は人の判断が済んだあとの順番待ちで、オーナーのすることはない。11-02 rally #589 が「オーナーの出番」と出ていた）
-STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder", "ci": "builder"}
+STOPPAGE_WHO = {"drain": "builder", "sendback": "builder", "hold": "builder", "ci": "builder", "repeat": "builder"}
 
 
 def _stoppages(cur, now) -> list[dict]:
@@ -132,12 +132,12 @@ def _stoppages(cur, now) -> list[dict]:
     # 人の停止に加えて、衝突の解消の上限に当たり工場がもう解かないと決めた PR（ci: の停止で conflict_human の記録があるもの）も拾う。
     # 種類が ticket なので載らず、建設日報でしか気づけなかった（11-11 rally #1117 が 39 時間止まっていた）
     cur.execute("select key, category, what, waiting_for, cause, started_at, correlation_id, job_id from stoppages "
-                "where ended_at is null and (category='human' or key like 'ci:%') order by started_at")
+                "where ended_at is null and (category='human' or key like 'ci:%' or key like 'repeat:%') order by started_at")
     out = []
     for s in cur.fetchall():
         prefix, _, rest = s["key"].partition(":")
         cap = None
-        if s["category"] != "human":
+        if s["category"] != "human" and prefix != "repeat":   # 繰り返すエラーを束ねた停止（#308）は建設者の件として載せる
             cap = workflow_guard.capped(cur, s["correlation_id"]) if s["correlation_id"] else None
             if not cap:
                 continue   # 工場がまだ自分で直す CI 落ち・衝突は人に回さない

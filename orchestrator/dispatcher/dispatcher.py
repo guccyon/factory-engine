@@ -59,6 +59,8 @@ import jobdb
 import judgment
 import line
 import notify_inbox
+import fault
+import repeat_watch
 import ops
 import pr_events
 import process_learn
@@ -143,6 +145,7 @@ store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV["OBJECTSTORE_ACCESS_KE
 
 def log(*a):
     print(datetime.now(timezone.utc).strftime("%H:%M:%S"), *a, flush=True)
+    fault.note_log("dispatcher", a)   # 握りつぶした例外を数える（束ねて factory.fault に。#308）
 
 
 def db():
@@ -1353,13 +1356,20 @@ def watch_once():
         patrol_watch.step(cur, paused=bool(draining or paused), heartbeat_stale=bool(h["last"] and h["stale"]))
 
         # 3) 予算・時間の超過と、人の手当てを待つ失敗
-        cur.execute("select job_id, correlation_id, occurred_at, payload from events "
-                    "where name='job.finished' and payload->>'state'='failed' and occurred_at >= %s order by id", (since,))
+        #    同じ種類・同じ失敗のジョブが続くときは先に束ねた停止（repeat:job:）を開き、1 件ずつの停止は通知しない（#308。11-10 investigate 30 件）
+        try:
+            repeat_watch.job_step(cur, classify_failure)
+        except Exception as e:  # noqa: BLE001  束ねるのに失敗しても 1 件ずつの停止は開く
+            log("repeat job step failed", repr(e)[:200])
+        bundled = repeat_watch.bundled_job_signatures(cur)
+        cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload, j.kind from events e left join jobs j on j.id=e.job_id "
+                    "where e.name='job.finished' and e.payload->>'state'='failed' and e.occurred_at >= %s order by e.id", (since,))
         for e in cur.fetchall():
             c = classify_failure(e["payload"])
             if c:
                 stoppage.open_stoppage(cur, f"job:{e['job_id']}", c[0], c[1], waiting_for=c[2], cause=e["payload"].get("error") or "",
-                                       started_at=e["occurred_at"], correlation_id=e["correlation_id"], job_id=e["job_id"])
+                                       started_at=e["occurred_at"], correlation_id=e["correlation_id"], job_id=e["job_id"],
+                                       quiet=repeat_watch.job_signature(e["kind"], e["payload"].get("error")) in bundled)
         for k in stoppage.open_keys(cur, "job:"):
             remedy = job_failure_settled(cur, int(k.split(":", 1)[1]))
             if remedy:
@@ -1475,6 +1485,12 @@ def watch_loop():
             watch_once()
         except Exception as e:  # noqa: BLE001  番人の失敗でラインを止めない
             log("watch error", repr(e))
+        try:   # 握りつぶした例外の数を書き、繰り返しを束ねて停止にする（#308）。watch_once が毎回落ちても動くよう別にする
+            with db() as conn, conn.cursor() as cur:
+                fault.flush(cur)
+                repeat_watch.step(cur)
+        except Exception as e:  # noqa: BLE001
+            print(datetime.now(timezone.utc).strftime("%H:%M:%S"), "fault watch failed", repr(e)[:200], flush=True)
         try:   # 受信トレイの通知（ADR 0026 の決定 7）。失敗してもラインと番人は止めない
             with db() as conn, conn.cursor() as cur:
                 notify_inbox.tick(cur)
