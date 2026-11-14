@@ -391,3 +391,47 @@ def test_ready_records_adr_and_contract_diff(cur):
     cur.execute("select payload from events where name='plan.decided'")
     ev = cur.fetchone()["payload"]
     assert ev["adrs"] == {"follow": ["0004"], "new": 1} and ev["contracts"][0]["kind"] == "change"
+
+
+class WaitCalls(Calls):
+    """待つ前のチケット（#30・#31）の状態を返す"""
+    states = {30: "open", 31: "open"}
+
+    def gh(self, method, path, body=None):
+        for n, st in self.states.items():
+            if method == "GET" and path.endswith(f"/issues/{n}"):
+                return {"state": st}
+        return super().gh(method, path, body)
+
+
+def waiting(after, steps=()):
+    r = res("wait", steps)
+    r["workflow"] = {"start": {"mode": "after", "after": list(after), "why": "#30 で解く見込み"}}
+    return r
+
+
+@needs_db
+def test_wait_holds_until_the_tickets_close_then_replans(cur):
+    """問いのない「前を待つ」を人へ回さず、待って、閉じたら着手判定に戻す（rally #1401・#1492）"""
+    c = WaitCalls()
+    c.states = {30: "open", 31: "closed"}
+    run(cur, c, waiting([30, 31]), c.gh)
+    assert c.labels == [(ISSUE, ("factory:running",), ("factory:waiting-steps",))]
+    assert "#30 が閉じるのを待ちます" in c.comments[0] and "人の操作は要りません" in c.comments[0]
+    cur.execute("select payload from events where name='plan.waiting'")
+    assert cur.fetchone()["payload"]["after"] == [30]
+    assert pn.advance_steps(cur, c.gh, c.swap, c.comment, [REPO]) == 0      # まだ開いている
+    c.states = {30: "closed", 31: "closed"}
+    assert pn.advance_steps(cur, c.gh, c.swap, c.comment, [REPO]) == 1
+    assert c.labels[-1] == (ISSUE, ("factory:waiting-steps",), ("factory:plan",)) and "着手判定をし直します" in c.comments[-1]
+    assert pn.advance_steps(cur, c.gh, c.swap, c.comment, [REPO]) == 0      # 1 度だけ
+
+
+@needs_db
+def test_wait_on_already_closed_tickets_goes_to_human(cur):
+    """前がもう閉じているのに待つと言ったら、判定し直しを繰り返さないよう人へ"""
+    c = WaitCalls()
+    c.states = {30: "closed"}
+    run(cur, c, waiting([30]), c.gh)
+    assert c.labels == [(ISSUE, ("factory:running",), ("factory:plan-human",))]
+    assert "もう閉じていた" in c.comments[0]

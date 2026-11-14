@@ -43,7 +43,8 @@ SPIKE_LABEL = "factory:spike"   # 方針が要るのでスパイクのレーン�
 GUARD_JA = {"no_design_system": "デザインシステムがなく、進め方の指定がない", "low_confidence": "プランナーの確信度が低い",
             "rounds_exhausted": "問いの往復を使い切った", "no_questions": "着手できないが問いが出なかった", "empty_steps": "経路が組めなかった", "verify_with_roles": "QA だけの道なのに経路に役がある",
             "oversized": "大きすぎる（切る基準に当たる）", "spike_exhausted": "スパイクの設計書があるのに、また方針が要ると答えた",
-            "spike_no_questions": "スパイクへ回すのに、決めることが出なかった"}
+            "spike_no_questions": "スパイクへ回すのに、決めることが出なかった",
+            "wait_closed": "待つと言った前のチケットがもう閉じていた"}
 ADVISORY_JA = {"small_change_with_designer": "小さな改修だがデザイナーを通す", "screen_without_designer": "新しい画面だがデザイナーを通さない",
                "design_after_implement": "実装の後にデザインの役がある", "no_size": "大きさの見積もりがない",
                "split_after_design": "大きいので、画面が決まってから実装の手前で切る", "no_requirements": "要件（受け入れ条件）がない",
@@ -460,6 +461,21 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, plan_id: int, result
         cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.asked',%s,%s,%s)",
                     (corr, job_id, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "round": round_, "questions": len(p.get("questions") or [])})))
         return
+    if decision == "wait":   # 前のチケットが閉じるのを待つだけ。閉じたら判定し直す（rally #1401・#1492。問いのない plan-human で止めない）
+        after = [int(x) for x in ((wf.get("start") or {}).get("after") or [])]
+        still = [n for n in after if gh and (gh("GET", f"repos/{repo}/issues/{n}") or {}).get("state") != "closed"] if gh else after
+        if still:
+            swap_label(repo, issue, [RUNNING_LABEL], [WAITING_LABEL])
+            cur.execute("insert into events(name, correlation_id, job_id, payload) values ('plan.waiting',%s,%s,%s)",
+                        (corr, job_id, Jsonb({"plan_id": plan_id, "repo": repo, "issue": issue, "after": still})))
+            cur.execute("update tickets set waiting_on=%s, updated_at=now() where source='github' and source_ref=%s",
+                        ([f"{repo}#{n}" for n in still], f"{repo}#{issue}"))
+            why = (wf.get("start") or {}).get("why") or ""
+            comment(repo, issue, f"プランナー（ジョブ {job_id}）: {' '.join(f'#{n}' for n in still)} が閉じるのを待ちます。"
+                                 f"閉じたら、このチケットの着手判定をし直します（人の操作は要りません）。{why}"
+                                 f"\n\n{p.get('summary') or ''}\n\n<sub>Plan {plan_id}</sub>")
+            return
+        guards = guards + ["wait_closed"]   # 待つと言った前のチケットがもう閉じている。判定し直しを繰り返さないよう人へ
     swap_label(repo, issue, [RUNNING_LABEL], [ESCALATE_LABEL])
     comment(repo, issue, f"プランナー（ジョブ {job_id}）: 着手の判定を人にお願いします（{_ja(guards) or '判定できなかった'}）。"
                          f"プランナーの見立ては {path_ja(steps)} です。決まったら、最初の役のラベル（{'・'.join(ROLE_LABELS.values())}）を付けるか、"
@@ -533,6 +549,9 @@ def advance_steps(cur, gh, swap_label, comment, repos: list[str]) -> int:
             if "pull_request" in it:
                 continue
             issue, corr = it["number"], f"github:{repo}#{it['number']}"
+            if release_waiting(cur, gh, swap_label, comment, repo, issue, corr):   # 前のチケットを待つと判定したもの（plan.waiting）
+                n += 1
+                continue
             cur.execute("select payload from events where name='plan.split' and correlation_id=%s order by id desc limit 1", (corr,))
             r = cur.fetchone()
             if not r or not (r["payload"].get("child") or r["payload"].get("children")):
@@ -552,6 +571,27 @@ def advance_steps(cur, gh, swap_label, comment, repos: list[str]) -> int:
             comment(repo, issue, f"#{sp['child']}（デザインシステム）が閉じたので、経路の次の役（{ROLE_JA[nxt]}）に進めました。")
             n += 1
     return n
+
+
+def release_waiting(cur, gh, swap_label, comment, repo: str, issue: int, corr: str) -> bool:
+    """プランナーが「前のチケットが閉じるのを待つ」と判定した（plan.waiting が plan.split より新しい）チケットで、前がすべて閉じたら
+    着手判定に戻す（factory:plan）。1 つの判定につき 1 度だけ"""
+    cur.execute("select id, payload from events where name in ('plan.waiting','plan.split') and correlation_id=%s order by id desc limit 1", (corr,))
+    r = cur.fetchone()
+    if not r or "after" not in (r["payload"] or {}) or "children" in r["payload"] or "child" in r["payload"]:
+        return False
+    w = r["payload"]
+    after = [int(x) for x in w.get("after") or []]
+    if any((gh("GET", f"repos/{repo}/issues/{d}") or {}).get("state") != "closed" for d in after):
+        return False
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('plan.released',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
+                (corr, Jsonb({"plan_id": w.get("plan_id"), "repo": repo, "issue": issue, "after": after}), f"plan.released:{w.get('plan_id')}"))
+    if cur.fetchone() is None:
+        return False
+    swap_label(repo, issue, [WAITING_LABEL], [TRIGGER_LABEL])
+    cur.execute("update tickets set waiting_on='{}', updated_at=now() where source='github' and source_ref=%s", (f"{repo}#{issue}",))
+    comment(repo, issue, f"{' '.join(f'#{d}' for d in after)} が閉じたので、着手判定をし直します。")
+    return True
 
 
 def close_split_parent(cur, gh, comment, repo: str, issue: int, corr: str, sp: dict) -> int:
