@@ -120,3 +120,18 @@ def test_inbox_shows_repeat_to_builder(cur):
     items = [i for i in inbox._stoppages(cur, datetime.now(timezone.utc)) if i["key"].startswith("stoppage:repeat:")]
     assert len(items) == 1 and items[0]["who"] == "builder"
     assert "繰り返し" in items[0]["title"]
+
+
+def test_env_failures_bundle_into_one(cur):
+    """名前解決・接続の失敗は工程ごとに分けず、工場の環境の不調 1 件にまとめる（11-14 Docker の VM の詰まりで 7 件に分かれた）"""
+    for comp, label in (("supervisor", "tick error"), ("dispatcher", "watch error"), ("dispatcher", "ops error")):
+        for _ in range(2):
+            fault.note_log(comp, (label, "OperationalError('could not translate host name \"postgres\" to address: Temporary failure in name resolution')"))
+    fault.note_log("dispatcher", ("capture statuses failed", "URLError(gaierror(-3, 'Temporary failure in name resolution'))"))
+    fault.note_log("supervisor", ("notify report failed", "IndexError(2)"))   # 別の原因は別の印のまま
+    fault.flush(cur, force=True)
+    opened = repeat_watch.step(cur)
+    assert len(opened) == 1 and opened[0].startswith("repeat:env:network#")
+    cur.execute("select payload from events where name='stoppage.opened'")
+    p = cur.fetchone()["payload"]
+    assert p["category"] == "env" and "7 回" in p["what"] and "環境" in p["what"]

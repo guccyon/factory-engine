@@ -46,8 +46,23 @@ def parse(args: tuple) -> tuple[str, str, str] | None:
     return None
 
 
+# 名前解決・DB や外への接続が落ちた例外は、工程ごとに分けず「工場の環境の不調」1 つの印にまとめる。
+# 11-14 01:16〜 Docker の VM が詰まって名前解決が途切れ途切れに落ち、工程ごとに 7 件の repeat: が開いた（原因は 1 つ）
+ENV_COMPONENT = "env"
+ENV_SIGNATURE = "env:network"
+_ENV_MARKERS = ("name resolution", "name or service not known", "could not translate host name", "nodename nor servname",
+                "connection refused", "closed the connection unexpectedly", "connection timed out", "network is unreachable")
+
+
+def is_env(sample: str) -> bool:
+    s = (sample or "").lower()
+    return any(m in s for m in _ENV_MARKERS)
+
+
 def note(component: str, label: str, exc: str, sample: str = "") -> None:
-    sig = signature(component, label, exc)
+    if is_env(sample):
+        component, label, exc = ENV_COMPONENT, f"{component}: {label}", "network"   # label は最後に出た工程（見本の手がかり）
+    sig = ENV_SIGNATURE if component == ENV_COMPONENT else signature(component, label, exc)
     now = time.time()
     with _lock:
         c = _counts.get(sig)
