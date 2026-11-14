@@ -9,6 +9,7 @@
 - release: staging で確かめた版がまだ本番に出ていない（「本番に出す」を押すのは人。ADR 0012）
 - judgment: judge が人に回した判断（停止 judge: の PR の、人の判断がまだの問い 1 つずつ。今の案・他の案・見立てと推奨を detail に）
 - task: 他の工程が request() で積んだ依頼（レビューページの承認待ち、着手判定で起票者に返した問いなど）。resolve() で消える
+- readiness_ask / readiness_ready: オンボーディングの準備のお願い（製品と仕事の組ごと）と稼働 ready の承認（ADR 0045 の追記。onboarding.py）
 
 1 件の形: key（通知の重複を防ぐ一意の名前）・kind・who（誰の出番か）・title・action（何をすればよいか）・url・since・age_sec・ref・
 detail（問いの中身。label と text の並び。任意）・answer（答え方。この場で答えられない件は None）・answered（答え済みで反映を待っている件は、誰が・どの入口から・何と答えたか）
@@ -35,7 +36,8 @@ WHO = {
 }
 CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り",
                  "exit_capture": "実装後の画面"}   # choice.KINDS と同じ
-KINDS = {"stoppage": "対応待ち", "judgment": "判断待ち", "choice": "選択待ち", "release": "リリース承認待ち", "task": "作業依頼"}
+KINDS = {"stoppage": "対応待ち", "judgment": "判断待ち", "choice": "選択待ち", "release": "リリース承認待ち", "task": "作業依頼",
+         "readiness_ask": "準備のお願い", "readiness_ready": "稼働 ready の承認待ち"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
 MAX_LEN = 300
@@ -401,10 +403,20 @@ def _notify_config(cur) -> list[dict]:
              "action": "; ".join(p.get("problems") or [])[:MAX_LEN], "url": "", "since": r["occurred_at"], "ref": p.get("repo") or ""}]
 
 
+def _readiness(cur) -> list[dict]:
+    """オンボーディングの判定の記録があれば、準備のお願いと稼働 ready の承認（onboarding.py）。記録がなければ定義も読まない"""
+    cur.execute("select 1 from events where name='onboarding.assessed' limit 1")
+    if not cur.fetchone():
+        return []
+    import onboarding
+    import readiness
+    return onboarding.inbox_items(cur, readiness.load())
+
+
 def _collect(cur, now: datetime) -> list[dict]:
     out: list[dict] = []
     for collect in (lambda: _stoppages(cur, now), lambda: _choices(cur), lambda: _releases(cur), lambda: _tasks(cur),
-                    lambda: _notify_config(cur)):
+                    lambda: _notify_config(cur), lambda: _readiness(cur)):
         try:
             out += collect()
         except Exception as e:  # noqa: BLE001
@@ -615,6 +627,9 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
     if kind == "judgment":
         import judgment
         return judgment.decide(cur, ref, option, by, via, note)
+    if kind in ("readiness_ask", "readiness_ready"):
+        import onboarding
+        return onboarding.answer(cur, kind, ref, option, by, via, note)
     return False, f"答えの作用が分からない: {kind}"
 
 

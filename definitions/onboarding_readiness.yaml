@@ -153,6 +153,7 @@ items:
     warn: 言葉の取り違えで、頼んだものと違うものを作るおそれ
 
 # オンボーディングのレベル（決定 3 の工程 S0〜S6 をまとめたもの）。条件は判定の記録に「満たしたか」で入る
+# human: true の条件は事業主の確認が要る（操業コンソールの製品のページで受信トレイへのリンクを付け、ホームのカードで数える）
 # 稼働 ready の線は L3 と L4 の間。L1〜L3 の条件と「開発を始める」の必須を機械で確かめたうえで、事業主が承認して越える（D4）
 ready_line_after: 3
 ladder:
@@ -169,7 +170,7 @@ ladder:
     conditions:
       - {id: analysis-matched,  ja: 契約・画面・依存が起こされ、照合率が出た}
       - {id: drafts-exist,      ja: 用語・境界・ストーリーの下書きがある}
-      - {id: reading-confirmed, ja: 事業主が読みを確かめた}
+      - {id: reading-confirmed, ja: 事業主が読みを確かめた, human: true}
   - level: 3
     ja: 動かせる
     stages: [S4]
@@ -189,5 +190,5 @@ ladder:
     stages: [S6]
     conditions:
       - {id: scope-widened,   ja: 任せる範囲を指標で広げた}
-      - {id: scope-approved,  ja: 事業主が範囲を承認した}
+      - {id: scope-approved,  ja: 事業主が範囲を承認した, human: true}
       - {id: jobs-enabled,    ja: 本番に出す・ストア・運用の必須がそろった分から有効にした}

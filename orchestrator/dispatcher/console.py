@@ -6,6 +6,10 @@
   GET  /api/usage?days=14                 使用量: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
   GET  /usage                             同じ中身のページ（画面の中のページ。中身は GET /usage/body の HTML の断片。usage_page.py）
   GET  /api/reference                     ヘルプの「API と MCP」「コマンド」の中身。この説明・desk_api.py の説明・MCP の道具・factoryctl の使い方から作る（reference.py）
+  GET  /api/products                      製品の一覧（オンボーディングの判定の記録の製品ごとの最新。ADR 0045 の追記、onboarding.py）。/api/state にも products として入る
+  GET  /api/products/<owner>/<repo>       製品のページの中身（レベル・準備度メーター・技術スタックと外部サービス・判定の推移）
+  GET  /products と /products/<製品>       同じ中身のページ（中身は GET /products/body?p=<製品> の HTML の断片。products_page.py）
+  GET  /api/connectors                    設定の「サービスとの連携」: 工場の生産に使う間接のサービスの取り込み元（鍵の値は出さない）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
   POST /api/tickets/<id>/hold | resume    順番待ちから一時的に外す / 戻す
@@ -63,8 +67,11 @@ import incident
 import line
 import inbox
 import judgment
+import onboarding
 import ops
+import products_page
 import prototype
+import readiness
 import reference
 import rerun
 import review_page
@@ -266,6 +273,30 @@ def trends(cur) -> dict | None:
     return {"days": rep.get("days") or [], "end": rep.get("end"), "level": rep.get("level") or "", "summary": rep.get("summary") or [], "items": out}
 
 
+def readiness_defs() -> dict | None:
+    """準備度の定義（definitions/onboarding_readiness.yaml）。compose で /definitions を載せていなければ None（製品の画面を出さない）"""
+    try:
+        return readiness.load()
+    except FileNotFoundError:
+        return None
+
+
+def products(cur) -> list[dict]:
+    """ホームのカードと製品の一覧（判定の記録がなければ空）"""
+    defs = readiness_defs()
+    return onboarding.summaries(cur, defs) if defs else []
+
+
+def product_body(cur, product: str) -> str:
+    defs = readiness_defs()
+    if not defs:
+        return products_page._wrap('<section><div class="m">準備度の定義（definitions/onboarding_readiness.yaml）が読めない。'
+                                   'compose で console に ../definitions を載せる</div></section>')
+    if not product:
+        return products_page.body_list(onboarding.summaries(cur, defs))
+    return products_page.body_product(onboarding.page(cur, defs, product), product)
+
+
 def host_view(cur) -> dict | None:
     """ホストの見張り（keep-awake.sh）が居るときだけ返す。居なければ（EC2 や Mac 以外）トグルを出さない"""
     seen = host_agent.get("seen")
@@ -464,7 +495,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/state":
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur), "trends": trends(cur),
-                                        "alerts": alerts.view(cur), "engine_version": version.engine_version()})
+                                        "alerts": alerts.view(cur), "engine_version": version.engine_version(), "products": products(cur),
+                                        "connectors": onboarding.sources(cur)})
         if self.path == "/api/reference":   # 中身はコードの説明なので、プロセスの間は変わらない。最初の 1 回だけ作る
             if "ref" not in REFERENCE:
                 REFERENCE["ref"] = reference.build()
@@ -480,6 +512,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == usage_page.BODY_PATH:   # 使用量のページの中身（画面の中の /usage が読み込む。タブとヘッダはほかのページと同じ）
                 return self._send(200, usage_page.body(v).encode(), "text/html; charset=utf-8")
             return self._json(200, v)
+        u = urlsplit(self.path)
+        if u.path in ("/api/products", "/api/connectors", products_page.BODY_PATH) or u.path.startswith("/api/products/"):
+            return self._products(u)
         m = re.fullmatch(r"/api/jobs/(\d+)/log", urlsplit(self.path).path)
         if m:
             text = job_log_tail(int(m.group(1)))
@@ -508,6 +543,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             return self._json(200, {"ok": True})
         self._json(404, {"error": "not found"})
+
+    def _products(self, u):
+        """製品のページ（ADR 0045 の追記）。一覧・1 製品の中身（JSON）と、画面に読み込む HTML の断片"""
+        with db() as conn, conn.cursor() as cur:
+            if u.path == "/api/connectors":
+                return self._json(200, {"connectors": onboarding.sources(cur)})
+            if u.path == "/api/products":
+                return self._json(200, {"products": products(cur)})
+            if u.path == products_page.BODY_PATH:
+                p = parse_qs(u.query).get("p", [""])[0]
+                if p and not onboarding.PRODUCT.match(p):
+                    return self._json(400, {"error": "p は owner/repo"})
+                return self._send(200, product_body(cur, p).encode(), "text/html; charset=utf-8")
+            p = u.path.removeprefix("/api/products/")
+            defs = readiness_defs()
+            page = onboarding.page(cur, defs, p) if defs and onboarding.PRODUCT.match(p) else None
+            return self._json(200, page) if page else self._json(404, {"error": "その製品の判定の記録がない"})
 
     def _choice_image(self, aid: int, option_id: str):
         with db() as conn, conn.cursor() as cur:

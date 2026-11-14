@@ -128,6 +128,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - runnergate:/run/runner-gate:ro   # ワーカーにはマウントしない（ジョブはランナーの窓口を直接呼べない）
+      - ../definitions:/definitions:ro   # 準備度の定義（onboarding_readiness.yaml）。factoryctl readiness record が判定に使う（ADR 0045 の追記）
     ports:
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8787}:8787"
     restart: unless-stopped
@@ -221,6 +222,8 @@ services:
       OBJECTSTORE_ENDPOINT: objectstore:7070             # 人の選択の画面で案の画像を中継する（choices/ の下だけ読む。ADR 0025）
       OBJECTSTORE_ACCESS_KEY: ${OBJECTSTORE_ACCESS_KEY:-factory}
       OBJECTSTORE_SECRET_KEY: ${OBJECTSTORE_SECRET_KEY:-factory-objectstore}
+    volumes:
+      - ../definitions:/definitions:ro   # 製品のページの項目と粒度の名前（onboarding_readiness.yaml。ADR 0045 の追記）
     ports:
       - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_HOST_PORT:-8790}:8790"   # 同じ LAN の端末から見るときは CONSOLE_BIND=0.0.0.0 と CONSOLE_ALLOWED_HOSTS にホスト名（例 host.example.local）
       - "${CONSOLE_BIND:-127.0.0.1}:${PROTOTYPE_HOST_PORT:-8791}:8791"  # 動くプロトタイプ（別オリジン）。ホストのポートを変えたら PROTOTYPE_PUBLIC_URL も合わせる
