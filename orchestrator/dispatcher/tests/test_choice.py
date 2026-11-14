@@ -98,5 +98,5 @@ def test_console_viewpoint_choices_match_vocabulary():
     import re
 
     import console_page
-    js = re.search(r"const VIEWS=\[(.*?)\];", console_page.PAGE, re.S).group(1)
+    js = re.search(r"const VIEWS=\[(.*?)\];", console_page.JS, re.S).group(1)
     assert sorted(re.findall(r'\["([a-z_]+)"', js)) == sorted(choice.VIEWPOINTS)

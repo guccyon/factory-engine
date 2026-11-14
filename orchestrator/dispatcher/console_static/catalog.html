@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>部品のカタログ — 操業コンソール</title>
+<link rel="stylesheet" href="/static/brand.css">
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/components.css">
+<style>
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/22px var(--font-sans)}
+.cat-h{display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:center;padding:var(--space-4);border-bottom:1px solid var(--line);background:var(--surface)}
+.cat-h a{color:var(--accent)}
+main{max-width:1080px;margin:0 auto;padding:var(--space-4)}
+.cat-s{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-l);padding:var(--space-4);margin-bottom:var(--space-4)}
+.cat-s h2{margin:0}.cat-g{font-weight:400;color:var(--ink-sub);font-size:12px;margin-left:var(--space-2)}
+.cat-s .c-dock{position:static}  /* カタログでは画面の下に固定しない（全体のキャプチャで重なる） */
+.cat-d{margin:var(--space-1) 0 var(--space-3);color:var(--ink-sub)}
+</style></head><body>
+<header class="cat-h"><h1 class="t-heading" style="margin:0">部品のカタログ</h1><a href="/">コンソールへ戻る</a>
+<span class="c-row" style="margin-left:auto">テーマ <button class="c-btn" data-theme-set="">端末に合わせる</button><button class="c-btn" data-theme-set="light">明るい</button><button class="c-btn" data-theme-set="dark">暗い</button></span></header>
+<main>
+<p class="t-caption" style="color:var(--ink-sub)">色・字・間は brand.css（ブランドの層）と tokens.css（意味の層）、部品は components.css（ADR 0059）。PR の画面のキャプチャはこのページから撮る。</p>
+<section class="cat-s" id="Button"><h2 class="t-title">Button <span class="cat-g">操作</span></h2><p class="cat-d">押せる操作のボタン。</p>
+<div class="c">
+<div class="c-row"><button class="c-btn is-primary">a で答える</button><button class="c-btn">コメント</button><button class="c-btn is-danger">止める</button><button class="c-btn is-small">保留</button></div>
+<div class="c-row" style="margin-top:8px"><button class="c-btn" aria-disabled="true">流量を変える</button><span class="c-why">運用者だけが変えられます</span></div>
+</div>
+</section>
+<section class="cat-s" id="ConfirmButton"><h2 class="t-title">ConfirmButton <span class="cat-g">操作</span></h2><p class="cat-d">取り返しのつかない操作（本番に出す、戻す、ラインを止める）のボタン。</p>
+<div class="c">
+<div class="c-row"><button class="c-btn c-confirm" id="cb">本番を 0.21.0 に戻す</button><span class="c-sub">押すと確かめに変わる</span></div>
+</div>
+</section>
+<section class="cat-s" id="StatusBadge"><h2 class="t-title">StatusBadge <span class="cat-g">状態</span></h2><p class="cat-d">状態を点と言葉で示す印。</p>
+<div class="c">
+<div class="c-row"><span class="c-status is-ok">出荷済</span><span class="c-status is-warn">確認待ち</span><span class="c-status is-bad">止まっている</span><span class="c-status is-info">お知らせ</span><span class="c-status">投入待ち</span></div>
+</div>
+</section>
+<section class="cat-s" id="PriorityBadge"><h2 class="t-title">PriorityBadge <span class="cat-g">状態</span></h2><p class="cat-d">チケットの優先度 p0〜p3 の印。</p>
+<div class="c">
+<div class="c-row"><span class="c-prio is-p0">p0</span><span class="c-prio is-p1">p1</span><span class="c-prio">p2</span><span class="c-prio is-p3">p3</span></div>
+</div>
+</section>
+<section class="cat-s" id="Nav"><h2 class="t-title">Nav <span class="cat-g">骨組み</span></h2><p class="cat-d">ページの行き来。</p>
+<div class="c">
+<div class="c-row" style="align-items:flex-start;gap:24px">
+<nav class="c-side" aria-label="ページ"><a href="#" aria-current="page">ホーム</a><a href="#">受信トレイ <span class="c-count is-new">2</span></a><a href="#">問い合わせ</a><a href="#">製品</a><a href="#">事業部の様子</a><a href="#">費用</a><div class="c-sep">工場</div><a href="#">工場の保守 <span class="c-count">10</span></a><a href="#">設定</a></nav>
+<div style="width:320px;border:1px solid var(--line);border-radius:12px;overflow:hidden;align-self:flex-end"><nav class="c-tabs" aria-label="ページ">
+<a href="#" aria-current="page"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>ホーム</a>
+<a href="#"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 13h5l1 2h4l1-2h5"/></svg>受信トレイ</a>
+<a href="#"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>問い合わせ</a>
+<a href="#"><svg viewBox="0 0 24 24"><path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/></svg>製品</a>
+<a href="#"><svg viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>その他</a></nav></div></div>
+</div>
+</section>
+<section class="cat-s" id="FactoryStatus"><h2 class="t-title">FactoryStatus <span class="cat-g">骨組み</span></h2><p class="cat-d">右上に 1 つだけ置く工場の状態。</p>
+<div class="c">
+<div class="c-row"><button class="c-factory"><i></i><b>動いている</b>· 並走モード</button><button class="c-factory is-warn"><i></i><b>注意</b>· 不調 3 件</button><button class="c-factory is-bad"><i></i><b>止まっている</b>· ライン停止中</button></div>
+</div>
+</section>
+<section class="cat-s" id="WorkbenchSwitch"><h2 class="t-title">WorkbenchSwitch <span class="cat-g">骨組み</span></h2><p class="cat-d">ワークベンチ（見え方）の切り替え。</p>
+<div class="c">
+<label class="c-wb">ワークベンチ <select><option>工場</option><option>製品</option></select></label>
+</div>
+</section>
+<section class="cat-s" id="Card"><h2 class="t-title">Card <span class="cat-g">表示</span></h2><p class="cat-d">まとまりを囲む面。</p>
+<div class="c">
+<section class="c-card" style="max-width:420px"><header><h3>判断待ち</h3><a href="#">すべて見る</a></header><p style="margin:0">今は 2 件。古い順に並べる。</p></section>
+</div>
+</section>
+<section class="cat-s" id="ListRow"><h2 class="t-title">ListRow <span class="cat-g">表示</span></h2><p class="cat-d">一覧の 1 行。</p>
+<div class="c">
+<ul class="c-list" style="max-width:520px"><li><span class="c-prio is-p0">p0</span><span class="c-g">本部がコーチをお休みにしようとすると 500 になる</span><span class="c-m">実装 · 16/40 分</span><button class="c-more" aria-label="操作">⋯</button></li>
+<li><span class="c-prio is-p1">p1</span><span class="c-g">QA: guccyon/rally@0.22.0</span><span class="c-m">QA · 6/40 分</span><button class="c-more" aria-label="操作">⋯</button></li>
+<li><span class="c-prio">p2</span><span class="c-g">生徒が確定済みの予約の日時を変えられる（リスケ）</span><span class="c-m">体験設計 · 2/40 分</span><button class="c-more" aria-label="操作">⋯</button></li></ul>
+</div>
+</section>
+<section class="cat-s" id="StatTile"><h2 class="t-title">StatTile <span class="cat-g">表示</span></h2><p class="cat-d">数字のタイル。</p>
+<div class="c">
+<div class="c-tiles" style="max-width:640px"><div class="c-tile"><div class="k">ラインの稼働</div><div class="v">97.9%<span class="d">+62.3</span></div><svg viewBox="0 0 100 28" preserveAspectRatio="none"><path d="M0 22 L14 20 L28 24 L42 12 L57 16 L71 8 L85 10 L100 6"/></svg></div>
+<div class="c-tile"><div class="k">マージした PR</div><div class="v">1<span class="d">-5</span></div><svg viewBox="0 0 100 28" preserveAspectRatio="none"><path d="M0 8 L14 10 L28 6 L42 12 L57 14 L71 18 L85 20 L100 24"/></svg></div>
+<div class="c-tile is-bad"><div class="k">止まっている作業</div><div class="v">2<span class="d">46.5 時間</span></div></div></div>
+</div>
+</section>
+<section class="cat-s" id="Notice"><h2 class="t-title">Notice <span class="cat-g">知らせ</span></h2><p class="cat-d">お知らせ。</p>
+<div class="c">
+<div class="c-col" style="max-width:560px"><div class="c-notice is-warn"><span class="c-g">工場の環境の不調が 10 件あります。提供元が対応しています</span><button class="c-x" aria-label="消す">×</button></div>
+<div class="c-notice"><span class="c-g">0.22.0 を本番に出しました（11/14 11:03）</span><button class="c-x" aria-label="消す">×</button></div></div>
+</div>
+</section>
+<section class="cat-s" id="EmptyState"><h2 class="t-title">EmptyState <span class="cat-g">表示</span></h2><p class="cat-d">中身が空のとき。</p>
+<div class="c">
+<div class="c-card c-empty" style="max-width:420px"><b>判断待ちはありません</b>新しい判断が来たら、ここと通知で知らせます</div>
+</div>
+</section>
+<section class="cat-s" id="DecisionPanel"><h2 class="t-title">DecisionPanel <span class="cat-g">判断</span></h2><p class="cat-d">受信トレイの件の詳細で答える部品。</p>
+<div class="c">
+<div style="max-width:420px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px" class="c-col">
+<div class="t-title">rally#1462 の画面の体験を判断する</div>
+<div class="c-ask">新しい画面の体験の案を承認するか、直しを頼む</div>
+<div class="c-opts"><label class="c-opt"><input type="radio" name="o" checked><span>a. 北極星のカード＋補助の指標の表<span class="c-rec">推奨</span></span></label><label class="c-opt"><input type="radio" name="o"><span>b. 6 つの指標をすべてカードで</span></label><label class="c-opt"><input type="radio" name="o"><span>c. 本部のホームの先頭に埋め込む</span></label></div>
+<div class="c-dock"><button class="c-btn">コメント</button><button class="c-btn is-primary">a で答える</button></div></div>
+</div>
+</section>
+<section class="cat-s" id="LaneFlow"><h2 class="t-title">LaneFlow <span class="cat-g">事業部の様子</span></h2><p class="cat-d">事業部の様子の中心の図。</p>
+<div class="c">
+<div class="c-lanes" style="max-width:640px">
+<div class="c-lane"><span class="c-name">スパイク</span><div class="c-track"><span class="c-job" style="animation-delay:-3s"></span></div><span class="c-m">1 · 4</span></div>
+<div class="c-lane"><span class="c-name">ビルド</span><div class="c-track"><span class="c-job"></span><span class="c-job" style="animation-delay:-3s"></span><span class="c-job" style="animation-delay:-6s"></span></div><span class="c-m">3 · 21</span></div>
+<div class="c-lane"><span class="c-name">出荷</span><div class="c-track"><span class="c-job is-stuck" style="left:62%"></span></div><span class="c-m">1 · 2</span></div></div>
+</div>
+</section>
+<section class="cat-s" id="PlanGate"><h2 class="t-title">PlanGate <span class="cat-g">知らせ</span></h2><p class="cat-d">契約のプランにない機能の置き場所。</p>
+<div class="c">
+<div class="c-gate" style="max-width:420px"><b>障害と問題</b><span class="c-sub">過去と進行中の障害を調べ、対応の経過を追えます。上位のプランで使えます</span><div class="c-shot">例の画面</div><div class="c-row"><button class="c-btn is-primary">14 日間試す</button><button class="c-btn">プランを見る</button></div></div>
+</div>
+</section>
+<section class="cat-s" id="Toggle"><h2 class="t-title">Toggle <span class="cat-g">操作</span></h2><p class="cat-d">オンとオフの切り替え。</p>
+<div class="c">
+<div class="c-row"><label class="c-toggle"><input type="checkbox" checked><span>ライン <b>流している</b></span></label><label class="c-toggle"><input type="checkbox"><span>夜は全自動モード <b>使わない</b></span></label></div>
+</div>
+</section>
+</main>
+<script src="/static/catalog.js"></script>
+</body></html>

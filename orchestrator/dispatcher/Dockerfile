@@ -7,6 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # 1 ファイルずつ並べると、新しいモジュール（planner.py・choice.py）を書き忘れて起動時に落ちるので、まとめて写す（Dockerfile.shipper と同じ）
 COPY *.py ./
+COPY console_static ./console_static
 RUN ln -s /app/factoryctl.py /usr/local/bin/factoryctl && chmod +x /app/factoryctl.py
 ENV PYTHONUNBUFFERED=1
 # Engine の版（ADR 0031）。scripts/build.sh が作るときに渡す。.env には書かない（古い値が残って来歴を誤るため）

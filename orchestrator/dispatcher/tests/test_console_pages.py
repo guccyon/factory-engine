@@ -9,7 +9,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from console_page import APP_PATH, PAGE  # noqa: E402
+from console_page import APP_PATH, CATALOG, PAGE, STATIC_DIR, static_file  # noqa: E402
 
 URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -20,6 +20,34 @@ def test_app_paths():
     for p in ("/api/state", "/review/1", "/usage/body", "/inbox/a/b", "/settings/../x", "/healthz"):
         assert not APP_PATH.fullmatch(p), p
     assert "__TOKEN__" in PAGE and '"""' not in PAGE
+
+
+def test_static_files():
+    """画面は console_static/ の静的ファイル（ADR 0059）。殻が読む CSS・JS はどれも配れて、外部から何も読まない"""
+    import re
+    refs = re.findall(r'(?:href|src)="/static/([^"]+)"', PAGE + CATALOG)
+    assert {"brand.css", "tokens.css", "components.css", "console.css", "console.js", "catalog.js"} <= set(refs)
+    for name in refs:
+        body, ctype = static_file(name)
+        assert body and ctype.startswith(("text/css", "text/javascript")), name
+    assert "http://" not in PAGE + CATALOG and "https://" not in PAGE + CATALOG
+    for bad in ("../console.py", "index.html", ".hidden.css", "x/y.css", "nope.css", "Brand.css"):
+        assert static_file(bad) is None, bad
+
+
+def test_layers():
+    """部品とページの CSS はブランドの層の原色を直接使わない（刷新は brand.css だけを替える。ADR 0059 の 6）"""
+    import re
+    def read(n):
+        with open(os.path.join(STATIC_DIR, n), encoding="utf-8") as f:
+            return f.read()
+    prim = re.compile(r"var\(--(brand|neutral|green|amber|red|blue)-\d+")
+    for name in ("components.css", "console.css", "catalog.html"):
+        assert not prim.search(read(name)), name
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", read("components.css"))
+    defined = set(re.findall(r"--([a-z0-9-]+):", read("brand.css") + read("tokens.css")))
+    used = set(re.findall(r"var\(--([a-z0-9-]+)", read("components.css") + read("console.css")))
+    assert used <= defined, used - defined
 
 
 @pytest.fixture()

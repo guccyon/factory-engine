@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git docker-comp
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY *.py /app/
+COPY console_static /app/console_static
 ARG ENGINE_VERSION=unknown
 ENV ENGINE_VERSION=$ENGINE_VERSION
 RUN echo "$ENGINE_VERSION" > /app/ENGINE_VERSION   # env_file の .env で上書きされても版を誤らないよう、ファイルにも置く
