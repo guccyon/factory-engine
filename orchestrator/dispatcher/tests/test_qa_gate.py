@@ -540,3 +540,46 @@ def test_qa_ticket_scope_written_as_files(cur):
     qa_gate.step(cur, gh, REPO, now=NOW)
     pl = qa_gate.gate(cur, qa_gate.ticket_key(REPO, 30))["plan"]
     assert [u["unit"] for u in pl["units"]] == ["verdict:b-chat"] and not pl.get("unknown")
+
+
+# ------------------------------------------------------------------ 流すストーリーを選ぶ（ADR 0060）
+def test_release_gate_runs_only_changed_and_stale_stories(cur):
+    """最近確かめたストーリーは、変更に関係がなければ流さない。流さなかったものと理由は Issue の本文と報告に載る"""
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    for story in ("a-prejoin", "b-chat", "d-cs"):
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, started_at, finished_at) "
+                    "values ('c',%s,7,'qa','succeeded',%s,%s) returning id", (REPO, NOW - timedelta(hours=2), NOW - timedelta(hours=2)))
+        verdicts(cur, cur.fetchone()["id"], [(story, "pass", [])])
+    corr = f"github:{REPO}#5"
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, result) values (%s,%s,5,'implement','succeeded',%s)",
+                (corr, REPO, Jsonb({"pr_url": f"https://github.com/{REPO}/pull/50"})))
+    cur.execute("insert into artifacts(type, correlation_id, payload) values ('Plan',%s,%s)",
+                (corr, Jsonb({"decision": "ready", "stories": [{"id": "d-cs", "action": "keep"}]})))
+    cur.execute("insert into events(name, correlation_id, payload) values ('release.created',%s,%s)",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": REPO, "app_version": "0.9.0", "prs": [f"https://github.com/{REPO}/pull/50"]})))
+    ship.record(cur, "release.deployed", rid, {"repo": REPO, "env": "staging", "ok": True, "request_id": 0})
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    plan = qa_gate.gate(cur, rid)["plan"]
+    assert [u["unit"] for u in plan["units"]] == ["verdict:d-cs", "explore:detour"]
+    assert plan["selection"]["d-cs"]["why"] == "changed" and plan["selection"]["b-chat"]["why"] == "fresh"
+    assert plan["time_stories"] == ["a-prejoin"] and plan["cap_usd"] == (3 + 5) * 1.5
+    assert sorted(x["unit"] for x in out["enqueued"]) == ["explore:detour", "verdict:d-cs"]
+    body = next(b["body"] for m, p, b in gh.calls if m == "POST" and p.endswith("/issues"))
+    assert "d-cs（変更に関係する: #50）" in body and "b-chat（変更に関係なし" in body
+    ex = units_of(cur, rid)["explore:detour"][0]
+    finish(cur, ex)
+    explored(cur, ex, [])
+    d = judged(cur, gh, rid, "verdict:d-cs", "pass")["decided"]
+    assert d["verdict"]["stories"] == {"pass": 1} and gh.closed() == [51]
+    assert any(r["label"] == "流さなかったシナリオ" and "a-prejoin" in r["text"] and "b-chat" in r["text"] for r in d["report"])
+
+
+def test_release_gate_select_off_runs_everything(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, started_at) values ('c',%s,7,'qa','succeeded',%s) returning id",
+                (REPO, NOW - timedelta(hours=1)))
+    verdicts(cur, cur.fetchone()["id"], [("b-chat", "pass", [])])
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW, defs={**qa_line.load_defs(), "gate": {**qa_line.DEFS["gate"], "select": False}})
+    plan = qa_gate.gate(cur, rid)["plan"]
+    assert "selection" not in plan and len(plan["units"]) == 4
