@@ -269,6 +269,7 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
   - 製品 `/products`・`/products/<owner>/<repo>?tab=`: 概要・見通し・障害と問題・利用状況（上位プランの置き場）・リリースと環境（出荷先のカード。前の `/ship` はここへ送り直す）・準備度（`GET /products/body?p=` の断片）
   - ライン `/line`: 状態ごとの一覧（既定）とかんばん。上には工場の不調の件数だけ。カードに元のチケットと PR。リポジトリと出どころで絞れる
   - 工場の保守 `/maint`（`GET /api/maint`、console_maint.py）: 工場の不調（下に別記）・建設者宛ての判断の件・見回りごとの最後に動いた時刻と期限・事故の台帳・直近 24 時間にうまくいかなかったジョブ（作業の記録・積み直す）
+  - 委員会 `/committees`・`/committees/<id>`（`GET /api/committees*`、console_committee.py）: 委員会の開催の一覧と議事録。知見の委員会の審査（`committee.decided`・`committee.revise`）と定例（`committee.weekly_reviewed`）、事故の調査委員会の週次（`fincident.reviewed`）を events から組み直す（読むだけ）
   - 費用 `/cost`（前の `/usage` は送り直す）: 下に別記。中身は `GET /usage/body` の HTML の断片
   - ヘルプ `/help`: ワークベンチとページ、工場の状態の数字、工場の不調の種類、ラインの列の意味
   - 工場の不調（2026-11-08、`dispatcher/alerts.py`）: 開いている停止を 1 行ずつ「何が止まり・どれのことか（チケット・PR・更新の依頼）・何分前から」で出す（最初の 5 件、残りは「ほか N 件」）。押すと次にすること・対応する人・記録・リンク・「やり直す」（失敗した作業の積み直し。`factoryctl rerun` と同じ `rerun.py`）・作業の記録の最後の部分（`GET /api/jobs/<id>/log`、鍵らしい文字列は伏せる）。× で画面から消せる（`POST /api/alerts/dismiss`。停止そのものは閉じない）。消したものは「消したもの」で見られ、戻せる。人の判断待ちの停止（human）は受信トレイに出すのでここには出さない

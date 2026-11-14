@@ -11,6 +11,7 @@
   GET  /products と /products/<製品>       同じ中身のページ（中身は GET /products/body?p=<製品> の HTML の断片。products_page.py）
   GET  /api/stream                      サーバーからの知らせ（SSE）。工場の記録が動いたら event: changed（画面は /api/state を読み直す。console_stream.py）
   GET  /api/ask と /api/ask/<id>          問い合わせ: 窓口の相談の一覧と会話（ADR 0059。POST で開く・返事・確認・閉じる。console_ask.py）
+  GET  /api/committees と /api/committees/<id>  委員会の開催の一覧（?committee=knowledge|incident）と議事録（console_committee.py）
   GET  /api/maint                       工場の保守: 見回りの結果・事故の台帳・最近うまくいかなかったジョブ（ADR 0059、#477。console_maint.py）
   GET  /api/connectors                    設定の「サービスとの連携」: 工場の生産に使う間接のサービスの取り込み元（鍵の値は出さない）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
@@ -87,6 +88,7 @@ import usage_page
 import version
 from console_page import PAGE, APP_PATH, CATALOG, static_file
 import console_ask
+import console_committee
 import console_maint
 import console_stream
 
@@ -510,6 +512,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             return console_stream.serve(self.wfile, db)
+        if urlsplit(self.path).path.startswith("/api/committees"):   # 委員会の開催と議事録（console_committee.py）
+            with db() as conn, conn.cursor() as cur:
+                r = console_committee.get(cur, self.path)
+            if r:
+                return self._json(*r)
         if self.path == "/api/maint":   # 工場の保守のページ（ADR 0059、#477。console_maint.py）
             with db() as conn, conn.cursor() as cur:
                 return self._json(200, console_maint.view(cur))

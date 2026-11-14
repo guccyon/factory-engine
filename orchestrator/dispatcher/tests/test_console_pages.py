@@ -15,7 +15,7 @@ URL = os.environ.get("TEST_DATABASE_URL")
 
 
 def test_app_paths():
-    for p in ("/inbox", "/inbox/", "/inbox/choice%3Aexit_capture", "/inbox/release%3Ao%2Fr%400.9.3", "/line", "/ship", "/usage", "/cost", "/maint", "/live", "/ask", "/ask/new", "/help", "/settings", "/settings/runners"):
+    for p in ("/inbox", "/inbox/", "/inbox/choice%3Aexit_capture", "/inbox/release%3Ao%2Fr%400.9.3", "/line", "/ship", "/usage", "/cost", "/maint", "/committees", "/committees/3", "/live", "/ask", "/ask/new", "/help", "/settings", "/settings/runners"):
         assert APP_PATH.fullmatch(p), p
     for p in ("/api/state", "/review/1", "/usage/body", "/inbox/a/b", "/settings/../x", "/healthz"):
         assert not APP_PATH.fullmatch(p), p
