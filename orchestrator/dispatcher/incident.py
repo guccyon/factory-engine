@@ -119,7 +119,12 @@ def held(cur) -> bool:
 
 
 def stoppage_key(st: dict) -> str:
-    return f"qa_hold:{st['since']:%Y%m%dT%H%M%S}"
+    """停止のキー。時刻は UTC に寄せて書く（DB のセッションの時刻帯で変わると、JST の factoryctl が UTC の dispatcher の開いた停止を
+    見つけられず、受信トレイの対応待ちが残った。#391）"""
+    since = st["since"]
+    if isinstance(since, datetime) and since.tzinfo is not None:
+        since = since.astimezone(timezone.utc)
+    return f"qa_hold:{since:%Y%m%dT%H%M%S}"
 
 
 def hold(cur, inc: dict, *, qa_corr: str | None, defect_corr: str | None, by: str = "qa") -> bool:
@@ -159,7 +164,11 @@ def release(cur, by: str, reason: str) -> bool:
     cur.execute("insert into events(name, payload) values (%s, %s)",
                 (RELEASED, Jsonb({"by": by, "reason": reason, "incidents": [i.get("incident_id") for i in st.get("incidents") or []],
                                   "held_minutes": st["minutes"]})))
-    stoppage.close_stoppage(cur, stoppage_key(st), remedy=f"人が差し止めを解除した（{by}: {reason}）", closed_by=by, woken_by="human")
+    remedy = f"人が差し止めを解除した（{by}: {reason}）"
+    if not stoppage.close_stoppage(cur, stoppage_key(st), remedy=remedy, closed_by=by, woken_by="human"):
+        # キーが合わなくても、差し止めの停止は同時に 1 つなので、開いている qa_hold: を閉じる（受信トレイに残さない。#391）
+        for k in stoppage.open_keys(cur, "qa_hold:"):
+            stoppage.close_stoppage(cur, k, remedy=remedy, closed_by=by, woken_by="human")
     return True
 
 

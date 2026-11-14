@@ -206,3 +206,13 @@ def test_s1_is_not_absorbed_into_an_open_lighter_defect_at_the_same_step(cur):
     s1_body = [c[2]["body"] for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues")][0]
     keys = qa_line.open_defects(lambda *a: gh_defects + [{"title": "QA: 他人の連絡先が見える", "html_url": "u1", "body": s1_body}], REPO, "x")
     assert keys == {"s#1": f"https://github.com/{REPO}/issues/50", "s#1#s1": "u1"}
+
+
+def test_stoppage_key_is_utc_regardless_of_session_tz():
+    """#391: JST のセッションで読んだ since でも、UTC の dispatcher が開いたときと同じキーになる"""
+    from datetime import datetime, timedelta, timezone as tz
+    import importlib
+    inc = importlib.import_module("incident")
+    utc = datetime(2026, 11, 11, 9, 14, 8, tzinfo=tz.utc)
+    jst = utc.astimezone(tz(timedelta(hours=9)))
+    assert inc.stoppage_key({"since": utc}) == inc.stoppage_key({"since": jst}) == "qa_hold:20261111T091408"
