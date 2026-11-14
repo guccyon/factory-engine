@@ -9,6 +9,7 @@
   GET  /api/products                      製品の一覧（オンボーディングの判定の記録の製品ごとの最新。ADR 0045 の追記、onboarding.py）。/api/state にも products として入る
   GET  /api/products/<owner>/<repo>       製品のページの中身（レベル・準備度メーター・技術スタックと外部サービス・判定の推移）
   GET  /products と /products/<製品>       同じ中身のページ（中身は GET /products/body?p=<製品> の HTML の断片。products_page.py）
+  GET  /api/ask と /api/ask/<id>          問い合わせ: 窓口の相談の一覧と会話（ADR 0059。POST で開く・返事・確認・閉じる。console_ask.py）
   GET  /api/connectors                    設定の「サービスとの連携」: 工場の生産に使う間接のサービスの取り込み元（鍵の値は出さない）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
@@ -83,6 +84,7 @@ import usage
 import usage_page
 import version
 from console_page import PAGE, APP_PATH, CATALOG, static_file
+import console_ask
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -497,6 +499,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {**snapshot(cur), "choices": choice.open_choices(cur), "inbox": inbox.view(cur), "trends": trends(cur),
                                         "alerts": alerts.view(cur), "engine_version": version.engine_version(), "products": products(cur),
                                         "connectors": onboarding.sources(cur)})
+        if urlsplit(self.path).path.startswith("/api/ask"):   # 問い合わせ（ADR 0059、#474。console_ask.py）
+            with db() as conn, conn.cursor() as cur:
+                r = console_ask.get(cur, urlsplit(self.path).path, console_ask.operator(OPERATOR))
+            if r:
+                return self._json(*r)
         if self.path == "/api/reference":   # 中身はコードの説明なので、プロセスの間は変わらない。最初の 1 回だけ作る
             if "ref" not in REFERENCE:
                 REFERENCE["ref"] = reference.build()
@@ -602,8 +609,10 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}") if n else {}
         except json.JSONDecodeError:
             return self._json(400, {"error": "invalid json"})
+        body = body if isinstance(body, dict) else {}
         with db() as conn, conn.cursor() as cur:
-            code, out = act(cur, self.path, body if isinstance(body, dict) else {})
+            r = console_ask.post(cur, self.path, body, console_ask.operator(OPERATOR)) if self.path.startswith("/api/ask") else None
+            code, out = r or act(cur, self.path, body)
         self._json(code, out)
 
     def log_message(self, fmt, *a):  # 操作だけ出す

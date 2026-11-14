@@ -171,9 +171,11 @@ def _event(cur, name: str, conversation_id: int, payload: dict) -> int:
 
 
 def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, level: str | None = None, due: str | None = None,
-                      source_ref: str | None = None, derived_from: int | None = None, notify_to: list[str] | None = None) -> dict:
+                      source_ref: str | None = None, derived_from: int | None = None, notify_to: list[str] | None = None,
+                      visibility: str | None = None) -> dict:
     """相談を開く。依頼（request）と問い合わせ（inquiry）の 2 種類だけ。返り値は会話（相手の返事は read_conversation で取る）。
-    source_ref は依頼の来た口（GitHub の Issue の URL。ADR 0039 の決定 1）、derived_from は断りから別案として始めた元の会話（決定 4）"""
+    source_ref は依頼の来た口（GitHub の Issue の URL。ADR 0039 の決定 1）、derived_from は断りから別案として始めた元の会話（決定 4）。
+    visibility は依頼ごとに見える人（all＝全員・me＝自分だけ。操業コンソールの問い合わせ、ADR 0059）。今は wanted に記録するだけ"""
     if kind not in KINDS:
         raise DeskError(400, "種類は request（依頼）か inquiry（問い合わせ）")
     if not isinstance(product, str) or not PRODUCT_RE.match(product):
@@ -191,7 +193,7 @@ def open_conversation(cur, who: dict, kind: str, product: str, body: str, *, lev
         if _conversation(cur, who, derived_from)["product"] != product:
             raise DeskError(400, "別案は元の依頼と同じ製品で開く")
     notify_to = check_notify(cur, notify_to)
-    wanted = {k: v for k, v in (("level", level), ("due", due), ("notify", notify_to)) if v is not None}
+    wanted = {k: v for k, v in (("level", level), ("due", due), ("notify", notify_to), ("visibility", visibility)) if v is not None}
     title = body.strip().splitlines()[0][:MAX_TITLE]
     cur.execute("insert into desk_conversations(kind, product, opened_by, title, wanted, source_ref, derived_from) "
                 "values (%s,%s,%s,%s,%s,%s,%s) returning *", (kind, product, who["name"], title, Jsonb(wanted), source_ref, derived_from))
