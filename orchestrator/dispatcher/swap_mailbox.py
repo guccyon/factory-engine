@@ -251,7 +251,7 @@ FORMAT_HELP = """本文に次の形の行を書きます（ほかの文は記録
 ```
 target: main            # main かコミット（main に入っているもの）
 kind: code              # code / control_plane / db（自己申告。差分から判定し直し、重い方を採る）
-urgency: normal         # normal / urgent
+urgency: normal         # normal / urgent（urgent は実行中の QA など中継を使うジョブの終わりを待たない。normal も待つのは 15 分まで）
 deadline: 2026-11-06T18:00+09:00
 ```"""
 
