@@ -924,6 +924,10 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, after, role]
     note: "ADR 0026。前の役のチケット（after）が閉じたので、経路の次の役（role）のラベルを付けた"
+  ops.disk_pruned:
+    source: control_plane
+    required: [cache_gb, free_gb_before, free_gb_after, actions]
+    note: "2026-11-14。dispatcher の Docker のディスクの見張り（disk_guard.py）が、ビルドのキャッシュが上限（cache_max_gb）を超えたか空きが下限（min_free_gb）を下回ったので、ビルドのキャッシュを減らした（足りなければ名前のないイメージも消した）。片付けても足りなければ停止 disk:low（env）を開く。Mac のディスク満杯で工場全体が止まったのが 2 回（11/14）"
   plan.waiting:
     source: control_plane
     required: [plan_id, repo, issue, after]

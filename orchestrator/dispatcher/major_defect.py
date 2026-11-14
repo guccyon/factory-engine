@@ -8,8 +8,10 @@
   プランナーは着手判定だけをし、方針が要ればスパイクのレーン（System Architect）が原因と直し方を決め、同じ原因の不具合を束ねる（ADR 0055）
 - 再リリース: メジャーの Incident の Defect の Issue が閉じ（修正の PR がマージされ）、まだ Release に入っていないマージ済みの PR があれば、
   supervisor が緊急便（train.emergency）を出す。Incident ごとに 1 回（major.rereleased）
-- 本番の承認: その緊急便に本番を立てる段階の製品の Release が載っていれば、staging に出た後に supervisor が承認する
-  （QA の関門の報告は待たない。release.approved の qa_skipped に理由が残る）
+- 本番の承認: その緊急便が S1 の修正を載せていて、本番を立てる段階の製品の Release が載っていれば、staging に出た後に supervisor が承認する
+  （QA の関門の報告は待たない。release.approved の qa_skipped に理由が残る）。S2 だけの緊急便は staging まで出し、本番は QA の関門の報告と
+  承認者の判断を待つ（ADR 0053 の追記 2026-11-14。緊急便はその時点の main をまるごと載せるので、S2 まで自動で本番に出すと
+  ほかの変更も関門と承認を通らずに本番に出続ける）
 - 本番で見つかったメジャー不具合の revert（ADR 0053 の決定 3）は本番を立てる製品が出てから実装する（rally は development）
 
 LLM は使わない。失敗しても supervisor の周回は止めない（呼び出し側で握る）。
@@ -23,6 +25,7 @@ import ship
 import train
 
 MAJOR_SEVERITIES = ("s1", "s2")
+AUTO_APPROVE_SEVERITIES = ("s1",)   # 工場が本番まで自分で承認する緊急便の重要度（ADR 0053 の追記 2026-11-14）
 FIX_PROPOSED, PLAN = "factory:fix-proposed", "factory:plan"
 REREL = "major.rereleased"
 APPROVE_VIA = "メジャー不具合の即時再リリース（ADR 0053）"
@@ -90,6 +93,14 @@ def rerelease_step(cur, gh, log=None) -> list[str]:
     return out
 
 
+def carries_auto_approved(cur, tid: str) -> bool:
+    """その緊急便が、工場が本番まで承認する重要度（S1）の Incident の修正を載せているか"""
+    cur.execute("select 1 from events r join events o on o.name='incident.opened' and o.payload->>'incident_id' = r.payload->>'incident_id' "
+                "where r.name=%s and r.payload->>'train_id'=%s and o.payload->>'severity' = any(%s) limit 1",
+                (REREL, tid, list(AUTO_APPROVE_SEVERITIES)))
+    return cur.fetchone() is not None
+
+
 def approve_step(cur, log=None) -> list[str]:
     """メジャー不具合の緊急便のうち、本番の承認が要り、まだ承認していないものを承認する（staging に出る前は次の周回で）"""
     cur.execute("select r.payload->>'train_id' as tid from events r where r.name=%s and not exists "
@@ -97,7 +108,7 @@ def approve_step(cur, log=None) -> list[str]:
     out = []
     for row in cur.fetchall():
         t = train.train_of(cur, row["tid"])
-        if not t or not t["approval"].get("required"):
+        if not t or not t["approval"].get("required") or not carries_auto_approved(cur, row["tid"]):
             continue
         staged = all(ship.status(cur, r["repo"])["environments"].get("staging", {}).get("release_id") == r["release_id"] for r in t["releases"])
         if not staged:
