@@ -35,6 +35,7 @@ from psycopg.types.json import Jsonb
 import case
 import committee
 import continuation
+import deadline as deadline_timer
 import model_route
 import design
 import design_line
@@ -554,6 +555,7 @@ def run_job(job: dict, reattaching: bool = False):
             deadline = (job["started_at"].timestamp() if reattaching and job.get("started_at") else time.time()) + JOB_TIMEOUT
             cancelled = False
             LAST_OUTPUT[job_id] = time.time()
+            killer = deadline_timer.arm(name, deadline)   # 出力が止まって readline が戻らなくても、締め切りでコンテナを止める
             while True:
                 line = proc.stdout.readline()
                 if line:
@@ -569,6 +571,7 @@ def run_job(job: dict, reattaching: bool = False):
                     subprocess.run(["docker", "kill", name], capture_output=True)
                     proc.wait(timeout=30)
                     break
+            killer.cancel()
             LAST_OUTPUT.pop(job_id, None)
             # 止める印はログが出ない間にも付く（ops_loop がコンテナを止める）。終わった時点でもう一度見る
             cur.execute("select cancel_requested, preempted_for from jobs where id=%s", (job_id,))
