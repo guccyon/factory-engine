@@ -90,7 +90,7 @@ services:
       WATCH_DRAIN_MIN: ${WATCH_DRAIN_MIN:-30}          # ラインの一時停止（ADR 0020）がこの分数続いたら停止 drain: を開く（再開の忘れ）
       WATCH_LINE_LOW_BELOW: ${WATCH_LINE_LOW_BELOW:-2}  # 投入待ちのタスクがこの数を切ったら知らせる（停止ではない。0 で無効）
       NOTIFIER: ${NOTIFIER:-github-issue}
-      STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
+      STATUS_REPO: ${STATUS_REPO:-}   # 空なら FACTORY_REPOS の最初の製品。公開の宛先に非公開の製品の情報を出さない（#226）
       # 受信トレイの通知（ADR 0026 の決定 7）。通知先は建てるときに選ぶ: log / github-issue / slack をカンマで。受信トレイ自体はコンソールに常にある
       INBOX_NOTIFY: ${INBOX_NOTIFY:-log}
       INBOX_RENOTIFY_MIN: ${INBOX_RENOTIFY_MIN:-240}     # 前の通知からこれだけ残っていれば知らせ直す（仮置き）
@@ -188,7 +188,7 @@ services:
       DESIGN_REVIEW: ${DESIGN_REVIEW:-1}
       QUALITY_REPOS: ${QUALITY_REPOS:-}
       ROADMAP: /definitions/roadmap.yaml
-      STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}
+      STATUS_REPO: ${STATUS_REPO:-}   # 空なら FACTORY_REPOS の最初の製品。公開の宛先に非公開の製品の情報を出さない（#226）
       BUILD_WORK_DIR: /build-work
     volumes:
       - ../definitions:/definitions:ro
@@ -288,7 +288,7 @@ services:
       SHIP_TOUCH_HOST: ${SHIP_TOUCH_HOST:-}
       SHIP_TOUCH_BIND: ${SHIP_TOUCH_BIND:-}
       EPHEMERAL_MAX: ${EPHEMERAL_MAX:-2}   # PR ごとの使い捨て環境（ADR 0043 の O7）を同時に立てる数（factoryctl の受け付けは既定の 2 で見る）
-      STATUS_REPO: ${STATUS_REPO:-guccyon/factory-engine}   # 出荷の失敗を停止として知らせる先
+      STATUS_REPO: ${STATUS_REPO:-}   # 出荷の失敗を停止として知らせる先。空なら FACTORY_REPOS の最初の製品（#226）
       NOTIFIER: ${NOTIFIER:-github-issue}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

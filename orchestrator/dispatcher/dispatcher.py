@@ -1817,6 +1817,9 @@ def main():
     global RELAY
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
+    if (problem := stoppage.visibility_problem()):   # 公開の宛先に非公開の製品の情報を出さない（#226）。直すまで上がらない
+        log(f"refuse to start: {problem}")
+        return 1
     reattached = recover()
     with db() as conn, conn.cursor() as cur:   # 上がった印。更新役が新しい版で上がったかを見る（ADR 0031）
         record_event(cur, "dispatcher.started", None, None, {"engine_version": version.engine_version(ENV), "reattaching": len(reattached)})
