@@ -122,6 +122,7 @@ const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if((m=p.match(/^\/ask(?:\/(new|\d+))?$/)))return["ask",m[1]||""];
+ if((m=p.match(/^\/committees(?:\/(\d+))?$/)))return["committees",m[1]||""];
  if(p==="/line"||p==="/ship"||p==="/cost"||p==="/live"||p==="/maint")return[p.slice(1),""];
  if(p==="/usage"){history.replaceState(null,"","/cost");return["cost",""]}   // 前の名前（使用量）のリンクは費用へ（ADR 0059、#478）
  if((m=p.match(/^\/products(?:\/([\w.-]+\/[\w.-]+))?$/)))return["products",m[1]||""];
@@ -231,6 +232,7 @@ const HELP=`<h2>ヘルプ: 画面の言葉</h2>
 <dt>製品</dt><dd>製品ごとの概要・見通し・障害と問題・利用状況・リリースと環境・準備度。出荷（Web 検証・本番・前の版へ戻す）は「リリースと環境」で</dd>
 <dt>ライン</dt><dd>チケットの一覧（状態ごと）とかんばん。優先度の変更・保留・止める</dd>
 <dt>工場の保守</dt><dd>提供元（建設者）が直す工場の側の件。工場の不調・建設者宛ての件・見回りの結果・うまくいかなかったジョブ</dd>
+<dt>委員会</dt><dd>工場の委員会の開催と議事録。知見の委員会（知見の PR ごとの審査と週 1 回の定例）と事故の調査委員会（週 1 回の見回り）。委員会は自分で実装せず、決めたことは Issue にして工場のラインで作る</dd>
 <dt>費用</dt><dd>日ごとの費用と予算、役割・モデルごとの消費、契約の週の進み（前の「使用量」）</dd>
 </dl>
 <h3>工場の状態（右上。押すと詳しく）</h3><dl>
@@ -459,13 +461,13 @@ function settingsBody(sec,s){const f=s.factory;
 // ---- 描画
 // 骨組み（ADR 0059、#471）。PC は左の縦のメニュー、タブレットはアイコンだけ、スマホは下のタブ。並びはワークベンチで変わり、どのページにもたどれる
 const ICON={home:'<path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/>',inbox:'<path d="M4 5h16v14H4zM4 13h5l1 2h4l1-2h5"/>',ask:'<path d="M4 5h16v11H9l-5 4z"/>',
- products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',maint:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
+ products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',committees:'<path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3 3-5 6-5s6 2 6 5M14 15.5c.6-.3 1.3-.5 2-.5 3 0 6 2 6 5"/>',maint:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
  cost:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
  help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01"/>',more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'};
 const icon=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]||ICON.more}</svg>`;
-const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],maint:["/maint","工場の保守"],cost:["/cost","費用"]};
+const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],maint:["/maint","工場の保守"],committees:["/committees","委員会"],cost:["/cost","費用"]};
 // main は主のメニュー、それ以外は「すべてのページ」の下。tabs はスマホの下のタブ（最後に「その他」が付く）
-const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","maint","ask","products","cost"],tabs:["home","inbox","ask","products"]},
+const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","maint","committees","ask","products","cost"],tabs:["home","inbox","ask","products"]},
  product:{name:"製品",main:["home","inbox","ask","products","live","cost"],tabs:["home","inbox","ask","products"]}};
 const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 let wb=WORKBENCHES[store.get("console.workbench")]?store.get("console.workbench"):"factory";
@@ -505,6 +507,7 @@ function skeleton(v,arg){
  if(v==="ask")return askSkeleton(arg);
  if(v==="live")return liveSkeleton();
  if(v==="maint")return mtSkeleton();
+ if(v==="committees")return cmSkeleton(arg);
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="products")return arg?ppSkeleton(arg):`<div id="prod-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
@@ -519,7 +522,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-
  b.parentNode.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));b.closest("section").querySelectorAll("[data-tgt]").forEach(x=>x.hidden=x.dataset.tgt!==t)});
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
 async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">費用を読み込めませんでした</div>')}}
-function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):v==="ask"||v==="products"?arg:"");
+function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):v==="ask"||v==="products"?arg:v==="committees"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));
  document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
@@ -541,6 +544,7 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
  else if(v==="ask")askRender(arg)
  else if(v==="live")liveRender(s)
  else if(v==="maint")mtRender(s)
+ else if(v==="committees")cmRender(arg)
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="products"&&arg)ppRender(s,arg)
  else if(v==="products"){if(prodOf!==arg||Date.now()-prodAt>60000||!document.querySelector("#prod-b .prod"))loadProd(arg)}
