@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 RUN useradd -m -u 1001 worker && mkdir -p /handoff && chown worker:worker /handoff   # チケットの引き継ぎのボリュームを付けるところ（ADR 0017）
 USER worker
 WORKDIR /work
+COPY --chown=worker:worker clone_engine.sh /usr/local/bin/clone_engine.sh
 COPY --chown=worker:worker entrypoint.sh /usr/local/bin/entrypoint.sh
 # clarify（intake → clarify の最小経路）とその要求者ペルソナ
 COPY --chown=worker:worker clarify.sh /usr/local/bin/clarify.sh

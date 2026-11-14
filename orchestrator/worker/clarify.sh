@@ -19,7 +19,7 @@ PERSONAS=/usr/local/share/factory/requesters.yaml   # 正本は orchestrator/wor
 echo "[clarify] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} max_rounds=${MAX_ROUNDS} engine=${ENGINE_REPO}@${ENGINE_REF}"
 # エージェントの呼び出しは Engine の core-gates/agent_runner.py に集める（工程 clarify.asker / clarify.persona。ADR 0010）
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 ISSUE_JSON=$(gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json title,body,labels)
 TITLE=$(jq -r .title <<<"${ISSUE_JSON}")
 BODY=$(jq -r '.body // ""' <<<"${ISSUE_JSON}")

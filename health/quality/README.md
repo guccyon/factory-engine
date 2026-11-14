@@ -37,5 +37,6 @@ python3 -m pytest health/quality/tests
 ## 既知の誤差
 
 - 複雑さと関数の長さは lizard が読める言語だけ（Gen1 は Rust と TypeScript）。Dart は行数・重複・テストの数だけ
+- テストの数は、数え方（`snapshot.py` の `TEST_FN`）を持つ言語だけ数える。持たない言語が製品にあれば、`tests_per_kloc` は 0 でなく null（測れない）にしてスコアから外し、測れなかった言語を `unmeasured_languages`（`tests`・`complexity`）に残す（#234）。言語ごとの数え方を製品の側で宣言するところは Gen2 の仕様に回す
 - Rust のファイルの中のテスト（`#[cfg(test)]`）は、その行から後ろをテストとみなす（テストのモジュールがファイルの末尾にある前提）
 - 重複は 6 行の窓の一致で、import と記号だけの行は見ない。言い換えた重複（名前だけ違う）は拾わない

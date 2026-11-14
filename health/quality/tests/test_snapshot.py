@@ -90,3 +90,22 @@ def test_floor_flags_only_increase():
     assert not results[0]["broken"]
     results, md = snapshot.floor(DEFS, base, {"counts": {"complex_functions": None}, "score": None})
     assert not results[0]["broken"] and "測れない" in md
+
+
+def test_language_without_test_counting_is_null_not_zero(tmp_path):
+    """数え方を持たない言語（ruby）があれば、テストの数は 0 でなく測れない（null）。測れなかった言語を残す（#234）"""
+    from datetime import datetime, timezone
+    root = tree(tmp_path, {"src/lib.rs": SIMPLE, "tests/t.rs": "#[test]\nfn t() {}\n",
+                           "app/a.rb": "def a\n  1\nend\n", "spec/a_spec.rb": "it 'works' do\nend\n"})
+    config = {"languages": {"rust": CONFIG["languages"]["rust"], "ruby": {"src": ["app/**/*.rb"], "tests": ["spec/**/*.rb"]}}}
+    out = snapshot.measure(root, config, DEFS, None, {}, False, datetime.now(timezone.utc))
+    assert out["metrics"]["tests_per_kloc"] is None
+    assert out["unmeasured_languages"]["tests"] == ["ruby"]
+    assert "ruby" in out["unmeasured_languages"]["complexity"]
+    assert ("rust" in out["unmeasured_languages"]["complexity"]) == (snapshot.lizard is None)
+
+
+def test_known_languages_keep_counting(tmp_path):
+    root = tree(tmp_path, {"src/lib.rs": SIMPLE, "tests/t.rs": "#[test]\nfn t() {}\n"})
+    out = run(root, history=False)
+    assert out["metrics"]["tests_per_kloc"] is not None and out["unmeasured_languages"]["tests"] == []

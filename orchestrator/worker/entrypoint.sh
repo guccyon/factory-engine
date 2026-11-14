@@ -95,7 +95,7 @@ trap save_handoff EXIT
 git config --global user.name "factory-worker"
 git config --global user.email "factory-worker@users.noreply.github.com"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 AGENT=(python3 /work/engine/core-gates/agent_runner.py)
 MODEL=$("${AGENT[@]}" resolve implement --tier "${MODEL_TIER:-tier-large}" | jq -r .model)
 echo "[worker] job=${JOB_ID} repo=${REPO} issue=#${ISSUE_NUMBER} model=${MODEL} max_turns=${MAX_TURNS} engine=${ENGINE_REPO}@${ENGINE_REF}"
