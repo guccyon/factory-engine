@@ -428,11 +428,52 @@ function settingsBody(sec,s){const f=s.factory;
  return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
 
 // ---- 描画
-const NAV=[["/","ホーム","home"],["/inbox","受信トレイ","inbox"],["/line","ライン","line"],["/ship","出荷","ship"],["/products","製品","products"],["/usage","使用量","usage"]];
+// 骨組み（ADR 0059、#471）。PC は左の縦のメニュー、タブレットはアイコンだけ、スマホは下のタブ。並びはワークベンチで変わり、どのページにもたどれる
+const ICON={home:'<path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/>',inbox:'<path d="M4 5h16v14H4zM4 13h5l1 2h4l1-2h5"/>',ask:'<path d="M4 5h16v11H9l-5 4z"/>',
+ products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
+ usage:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+ help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01"/>',more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'};
+const icon=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]||ICON.more}</svg>`;
+const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],products:["/products","製品"],line:["/line","ライン"],ship:["/ship","出荷"],usage:["/usage","使用量"]};
+// main は主のメニュー、それ以外は「すべてのページ」の下。tabs はスマホの下のタブ（最後に「その他」が付く）
+const WORKBENCHES={factory:{name:"工場",main:["home","inbox","line","products","ship","usage"],tabs:["home","inbox","line","products"]},
+ product:{name:"製品",main:["home","inbox","products","ship","usage"],tabs:["home","inbox","products"]}};
+const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+let wb=WORKBENCHES[store.get("console.workbench")]?store.get("console.workbench"):"factory";
+function navItem(k,v,cls){const [h,t]=PAGES[k];return `<a href="${h}" data-nav data-v="${k}" title="${t}"${k===v?' aria-current="page"':""}${cls?` class="${cls}"`:""}>${icon(k)}<span class="lb">${t}</span>${k==="inbox"?'<span class="c-count" data-n="inbox"></span>':""}</a>`}
+function buildNav(){const w=WORKBENCHES[wb],v=route()[0],rest=Object.keys(PAGES).filter(k=>!w.main.includes(k));
+ document.getElementById("side").innerHTML=w.main.map(k=>navItem(k,v)).join("")+(rest.length?`<div class="c-sep"><span class="lb">すべてのページ</span></div>`+rest.map(k=>navItem(k,v)).join(""):"");
+ document.getElementById("tabs").innerHTML=w.tabs.map(k=>navItem(k,v)).join("")+`<a href="#more" id="more-t" title="その他">${icon("more")}<span class="lb">その他</span></a>`;
+ document.getElementById("tabs").style.gridTemplateColumns=`repeat(${w.tabs.length+1},1fr)`;
+ document.getElementById("wb").innerHTML=Object.entries(WORKBENCHES).map(([k,x])=>`<option value="${k}"${k===wb?" selected":""}>${x.name}</option>`).join("");
+ const others=Object.keys(PAGES).filter(k=>!w.tabs.includes(k));
+ document.getElementById("more-b").innerHTML=`<div class="c-side">${others.map(k=>navItem(k,v)).join("")}<div class="c-sep">工場と使い方</div><a href="/settings" data-nav data-v="settings">${icon("settings")}<span class="lb">設定</span></a><a href="/help" data-nav data-v="help">${icon("help")}<span class="lb">ヘルプ</span></a></div>
+  <label class="c-wb">ワークベンチ <select data-wb>${Object.entries(WORKBENCHES).map(([k,x])=>`<option value="${k}"${k===wb?" selected":""}>${x.name}</option>`).join("")}</select></label>`;
+ setCounts()}
+function setWorkbench(k){if(!WORKBENCHES[k])return;wb=k;store.set("console.workbench",k);buildNav();force=true;render()}
+document.addEventListener("change",e=>{if(e.target.id==="wb"||e.target.matches("[data-wb]"))setWorkbench(e.target.value)});
+function setCounts(){const n=(S&&S.inbox&&S.inbox.count)||0;document.querySelectorAll('.c-count[data-n="inbox"]').forEach(c=>{c.textContent=n||"";c.hidden=!n;c.classList.toggle("is-new",n>0)})}
+const more=document.getElementById("more");
+function moreOpen(on){more.hidden=!on;document.getElementById("more-t")?.setAttribute("aria-expanded",on)}
+document.addEventListener("click",e=>{if(e.target.closest("#more-t")){e.preventDefault();moreOpen(more.hidden);return}if(!more.hidden&&(e.target===more||e.target.closest("#more a[data-nav]")))moreOpen(false)});
+// 工場の状態（右上）。点の色＋一言。押すと指示役・モード・流量・費用・着手待ち・ラインの切り替え
+const fsBtn=document.getElementById("fs"),fsPop=document.getElementById("fs-pop");
+function fsOpen(on){fsPop.hidden=!on;fsBtn.setAttribute("aria-expanded",on)}
+fsBtn.addEventListener("click",()=>fsOpen(fsPop.hidden));
+document.addEventListener("click",e=>{if(!fsPop.hidden&&!e.target.closest("#fs-pop,#fs"))fsOpen(false)});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){fsOpen(false);moreOpen(false)}});
+function factoryState(s){const f=s.factory,hb=f.heartbeat_age_sec,l=f.line,al=((s.alerts||{}).open||[]).filter(a=>!a.inbox).length,mode=f.mode==="unattended"?"全自動モード":"並走モード";
+ if(hb==null||hb>180)return["is-bad","止まっている",hb==null?"指示役が未起動":"指示役が "+dur(hb)+"前に停止"];
+ if(f.qa_hold)return["is-bad","止まっている","QA が差し止め中"];
+ if(l&&l.draining)return["is-bad","止まっている","ラインを一時停止中"];
+ if(al)return["is-warn","注意",`不調 ${al} 件`];
+ if(f.line_low_below>0&&f.planned<f.line_low_below)return["is-warn","注意",`着手待ちが ${f.planned} 件`];
+ return["","動いている",mode]}
+function factoryView(s){const [c,t,sub]=factoryState(s);fsBtn.className="c-factory "+c;fsBtn.innerHTML=`<i></i><b>${esc(t)}</b><span class="sub">· ${esc(sub)}</span>`;fsBtn.title=`工場の状態: ${t}（${sub}）。押すと詳しく`}
 function skeleton(v,arg){
  if(v==="home")return `<section class="card" id="h-todo"></section><section class="card" id="h-prod" hidden></section><div id="h-stops"></div><section class="card" id="h-trend"></section><div class="two"><section class="card" id="h-line"></section><section class="card" id="h-ship"></section></div>`;
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
- if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><main id="lanes"></main>`;
+ if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="products")return `<div id="prod-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
  if(v==="usage")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
@@ -448,7 +489,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-
 async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
 function render(){if(!S)return;const s=S,[v,arg]=route(),sig=v+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
- document.querySelectorAll("#nav a[data-v]").forEach(a=>a.classList.toggle("on",a.dataset.v===v));
+ document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));
  document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
  const vw=document.getElementById("view");if(vw._sig!==sig){vw._sig=sig;vw.innerHTML=skeleton(v,arg);window.scrollTo(0,0)}
  if(v==="settings")document.querySelectorAll(".sn a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="/settings/"+arg));
@@ -476,8 +517,8 @@ async function load(){if(document.hidden&&!force)return;let s;try{s=await (await
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
   `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="まだ手を付けていないチケット（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">着手待ちのチケット <b>${f.planned}</b></span>`,
   lineView(f.line),holdView(f.qa_hold)].join(" "));
- const n=document.getElementById("nav-n");n.textContent=ib.count;n.classList.toggle("has",ib.count>0);
- document.title=(ib.count?`(${ib.count}) `:"")+"工場の操業コンソール";
+ setCounts();factoryView(s);
+ document.title=(ib.count?`(${ib.count}) `:"")+"操業コンソール";
  render()}
-document.getElementById("nav").innerHTML=NAV.map(([h,t,v])=>`<a href="${h}" data-nav data-v="${v}">${t}${v==="inbox"?' <span class="n" id="nav-n">0</span>':""}</a>`).join("");
+buildNav();
 load();setInterval(load,10000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
