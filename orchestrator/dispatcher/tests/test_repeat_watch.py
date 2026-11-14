@@ -32,6 +32,10 @@ def test_parse_only_swallowed_exceptions():
     assert fault.root_signature("IndexError", "IndexError(2)") == fault.root_signature("IndexError", "IndexError(3)")
     assert fault.root_signature("KeyError", "KeyError('a')") != fault.root_signature("IndexError", "IndexError(2)")
     assert fault.root_signature("OperationalError", "OperationalError('could not translate host name \"postgres\"')") == fault.ENV_SIGNATURE
+    for s in ("OperationalError('connection failed: connection to server at \"172.18.0.2\", port 5432 failed: timeout expired')",
+              "OperationalError('the connection is closed')", "URLError(TimeoutError('The read operation timed out'))",
+              "<urlopen error [Errno 61] Connection refused>", "OperationalError('consuming input failed: server closed the connection unexpectedly')"):
+        assert fault.root_signature(s.lstrip("<").split("(")[0].split(" ")[0], s) == fault.ENV_SIGNATURE, s
 
 
 @pytest.fixture

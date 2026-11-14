@@ -52,7 +52,10 @@ def parse(args: tuple) -> tuple[str, str, str] | None:
 ENV_COMPONENT = "env"
 ENV_SIGNATURE = "env:network"
 _ENV_MARKERS = ("name resolution", "name or service not known", "could not translate host name", "nodename nor servname",
-                "connection refused", "closed the connection unexpectedly", "connection timed out", "network is unreachable")
+                "connection refused", "closed the connection unexpectedly", "connection timed out", "network is unreachable",
+                # 11-14 の Mac: 同じ VM の詰まりで psycopg・urllib が出す別の文言（接続の失敗・切断・時間切れ）
+                "connection failed", "could not connect", "connection is closed", "terminating connection", "connection reset",
+                "temporary failure", "operation timed out", "urlopen error timed out", "timeout expired", "server closed the connection", "ssl syscall error")
 
 
 def is_env(sample: str) -> bool:
