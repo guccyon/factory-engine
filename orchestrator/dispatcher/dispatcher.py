@@ -91,6 +91,9 @@ TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "�
               "spike": "スパイクのレーンの System Architect が、原因と直し方の方針を決めて設計書に書きます（ADR 0055）"}
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
+# 始めるときに外すラベル。積み直し（rerun・自動の立て直し）は GitHub のラベルを通らずに積むので、前の失敗の factory:failed と
+# 流すための factory:planned が残り、running・failed・planned が同時に付いた（2026-11-14 rally #1438）
+START_CLEARS = [LABELS["queued"], LABELS["failed"], "factory:planned"]
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
 BODY_FIX_MAX_PER_PR = int(ENV.get("BODY_FIX_MAX_PER_PR", "2"))   # 1 本の PR の本文を直す回数の上限（2026-11-10）
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))   # ラインのワーカーの数の既定。宣言（factoryctl line scale）があればそちら（ADR 0028）
@@ -453,15 +456,15 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind in NO_LABEL_KINDS:   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける。窓口と一次調査（ADR 0048）は Issue がない（issue_number は仮の負の数）
                 image = WORKER_IMAGE
             elif kind in ("plan", "spike"):   # プランナー（ADR 0025・0026）とスパイク（ADR 0055）。読むだけなので製品によらず基本のイメージ
-                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                swap_label(repo, issue, START_CLEARS, [LABELS["running"]])
                 image = WORKER_IMAGE
             elif kind in ("ui_design", "design_system"):   # デザイナー役（ADR 0025・0026）。製品によらず Chromium つきのイメージ
-                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                swap_label(repo, issue, START_CLEARS, [LABELS["running"]])
                 image = UI_DESIGN_IMAGE
             elif kind == "qa":   # QA 役（ADR 0028 の決定 2）。画面を動かすので Chromium と playwright-core のイメージ。固定 Issue（factory:qa）なのでラベルは替えない
                 image = UI_DESIGN_IMAGE
             else:
-                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                swap_label(repo, issue, START_CLEARS, [LABELS["running"]])
                 image = image_for(repo, issue)
             if not reattaching:
                 prov = provenance(repo, image)
@@ -494,6 +497,10 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
+                   # ワーカー 1 本が使える CPU の上限（docker run --cpus）。重いビルドが並ぶと Docker の VM が飽和し、DNS と制御プレーンの DB の認証が
+                   # 時間切れになった（2026-11-14 01:38〜01:52 UTC、rust のジョブ 2 本と QA の staging の作り直しが重なった）。機械ごとに override で
+                   *(["--cpus", ENV["WORKER_CPUS"]] if ENV.get("WORKER_CPUS") else []),
+                   *(["--memory", ENV["WORKER_MEMORY"]] if ENV.get("WORKER_MEMORY") else []),
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    *(["-e", f"MAX_BUDGET_USD={budget}"] if budget is not None else []),
                    "-e", f"GH_TOKEN={'' if kind == 'investigate' else ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）。一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）
