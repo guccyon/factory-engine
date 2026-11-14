@@ -42,3 +42,10 @@
 
 1 PR（factory-engine）: `prod_watch.py`（見張り）、`ship.py`（自動の戻し・控え）、`inbox.py`（contract を添える）、definitions/events.yaml、テスト。DB のスキーマは変えない（events に足すだけ）。
 製品の側（rally）: `.factory-config/ship.yaml` に `backup`、`.factory-config/manifest.yaml` の `product_stage` を launch に。
+
+## 追記（2026-11-14）: 本番待ちの版で便を止めない場合
+
+rally を launch に上げると、staging の版が本番待ちの間は定期便も緊急便も次の版を切らない（`ship.busy`）。次の 2 つで便が止まったままになるので直した（ADR 0049・0053 の意図どおりにするだけで、承認の仕組みは変えない）。
+
+- **見送った版**: 承認者が QA の関門の報告を見て「見送る」（`qa.gate_blocked`）と、その版は本番に出ないのに staging に残り、本番待ちのまま次の便も止まっていた。「修正は次の便で」（ADR 0049）が出せない。見送った版は本番待ちに数えない
+- **緊急便**: S1 の修正（ADR 0053）が、本番待ちの版の承認を待っていた。緊急便は本番待ちを追い越して staging に出す（処理中の依頼だけ待つ）。追い越された版は本番待ちから外れ、受信トレイにはいまの staging の版だけが出る

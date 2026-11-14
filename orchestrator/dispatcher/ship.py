@@ -168,18 +168,24 @@ def unreleased(cur, repo: str) -> int:
     return cur.fetchone()["n"]
 
 
-def busy(cur, repo: str) -> bool:
-    """その製品の出荷の依頼が処理待ちか、staging に出した版が prod への承認を待っているか"""
+def busy(cur, repo: str, emergency: bool = False) -> bool:
+    """その製品の出荷の依頼が処理待ちか、staging に出した版が prod への承認を待っているか。
+    承認者が見送った版（QA の関門の「見送る」、qa.gate_blocked）は本番待ちにしない（修正は次の便で出すので、便を止めない）。
+    緊急便（S1 の修正。ADR 0053）は承認待ちの版を待たずに staging に出す（処理中の依頼だけ待つ）"""
     cur.execute("select 1 from events e where name = any(%s) and payload->>'release_id' like %s and not exists "
                 "(select 1 from events r where r.name = any(%s) and (r.payload->>'request_id')::bigint = e.id) limit 1",
                 (list(REQUESTS), f"{repo}@%", list(RESULTS)))
     if cur.fetchone():
         return True
-    if prod_held(cur, repo):
-        return False   # 本番に出さないので、staging の版は本番待ちにならない
+    if prod_held(cur, repo) or emergency:
+        return False   # 本番に出さないので、staging の版は本番待ちにならない（緊急便は本番待ちを追い越す）
     envs = status(cur, repo)["environments"]
     staged = envs.get("staging", {}).get("release_id")
-    return bool(staged) and staged != envs.get("prod", {}).get("release_id")
+    if not staged or staged == envs.get("prod", {}).get("release_id"):
+        return False
+    import qa_gate
+    g = qa_gate.gate(cur, staged)
+    return not (g and g["blocked"])
 
 
 # ------------------------------------------------------------------ 入口（factoryctl・コンソール）

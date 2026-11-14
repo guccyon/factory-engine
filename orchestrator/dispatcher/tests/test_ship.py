@@ -105,8 +105,27 @@ def test_release_train_helpers(cur):
     assert ship.busy(cur, REPO) is True                             # 処理待ち
     ship.record(cur, "release.deployed", rid, {"repo": REPO, "env": "staging", "ok": True, "request_id": ship.pending(cur)[0]["id"]})
     assert ship.busy(cur, REPO) is True                             # 承認待ち（staging と prod が違う）
+    assert ship.busy(cur, REPO, emergency=True) is False            # 緊急便は本番待ちを追い越す（ADR 0053）
     deployed(cur, rid, "prod")
     assert ship.busy(cur, REPO) is False
+
+
+def test_blocked_release_does_not_hold_the_train(cur):
+    """承認者が見送った版（QA の関門の「見送る」）は本番待ちにしない。修正は次の便で出すので、便を止めない"""
+    import qa_gate
+    a, b = release(cur, "1.0.0"), release(cur, "1.1.0")
+    deployed(cur, a, "staging")
+    deployed(cur, a, "prod")
+    deployed(cur, b, "staging")
+    assert ship.busy(cur, REPO) is True
+    cur.execute("insert into events(name, correlation_id, payload) values ('qa.gate_opened',%s,%s)",
+                (f"qa_gate:{b}", Jsonb({"release_id": b, "repo": REPO})))
+    assert ship.busy(cur, REPO) is True                             # 関門が開いているだけでは待つ
+    cur.execute("insert into events(name, correlation_id, payload) values ('qa.gate_blocked',%s,%s)",
+                (f"qa_gate:{b}", Jsonb({"release_id": b, "repo": REPO, "by": "owner", "via": "test", "note": "S2 が残る"})))
+    assert qa_gate.gate(cur, b)["blocked"] and ship.busy(cur, REPO) is False
+    ship.request_ship(cur, a, "t", "test")
+    assert ship.busy(cur, REPO, emergency=True) is True              # 処理中の依頼は緊急便も待つ
 
 
 def built(cur, rid, contracts):

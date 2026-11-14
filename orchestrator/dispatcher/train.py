@@ -54,12 +54,12 @@ def record_train(cur, kind: str, releases: list[dict], by: str, reason: str | No
     return tid
 
 
-def cut(cur, repos: list[str]) -> list[dict]:
+def cut(cur, repos: list[str], emergency: bool = False) -> list[dict]:
     """製品ごとに、まだ Release に入っていないマージ済みの PR を Release に切り、staging への出荷を依頼する。
-    PR がない・出荷が処理中か承認待ちの製品は載せない"""
+    PR がない・出荷が処理中か承認待ちの製品は載せない（緊急便は承認待ちを追い越す）"""
     out = []
     for repo in repos:
-        if ship.unreleased(cur, repo) == 0 or ship.busy(cur, repo):
+        if ship.unreleased(cur, repo) == 0 or ship.busy(cur, repo, emergency=emergency):
             continue
         rid, prs = ship.create_release(cur, repo, ship.next_version(cur, repo))
         if not rid:
@@ -84,9 +84,9 @@ def emergency(cur, repo: str, by: str, reason: str, now: datetime | None = None)
         return False, "緊急便は理由（どの S1 を直すか）が要る"
     if ship.unreleased(cur, repo) == 0:
         return False, "まだ Release に入っていないマージ済みの PR がない（修正の PR がマージされてから出す）"
-    if ship.busy(cur, repo):
-        return False, "出荷が処理中か承認待ち（factoryctl release status で見る）"
-    rels = cut(cur, [repo])
+    if ship.busy(cur, repo, emergency=True):
+        return False, "出荷が処理中（factoryctl release status で見る）"
+    rels = cut(cur, [repo], emergency=True)
     if not rels:
         return False, "Release を切れなかった"
     tid = record_train(cur, "emergency", rels, by, reason=reason.strip()[:300], now=now)

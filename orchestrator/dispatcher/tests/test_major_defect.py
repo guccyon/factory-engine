@@ -113,6 +113,21 @@ def test_rerelease_waits_while_shipping_is_busy(cur):
     assert len(major_defect.rerelease_step(cur, gh)) == 1              # 次の周回で出す
 
 
+def test_rerelease_overtakes_a_release_waiting_for_prod(cur):
+    """本番を立てる段階で、staging の版が本番待ちでも S1 の修正の緊急便は出る（ADR 0053。本番待ちで修正が止まらない）"""
+    ship.observe_stage(cur, REPO, "launch")
+    gh = FakeGh("closed")
+    merged(cur, 9)
+    rid, _ = ship.create_release(cur, REPO, ship.next_version(cur, REPO))
+    ship.request_ship(cur, rid, "t", "test")
+    finish_ship(cur)                                                    # staging に出て本番待ち
+    assert ship.busy(cur, REPO) is True
+    s1(cur, gh)
+    merged(cur, 1)
+    logs = []
+    assert len(major_defect.rerelease_step(cur, gh, log=lambda *a: logs.append(a))) == 1, logs
+
+
 def test_launch_stage_is_approved_after_staging_without_the_qa_report(cur):
     ship.observe_stage(cur, REPO, "launch")
     gh = FakeGh("closed")
