@@ -202,3 +202,32 @@ def test_qa_ticket_with_declared_caps_is_capped(cur):
     for _ in range(4):
         spend(cur, "qa", 3.0)
     assert wg.cost_gate(cur, CORR)["hit"] == ["ticket.cost_usd"]
+
+
+def ticket(cur, n, priority, held=False):
+    cur.execute("insert into tickets(source, source_ref, repo, title, state, priority, held) values ('github',%s,'o/r','t','planned',%s,%s)",
+                (f"o/r#{n}", priority, held))
+
+
+def test_start_blockers_skip_lower_priority_and_held(cur):
+    """p0 の修正を、優先度の低い・止まっている前の後ろに並べない（rally #1522）"""
+    import ops
+    p0, p1 = ops.LEVELS["p0"][0], ops.LEVELS["p1"][0]
+    ticket(cur, 7, p1)
+    ticket(cur, 8, p0)
+    ticket(cur, 9, p0, held=True)
+    assert wg.start_blockers(cur, CORR, "o/r", p0, [7, 8, 9, 10]) == [8, 10]   # 10 は台帳にない（待つ）
+    cur.execute("select payload from events where name='workflow.enforced' and payload->>'kind'='start_skipped'")
+    assert [x["why"] for x in cur.fetchone()["payload"]["skipped"]] == ["lower_priority", "held"]
+    assert wg.start_blockers(cur, CORR, "o/r", p1, [7]) == [7]                  # 同じ優先度なら待つ
+    assert wg.start_blockers(cur, CORR, "o/r", p0, []) == []
+
+
+def test_start_blockers_skip_tickets_stopped_by_the_line_hold(cur):
+    import ops
+    p0, p1 = ops.LEVELS["p0"][0], ops.LEVELS["p1"][0]
+    ticket(cur, 7, p1)
+    ticket(cur, 8, p1)
+    cur.execute("insert into events(name, payload) values ('line.held_by_qa', %s)",
+                (Jsonb({"by": "qa", "incidents": [], "corrs": ["github:o/r#8"], "min_priority": p0}),))
+    assert wg.start_blockers(cur, CORR, "o/r", p1, [7, 8]) == [8]   # 7 は差し止めで動かない。8 は差し止めた Incident のチケット

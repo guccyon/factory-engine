@@ -787,6 +787,7 @@ def enqueue_step(cur, open_prs: set):
             start = workflow_shadow.declared_start(cur, corr)
             after = [int(x) for x in start.get("after") or []] if start.get("mode") == "after" else []
             open_after = [n for n in after if issue_state(repo, n) != "closed"] if after else []
+            open_after = workflow_guard.start_blockers(cur, corr, repo, t["priority"], open_after)   # 低い優先度・止まっている前は待たない（rally #1522）
         except Exception as e:  # noqa: BLE001
             log("workflow start check failed", corr, repr(e)[:200])
             start, open_after = {}, []
