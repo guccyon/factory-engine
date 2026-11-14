@@ -680,8 +680,11 @@ def over_budget(cur) -> dict | None:
 def inflight_count(cur, open_prs) -> int:
     """同時に流しているチケットの数。待ち・実行中のジョブと、開いた工場の PR（人を待たないもの）を、チケット（correlation_id）ごとに 1 と数える。
     以前はジョブの数と PR の数を足していたので、PR の衝突・CI の直しの続きのジョブが PR と二重に数えられ、
-    直しが重なると新しいタスクが投入されなくなった（11-02 朝、21 件と数えて上限 13 で止まった）"""
-    cur.execute("select coalesce(correlation_id, 'job:' || id::text) as corr from jobs where state in ('queued','running')")
+    直しが重なると新しいタスクが投入されなくなった（11-02 朝、21 件と数えて上限 13 で止まった）。
+    プランナーのジョブ（plan）は投入の前の段なので数えない。一度に積まれた計画待ちを数えて、動いているのは 2 件なのに
+    「39 / 6」と出て、実装の投入も止まった（11-14）。委員会・知見の流れと窓口のジョブもラインのチケットではないので数えない"""
+    cur.execute(f"select coalesce(q.correlation_id, 'job:' || q.id::text) as corr from jobs q where q.state in ('queued','running') "
+                f"and q.kind <> 'plan' and {line.LINE_WHERE}", line.ARGS)
     return len({r["corr"] for r in cur.fetchall()} | set(open_prs))
 
 

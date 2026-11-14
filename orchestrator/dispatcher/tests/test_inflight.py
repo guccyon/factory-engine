@@ -47,6 +47,17 @@ def test_job_for_pr_waiting_on_human_still_counts(cur):
     assert supervisor.inflight_count(cur, set()) == 1
 
 
+def test_plan_governance_and_desk_jobs_do_not_count(cur):
+    for n in range(10, 15):
+        job(cur, n, "queued", "plan")     # 計画待ちは投入の前の段（11-14、39 / 6 と出た）
+    job(cur, 20, "running", "plan")
+    job(cur, 21, "queued", "committee_review")
+    job(cur, 22, "running", "desk_answer")
+    job(cur, 23, "queued", "qa")          # 版の QA はラインに流れているので数える
+    job(cur, 24, "running", "implement")
+    assert supervisor.inflight_count(cur, set()) == 2   # #23・#24
+
+
 def test_labeled_or_held_pr_is_waiting_for_human(cur):
     import stoppage
     url = "https://github.com/o/r/pull/534"
