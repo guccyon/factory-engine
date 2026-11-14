@@ -176,6 +176,35 @@ def record_start_wait(cur, corr: str, open_after: list[int], start: dict) -> boo
                    f"start_wait:{corr}:{','.join(str(n) for n in sorted(open_after))}")
 
 
+def start_blockers(cur, corr: str, repo: str, priority: int, open_after: list[int]) -> list[int]:
+    """start: after の前のチケットのうち、本当に待つものだけを返す（rally #1522）。次のものは待たない（並べ方より先に進める）:
+    - 前のほうが優先度が低い（p0 の修正を p1・p2 の後ろに並べない）
+    - 前が止められている（tickets.held）
+    - ラインの差し止め中で、前が差し止めの対象（差し止めの優先度に届かず、差し止めた Incident のチケットでもない）。前は差し止めが解けるまで動かない
+    待たなかった前は workflow.enforced（kind=start_skipped）に 1 度だけ記録する"""
+    if not open_after:
+        return []
+    import incident
+    hold = incident.hold_state(cur)
+    keep, skipped = [], []
+    for n in open_after:
+        cur.execute("select priority, held from tickets where source='github' and source_ref=%s order by id desc limit 1", (f"{repo}#{n}",))
+        t = cur.fetchone()
+        if not t:
+            keep.append(n)
+            continue
+        why = ("lower_priority" if t["priority"] < priority else "held" if t["held"] else
+               "line_held" if hold and t["priority"] < int(hold.get("min_priority") or 0) and f"github:{repo}#{n}" not in (hold.get("corrs") or []) else None)
+        if why:
+            skipped.append({"issue": n, "why": why})
+        else:
+            keep.append(n)
+    if skipped:
+        _record(cur, corr, "start_skipped", {"skipped": skipped, "priority": priority},
+                f"start_skipped:{corr}:" + ",".join(str(x["issue"]) + x["why"] for x in skipped))
+    return keep
+
+
 # ------------------------------------------------------------------ ステップを飛ばす（ADR 0038 の追記、2026-11-11 オーナー「実際に飛ばして、根拠を記録」）
 # 飛ばしてよいかの決まりは core-gates/workflow.py の mandatory（プランナーの宣言で飛ばしても、飛ばせないステップは run: true に戻してある）。
 # ここでは、宣言で飛ばしたステップを記録し、検査（inspect）は実際の差分が docs と changelog.d/ だけのときに積まない
