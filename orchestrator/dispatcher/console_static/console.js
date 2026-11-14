@@ -120,7 +120,7 @@ const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if((m=p.match(/^\/ask(?:\/(new|\d+))?$/)))return["ask",m[1]||""];
- if(p==="/line"||p==="/ship"||p==="/usage"||p==="/live")return[p.slice(1),""];
+ if(p==="/line"||p==="/ship"||p==="/usage"||p==="/live"||p==="/maint")return[p.slice(1),""];
  if((m=p.match(/^\/products(?:\/([\w.-]+\/[\w.-]+))?$/)))return["products",m[1]||""];
  if((m=p.match(/^\/help(?:\/(api|cli|mobile))?$/)))return["help",m[1]||""];
  if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
@@ -161,8 +161,10 @@ const HOME_ORDER={factory:["notice","todo","stats","line","trend","prod","ship"]
 function homeStats(s){const f=s.factory,hum=s.items.filter(i=>i.stage==="human").length,run=s.items.filter(i=>i.stage==="running").length,low=f.line_low_below>0&&f.planned<f.line_low_below;
  const t=(k,v,href,cls,d)=>`<a class="c-tile${cls?" "+cls:""}" href="${href}" data-nav><div class="k">${k}</div><div class="v">${v}${d?`<span class="d">${d}</span>`:""}</div></a>`;
  return `<div class="c-tiles">${t("対応が必要な作業",hum,"/line",hum?"is-bad":"")}${t("作業中",run,"/line")}${t("着手待ちのチケット",f.planned,"/line",low?"is-warn":"",low?`${f.line_low_below} 件を切った`:"")}${t("今日の費用","$"+f.cost_today_usd.toFixed(2),"/usage")}</div>`}
+// ラインには工場の不調の件数とリンクだけ（中身は工場の保守のページ、ADR 0059、#477）
+function lineStops(s){const n=((s.alerts||{}).open||[]).filter(a=>!a.inbox).length;return n?`<a class="c-notice is-warn" href="/maint" data-nav><span class="c-g">工場の不調が ${n} 件。工場の保守で見る</span><span aria-hidden="true">→</span></a>`:""}
 function homeNotice(s){const xs=((s.alerts||{}).open||[]).filter(a=>!a.inbox);if(!xs.length)return"";
- return `<a class="c-notice is-warn" href="/line" data-nav><span class="c-g">工場の不調が ${xs.length} 件あります。提供元が対応しています</span><span aria-hidden="true">→</span></a>`}
+ return `<a class="c-notice is-warn" href="/maint" data-nav><span class="c-g">工場の不調が ${xs.length} 件あります。提供元が対応しています</span><span aria-hidden="true">→</span></a>`}
 function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
  return `<h2><a href="/line" data-nav>ライン →</a></h2><div class="kv">${LANES.map(([k,n])=>`<span>${esc(n)} <b>${c(k)}</b></span>`).join("")}</div>`}
 function shipSummary(rs){return `<h2><a href="/products" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b><a href="/products/${esc(r.repo)}?tab=release" data-nav>${esc(r.repo)}</a></b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
@@ -443,13 +445,13 @@ function settingsBody(sec,s){const f=s.factory;
 // ---- 描画
 // 骨組み（ADR 0059、#471）。PC は左の縦のメニュー、タブレットはアイコンだけ、スマホは下のタブ。並びはワークベンチで変わり、どのページにもたどれる
 const ICON={home:'<path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/>',inbox:'<path d="M4 5h16v14H4zM4 13h5l1 2h4l1-2h5"/>',ask:'<path d="M4 5h16v11H9l-5 4z"/>',
- products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
+ products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',maint:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
  usage:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
  help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01"/>',more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'};
 const icon=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]||ICON.more}</svg>`;
-const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],usage:["/usage","使用量"]};
+const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],maint:["/maint","工場の保守"],usage:["/usage","使用量"]};
 // main は主のメニュー、それ以外は「すべてのページ」の下。tabs はスマホの下のタブ（最後に「その他」が付く）
-const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","ask","products","usage"],tabs:["home","inbox","ask","products"]},
+const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","maint","ask","products","usage"],tabs:["home","inbox","ask","products"]},
  product:{name:"製品",main:["home","inbox","ask","products","live","usage"],tabs:["home","inbox","ask","products"]}};
 const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 let wb=WORKBENCHES[store.get("console.workbench")]?store.get("console.workbench"):"factory";
@@ -488,6 +490,7 @@ function skeleton(v,arg){
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="ask")return askSkeleton(arg);
  if(v==="live")return liveSkeleton();
+ if(v==="maint")return mtSkeleton();
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="products")return arg?ppSkeleton(arg):`<div id="prod-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
@@ -515,7 +518,7 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
  else if(v==="inbox"){document.querySelector(".ibx").classList.toggle("open",!!arg);put("ib-f",ibFilters(ib));put("ib-list",ibList(ib,arg));
   if(!arg)put("ib-d","");else if(force||!busy("ib-d"))put("ib-d",ibDetail(ib,arg));
   const sel=document.querySelector(".ir.sel");if(sel&&force)sel.scrollIntoView({block:"nearest"})}
- else if(v==="line"){put("l-stops",alertsView(s.alerts));put("l-f",lineFilters(s.items));
+ else if(v==="line"){put("l-stops",lineStops(s));put("l-f",lineFilters(s.items));
   const xs=s.items.filter(i=>(!lnRepo||repoOf(i)===lnRepo)&&(!lnSrc||i.source===lnSrc));
   // ラインは状態ごとの一覧が既定（止まっているものが先頭）、かんばんは切り替え（ADR 0059、#476）
   document.getElementById("lanes").className=lnView==="kanban"?"kanban":"lnlist";
@@ -523,6 +526,7 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
    :LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return ys.length?`<section class="card lnsec ${k}"><h2>${n}（${ys.length}）</h2>${ys.map(card).join("")}</section>`:""}).join("")||'<div class="c-empty"><b>ラインにチケットはありません</b></div>')}
  else if(v==="ask")askRender(arg)
  else if(v==="live")liveRender(s)
+ else if(v==="maint")mtRender(s)
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="products"&&arg)ppRender(s,arg)
  else if(v==="products"){if(prodOf!==arg||Date.now()-prodAt>60000||!document.querySelector("#prod-b .prod"))loadProd(arg)}
@@ -538,7 +542,7 @@ async function load(){if(document.hidden&&!force)return;let s;try{s=await (await
   scaleView(f.scale,f.line),
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
   `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="まだ手を付けていないチケット（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">着手待ちのチケット <b>${f.planned}</b></span>`,
-  lineView(f.line),holdView(f.qa_hold)].join(" "));
+  lineView(f.line),holdView(f.qa_hold),`<a class="stat" href="/maint" data-nav>工場の保守 →</a>`].join(" "));
  setCounts();factoryView(s);
  document.title=(ib.count?`(${ib.count}) `:"")+"操業コンソール";
  render()}

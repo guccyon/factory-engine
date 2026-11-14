@@ -124,3 +124,4 @@ a.c-btn { display: inline-block; text-decoration: none; }
 /* EmptyState */
 .c-empty { text-align: center; padding: var(--space-6) var(--space-4); color: var(--ink-sub); }
 .c-empty b { display: block; color: var(--ink); font-size: 16px; line-height: 24px; margin-bottom: var(--space-1); }
+.c-list a.c-g { color: inherit; text-decoration: none; } .c-list a.c-g:hover { text-decoration: underline; }
