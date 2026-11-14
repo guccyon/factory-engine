@@ -91,6 +91,9 @@ TRIGGER_JA = {"implement": "PR 作成まで自動で進めます", "clarify": "�
               "spike": "スパイクのレーンの System Architect が、原因と直し方の方針を決めて設計書に書きます（ADR 0055）"}
 PROVISIONAL_LABEL = "factory:provisional"   # ワーカーが仮決めした判断を含む PR（ADR 0006。出口で judge が裁く）
 LABELS = {"queued": "factory:queued", "running": "factory:running", "pr_open": "factory:pr-open", "failed": "factory:failed"}
+# 始めるときに外すラベル。積み直し（rerun・自動の立て直し）は GitHub のラベルを通らずに積むので、前の失敗の factory:failed と
+# 流すための factory:planned が残り、running・failed・planned が同時に付いた（2026-11-14 rally #1438）
+START_CLEARS = [LABELS["queued"], LABELS["failed"], "factory:planned"]
 POLL_INTERVAL = int(ENV.get("POLL_INTERVAL_SEC", "30"))
 BODY_FIX_MAX_PER_PR = int(ENV.get("BODY_FIX_MAX_PER_PR", "2"))   # 1 本の PR の本文を直す回数の上限（2026-11-10）
 MAX_PARALLEL = int(ENV.get("MAX_PARALLEL", "2"))   # ラインのワーカーの数の既定。宣言（factoryctl line scale）があればそちら（ADR 0028）
@@ -453,15 +456,15 @@ def run_job(job: dict, reattaching: bool = False):
             elif kind in NO_LABEL_KINDS:   # 検査・judge・本文の追記・設計の診断（ADR 0004 / 0006 / 0022）・知見の委員会（ADR 0024）・デザイン検査役（ADR 0025）。issue_number は PR か固定 Issue の番号。ラベルは結果を見て付ける。窓口と一次調査（ADR 0048）は Issue がない（issue_number は仮の負の数）
                 image = WORKER_IMAGE
             elif kind in ("plan", "spike"):   # プランナー（ADR 0025・0026）とスパイク（ADR 0055）。読むだけなので製品によらず基本のイメージ
-                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                swap_label(repo, issue, START_CLEARS, [LABELS["running"]])
                 image = WORKER_IMAGE
             elif kind in ("ui_design", "design_system"):   # デザイナー役（ADR 0025・0026）。製品によらず Chromium つきのイメージ
-                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                swap_label(repo, issue, START_CLEARS, [LABELS["running"]])
                 image = UI_DESIGN_IMAGE
             elif kind == "qa":   # QA 役（ADR 0028 の決定 2）。画面を動かすので Chromium と playwright-core のイメージ。固定 Issue（factory:qa）なのでラベルは替えない
                 image = UI_DESIGN_IMAGE
             else:
-                swap_label(repo, issue, [LABELS["queued"]], [LABELS["running"]])
+                swap_label(repo, issue, START_CLEARS, [LABELS["running"]])
                 image = image_for(repo, issue)
             if not reattaching:
                 prov = provenance(repo, image)
