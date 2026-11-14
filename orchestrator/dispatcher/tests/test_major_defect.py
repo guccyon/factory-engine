@@ -144,6 +144,19 @@ def test_launch_stage_is_approved_after_staging_without_the_qa_report(cur):
     assert major_defect.approve_step(cur) == []                        # 2 回目はない
 
 
+def test_s2_only_train_goes_to_staging_but_waits_for_prod_approval(cur):
+    """S2 だけの緊急便は staging まで出すが、本番は QA の関門の報告と承認者を待つ（ADR 0053 の追記 2026-11-14）"""
+    ship.observe_stage(cur, REPO, "launch")
+    gh = FakeGh("closed")
+    s1(cur, gh, severity="s2")
+    merged(cur, 1)
+    [tid] = major_defect.rerelease_step(cur, gh)
+    finish_ship(cur)
+    assert major_defect.approve_step(cur) == []
+    cur.execute("select 1 from events where name='release.approved'")
+    assert cur.fetchone() is None
+
+
 def test_s2_is_major_but_does_not_hold_the_line(cur):
     gh = FakeGh()
     inc, comments = s1(cur, gh, severity="s2")
