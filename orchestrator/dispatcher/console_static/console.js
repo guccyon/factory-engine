@@ -112,7 +112,9 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 // ---------------------------------------------------------------- ページ（11-07 の構成。ADR 0009 の決定 5 の簡易画面）
 // URL がページ: / ホーム（ダッシュボード）・/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）・/line・/ship・/settings/<項目>
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
-const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","使用量の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場の版"]];
+const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","費用の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場の版"]];
+// 設定の並び（ADR 0059、#478）。事業主が決めるものと、提供元（工場を動かす人）が決めるものに分ける。鍵やトークンの値はどちらにも出さない
+const SET_GROUPS=[["事業主向け",["mode","budget","connectors"]],["提供元向け",["runners","line","mac","version"]]];
 const LATER=["credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
 let S=null,view="",gi={},ibTab="open",ibKind="",ibWho=null;   // ibWho が null のときはワークベンチの既定
 const enc=k=>encodeURIComponent(k);
@@ -120,10 +122,11 @@ const ibHref=k=>"/inbox/"+enc(k);
 function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if((m=p.match(/^\/ask(?:\/(new|\d+))?$/)))return["ask",m[1]||""];
- if(p==="/line"||p==="/ship"||p==="/usage"||p==="/live"||p==="/maint")return[p.slice(1),""];
+ if(p==="/line"||p==="/ship"||p==="/cost"||p==="/live"||p==="/maint")return[p.slice(1),""];
+ if(p==="/usage"){history.replaceState(null,"","/cost");return["cost",""]}   // 前の名前（使用量）のリンクは費用へ（ADR 0059、#478）
  if((m=p.match(/^\/products(?:\/([\w.-]+\/[\w.-]+))?$/)))return["products",m[1]||""];
  if((m=p.match(/^\/help(?:\/(api|cli|mobile))?$/)))return["help",m[1]||""];
- if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"runners"];
+ if((m=p.match(/^\/settings(?:\/([a-z-]+))?$/)))return["settings",SETTINGS.some(x=>x[0]===m[1])?m[1]:"mode"];
  return["home",""]}
 // 前の構成のリンク（通知や古いタブの /#choice-1・/#choices・/#ship）を新しいページに読み替える
 (()=>{if(location.pathname!=="/"||!location.hash)return;const h=location.hash.slice(1);let to="";
@@ -160,7 +163,7 @@ function trendView(t){if(!t||!t.items.length)return `<h2>指標の推移</h2><di
 const HOME_ORDER={factory:["notice","todo","stats","line","trend","prod","ship"],product:["prod","todo","ship","stats","trend","line","notice"]};
 function homeStats(s){const f=s.factory,hum=s.items.filter(i=>i.stage==="human").length,run=s.items.filter(i=>i.stage==="running").length,low=f.line_low_below>0&&f.planned<f.line_low_below;
  const t=(k,v,href,cls,d)=>`<a class="c-tile${cls?" "+cls:""}" href="${href}" data-nav><div class="k">${k}</div><div class="v">${v}${d?`<span class="d">${d}</span>`:""}</div></a>`;
- return `<div class="c-tiles">${t("対応が必要な作業",hum,"/line",hum?"is-bad":"")}${t("作業中",run,"/line")}${t("着手待ちのチケット",f.planned,"/line",low?"is-warn":"",low?`${f.line_low_below} 件を切った`:"")}${t("今日の費用","$"+f.cost_today_usd.toFixed(2),"/usage")}</div>`}
+ return `<div class="c-tiles">${t("対応が必要な作業",hum,"/line",hum?"is-bad":"")}${t("作業中",run,"/line")}${t("着手待ちのチケット",f.planned,"/line",low?"is-warn":"",low?`${f.line_low_below} 件を切った`:"")}${t("今日の費用","$"+f.cost_today_usd.toFixed(2),"/cost")}</div>`}
 // ラインには工場の不調の件数とリンクだけ（中身は工場の保守のページ、ADR 0059、#477）
 function lineStops(s){const n=((s.alerts||{}).open||[]).filter(a=>!a.inbox).length;return n?`<a class="c-notice is-warn" href="/maint" data-nav><span class="c-g">工場の不調が ${n} 件。工場の保守で見る</span><span aria-hidden="true">→</span></a>`:""}
 function homeNotice(s){const xs=((s.alerts||{}).open||[]).filter(a=>!a.inbox);if(!xs.length)return"";
@@ -208,8 +211,8 @@ document.addEventListener("click",e=>{let b;
  const h=e.target.closest(".al-h[data-al]");if(h&&!e.target.closest("button,a"))alToggle(h.dataset.al)});
 document.addEventListener("keydown",e=>{const h=e.target.closest&&e.target.closest(".al-h[data-al]");if(h&&e.target===h&&(e.key==="Enter"||e.key===" ")){e.preventDefault();alToggle(h.dataset.al)}});
 // ヘルプの流量の図（11-08 オーナー）。チケット＝1 台のベルトコンベアに同時に載せる部品の数（人は描かない。手を動かす数はワーカーで決まるので、人を描くとミスリードになる）。ワーカー＝ベルトコンベアの台数
-function belt(x,y,w,h){let r=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h/2}" fill="var(--line)" stroke="var(--sub)" stroke-width="1"/>`;
- for(let cx=x+h/2;cx<x+w;cx+=h*1.6)r+=`<circle cx="${cx}" cy="${y+h/2}" r="${h/2-3}" fill="none" stroke="var(--sub)" stroke-width="1"/>`;return r}
+function belt(x,y,w,h){let r=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h/2}" fill="var(--line)" stroke="var(--ink-sub)" stroke-width="1"/>`;
+ for(let cx=x+h/2;cx<x+w;cx+=h*1.6)r+=`<circle cx="${cx}" cy="${y+h/2}" r="${h/2-3}" fill="none" stroke="var(--ink-sub)" stroke-width="1"/>`;return r}
 function part(x,y,s){return `<rect x="${x}" y="${y}" width="${s}" height="${s}" rx="3" fill="var(--accent)"/>`}
 function beltFig(title,cases,kind){const W=330,H=kind==="tickets"?90:150;let out=`<svg viewBox="0 0 ${W*2+20} ${H+50}" role="img" aria-label="${esc(title)}"><text x="0" y="14" font-size="13" font-weight="700" fill="currentColor">${esc(title)}</text>`;
  cases.forEach(([n,label],i)=>{const ox=i*(W+20),oy=26;out+=`<rect x="${ox}" y="${oy}" width="${W}" height="${H}" rx="8" fill="none" stroke="var(--line)"/>`;
@@ -218,8 +221,19 @@ function beltFig(title,cases,kind){const W=330,H=kind==="tickets"?90:150;let out
   out+=`<text x="${ox+W/2}" y="${oy+H+14}" font-size="12" text-anchor="middle" fill="currentColor">${esc(label)}</text>`});
  return out+"</svg>"}
 // ---- ヘルプ（11-08）。ヘッダの数字と、コンソールの言葉の意味
-const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
-<h3>ヘッダ</h3><dl>
+const HELP=`<h2>ヘルプ: 画面の言葉</h2>
+<h3>ワークベンチとページ</h3><dl>
+<dt>ワークベンチ</dt><dd>右上（スマホは「その他」）で選ぶ、仕事の見え方。「工場」は工場を動かす人向けで、ライン・工場の保守が前に出る。「製品」は製品の持ち主向けで、製品・問い合わせが前に出て、受信トレイは提供元宛てを除いて出す。どちらでもすべてのページを開ける。選んだものはこの端末に覚える</dd>
+<dt>ホーム</dt><dd>いま見るべき件の数と入口。1 つの件は 1 つのページで片付けるので、ホームには件数とリンクだけを置く</dd>
+<dt>受信トレイ</dt><dd>工場が人に判断を求めている件（判断待ち）と、見たら消せるお知らせ</dd>
+<dt>問い合わせ</dt><dd>工場への依頼や質問（窓口）。新しい依頼を出し、対応の状況と返事を見る。Claude（窓口の MCP）や API から出した相談も同じ一覧に並ぶ</dd>
+<dt>事業部の様子</dt><dd>ジョブの種類ごとのレーンの上をチケットが流れていく様子と、作業中・順番待ちの数の推移</dd>
+<dt>製品</dt><dd>製品ごとの概要・見通し・障害と問題・利用状況・リリースと環境・準備度。出荷（Web 検証・本番・前の版へ戻す）は「リリースと環境」で</dd>
+<dt>ライン</dt><dd>チケットの一覧（状態ごと）とかんばん。優先度の変更・保留・止める</dd>
+<dt>工場の保守</dt><dd>提供元（建設者）が直す工場の側の件。工場の不調・建設者宛ての件・見回りの結果・うまくいかなかったジョブ</dd>
+<dt>費用</dt><dd>日ごとの費用と予算、役割・モデルごとの消費、契約の週の進み（前の「使用量」）</dd>
+</dl>
+<h3>工場の状態（右上。押すと詳しく）</h3><dl>
 <dt>指示役</dt><dd>工場の進行役（supervisor）が動いているか。60 秒ごとに合図を出しながら、依存が片付いたチケットを優先度の順にラインへ流し、工場の PR のマージの判定・検査と judge の開始・CI 落ちや衝突の直しの手配・日報・出荷のタイミングを回す。合図が 3 分途絶えると「〇分前に停止」と赤く出る。工場を動かしている Mac のスリープや停止を疑う</dd>
 <dt>モード</dt><dd>「並走モード」（attended）は、工場が決めきれなかった判断を受信トレイに回し、1 タップの回答で流す。「全自動モード」（unattended）は、決めてよい範囲の中では工場が自分で判断して流す。切り替えは設定の「モード」（期限も付けられる）か、コマンド（factoryctl mode set）。切り替えがなければ時間帯の設定（MODE_SCHEDULE。例: 夜は全自動モード）に従う</dd>
 <dt>流量</dt><dd id="flow"><div class="figs">
@@ -229,12 +243,12 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <dt>　チケット</dt><dd>同時に手を付けるチケットの数。作業中のものと、PR が開いたまま検査やマージを待っているものの両方を数える。満杯だとワーカーが空いていても次のチケットに手を付けない</dd>
 <dt>　委員会</dt><dd>知見をまとめる係（知見の委員会・事例の分析）が同時に動く数。委員会どうしは数によらず常に 1 つずつ順に動く（並べると知見が競合・矛盾するため。検討の課題は順番待ちに積まれる）。ラインを一時停止しても止まらない</dd>
 <dt>　窓口</dt><dd>相談に答える係が同時に動く数。ラインを一時停止しても止まらず、ラインのワーカーを使わない</dd>
-<dt>今日の費用</dt><dd>今日終わった作業の消費を API の単価に換算した目安。定額の契約の実際の請求ではない。詳しくは「使用量」</dd>
-<dt>使用量の予算</dt><dd>1 日（7:00 から翌 7:00）の費用が予算に届いたら、次の日まで新しいタスクを投入しない。作業中のもの・検査・judge・p0 は止めない。毎日同じ額か曜日ごとかを、設定の「使用量の予算」で決める</dd>
+<dt>今日の費用</dt><dd>今日終わった作業の消費を API の単価に換算した目安。定額の契約の実際の請求ではない。詳しくは「費用」のページ</dd>
+<dt>費用の予算</dt><dd>1 日（7:00 から翌 7:00）の費用が予算に届いたら、次の日まで新しいタスクを投入しない。作業中のもの・検査・judge・p0 は止めない。毎日同じ額か曜日ごとかを、設定の「費用の予算」で決める</dd>
 <dt>着手待ちのチケット</dt><dd>依存や上限で、まだ手を付けていないチケットの数（保留にしたものは除く）。少なくなる（既定は 2 件を切る）と赤くなり、番人が知らせる。積まないとラインが空になる</dd>
 <dt>ライン</dt><dd>スイッチがオンなら、順番待ちの作業を取り出して流している。オフ（一時停止）にすると新しく取り出さない。工場の更新の前に使う</dd>
 </dl>
-<h3>ホームの「判断待ち」と「工場の不調」</h3><dl>
+<h3>受信トレイの「判断待ち」と、工場の保守の「工場の不調」</h3><dl>
 <dt>判断待ち</dt><dd>プロダクトの判断（画面の案・マージ・工場が決めきれなかった点など）。受信トレイで答える。答える人はプロダクトの持ち主（オーナー）か、件ごとの宛先</dd>
 <dt>工場の不調</dt><dd>番人（ラインを見張る仕組み）が見つけた、工場の側の止まり（作業の失敗・PR が CI や衝突で進めない・指示役の不在など）。工場の保守の担当（建設者）が直すもの。1 行を押すと、対象・次にすること・記録・やり直すボタンが出る。× で画面から消せる（止まり自体は解けない）。消したものは「消したもの」で見られ、戻せる。止まりが解けると自動で一覧から消える</dd>
 <dt>作業の失敗</dt><dd>1 つの作業（ジョブ）が失敗した。作業ごとに 1 件出る。同じチケットで何度も失敗すると同じチケットの行が並ぶ。「やり直す」で同じ作業を積み直す</dd>
@@ -245,14 +259,14 @@ const HELP=`<h2>ヘルプ: ヘッダの数字と言葉の意味</h2>
 <dt>依存待ち</dt><dd>先に片付けるチケットが残っている</dd><dt>投入待ち（上限）</dt><dd>依存は片付いたが、流量のチケットの上限で待っている</dd>
 <dt>順番待ち</dt><dd>作業が積まれ、ワーカーが空くのを待っている</dd><dt>作業中</dt><dd>ワーカーが作業している</dd>
 <dt>検査・判定・マージ待ち</dt><dd>PR ができ、CI・検査・judge・マージを待っている</dd><dt>対応が必要</dt><dd>判断や手当てを待っている</dd>
-</dl><div class="m" style="margin-top:12px">画面は 10 秒ごとに自動で読み直す（タブを開いている間）</div>`;
+</dl><div class="m" style="margin-top:12px">画面は工場の記録が動いたときにすぐ読み直す（サーバーからの知らせを受ける）。つながらないときは 10 秒ごとに読み直す（タブを開いている間）</div>`;
 
 // ---- ヘルプのリファレンス（/help/api・/help/cli）。中身は GET /api/reference（コードの説明から作る。reference.py）
 // ---- ヘルプ: モバイルアプリの審査前の配布（ADR 0047）。Mac と Firebase の準備は人が 1 回だけ
 const HELP_MOBILE=`<h2>モバイルアプリの配布（Android・Firebase App Distribution）</h2>
 <p>工場が作ったモバイルアプリを、ストアの審査を通さずにテスターの端末へ配る（ADR 0047）。署名の鍵と Firebase へのログインは Mac にだけ置き、工場には渡さない。配るたびに、Mac の画面で人が「配布する」を押す。</p>
 <h3>流れ</h3>
-<ol><li><a href="/ship" data-nav>出荷</a>の「Android（審査前の配布・Firebase）」で「配布する」を押す</li>
+<ol><li>製品のページの「リリースと環境」の「Android（審査前の配布・Firebase）」で「配布する」を押す</li>
 <li>工場が Mac ランナーに頼む。Mac の画面に「工場の Mac ランナー」の窓が出るので、宛先とコミットを見て「配布する」を押す（5 分押さなければ何もせずにやめる）</li>
 <li>Mac が main の最新を release でビルドし、Mac の鍵で署名して Firebase に上げる（数分）</li>
 <li>テスターに Firebase から招待のメールが届く。初回は App Tester を入れ、そこから入れる</li></ol>
@@ -260,7 +274,7 @@ const HELP_MOBILE=`<h2>モバイルアプリの配布（Android・Firebase App D
 <ol><li><a href="https://console.firebase.google.com" target="_blank" rel="noopener">Firebase コンソール</a>でプロジェクトを作る（Google アナリティクスはなしでよい）</li>
 <li>「アプリを追加」→ Android。パッケージ名は工場が作る applicationId（rally の生徒アプリは <code>jp.rally.rally_student_app</code>）。google-services.json はダウンロードしなくてよい</li>
 <li>左のメニューの「App Distribution」を開いて始める。「テスターとグループ」でグループ（例 <code>testers</code>）を作り、テスターのメールを足す</li>
-<li>プロジェクトの設定 →「マイアプリ」の「アプリ ID」（<code>1:…:android:…</code>）を控え、<a href="/ship" data-nav>出荷</a>の「配布先」に入れて保存する（秘密ではない）</li></ol>
+<li>プロジェクトの設定 →「マイアプリ」の「アプリ ID」（<code>1:…:android:…</code>）を控え、製品のページの「リリースと環境」の「配布先」に入れて保存する（秘密ではない）</li></ol>
 <h3>はじめに 1 回だけ: Mac（工場を動かしている Mac）</h3>
 <ol><li><b>Android の道具</b>: Android Studio を入れる（<code>brew install --cask android-studio</code>）。起動して Android SDK・SDK Command-line Tools・Platform-Tools・Build-Tools を入れ、<code>flutter doctor --android-licenses</code> で同意する。<code>flutter doctor</code> の Android の行が ✓ になればよい</li>
 <li><b>Firebase CLI</b>: <code>npm install -g firebase-tools</code> のあと <code>firebase login</code>（ブラウザで、Firebase のプロジェクトに触れる Google アカウントでログイン）。<code>firebase projects:list</code> にプロジェクトが出ればよい。node を mise などで入れているときは、node の版を替えると常駐のランナーから firebase が見えなくなるので、替えたら下の 4 をやり直す</li>
@@ -437,7 +451,7 @@ function settingsBody(sec,s){const f=s.factory;
  if(sec==="runners")return `<h2>ランナー</h2>${pairsView(s.runner_pairs||[])}${runnersView(s.runners||[])||'<div class="m">登録済みのランナーはない（工場の外の機械に入れた常駐プロセス。Mac なら scripts/macrunner.sh）</div>'}`;
  if(sec==="mode")return `<h2>モード</h2>${modeForm(f.mode_spec)}`;
  if(sec==="line")return `<h2>ラインと流量</h2><div class="acts">${lineView(f.line)}</div>${scaleForm(f.scale)}`;
- if(sec==="budget")return `<h2>使用量の予算</h2>${budgetForm(f.budget)}<div class="m"><a href="/usage" data-nav>日ごとの費用と予算（使用量）→</a></div>`;
+ if(sec==="budget")return `<h2>費用の予算</h2>${budgetForm(f.budget)}<div class="m"><a href="/cost" data-nav>日ごとの費用と予算 →</a></div>`;
  if(sec==="connectors")return `<h2>サービスとの連携</h2>${connView(s.connectors||[])}`;
  if(sec==="mac")return `<h2>Mac</h2>${f.host?`<div class="acts"><label class="stat sw" title="オンの間は工場の稼働中に Mac を眠らせない">起こしたまま <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label></div><div class="m">Mac 上の見張り（keep-awake.sh）が ${dur(f.host.agent_age_sec)}前に連絡</div>`:'<div class="m">Mac 上の見張り（keep-awake.sh）から連絡がない。Mac 以外で動いているか、見張りが止まっている</div>'}`;
  return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
@@ -446,13 +460,13 @@ function settingsBody(sec,s){const f=s.factory;
 // 骨組み（ADR 0059、#471）。PC は左の縦のメニュー、タブレットはアイコンだけ、スマホは下のタブ。並びはワークベンチで変わり、どのページにもたどれる
 const ICON={home:'<path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/>',inbox:'<path d="M4 5h16v14H4zM4 13h5l1 2h4l1-2h5"/>',ask:'<path d="M4 5h16v11H9l-5 4z"/>',
  products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',maint:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
- usage:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+ cost:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
  help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01"/>',more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'};
 const icon=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]||ICON.more}</svg>`;
-const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],maint:["/maint","工場の保守"],usage:["/usage","使用量"]};
+const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],maint:["/maint","工場の保守"],cost:["/cost","費用"]};
 // main は主のメニュー、それ以外は「すべてのページ」の下。tabs はスマホの下のタブ（最後に「その他」が付く）
-const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","maint","ask","products","usage"],tabs:["home","inbox","ask","products"]},
- product:{name:"製品",main:["home","inbox","ask","products","live","usage"],tabs:["home","inbox","ask","products"]}};
+const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","maint","ask","products","cost"],tabs:["home","inbox","ask","products"]},
+ product:{name:"製品",main:["home","inbox","ask","products","live","cost"],tabs:["home","inbox","ask","products"]}};
 const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 let wb=WORKBENCHES[store.get("console.workbench")]?store.get("console.workbench"):"factory";
 function navItem(k,v,cls){const [h,t]=PAGES[k];return `<a href="${h}" data-nav data-v="${k}" title="${t}"${k===v?' aria-current="page"':""}${cls?` class="${cls}"`:""}>${icon(k)}<span class="lb">${t}</span>${k==="inbox"?'<span class="c-count" data-n="inbox"></span>':""}</a>`}
@@ -494,9 +508,9 @@ function skeleton(v,arg){
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="products")return arg?ppSkeleton(arg):`<div id="prod-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
- if(v==="usage")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
+ if(v==="cost")return `<div id="usage-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
  if(v==="help")return `<nav class="htabs">${HTABS.map(([k,n])=>`<a href="/help${k?"/"+k:""}" data-nav class="${k===arg?"on":""}">${n}</a>`).join("")}</nav>`+(arg==="mobile"?`<section class="card help">${HELP_MOBILE}</section>`:arg?`<section class="card help ref"><div class="ref-q"><input id="ref-qi" type="search" placeholder="絞り込み（例 inbox、drain、予算）" value="${esc(refQ)}"><span class="m" id="ref-n"></span></div><div id="ref-b"><div class="m">読み込み中…</div></div></section>`:`<section class="card help">${HELP}</section>`);
- return `<div class="set"><nav class="sn">${SETTINGS.map(([k,n])=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(n)}</a>`).join("")}${LATER.map(n=>`<span class="later" title="今後">${esc(n)}（今後）</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
+ return `<div class="set"><nav class="sn">${SET_GROUPS.map(([g,ks])=>`<span class="sn-g">${esc(g)}</span>`+ks.map(k=>`<a href="/settings/${k}" data-nav class="${k===arg?"on":""}">${esc(SETTINGS.find(x=>x[0]===k)[1])}</a>`).join("")).join("")}<span class="sn-g">今後</span>${LATER.map(n=>`<span class="later" title="今後">${esc(n)}</span>`).join("")}</nav><section class="card" id="set-b"></section></div>`}
 let force=false,usageAt=0,prodAt=0,prodOf=null,prodTgt="";
 // 製品のページ（ADR 0045 の追記）。使用量と同じく、画面の中に中身（/products/body?p=<製品>）を読み込む。仕事の切り替えは画面の中だけ
 async function loadProd(p){prodAt=Date.now();prodOf=p;try{const h=await (await fetch("/products/body"+(p?"?p="+enc(p):""))).text();put("prod-b",h);prodTab()}catch(e){put("prod-b",'<div class="m">製品のページを読み込めませんでした</div>')}}
@@ -504,7 +518,7 @@ function prodTab(){if(!prodTgt)return;const b=document.querySelector(`#prod-b bu
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-b]");if(!b)return;const t=b.dataset.tgtB;prodTgt=t;
  b.parentNode.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));b.closest("section").querySelectorAll("[data-tgt]").forEach(x=>x.hidden=x.dataset.tgt!==t)});
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
-async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">使用量を読み込めませんでした</div>')}}
+async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">費用を読み込めませんでした</div>')}}
 function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):v==="ask"||v==="products"?arg:"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));
@@ -530,7 +544,7 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="products"&&arg)ppRender(s,arg)
  else if(v==="products"){if(prodOf!==arg||Date.now()-prodAt>60000||!document.querySelector("#prod-b .prod"))loadProd(arg)}
- else if(v==="usage"){if(Date.now()-usageAt>60000||!document.querySelector("#usage-b .usage"))loadUsage()}
+ else if(v==="cost"){if(Date.now()-usageAt>60000||!document.querySelector("#usage-b .usage"))loadUsage()}
  else if(v==="help"){if(arg&&arg!=="mobile"&&!document.querySelector("#ref-b section")){if(REF)refPut();else loadRef()}}
  else if(force||!busy("set-b"))put("set-b",settingsBody(arg,s));
  force=false}

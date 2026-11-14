@@ -5,7 +5,7 @@ brand.css（ブランドの層）・tokens.css（意味の層）・components.cs
 catalog.html・catalog.js（部品のカタログ。/catalog）。
 
 ページは URL で分ける（2026-11-07 オーナー）: / ホーム（ダッシュボード）、/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）、
-/line（ライン）、/ship（出荷）、/products と /products/<owner>/<repo>（製品。中身は products_page.py の断片を読み込む）、/usage（使用量。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）と
+/line（ライン）、/ship（出荷）、/products と /products/<owner>/<repo>（製品。中身は products_page.py の断片を読み込む）、/cost（費用。前の /usage は画面がここへ送り直す。中身は usage_page.py の断片を読み込む）、/help（ヘッダの数字と言葉の意味）と
 /help/api・/help/cli（API と MCP・factoryctl のリファレンス。中身は GET /api/reference。コードの説明から作る。reference.py）、
 /settings/<項目>（右上の歯車。ランナー・モード・ラインと流量・Mac・工場の版）。
 サーバーはどのページにも同じ HTML を返し、画面の中で URL に合うページを描く。データは /api/state の 1 本（10 秒ごと）
@@ -13,7 +13,7 @@ catalog.html・catalog.js（部品のカタログ。/catalog）。
 import os
 import re
 
-APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|ask(/(new|\d+))?|live|maint|line|ship|products(/[\w.-]+/[\w.-]+)?|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|ask(/(new|\d+))?|live|maint|line|ship|cost|products(/[\w.-]+/[\w.-]+)?|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "console_static")
 STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8"}

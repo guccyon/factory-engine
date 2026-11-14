@@ -103,9 +103,6 @@
   --bp-tablet: 600px;
   --bp-pc: 1200px;
   --bp-wide: 1600px;
-  /* 移行用の別名（console.css の古い名前。部品へ移したら消す） */
-  --card: var(--surface);
-  --sub: var(--ink-sub);
 }
 .t-display { font-family: var(--font-sans); font-size: 24px; line-height: 32px; font-weight: 700; }
 .t-heading { font-family: var(--font-sans); font-size: 20px; line-height: 28px; font-weight: 700; }

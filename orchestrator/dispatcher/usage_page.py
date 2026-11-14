@@ -75,14 +75,14 @@ def body(v: dict) -> str:
         ("課金対象のトークン", mtok(wk["billable_tokens"])), ("ジョブ", f'{wk["jobs"]:,}'), ("上限に当たった回数", f'{wk["usage_limited"]}')))
     daily = list(reversed(v["daily"]))
     css = """
-.usage .m{color:var(--sub);font-size:12px}.usage .note{margin:12px 0 0}.usage section{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.usage .m{color:var(--ink-sub);font-size:12px}.usage .note{margin:12px 0 0}.usage section{margin-top:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px}
 .usage h2{font-size:14px;margin:0 0 8px}.usage ul.sig{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .usage ul.sig li{padding:8px 10px;border-radius:8px;border:1px solid var(--line);border-left:4px solid var(--ok)}.usage ul.sig li.warn{border-left-color:var(--warn)}.usage ul.sig li.bad{border-left-color:var(--p0)}
 .usage ul.sig b{margin-right:6px}.usage .tiles{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
-.usage .tile{border:1px solid var(--line);border-radius:8px;padding:8px}.usage .tile span{display:block;color:var(--sub);font-size:12px}.usage .tile b{font-size:18px}
+.usage .tile{border:1px solid var(--line);border-radius:8px;padding:8px}.usage .tile span{display:block;color:var(--ink-sub);font-size:12px}.usage .tile b{font-size:18px}
 .usage .chart{width:100%;max-width:760px;height:auto;display:block}.usage .chart .bar{fill:var(--accent)}.usage .chart .bar.over{fill:var(--warn)}.usage .chart .budget{stroke:var(--p0);stroke-width:2;stroke-dasharray:4 3}
-.usage .chart text{fill:var(--sub);font-size:11px}.usage .scroll{overflow-x:auto}.usage table{border-collapse:collapse;width:100%;font-size:13px}
-.usage th,.usage td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--line);white-space:nowrap}.usage th:first-child,.usage td:first-child{text-align:left}.usage th{color:var(--sub);font-weight:600}
+.usage .chart text{fill:var(--ink-sub);font-size:11px}.usage .scroll{overflow-x:auto}.usage table{border-collapse:collapse;width:100%;font-size:13px}
+.usage th,.usage td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--line);white-space:nowrap}.usage th:first-child,.usage td:first-child{text-align:left}.usage th{color:var(--ink-sub);font-weight:600}
 """
     return f"""<style>{css}</style><div class="usage">
 <p class="m note">{esc(when(v["generated_at"]))} 時点。費用は API 単価に換算した消費の目安で、定額の契約の実請求ではない</p>
@@ -111,8 +111,8 @@ def render(v: dict) -> str:
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>工場の使用量</title>
 <style>
-:root{{--bg:#f6f7f9;--card:#fff;--ink:#1d2330;--sub:#5b6474;--line:#e2e5ea;--accent:#2f5bd3;--p0:#c62828;--warn:#b45309;--ok:#1f7a4d}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#12151b;--card:#1b2029;--ink:#e6e9ef;--sub:#9aa3b2;--line:#2a313d;--accent:#7aa2ff}}}}
+:root{{--bg:#f6f7f9;--surface:#fff;--ink:#1d2330;--ink-sub:#5b6474;--line:#e2e5ea;--accent:#2f5bd3;--p0:#c62828;--warn:#b45309;--ok:#1f7a4d}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#12151b;--surface:#1b2029;--ink:#e6e9ef;--ink-sub:#9aa3b2;--line:#2a313d;--accent:#7aa2ff}}}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}}
 main{{padding:16px;max-width:980px;margin:0 auto}}h1{{font-size:16px;margin:0}}
 </style></head><body><main><h1>工場の使用量</h1><a href="/">操業コンソールへ</a>{body(v)}</main></body></html>"""
