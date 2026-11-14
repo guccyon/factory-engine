@@ -78,11 +78,11 @@ phases:
       # 完了は「最初に選んだテーマ（4 言葉と伝達・6 工程）で、入力から作用先まで 1 周回り、効き目を測れた」。外向きのテーマ（1・2）は P5 へ
       - { id: taxonomy, ja: "学習の体系（8 テーマ・4 型・承認の線）を定義した", measure: { manual: done } }   # ADR 0023
       - { id: case_analyst, ja: "事例型の分析役が差し戻しと停止をなぜなぜで分析し、記録に残す", measure: { manual: done } }   # 2026-11-04: case.py の case_review が毎日回り、case.analyzed・CaseAnalysis に残っている（工程の束も同じ道で分析）
-      - { id: knowledge_store, ja: "知見の蓄積（形式・鮮度・矛盾の解消・形骸化の防止）", measure: { manual: todo } }   # ADR 0024。形と検査 #99、rally の置き場 rally #397、変更セットの起票 #100
+      - { id: knowledge_store, ja: "知見の蓄積（形式・鮮度・矛盾の解消・形骸化の防止）", measure: { manual: done } }   # ADR 0024。2026-11-14 オーナー: 世代の済は仕組みの 1 周まで、効き目は世代をまたぐ観測（factoryctl export learning）。矛盾の解消は実績（rally #1119 → PR #1434、議決 D-0159）、期限切れの見直しは日付をずらした検査で確かめた（12/02 と見なすと K-0003・K-0004 が要再確認）、60 日使われない知見の検出は #454
       - { id: committee, ja: "知見の委員会（4 役の審査と議決、週 1 の定例、置き場の構造のオーナー）。決定論で担保するかを決め、担保は Issue にしてラインで作る", measure: { manual: done } }   # 2026-11-04: 委員会の 4 役の審査（committee_review）と週 1 の定例（rally #459）が回り、決定論の担保を Issue にしてラインで作った（rally #827→#828）。ADR 0024 の 4。建設は P3 スレッド、委員会の役割・基準の変更はオーナーの承認
-      - { id: theme4_loop, ja: "テーマ 4（言葉と伝達）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: todo } }
+      - { id: theme4_loop, ja: "テーマ 4（言葉と伝達）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: done } }   # 2026-11-14 オーナー: 事例（PR 本文の見出しが続きのジョブで崩れる）→ 知見 K-0001 → 担保の ci_check（rally、11/9）。マージ 1 件あたり、本文の直し 2.6→1.6 回・PR-002 の採用 3.3→2.5 件（11/1〜8 と 11/9〜13）。後の期間はマージ 78 件と少なく、ラインの詰まりと重なる。効き目は Gen1.5 以降の観測
       - { id: theme6_loop, ja: "テーマ 6（工程の進め方）で入力から作用先まで 1 周回り、効き目を測れた", measure: { manual: done } }   # 2026-11-04: CHANGELOG の衝突（工程の信号）→ 分析役の改善案 → ADR 0027 の 1・2 → 衝突の解消 403 件/日から 0 件（ADR 0027 の実施の記録）
-      - { id: rule_adopted, ja: "テーマ 5: 自動生成ルールが shadow を経て採用され、教師信号が減った", measure: { manual: todo } }   # ADR 0013。採用とカナリアの起票は #96
+      - { id: rule_adopted, ja: "テーマ 5: 自動生成ルールが shadow を経て採用され、教師信号が減った", measure: { manual: done } }   # ADR 0013。2026-11-14 オーナー: 仕組みの 1 周で済。shadow → adopted が 2 回（rally OV-005 11/7・OV-006 11/12）、カナリアで shadow に戻すのが 1 回（OV-005 11/8）。教師信号の減り（前後 30 日の比較）は Gen1.5 以降の観測
 
   - id: P4
     ja: 上流自動化
