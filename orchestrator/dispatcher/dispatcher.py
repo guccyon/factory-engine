@@ -411,11 +411,17 @@ def lock_waited_sec(cur, job_id: int) -> float:
                 "where name='job.requeued' and job_id=%s and payload->>'reason'='advisory_lock_held'", (job_id,))
     return float((cur.fetchone() or {}).get("sec") or 0)
 
+def lock_key_of(job: dict) -> str:
+    """二重実行の抑止の 2 つ目の錠の鍵。同じ repo#issue のジョブは 1 つずつ。単位のあるジョブ（版ごとの QA のチケットに並べて積む
+    シナリオごとのジョブ。ADR 0054 の決定 3）は、単位ごとに 1 つずつ（一意の索引 jobs_one_active_per_issue と同じ組）"""
+    return f"{job['repo']}#{job['issue_number']}" + (f"#{job['unit']}" if job.get("unit") else "")
+
+
 def run_job(job: dict, reattaching: bool = False):
     """ジョブのコンテナを起動して、終わるまで出力を受け、結果を記録する。
     reattaching は dispatcher の上げ直しで、動いている（終わっている）コンテナにつなぎ直すとき（ADR 0020）。起動の前の準備はしない"""
     job_id, repo, issue, corr = job["id"], job["repo"], job["issue_number"], job["correlation_id"]
-    lock_key = f"{repo}#{issue}"
+    lock_key = lock_key_of(job)
     with db() as conn, conn.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (lock_key,))
         if not cur.fetchone()["ok"]:   # 二重実行の抑止の 2 つ目
