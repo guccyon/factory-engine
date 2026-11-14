@@ -56,6 +56,24 @@ def test_net_transient_push_rejected():
     assert not dispatcher.net_transient([" ! [rejected]        HEAD -> factory/x (non-fast-forward)\n"])
 
 
+def test_graphql_transient_and_push_raced():
+    assert dispatcher.net_transient(["pull request create failed: GraphQL: Something went wrong while executing your query. (createPullRequest)\n"])
+    # non-fast-forward は一時的とは見なさない（続きのジョブのときだけ push_raced で積み直す）
+    assert dispatcher.push_raced([" ! [rejected]        HEAD -> factory/issue-961-job-5096 (non-fast-forward)\n"])
+    assert dispatcher.push_raced([" ! [rejected]        HEAD -> factory/x (fetch first)\n"])
+    assert not dispatcher.push_raced([" ! [remote rejected] HEAD -> main (protected branch hook declined)\n"])
+
+
+def test_body_only_locations():
+    assert dispatcher.is_body_only({"location": "PR 本文"})
+    assert dispatcher.is_body_only({"location": "PR #97 本文"})
+    assert dispatcher.is_body_only({"location": "PR タイトル・本文 / 差分全体"})
+    assert dispatcher.is_body_only({"location": "committee/D-0012.yaml（新規ファイル）／PR 本文『## 対応内容』"})
+    assert dispatcher.is_body_only({"rubric_id": "PR-002", "location": "差分全体"})
+    assert not dispatcher.is_body_only({"rubric_id": "PR-001", "location": "apps/backend/src/lib.rs"})
+    assert not dispatcher.is_body_only({"location": "docs/pr-template.md"})
+
+
 def test_requeues_with_same_input_and_caps(cur):
     j = failed_job(cur)
     assert dispatcher.requeue_transient(cur, j)
