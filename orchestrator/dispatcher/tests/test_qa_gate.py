@@ -477,6 +477,7 @@ def test_qa_ticket_runs_scope_on_current_staging_and_closes(cur):
     d = tickets(qa_gate.step(cur, gh, REPO, now=NOW))["decided"][0]
     assert d["candidates"] == 1 and d["ticket"] == 30 and d["on_release"] == rid
     assert 30 in gh.closed() and "QA だけのチケットの結果" in gh.comments(30)[-1] and "本番への出荷には何もしていません" in gh.comments(30)[-1]
+    assert "探索（推論）" not in gh.comments(30)[-1]   # 探索を頼んでいない（rally#1488 で「まだ」と出ていた）
     assert qa_gate.gate(cur, key)["state"] == "decided"
     cur.execute("select count(*) as n from events where name='release.approved'")
     assert cur.fetchone()["n"] == 0

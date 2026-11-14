@@ -710,6 +710,8 @@ def ticket_decide(cur, gh, repo: str, g: dict, results: dict, timed_out: bool, n
     on = _staging_release(cur, repo)
     began = g["opened"].get("staged_release") or g["opened"].get("on_release")
     rep = report(results, timed_out)
+    if not (g["opened"].get("decl") or {}).get("explore"):   # 探索を頼んでいないチケットに「まだ」と出さない
+        rep = [r for r in rep if r["label"] != "探索（推論）"]
     if (g.get("plan") or {}).get("unknown"):
         rep.append({"label": "製品にないストーリー", "text": "、".join(g["plan"]["unknown"]) + "（流していない）"})
     if (g.get("plan") or {}).get("note"):
@@ -725,7 +727,7 @@ def ticket_decide(cur, gh, repo: str, g: dict, results: dict, timed_out: bool, n
         payload[TIME] = results[TIME]
     if not _ev(cur, "qa.gate_decided", payload, f"qa.gate_decided:{key}", now):
         return payload
-    rep[0] = {"label": "見つけた不具合（S1・S2 の候補）", "text": f"{len(cands)} 件" + ("" if cands else "（見つからなかった）")}
+    rep[0] = {"label": "見つけた不具合", "text": f"{len(cands)} 件" + ("" if cands else "（見つからなかった）")}
     body = [f"## QA だけのチケットの結果（staging の版 {(began or '-').split('@')[-1]}、factory-engine の ADR 0056）", ""]
     body += [f"- **{r['label']}**: {r['text']}" for r in rep]
     if via:
