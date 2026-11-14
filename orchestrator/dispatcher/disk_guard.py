@@ -2,8 +2,9 @@
 どちらも人が `docker builder prune` で直した。直し方の決まっている資源の詰まりなので、工場が自分で片付ける（人の手は承認と審美眼に絞る）。
 
 dispatcher の周回（swap_loop）から DISK_GUARD_INTERVAL_SEC ごとに呼ぶ。
-- ビルドのキャッシュ（docker system df の Build Cache）が DISK_BUILD_CACHE_MAX_GB を超えた、またはコンテナから見た空きが DISK_MIN_FREE_GB を
-  下回ったら、ビルドのキャッシュを DISK_BUILD_CACHE_KEEP_GB まで減らす（`docker builder prune -f --keep-storage`。最近使ったものは残る）
+- ビルドのキャッシュ（docker system df の Build Cache）が DISK_BUILD_CACHE_MAX_GB を超えた、または空きが DISK_MIN_FREE_GB を下回ったら。
+  空きは、Docker の仮想ディスクの中（コンテナの /）と、ホスト（Mac 本体）のディスク（ホストから bind mount したパス DISK_HOST_PATH、既定 /definitions）の
+  少ない方で見る。11/14 の 2 回目の満杯は Mac 本体の側で、仮想ディスクの中は 356GB 空いていた。Docker Desktop は仮想ディスクで消した分を Mac に返す、ビルドのキャッシュを DISK_BUILD_CACHE_KEEP_GB まで減らす（`docker builder prune -f --keep-storage`。最近使ったものは残る）
 - それでも空きが足りなければ、名前のないイメージ（dangling）も消す。名前のあるイメージ（前の版に戻すためのものを含む）・コンテナ・ボリュームは消さない
 - 片付けたら ops.disk_pruned に残す。片付けても空きが足りなければ、停止 disk:low（env）を開いてお知らせにする。空きが戻ったら閉じる
 DISK_GUARD=0 で止める。
@@ -24,6 +25,7 @@ INTERVAL_SEC = int(ENV.get("DISK_GUARD_INTERVAL_SEC", "300"))
 CACHE_MAX_GB = float(ENV.get("DISK_BUILD_CACHE_MAX_GB", "20"))
 CACHE_KEEP_GB = float(ENV.get("DISK_BUILD_CACHE_KEEP_GB", "8"))
 MIN_FREE_GB = float(ENV.get("DISK_MIN_FREE_GB", "15"))
+HOST_PATH = ENV.get("DISK_HOST_PATH", "/definitions")   # ホストから bind mount したパス（statvfs がホストのディスクを返す）
 STOPPAGE_KEY = "disk:low"
 GB = 1024 ** 3
 UNITS = {"b": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4}
@@ -53,8 +55,15 @@ def build_cache_bytes(docker=_docker) -> float:
     return 0.0
 
 
-def free_bytes(path: str = "/") -> float:
-    return float(shutil.disk_usage(path).free)
+def free_bytes() -> float:
+    """仮想ディスクの中とホストのディスクの、少ない方の空き"""
+    vals = [float(shutil.disk_usage("/").free)]
+    if HOST_PATH and os.path.isdir(HOST_PATH):
+        try:
+            vals.append(float(shutil.disk_usage(HOST_PATH).free))
+        except OSError:
+            pass
+    return min(vals)
 
 
 def step(cur, log=print, *, docker=_docker, free=free_bytes) -> dict | None:
@@ -79,9 +88,9 @@ def step(cur, log=print, *, docker=_docker, free=free_bytes) -> dict | None:
     cur.execute("insert into events(name, payload) values ('ops.disk_pruned', %s)", (Jsonb(rec),))
     log("disk pruned", rec["cache_gb"], "GB cache,", rec["free_gb_before"], "->", rec["free_gb_after"], "GB free")
     if after < MIN_FREE_GB * GB:
-        stoppage.open_stoppage(cur, STOPPAGE_KEY, "env", f"Docker のディスクの空きが {rec['free_gb_after']}GB（下限 {MIN_FREE_GB:g}GB）。"
+        stoppage.open_stoppage(cur, STOPPAGE_KEY, "env", f"ディスク（Docker の仮想ディスクか Mac 本体）の空きが {rec['free_gb_after']}GB（下限 {MIN_FREE_GB:g}GB）。"
                                "ビルドのキャッシュと名前のないイメージを片付けても足りない",
-                               waiting_for="Mac で docker system df を見て、要らないイメージ・ボリュームを消すか、Docker Desktop のディスクを広げる",
+                               waiting_for="Mac 本体の空き（ディスクユーティリティ）と docker system df を見て、要らないファイル・イメージ・ボリュームを消す",
                                detected_by="dispatcher")
     else:
         stoppage.close_stoppage(cur, STOPPAGE_KEY, remedy="ビルドのキャッシュを片付けて空きが戻った", closed_by="dispatcher")

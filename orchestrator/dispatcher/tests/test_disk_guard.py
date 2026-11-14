@@ -70,3 +70,13 @@ def test_low_disk_prunes_images_too_and_opens_then_closes_the_stoppage(cur):
     assert open_keys(cur) == ["disk:low"]
     dg.step(cur, lambda *a: None, docker=Docker("1GB"), free=lambda: 100 * GB)
     assert open_keys(cur) == []
+
+
+def test_free_takes_the_smaller_of_vm_and_host(monkeypatch, tmp_path):
+    """Mac 本体の側の満杯も見る（11/14 の 2 回目は仮想ディスクの中に 356GB 空きがあった）"""
+    import shutil as sh
+    monkeypatch.setattr(dg, "HOST_PATH", str(tmp_path))
+    monkeypatch.setattr(sh, "disk_usage", lambda p: sh._ntuple_diskusage(100, 0, 2 if p == str(tmp_path) else 50))
+    assert dg.free_bytes() == 2
+    monkeypatch.setattr(dg, "HOST_PATH", str(tmp_path / "none"))
+    assert dg.free_bytes() == 50
