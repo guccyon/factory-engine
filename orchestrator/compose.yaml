@@ -81,6 +81,8 @@ services:
       WORKER_DRY_RUN: ${WORKER_DRY_RUN:-}
       KNOWLEDGE_CONTEXT: ${KNOWLEDGE_CONTEXT:-1}   # 委員会が採用した確認済み以上の知見を implement のワーカーに渡す（ADR 0024 の 6）。0 で止める
       WORKER_CARGO_BUILD_JOBS: ${WORKER_CARGO_BUILD_JOBS:-}   # ワーカーの cargo の並列度（空なら cargo の既定。同時 3 本なら コア数÷3 が目安）
+      WORKER_CPUS: ${WORKER_CPUS:-}               # ワーカー 1 本の CPU の上限（docker run --cpus。空なら上限なし）。Docker の VM のコア数から 2 を引いてワーカーの数で割るのが目安
+      WORKER_MEMORY: ${WORKER_MEMORY:-}           # ワーカー 1 本のメモリの上限（docker run --memory、例 6g。空なら上限なし）
       # 番人（ADR 0005）。閾値は仮置き。通知は 1 経路（github-issue: STATUS_REPO の工場状況 Issue / log: ログだけ）
       WATCH_ENABLED: ${WATCH_ENABLED:-1}
       WATCH_IDLE_MIN: ${WATCH_IDLE_MIN:-20}

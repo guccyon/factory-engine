@@ -497,6 +497,10 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
+                   # ワーカー 1 本が使える CPU の上限（docker run --cpus）。重いビルドが並ぶと Docker の VM が飽和し、DNS と制御プレーンの DB の認証が
+                   # 時間切れになった（2026-11-14 01:38〜01:52 UTC、rust のジョブ 2 本と QA の staging の作り直しが重なった）。機械ごとに override で
+                   *(["--cpus", ENV["WORKER_CPUS"]] if ENV.get("WORKER_CPUS") else []),
+                   *(["--memory", ENV["WORKER_MEMORY"]] if ENV.get("WORKER_MEMORY") else []),
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    *(["-e", f"MAX_BUDGET_USD={budget}"] if budget is not None else []),
                    "-e", f"GH_TOKEN={'' if kind == 'investigate' else ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）。一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）
