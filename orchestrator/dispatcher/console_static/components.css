@@ -8,6 +8,7 @@
 
 /* Button */
 .c-btn { font: 600 14px/22px var(--font-sans); padding: var(--space-2) var(--space-3); border-radius: var(--radius-m); border: 1px solid var(--line-control); background: var(--surface); color: var(--ink); cursor: pointer; }
+a.c-btn { display: inline-block; text-decoration: none; }
 .c-btn:hover { background: var(--surface-sunken); }
 .c-btn.is-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .c-btn.is-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }

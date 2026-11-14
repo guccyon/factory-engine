@@ -13,7 +13,7 @@ catalog.html・catalog.js（部品のカタログ。/catalog）。
 import os
 import re
 
-APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|line|ship|products(/[\w.-]+/[\w.-]+)?|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
+APP_PATH = re.compile(r"/(inbox(/[^/?#]+)?|ask(/(new|\d+))?|line|ship|products(/[\w.-]+/[\w.-]+)?|usage|help(/(api|cli|mobile))?|settings(/[a-z-]+)?)/?")   # PAGE を返すパス（/ と /index.html のほか）
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "console_static")
 STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8"}
