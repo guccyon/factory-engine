@@ -10,6 +10,9 @@ dispatcher の周回（swap_loop）から DISK_GUARD_INTERVAL_SEC ごとに呼�
   9〜13 日前の控えで回収できる 21GB があった）
 - それでも空きが足りなければ、名前のないイメージ（dangling）も消す。工場の版のタグ（<name>-<sha>。更新役が管理）・コンテナ・ボリュームは消さない
 - 片付けたら ops.disk_pruned に残す。片付けても空きが足りなければ、停止 disk:low（env）を開いてお知らせにする。空きが戻ったら閉じる
+- 空きが DISK_MIN_FREE_GB を割っている間は、dispatcher が新しいジョブを取らない（too_low。_claim_loop が見る）
+- 動いているジョブのコンテナの書き込み層が DISK_JOB_MAX_GB（既定 30）を超えたら、そのコンテナを止めて人へ回す（ジョブは exit=137 で落ち、自動の立て直しはしない）。
+  11/14 夜、rust のジョブ 1 本の書き込み層が 54GB になり、Mac の空きが 23GB まで減った
 DISK_GUARD=0 で止める。
 """
 from __future__ import annotations
@@ -32,6 +35,8 @@ MIN_FREE_GB = float(ENV.get("DISK_MIN_FREE_GB", "15"))
 HOST_PATH = ENV.get("DISK_HOST_PATH", "/definitions")   # ホストから bind mount したパス（statvfs がホストのディスクを返す）
 KEEP_RELEASES = int(ENV.get("DISK_KEEP_RELEASES", "3"))
 BEFORE_TAG_DAYS = int(ENV.get("DISK_BEFORE_TAG_DAYS", "7"))
+JOB_MAX_GB = float(ENV.get("DISK_JOB_MAX_GB", "30"))
+JOB_LABEL = "factory.job"   # reattach.JOB_LABEL と同じ
 STOPPAGE_KEY = "disk:low"
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 GB = 1024 ** 3
@@ -132,11 +137,55 @@ def remove_stale_images(docker=_docker) -> dict:
     return {"cmd": "rmi stale", "ok": True, "out": f"{len(removed)}/{len(names)}", "removed": removed[:50]}
 
 
+def too_low() -> bool:
+    """新しいジョブを取らないほど空きが少ないか（見られなければ False）"""
+    if not ENABLED:
+        return False
+    try:
+        return free_bytes() < MIN_FREE_GB * GB
+    except OSError:
+        return False
+
+
+def oversized_jobs(docker=_docker) -> list[dict]:
+    """書き込み層が JOB_MAX_GB を超えた、動いているジョブのコンテナ"""
+    r = docker(["ps", "--size", "--filter", f"label={JOB_LABEL}", "--format", "{{json .}}"], timeout=300)
+    out = []
+    for line in (r.stdout or "").splitlines() if r.returncode == 0 else []:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        rw = size_bytes(((row.get("Size") or "").split("(")[0]).strip())   # "54.6GB (virtual 60GB)"
+        if rw > JOB_MAX_GB * 1e9:
+            out.append({"name": row.get("Names"), "size_gb": round(rw / 1e9, 1), "labels": row.get("Labels") or ""})
+    return out
+
+
+def stop_oversized_jobs(cur, log=print, *, docker=_docker) -> list[dict]:
+    import stoppage
+    killed = []
+    for c in oversized_jobs(docker):
+        m = re.search(re.escape(JOB_LABEL) + r"=(\d+)", c["labels"])
+        job_id = int(m.group(1)) if m else None
+        if docker(["kill", c["name"]], timeout=60).returncode != 0:
+            continue
+        cur.execute("insert into events(name, job_id, payload) values ('ops.job_disk_killed', %s, %s)",
+                    (job_id, Jsonb({"container": c["name"], "size_gb": c["size_gb"], "max_gb": JOB_MAX_GB})))
+        stoppage.open_stoppage(cur, f"diskjob:{job_id or c['name']}", "factory-bug",
+                               f"ジョブ {job_id} のコンテナの書き込み層が {c['size_gb']}GB（上限 {JOB_MAX_GB:g}GB）になったので止めた",
+                               waiting_for="何がそこまで大きくなったか（Rust の target・生成物）を見て、チケットを直すか積み直す", detected_by="dispatcher", job_id=job_id)
+        log("job container killed for disk", c["name"], c["size_gb"])
+        killed.append(c)
+    return killed
+
+
 def step(cur, log=print, *, docker=_docker, free=free_bytes) -> dict | None:
     """見て、要れば片付ける。片付けたら記録の中身を返す"""
     if not ENABLED:
         return None
     import stoppage
+    stop_oversized_jobs(cur, log, docker=docker)
     cache, avail = build_cache_bytes(docker), free()
     low = avail < MIN_FREE_GB * GB
     if cache <= CACHE_MAX_GB * GB and not low:

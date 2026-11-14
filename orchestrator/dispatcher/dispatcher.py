@@ -497,7 +497,10 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"JOB_DEADLINE={int(time.time()) + JOB_TIMEOUT}",   # 打ち切りの時刻（epoch 秒）。ワーカーはエージェントをこれより前に止め、後処理の時間を残す
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
-                   *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
+                   *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),
+                   # Rust の target を小さくする（増分コンパイルの中間物とデバッグ情報が target の大半。1 ジョブで書き込み層が 54GB になった。2026-11-14）。0 で止める
+                   *(["-e", "CARGO_INCREMENTAL=0", "-e", "CARGO_PROFILE_DEV_DEBUG=line-tables-only", "-e", "CARGO_PROFILE_TEST_DEBUG=line-tables-only"]
+                     if ENV.get("WORKER_CARGO_LEAN", "1") == "1" else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    # ワーカー 1 本が使える CPU の上限（docker run --cpus）。重いビルドが並ぶと Docker の VM が飽和し、DNS と制御プレーンの DB の認証が
                    # 時間切れになった（2026-11-14 01:38〜01:52 UTC、rust のジョブ 2 本と QA の staging の作り直しが重なった）。機械ごとに override で
                    *(["--cpus", ENV["WORKER_CPUS"]] if ENV.get("WORKER_CPUS") else []),
@@ -1006,6 +1009,9 @@ def _claim_loop(name: str, claim):
     数を下げても、動いているジョブは最後まで流す（新しく取り出さないだけ）"""
     while True:
         job = None
+        if disk_guard.too_low():   # ディスクの空きが下限を割っている間は新しいジョブを取らない（2026-11-14 夜: rust のジョブ 2 本で Mac が満杯に近づいた）
+            time.sleep(30)
+            continue
         try:
             with db() as conn, conn.cursor() as cur:
                 job = claim(cur)
