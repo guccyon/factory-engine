@@ -1,16 +1,19 @@
 <!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="console-token" content="__TOKEN__">
-<title>工場の操業コンソール</title>
+<title>操業コンソール</title>
 <link rel="stylesheet" href="/static/brand.css">
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/components.css">
 <link rel="stylesheet" href="/static/console.css">
 </head><body>
-<header><a class="brand" href="/" data-nav>工場の操業コンソール</a><span id="hdr"></span><a id="help-i" href="/help" data-nav title="ヘルプ（画面の言葉・API と MCP・コマンド）" aria-label="ヘルプ"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5"/><circle cx="12" cy="17.5" r=".6"/></svg></a><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></header>
-<nav id="nav" aria-label="ページ"></nav>
-<div id="banner"></div>
-<div id="view"></div><div id="msg"></div>
+<header id="top"><a class="brand" href="/" data-nav>操業コンソール</a><span class="top-r"><button type="button" class="c-factory" id="fs" aria-expanded="false" aria-controls="fs-pop"><i></i><b>読み込み中</b></button><label class="c-wb" id="wb-l">ワークベンチ <select id="wb"></select></label><a id="help-i" href="/help" data-nav title="ヘルプ（画面の言葉・API と MCP・コマンド）" aria-label="ヘルプ"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5"/><circle cx="12" cy="17.5" r=".6"/></svg></a><a id="gear" href="/settings" data-nav title="設定" aria-label="設定"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a></span></header>
+<div id="fs-pop" class="pop" hidden><div id="hdr"></div></div>
+<nav id="side" class="c-side" aria-label="ページ"></nav>
+<main id="main"><div id="banner"></div><div id="view"></div></main>
+<nav id="tabs" class="c-tabs" aria-label="ページ"></nav>
+<div id="more" class="sheet" hidden role="dialog" aria-modal="true" aria-label="その他のページ"><div class="sheet-b" id="more-b"></div></div>
+<div id="msg"></div>
 <div id="zoom" hidden role="dialog" aria-modal="true" aria-label="画面の拡大"><div class="bar"><span class="t" id="zoom-t"></span><button data-zm="-1" title="前の画面（←）">←</button><button data-zm="1" title="次の画面（→）">→</button><button data-zm="fit" title="幅に合わせる・全体を見る（画像のクリックでも切り替え）" id="zoom-fit">全体を見る</button><a id="zoom-tab" href="#" target="_blank" rel="noopener">別タブで開く</a><button data-zm="close" title="閉じる（Esc）">閉じる</button></div><div class="vp"><img id="zoom-img" alt=""></div></div>
 <script src="/static/console.js"></script>
 </body></html>

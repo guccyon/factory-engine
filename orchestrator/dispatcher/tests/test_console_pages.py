@@ -45,7 +45,7 @@ def test_layers():
     for name in ("components.css", "console.css", "catalog.html"):
         assert not prim.search(read(name)), name
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", read("components.css"))
-    defined = set(re.findall(r"--([a-z0-9-]+):", read("brand.css") + read("tokens.css")))
+    defined = set(re.findall(r"--([a-z0-9-]+):", read("brand.css") + read("tokens.css") + read("console.css")))   # 骨組みの寸法（--side-w など）は console.css
     used = set(re.findall(r"var\(--([a-z0-9-]+)", read("components.css") + read("console.css")))
     assert used <= defined, used - defined
 
