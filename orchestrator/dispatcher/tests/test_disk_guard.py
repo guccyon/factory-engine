@@ -145,7 +145,7 @@ def test_job_is_not_stopped_when_du_inside_is_small(cur):
 def test_build_cache_uses_decimal_gb_and_engine_total(tmp_path):
     """11/14: 古い CLI が共有分を抜いた 21.36GB を返し、1024³ の上限（約 21.47e9）より下と見て片付けが 5 時間走らなかった"""
     assert dg.CACHE_MAX_GB * dg.GB < dg.size_bytes("21.36GB")
-    assert dg.build_cache_bytes(Docker("21.36GB"), engine=lambda: 45.43e9) == 45.43e9   # エンジンの全体を使う
+    assert dg.build_cache_bytes(Docker("45.43GB"), engine=lambda: 7.86e9) == 7.86e9   # エンジンが読めればそれ（CLI の版で数え方が違う）
     assert dg.build_cache_bytes(Docker("21.36GB"), engine=lambda: None) == dg.size_bytes("21.36GB")   # エンジンが読めなければ CLI
     assert dg.engine_build_cache_bytes(str(tmp_path / "none.sock")) is None
 
@@ -166,6 +166,6 @@ def test_engine_build_cache_reads_the_socket(tmp_path):
         c.close()
     t = threading.Thread(target=serve)
     t.start()
-    assert dg.engine_build_cache_bytes(path) == 45.43e9
+    assert dg.engine_build_cache_bytes(path) == 30e9   # イメージと共有している分は prune で消えないので数えない
     t.join()
     srv.close()
