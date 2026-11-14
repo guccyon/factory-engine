@@ -20,10 +20,11 @@ def test_size_bytes():
 
 class Docker:
     def __init__(self, cache="30GB"):
-        self.cache, self.calls = cache, []
+        self.cache, self.calls, self.full = cache, [], []
 
     def __call__(self, args, timeout=600):
         self.calls.append(args[:2])
+        self.full.append(args)
         out = ""
         if args[:2] == ["system", "df"]:
             out = "\n".join(json.dumps(r) for r in [{"Type": "Images", "Size": "40GB"}, {"Type": "Build Cache", "Size": self.cache}])
@@ -58,6 +59,7 @@ def test_prunes_cache_when_large(cur):
     d = Docker("30GB")
     rec = dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
     assert rec["cache_gb"] > 20 and ["builder", "prune"] in d.calls and ["image", "prune"] not in d.calls
+    assert ["--filter", "until=24h"] == next(a for a in d.full if a[:2] == ["builder", "prune"])[-2:]   # 作ったばかりの層は残す
     cur.execute("select count(*) as n from events where name='ops.disk_pruned'")
     assert cur.fetchone()["n"] == 1 and open_keys(cur) == []
 
@@ -67,6 +69,7 @@ def test_low_disk_prunes_images_too_and_opens_then_closes_the_stoppage(cur):
     d = Docker("1GB")
     dg.step(cur, lambda *a: None, docker=d, free=lambda: 2 * GB)
     assert ["builder", "prune"] in d.calls and ["image", "prune"] in d.calls
+    assert "--filter" not in next(a for a in d.full if a[:2] == ["builder", "prune"])   # 空きが足りないときは新しい層も消す
     assert open_keys(cur) == ["disk:low"]
     dg.step(cur, lambda *a: None, docker=Docker("1GB"), free=lambda: 100 * GB)
     assert open_keys(cur) == []
