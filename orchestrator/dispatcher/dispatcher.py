@@ -58,6 +58,7 @@ import jobdb
 import judgment
 import line
 import notify_inbox
+import output_pump
 import ops
 import pr_events
 import process_learn
@@ -554,21 +555,18 @@ def run_job(job: dict, reattaching: bool = False):
             deadline = (job["started_at"].timestamp() if reattaching and job.get("started_at") else time.time()) + JOB_TIMEOUT
             cancelled = False
             LAST_OUTPUT[job_id] = time.time()
-            while True:
-                line = proc.stdout.readline()
-                if line:
-                    lines.append(line)
-                    LAST_OUTPUT[job_id] = time.time()
-                    if len(lines) % 20 == 0:
-                        cur.execute("select cancel_requested from jobs where id=%s", (job_id,))
-                        if cur.fetchone()["cancel_requested"]:
-                            cancelled = True
-                elif proc.poll() is not None:
-                    break
-                if cancelled or time.time() > deadline:
-                    subprocess.run(["docker", "kill", name], capture_output=True)
-                    proc.wait(timeout=30)
-                    break
+
+            def _on_line(line: str) -> None:
+                lines.append(line)
+                LAST_OUTPUT[job_id] = time.time()
+
+            def _should_cancel() -> bool:
+                cur.execute("select cancel_requested from jobs where id=%s", (job_id,))
+                return bool(cur.fetchone()["cancel_requested"])
+
+            # 出力が止まっても打ち切りの時刻と止める印を見る（readline で待ち続けて 7 時間握った。2026-11-14 job 8765・8770）
+            cancelled, _ = output_pump.follow(proc, deadline, _should_cancel, _on_line,
+                                              lambda: subprocess.run(["docker", "kill", name], capture_output=True))
             LAST_OUTPUT.pop(job_id, None)
             # 止める印はログが出ない間にも付く（ops_loop がコンテナを止める）。終わった時点でもう一度見る
             cur.execute("select cancel_requested, preempted_for from jobs where id=%s", (job_id,))
