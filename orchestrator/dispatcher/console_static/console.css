@@ -160,3 +160,13 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 .live-leg{display:flex;gap:var(--space-4)}.live-leg .r{color:var(--accent);font-weight:600}
 #lanes.lnlist{display:block;padding:0}.lnsec.human{border-color:var(--bad)}.lnsec h2{font-size:15px}
 @media (max-width:599px){.live-lanes .c-lane{grid-template-columns:64px minmax(0,1fr) 44px}.live-axis{grid-template-columns:64px 1fr 1fr 1fr 44px}}
+
+/* ---- 工場の保守（ADR 0059、#477） ---- */
+.mt > .m { margin: 0 0 var(--space-3); }
+.mt .alerts, .mt > section { margin-top: var(--space-3); }
+.mt-job { padding: var(--space-2) 0; border-top: 1px solid var(--line); }
+.mt-job:first-child { border-top: 0; }
+.mt-jh { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.mt-jh .c-g { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-err { margin: var(--space-1) 0; overflow-wrap: anywhere; }
+.mt-job .acts { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-1); }
