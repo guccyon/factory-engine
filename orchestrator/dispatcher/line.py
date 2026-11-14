@@ -77,13 +77,26 @@ MIN_PRIORITY_WHERE = ("(q.priority >= %(minp)s or exists (select 1 from tickets 
                       "(t.id = q.ticket_id or (t.source = 'github' and 'github:' || t.source_ref = q.correlation_id))))")
 
 
+# 触れる環境を 1 つのジョブだけで使う QA（ADR 0055 の決定 3）。時刻をまたぐストーリーの判定は、時計を進めて再起動するので、
+# 同じ製品のほかの QA のジョブと重ねない。入力の exclusive_env が true の QA のジョブは、同じ製品で QA のジョブが動いていれば取り出さない。
+# 動いていれば、ほかの QA のジョブも取り出さない。先に積まれて待っている exclusive_env のジョブがあれば、後から来た QA のジョブは追い越さない
+_EXCLUSIVE = ("exists (select 1 from events x where x.job_id = {j}.id and x.name = 'job.enqueued' "
+              "and coalesce((x.payload->'input'->>'exclusive_env')::boolean, false))")
+EXCLUSIVE_ENV_WHERE = (
+    "not (q.kind = 'qa' and ("
+    f"exists (select 1 from jobs r where r.state = 'running' and r.kind = 'qa' and r.repo = q.repo and {_EXCLUSIVE.format(j='r')}) "
+    f"or ({_EXCLUSIVE.format(j='q')} and exists (select 1 from jobs r where r.state = 'running' and r.kind = 'qa' and r.repo = q.repo)) "
+    f"or (not {_EXCLUSIVE.format(j='q')} and exists (select 1 from jobs w where w.state = 'queued' and not w.cancel_requested "
+    f"and w.kind = 'qa' and w.repo = q.repo and w.enqueued_at < q.enqueued_at and {_EXCLUSIVE.format(j='w')}))))")
+
+
 def _claim(cur, where: str, corrs: list[str] | None = None, min_priority: int | None = None) -> dict | None:
     """corrs か min_priority を渡すと、そのどちらかに当たるジョブに絞る（一時停止中の drain allow）"""
     conds = (["q.correlation_id = any(%(corrs)s)"] if corrs else []) + ([MIN_PRIORITY_WHERE] if min_priority is not None else [])
     if corrs is not None and not conds:
         conds = ["false"]
     extra = f" and ({' or '.join(conds)})" if conds else ""
-    cur.execute(f"""select q.id from jobs q where q.state='queued' and not q.cancel_requested and {where}{extra}
+    cur.execute(f"""select q.id from jobs q where q.state='queued' and not q.cancel_requested and {where}{extra} and {EXCLUSIVE_ENV_WHERE}
                       and not exists (select 1 from tickets t where t.held and (t.id = q.ticket_id or (t.source = 'github' and 'github:' || t.source_ref = q.correlation_id)))
                     order by q.priority desc, q.enqueued_at for update skip locked limit 1""",
                 {**ARGS, "corrs": corrs or [], "minp": min_priority})

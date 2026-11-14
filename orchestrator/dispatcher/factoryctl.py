@@ -1221,11 +1221,21 @@ def qa_cmd(cur, argv) -> int:
             else:
                 print("  ラインは一時停止中なので、再開するまで流れない（--through-pause を付けて積み直す）")
         return 0
+    exclusive = False
+    try:   # 時刻をまたぐストーリーを含むなら、同じ製品のほかの QA と重ねずに流す（ADR 0055 の決定 3）
+        import qa_gate
+        with_time, _ = qa_gate.time_stories(gh, repo)
+        exclusive = bool(set(with_time) & set(stories)) if stories else bool(with_time)
+    except Exception as e:  # noqa: BLE001  読めなければ重ねてよいものとして積む（時計の道具は重なると断る）
+        print(f"  ※ ストーリーの time を読めなかった（{str(e)[:120]}）。ほかの QA と重なると時計を進められない")
     try:
-        got = qa_line.enqueue(cur, gh, repo, env=opt(argv, "--env", "staging"), stories=stories, by=opt(argv, "--by", "factoryctl"), priority=level)
+        got = qa_line.enqueue(cur, gh, repo, env=opt(argv, "--env", "staging"), stories=stories, by=opt(argv, "--by", "factoryctl"), priority=level,
+                              exclusive_env=exclusive)
     except psycopg.errors.UniqueViolation:
         print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
     print(f"enqueued job {got['job_id']}（QA 役・{repo}#{got['issue']}・版 {got['release_id'] or '不明'}・{level}）")
+    if exclusive:
+        print("  時刻をまたぐストーリーを含むので、この製品のほかの QA のジョブが終わってから始まる（ADR 0055）")
     if not got["release_id"]:
         print("  ※ 環境に出ている版の記録がない。先に factoryctl env up で触れる環境を立てる")
     if drain.active(cur):

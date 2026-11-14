@@ -116,7 +116,7 @@ def unit_ready(cur) -> bool:
 def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | None = None, by: str = "factoryctl",
             priority: str = "p1", tier: str = "tier-judge", env_host: str | None = None, defs: dict | None = None,
             extra: dict | None = None, issue_label: str | None = None, issue: int | None = None, unit: str = "",
-            title: str | None = None) -> dict:
+            title: str | None = None, exclusive_env: bool = False) -> dict:
     """QA のジョブを固定 Issue に積む。返り値 {job_id, issue, release_id}。同じ Issue に動いているジョブがあれば psycopg の UniqueViolation。
     extra はワーカーへの入力に足すもの（夜間の探索の mode・charter・night、出荷の関門の gate）。issue_label は積む固定 Issue（既定は判定の factory:qa）。
     issue と unit を渡すと、その Issue（版ごとの QA のチケット。ADR 0054）に、その単位のジョブとして積む（同じ単位で動いているジョブがあれば UniqueViolation）"""
@@ -125,6 +125,8 @@ def enqueue(cur, gh, repo: str, *, env: str = "staging", stories: list[str] | No
     corr = f"github:{repo}#{issue}"
     inp = build_input(cur, repo, env, list(stories or []), env_host or os.environ.get("QA_ENV_HOST") or defs["worker"]["env_host"])
     inp.update(extra or {})
+    if exclusive_env:   # 時刻をまたぐストーリーの判定。同じ製品のほかの QA と重ねずに流す（ADR 0055 の決定 3。line.EXCLUSIVE_ENV_WHERE）
+        inp["exclusive_env"] = True
     if inp.get("mode") == "explore":   # 探索は開いている Defect を見て、同じ不具合なら same_as を書く（重複起票を防ぐ）
         inp["open_defects"] = open_defects_for_worker(gh, repo, defs)
     t = ops.upsert_ticket(cur, "github", f"{repo}#{issue}", repo,
