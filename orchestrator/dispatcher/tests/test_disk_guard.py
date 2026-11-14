@@ -80,3 +80,15 @@ def test_free_takes_the_smaller_of_vm_and_host(monkeypatch, tmp_path):
     assert dg.free_bytes() == 2
     monkeypatch.setattr(dg, "HOST_PATH", str(tmp_path / "none"))
     assert dg.free_bytes() == 50
+
+
+def test_stale_images_keep_recent_releases_used_ones_and_new_before_tags():
+    from datetime import datetime, timezone
+    R = lambda repo, tag, created="2026-11-01 10:00:00 +0900 JST", i="sha:x": {"Repository": repo, "Tag": tag, "CreatedAt": created, "ID": i}  # noqa: E731
+    rows = [R("rally-backend", f"0.{n}.0") for n in (4, 9, 10, 31, 32, 33)] + [R("rally-web", "0.5.0", i="sha:used")] + [
+        R("factory-dispatcher", "p0-before-a", "2026-11-01 10:00:00 +0900 JST"), R("factory-dispatcher", "p0-before-b", "2026-11-02 10:00:00 +0900 JST"),
+        R("factory-dispatcher", "p0-before-c", "2026-11-03 10:00:00 +0900 JST"), R("factory-dispatcher", "p0-before-d", "2026-11-13 10:00:00 +0900 JST"),
+        R("factory-dispatcher", "p0-1314e88"), R("<none>", "<none>")]
+    now = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+    out = dg.stale_images(rows, {"rally-backend:0.9.0", "sha:used"}, keep_releases=3, before_days=7, now=now)
+    assert sorted(out) == ["factory-dispatcher:p0-before-a", "factory-dispatcher:p0-before-b", "rally-backend:0.10.0", "rally-backend:0.4.0"]
