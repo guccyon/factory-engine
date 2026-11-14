@@ -28,7 +28,10 @@ def test_parse_only_swallowed_exceptions():
     assert fault.parse(("tick error", "psycopg.errors.UndefinedColumn('x')"))[1] == "UndefinedColumn"
     assert fault.parse(("supervisor up: repos=[]",)) is None             # ふつうのログ
     assert fault.parse(("job 3 failed", "exit=1")) is None                # 例外の repr がない
-    assert fault.signature("supervisor", "notify report failed", "IndexError") == "supervisor:notify_report_failed:IndexError"
+    # 印は「どんなエラーか」。回ごとに変わる数・引用した値は落とす。工程が違っても同じ根っこなら同じ印
+    assert fault.root_signature("IndexError", "IndexError(2)") == fault.root_signature("IndexError", "IndexError(3)")
+    assert fault.root_signature("KeyError", "KeyError('a')") != fault.root_signature("IndexError", "IndexError(2)")
+    assert fault.root_signature("OperationalError", "OperationalError('could not translate host name \"postgres\"')") == fault.ENV_SIGNATURE
 
 
 @pytest.fixture
@@ -65,7 +68,7 @@ def test_fault_flush_bundles_counts(cur):
     cur.execute("select count(*) as n from events where name='factory.fault'")
     assert cur.fetchone()["n"] == 2
     opened = repeat_watch.step(cur)
-    assert len(opened) == 1 and opened[0].startswith("repeat:supervisor:notify_report_failed:IndexError#")
+    assert len(opened) == 1 and opened[0].startswith("repeat:IndexError:")
     cur.execute("select payload from events where name='stoppage.opened'")
     p = cur.fetchone()["payload"]
     assert p["category"] == "factory-bug" and "55 回" in p["what"] and p["cause"] == "IndexError(2)"
@@ -135,3 +138,30 @@ def test_env_failures_bundle_into_one(cur):
     cur.execute("select payload from events where name='stoppage.opened'")
     p = cur.fetchone()["payload"]
     assert p["category"] == "env" and "7 回" in p["what"] and "環境" in p["what"]
+
+
+
+def test_same_root_from_different_steps_is_one_and_old_keys_merge(cur):
+    """同じ根っこのエラーは工程が違っても 1 件。前の版で工程ごとに開いていた件は、新しい 1 件に寄せて閉じる（11-14 オーナー）"""
+    from psycopg.types.json import Jsonb
+    # 前の版の印（工程ごと）で開いていた 2 件
+    for old in ("supervisor:tick_error:OperationalError", "dispatcher:watch_error:OperationalError"):
+        cur.execute("insert into events(name, payload) values ('factory.fault', %s)",
+                    (Jsonb({"signature": old, "component": old.split(":")[0], "label": "x", "exc": "OperationalError", "count": 6,
+                            "sample": "OperationalError('could not translate host name \"postgres\" to address')", "first_at": 1.0, "last_at": 2.0}),))
+        stoppage.open_stoppage(cur, f"repeat:{old}#20261114T0116", "factory-bug", "old")
+    for comp in ("supervisor", "dispatcher"):
+        fault.note_log(comp, ("ops error", "KeyError('job_7')"))
+        fault.note_log(comp, ("watch error", "KeyError('job_8')"))
+        fault.note_log(comp, ("tick error", "KeyError('job_9')"))
+    fault.flush(cur, force=True)
+    repeat_watch.step(cur)
+    keys = sorted(stoppage.open_keys(cur, "repeat:"))
+    assert len(keys) == 2   # 名前解決の 1 件と KeyError の 1 件
+    assert any(k.startswith("repeat:env:network#") for k in keys) and any(k.startswith("repeat:KeyError:") for k in keys)
+    cur.execute("select payload->>'remedy' as r from events where name='stoppage.closed'")
+    assert [r["r"] for r in cur.fetchall()].count(None) == 0
+    import inbox
+    from datetime import datetime, timezone
+    items = [i for i in inbox._stoppages(cur, datetime.now(timezone.utc)) if i["key"].startswith("stoppage:repeat:KeyError")]
+    assert len(items) == 1 and "6 回" in items[0]["title"]   # 最新の回数で見せる

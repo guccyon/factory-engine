@@ -12,6 +12,7 @@ supervisor と dispatcher は、1 つの工程の失敗でラインを止めな�
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import threading
@@ -59,15 +60,35 @@ def is_env(sample: str) -> bool:
     return any(m in s for m in _ENV_MARKERS)
 
 
-def note(component: str, label: str, exc: str, sample: str = "") -> None:
+def _normalize(sample: str) -> str:
+    """見本から、回ごとに変わる部分（引用した値・数・16 進）を落とす。同じ根っこのエラーが同じ文になるように"""
+    s = (sample or "").lower()
+    s = re.sub(r"'[^']*'|\"[^\"]*\"", "''", s)
+    s = re.sub(r"0x[0-9a-f]+|\b[0-9a-f]{12,}\b", "x", s)
+    s = re.sub(r"\d+", "0", s)
+    return re.sub(r"\s+", " ", s).strip()[:160]
+
+
+def root_signature(exc: str, sample: str) -> str:
+    """停止の key に使う印。どの工程で出たかでなく、どんなエラーか（例外の型と、回ごとに変わる部分を落とした中身）で作る。
+    11-14 に同じ名前解決の失敗が工程ごとに 7 件の判断待ちになった（オーナー「同じ内容は最新の 1 件だけでよい」）。
+    名前解決・接続の失敗はまとめて env:network"""
     if is_env(sample):
-        component, label, exc = ENV_COMPONENT, f"{component}: {label}", "network"   # label は最後に出た工程（見本の手がかり）
-    sig = ENV_SIGNATURE if component == ENV_COMPONENT else signature(component, label, exc)
+        return ENV_SIGNATURE
+    return f"{exc}:{hashlib.sha1(_normalize(sample).encode()).hexdigest()[:10]}"
+
+
+def note(component: str, label: str, exc: str, sample: str = "") -> None:
+    sig = root_signature(exc, sample)
+    where = f"{component}: {label}"   # 最後に出た工程（見本の手がかり）
+    if sig == ENV_SIGNATURE:
+        component, exc = ENV_COMPONENT, "network"
     now = time.time()
     with _lock:
         c = _counts.get(sig)
         if c is None:
-            c = _counts[sig] = {"component": component, "label": label, "exc": exc, "count": 0, "first": now}
+            c = _counts[sig] = {"component": component, "label": where, "exc": exc, "count": 0, "first": now}
+        c["label"] = where
         c["count"] += 1
         c["last"] = now
         c["sample"] = sample

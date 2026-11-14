@@ -96,37 +96,79 @@ def job_step(cur, classify: Callable[[dict], tuple | None]) -> list[str]:
     return opened
 
 
+def _root_of(sig: str, last: dict) -> str:
+    """古い印（工程ごと・#452 の前）でも、最後の見本から今の印（どんなエラーか）を出す"""
+    if sig == fault.ENV_SIGNATURE:
+        return sig
+    return fault.root_signature(last.get("exc") or "", last.get("sample") or "")
+
+
 def fault_step(cur) -> list[str]:
-    """工場の中で握りつぶした同じ例外を束ねる。開いた key を返す"""
+    """工場の中で握りつぶした同じ根っこの例外を、1 件の停止に束ねる。開いた key を返す。
+    同じ根っこで開いている古い印の停止（工程ごとに分かれていたもの）は、新しい 1 件に寄せて閉じる（11-14 オーナー「最新の 1 件だけでよい」）"""
     cur.execute("select payload->>'signature' as sig, "
                 "coalesce(sum((payload->>'count')::int) filter (where occurred_at > now() - make_interval(mins => %s)), 0) as n, "
                 "bool_or(occurred_at > now() - make_interval(mins => %s)) as recent, "
                 "min((payload->>'first_at')::float) filter (where occurred_at > now() - make_interval(mins => %s)) as first_at, "
-                "(array_agg(payload order by id desc))[1] as last "
+                "max(occurred_at) as last_at, (array_agg(payload order by id desc))[1] as last "
                 "from events where name='factory.fault' and occurred_at > now() - make_interval(mins => %s) group by 1",
                 (WINDOW_MIN, QUIET_MIN, WINDOW_MIN, max(WINDOW_MIN, QUIET_MIN)))
-    rows = {r["sig"]: r for r in cur.fetchall()}
-    opened = []
+    groups: dict[str, dict] = {}
+    root_of: dict[str, str] = {}
+    for r in cur.fetchall():
+        root = root_of[r["sig"]] = _root_of(r["sig"], r["last"] or {})
+        g = groups.setdefault(root, {"n": 0, "recent": False, "first_at": None, "last_at": None, "last": {}})
+        g["n"] += r["n"] or 0
+        g["recent"] = g["recent"] or bool(r["recent"])
+        if r["first_at"] and (g["first_at"] is None or r["first_at"] < g["first_at"]):
+            g["first_at"] = r["first_at"]
+        if g["last_at"] is None or r["last_at"] > g["last_at"]:
+            g["last_at"], g["last"] = r["last_at"], r["last"] or {}
     open_now = {s: k for s, k in _open_by_sig(cur, PREFIX).items() if not k.startswith(JOB_PREFIX)}
-    for sig, r in rows.items():
-        if sig in open_now or r["n"] < FAULT_MIN:
+    superseded = {s: root_of[s] for s in open_now if root_of.get(s, s) != s}
+    opened = []
+    for root, g in groups.items():
+        if root in open_now:
             continue
-        last = r["last"] or {}
-        key = f"{PREFIX}{sig}#{_stamp(r['first_at'] or datetime.now(timezone.utc))}"
-        env = sig == fault.ENV_SIGNATURE
+        if g["n"] < FAULT_MIN and root not in superseded.values():   # 古い印で開いていた件を寄せるときは数に届かなくても開く
+            continue
+        last = g["last"]
+        key = f"{PREFIX}{root}#{_stamp(g['first_at'] or datetime.now(timezone.utc))}"
+        env = root == fault.ENV_SIGNATURE
         if stoppage.open_stoppage(cur, key, "env" if env else "factory-bug",
-                                  (f"工場の環境の不調: 名前解決か、DB・外への接続が繰り返し落ちている（直近 {WINDOW_MIN} 分に {r['n']} 回。最後は {last.get('label')}）"
+                                  (f"工場の環境の不調: 名前解決か、DB・外への接続が繰り返し落ちている（直近 {WINDOW_MIN} 分に {g['n']} 回。最後は {last.get('label')}）"
                                    if env else
-                                   f"工場の中で同じエラーが繰り返している（{last.get('component')} の「{last.get('label')}」が {last.get('exc')}、直近 {WINDOW_MIN} 分に {r['n']} 回）"),
+                                   f"工場の中で同じエラーが繰り返している（{last.get('exc')}、直近 {WINDOW_MIN} 分に {g['n']} 回。最後は {last.get('label')}）"),
                                   waiting_for=("工場を動かしている機械（Docker の VM のディスク・メモリ・再起動）を確かめる。収まれば自動で閉じる" if env else
                                                "建設者が原因を調べて直す（工場は止まらずに回っているが、この工程は動いていない）"),
                                   cause=last.get("sample") or "",
-                                  started_at=datetime.fromtimestamp(r["first_at"], timezone.utc) if r["first_at"] else None):
+                                  started_at=datetime.fromtimestamp(g["first_at"], timezone.utc) if g["first_at"] else None):
             opened.append(key)
+            open_now[root] = key
+    for sig, root in superseded.items():
+        stoppage.close_stoppage(cur, open_now[sig], remedy=f"同じ根っこの 1 件（{open_now.get(root, root)}）にまとめた", quiet=True)
     for sig, key in open_now.items():
-        if not (rows.get(sig) or {}).get("recent"):
+        if sig in superseded:
+            continue
+        if not (groups.get(sig) or {}).get("recent"):
             stoppage.close_stoppage(cur, key, remedy=f"同じエラーが {QUIET_MIN} 分出ていない")
     return opened
+
+
+def live(cur, key: str) -> dict | None:
+    """束ねた停止（例外の repeat:）のいまの状態。受信トレイの件を、開いた時点の数でなく最新の回数・時刻で見せる"""
+    if not key.startswith(PREFIX) or key.startswith(JOB_PREFIX):
+        return None
+    sig = key[len(PREFIX):].rsplit("#", 1)[0]
+    cur.execute("select coalesce(sum((payload->>'count')::int), 0) as n, max(occurred_at) as last_at, "
+                "(array_agg(payload order by id desc))[1] as last from events "
+                "where name='factory.fault' and payload->>'signature'=%s and occurred_at > now() - make_interval(mins => %s)",
+                (sig, WINDOW_MIN))
+    r = cur.fetchone()
+    if not r or not r["last_at"]:
+        return {"n": 0, "last_at": None, "label": None, "env": sig == fault.ENV_SIGNATURE}
+    return {"n": int(r["n"]), "last_at": r["last_at"], "label": (r["last"] or {}).get("label"), "exc": (r["last"] or {}).get("exc"),
+            "env": sig == fault.ENV_SIGNATURE}
 
 
 def step(cur) -> list[str]:

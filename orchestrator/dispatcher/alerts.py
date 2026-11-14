@@ -8,8 +8,10 @@
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
@@ -22,6 +24,7 @@ WHO_JA = {"owner": "オーナー", "builder": "建設者", "none": "対応は要
 GROUPS = ("判断待ち", "工場の更新", "ライン", "工場の不調", "PR が進めない", "作業の失敗", "予算・上限", "そのほか")
 # 工場の更新を人に回す決まり（definitions/swap.yaml の escalate の id）を、エンジニアでなくても読める言葉に
 SWAP_ESCALATE_JA = {"secrets_permissions": "工場の守りに関わる設定（パスワードや鍵の扱い、外からつながる入口）が変わる"}
+TZ = ZoneInfo(os.environ.get("REPORT_TZ", "Asia/Tokyo"))   # 受信トレイに出す時刻
 PR_RE = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 OLD_WORDS = (("入れ替え", "更新"),)   # 古い記録の言葉（11-07 に「入れ替え」は「更新」に統一）
 
@@ -204,6 +207,13 @@ def describe(cur, s: dict) -> dict:
             a.update(group="ライン", who="none", title="同時に流せる枠が開いた PR でふさがっていて、新しい作業を待っている",
                      todo="何もしなくてよい。PR が進まないときは「判定に進まない PR」の件が別に出る")
         elif prefix == "repeat":   # 繰り返すエラーを束ねた停止（repeat_watch.py、#308）
+            import repeat_watch
+            lv = repeat_watch.live(cur, key)
+            if lv is not None:   # 開いた時点の数でなく、最新の回数・時刻で見せる（11-14 オーナー）
+                when = lv["last_at"].astimezone(TZ).strftime("%H:%M") if lv["last_at"] else None
+                a["title"] = ((f"工場の環境の不調（名前解決・接続が落ちている）" if lv["env"] else f"同じエラーが繰り返している（{lv.get('exc')}）")
+                              + (f": 直近 {repeat_watch.WINDOW_MIN} 分に {lv['n']} 回、最後は {when} の {lv['label']}" if when
+                                 else f": 直近 {repeat_watch.WINDOW_MIN} 分は出ていない（収まれば自動で閉じる）"))
             a.update(group="工場の不調", who="builder",
                      todo=("工場を動かしている機械の不調（名前解決・接続）。Docker の VM のディスク・メモリを確かめ、続くなら再起動する。収まれば自動で閉じる"
                            if rest.startswith("env:") else
