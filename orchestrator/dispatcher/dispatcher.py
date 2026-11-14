@@ -499,7 +499,9 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
                    *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),
                    # Rust の target を小さくする（増分コンパイルの中間物とデバッグ情報が target の大半。1 ジョブで書き込み層が 54GB になった。2026-11-14）。0 で止める
-                   *(["-e", "CARGO_INCREMENTAL=0", "-e", "CARGO_PROFILE_DEV_DEBUG=line-tables-only", "-e", "CARGO_PROFILE_TEST_DEBUG=line-tables-only"]
+                   # 結合テストを 1 ファイル 1 バイナリでリンクすると、1 本 130MB 前後が百本以上になる（rally の server で 6.7GB）。デバッグ情報を持たせず剥がす
+                   *(["-e", "CARGO_INCREMENTAL=0", "-e", "CARGO_PROFILE_DEV_DEBUG=0", "-e", "CARGO_PROFILE_TEST_DEBUG=0",
+                      "-e", "CARGO_PROFILE_DEV_STRIP=debuginfo", "-e", "CARGO_PROFILE_TEST_STRIP=debuginfo"]
                      if ENV.get("WORKER_CARGO_LEAN", "1") == "1" else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    # ワーカー 1 本が使える CPU の上限（docker run --cpus）。重いビルドが並ぶと Docker の VM が飽和し、DNS と制御プレーンの DB の認証が
                    # 時間切れになった（2026-11-14 01:38〜01:52 UTC、rust のジョブ 2 本と QA の staging の作り直しが重なった）。機械ごとに override で

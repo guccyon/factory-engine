@@ -158,6 +158,13 @@ def oversized_jobs(docker=_docker) -> list[dict]:
             continue
         rw = size_bytes(((row.get("Size") or "").split("(")[0]).strip())   # "54.6GB (virtual 60GB)"
         if rw > JOB_MAX_GB * 1e9:
+            # docker ps -s は書き込み層を多めに数える（11/14: 中の du で 13GB のとき 39GB と出た。cargo のハードリンクを重ねて数える見込み）。
+            # 中の du（-x で 1 つのファイルシステムだけ）でも上限を超えたときだけ止める。du が取れなければ ps の値で判断する
+            d = docker(["exec", row.get("Names") or "", "du", "-sxm", "/"], timeout=240)
+            m = re.match(r"^\s*(\d+)", d.stdout or "") if d.returncode == 0 else None
+            if m:
+                rw = min(rw, int(m.group(1)) * 1e6)
+        if rw > JOB_MAX_GB * 1e9:
             out.append({"name": row.get("Names"), "size_gb": round(rw / 1e9, 1), "labels": row.get("Labels") or ""})
     return out
 
