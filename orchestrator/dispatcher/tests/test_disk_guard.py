@@ -125,3 +125,18 @@ def test_too_low(monkeypatch):
     assert dg.too_low()
     monkeypatch.setattr(dg, "free_bytes", lambda: 50 * GB)
     assert not dg.too_low()
+
+
+class DuDocker(PsDocker):
+    """中の du では 13GB（ps -s は 54.6GB と多めに出る）"""
+    def __call__(self, args, timeout=600):
+        if args[0] == "exec":
+            return subprocess.CompletedProcess(args, 0, "13000\t/\n", "")
+        return super().__call__(args, timeout)
+
+
+@needs_db
+def test_job_is_not_stopped_when_du_inside_is_small(cur):
+    d = DuDocker("1GB")
+    dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
+    assert not any(c[0] == "kill" for c in d.calls)
