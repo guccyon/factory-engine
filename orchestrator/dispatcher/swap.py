@@ -34,6 +34,7 @@ STATUS_JA = {"requested": "受付済", "confirmed": "時刻確定済", "launched
 REF = re.compile(r"^(main|[0-9a-f]{7,40})$")
 CONTAINER_PREFIX = "factory-swap-"
 LABEL = "factory.swap"
+RELAY_WAIT_SEC = int(ENV.get("SWAP_RELAY_WAIT_SEC", "900"))   # 中継を使うジョブの終わりを待つのはここまで（受けた時刻から）。急ぎの更新は待たない
 LOST_AFTER_SEC = 90   # 起動してからこの秒数たってもコンテナがなく、結果もなければ、更新役が消えたとみなす
 DEFINITIONS = "definitions/swap.yaml"
 DEFAULT_RULES = {"kinds": [{"kind": "db", "paths": ["orchestrator/postgres/init/**"]}, {"kind": "control_plane", "paths": ["orchestrator/compose.yaml"]}],
@@ -256,12 +257,15 @@ def tick(cur, log=print, *, launch_fn=launch, alive_fn=alive, now: datetime | No
         at = datetime.fromisoformat(s["at"]) if s["at"] else now
         if at > now:
             return
-        held = relay_jobs(cur)
-        if held:
-            # Mac ランナーへの中継（runner_relay）の合言葉は dispatcher のプロセスの中にだけある。上げ直すとつなぎ直したジョブが中継を使えなくなる
-            # （2026-11-06 ジョブ 4993）。中継を使うジョブが終わるまで更新役を起動しない（最長 JOB_TIMEOUT_SEC）
+        held = relay_jobs(cur) if s.get("urgency") != "urgent" else []
+        if held and (now - at).total_seconds() < RELAY_WAIT_SEC:
+            # Mac ランナーへの中継（runner_relay）の合言葉は dispatcher のプロセスの中にだけある。上げ直すとつなぎ直したジョブが中継を使えなくなった
+            # （2026-11-06 ジョブ 4993）。#458 から、つなぎ直すときに合言葉を認め直すので、待つのは上げ直しの数秒の切れ目を避けるためだけ。
+            # 待ちの間も新しい QA のジョブが始まり続けて更新が止まった（2026-11-14 #466 で 40 分以上）ので、RELAY_WAIT_SEC で打ち切る。急ぎ（urgent）は待たない
             log("swap waits for relay jobs", sid, held)
             return
+        if held:
+            log("swap stops waiting for relay jobs", sid, held)
         try:
             name = launch_fn(sid)
         except Exception as e:  # noqa: BLE001
