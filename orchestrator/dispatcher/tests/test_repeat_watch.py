@@ -165,3 +165,36 @@ def test_same_root_from_different_steps_is_one_and_old_keys_merge(cur):
     from datetime import datetime, timezone
     items = [i for i in inbox._stoppages(cur, datetime.now(timezone.utc)) if i["key"].startswith("stoppage:repeat:KeyError")]
     assert len(items) == 1 and "6 回" in items[0]["title"]   # 最新の回数で見せる
+
+
+def test_repeat_is_a_notice_that_can_be_dismissed(cur):
+    """工場の中の不調は判断待ちでなくお知らせ。人の出番に数えず、見たら消せる（受信トレイとコンソールの両方から）。11-14 オーナー"""
+    import alerts
+    import inbox
+    for _ in range(6):
+        fault.note_log("dispatcher", ("watch error", "OperationalError('could not translate host name \"postgres\" to address')"))
+    fault.flush(cur, force=True)
+    [key] = repeat_watch.step(cur)
+    v = inbox.view(cur)
+    [it] = [i for i in v["items"] if i["key"] == f"stoppage:{key}"]
+    assert it["kind"] == "notice" and v["kinds"]["notice"] == "お知らせ"
+    assert it["answer"]["type"] == "ack" and v["count"] == 0   # 人の出番に数えない
+    assert inbox.answer(cur, f"stoppage:{key}", "seen", "owner", "console")[0] == "answered"
+    assert not [i for i in inbox.items(cur) if i["key"] == f"stoppage:{key}"]
+    assert key in alerts.dismissed(cur)                        # コンソールの「工場の不調」からも消える
+    assert stoppage.open_keys(cur, "repeat:") == [key]         # 停止は開いたまま（収まれば番人が閉じる）
+
+
+def test_console_folds_job_stoppages_into_the_bundle(cur):
+    """束ねた停止が開いている同じ失敗のジョブは、「工場の不調」「作業の失敗」に 1 行ずつ出さず、束ねた 1 件の中に数える"""
+    import alerts
+    ids = [_failed_job(cur, "investigate", "exit=125") for _ in range(3)]
+    other = _failed_job(cur, "judge", "exit=1")
+    for j in ids + [other]:
+        stoppage.open_stoppage(cur, f"job:{j}", "factory-bug", "失敗", job_id=j)
+    [bkey] = repeat_watch.job_step(cur, _classify)
+    keys = [a["key"] for a in alerts.view(cur)["open"]]
+    assert bkey in keys and f"job:{other}" in keys
+    assert not any(f"job:{j}" in keys for j in ids)
+    [b] = [a for a in alerts.view(cur)["open"] if a["key"] == bkey]
+    assert any(d["label"] == "まとめたジョブの停止" and "3 件" in d["text"] for d in b["detail"])

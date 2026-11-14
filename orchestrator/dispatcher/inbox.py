@@ -36,7 +36,7 @@ WHO = {
 }
 CHOICE_TITLES = {"design_variants": "画面の体験の案の選択", "design_look": "画面の見た目の案の選択", "concept_tone": "コンセプトとトーン＆マナーの選択", "taste_sample": "抜き取り",
                  "exit_capture": "実装後の画面"}   # choice.KINDS と同じ
-KINDS = {"stoppage": "対応待ち", "judgment": "判断待ち", "choice": "選択待ち", "release": "リリース承認待ち", "task": "作業依頼",
+KINDS = {"stoppage": "対応待ち", "notice": "お知らせ", "judgment": "判断待ち", "choice": "選択待ち", "release": "リリース承認待ち", "task": "作業依頼",
          "readiness_ask": "準備のお願い", "readiness_ready": "稼働 ready の承認待ち"}
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 KEY = re.compile(r"^[A-Za-z0-9_.:/#@-]{1,200}$")
@@ -135,9 +135,13 @@ def _stoppages(cur, now) -> list[dict]:
     # 種類が ticket なので載らず、建設日報でしか気づけなかった（11-11 rally #1117 が 39 時間止まっていた）
     cur.execute("select key, category, what, waiting_for, cause, started_at, correlation_id, job_id from stoppages "
                 "where ended_at is null and (category='human' or key like 'ci:%' or key like 'repeat:%' or key like 'prwait:%') order by started_at")
+    rows = cur.fetchall()
+    gone = alerts.dismissed(cur)   # 操業コンソールで消したお知らせは受信トレイにも出さない
     out = []
-    for s in cur.fetchall():
+    for s in rows:
         prefix, _, rest = s["key"].partition(":")
+        if prefix == "repeat" and s["key"] in gone:
+            continue
         cap = None
         if s["category"] != "human" and prefix not in ("repeat", "prwait"):   # 繰り返すエラー・判定に進まない PR（#308）は建設者の件として載せる
             cap = workflow_guard.capped(cur, s["correlation_id"]) if s["correlation_id"] else None
@@ -173,11 +177,17 @@ def _stoppages(cur, now) -> list[dict]:
         if prefix == "cost":   # 費用の上限（ADR 0038 の追記、2026-11-11）
             al["todo"] = ("工場は費用の上限でこのチケットのジョブを止めている。続けるなら上限に上乗せ（factoryctl plan cap <repo#番号> --add-usd <額>）、"
                           "やめるならチケットか PR を閉じる。大きすぎるなら切り直し（factoryctl plan resplit）も検討する")
+        kind = "stoppage"
+        if prefix == "repeat":   # 工場の中の不調（繰り返すエラー・環境）は提供元が直すもの。判断を頼まず、お知らせとして出して見たら消せる（11-14 オーナー、ADR 0044）
+            kind = "notice"
+            ans = {"type": "ack", "options": [{"id": "seen", "label": "見た（消す）"}], "extra": [],
+                   "effect": "お知らせを受信トレイから消す（直すのは提供元の建設者で、収まれば自動で閉じる）", "allowed": [who, "owner"],
+                   "target": ("notice", s["key"])}
         fixing = _sendback_fixing(cur, url) if prefix == "sendback" and url else None
-        out.append({"key": f"stoppage:{s['key']}", "kind": "stoppage", "who": who, "fixing": fixing, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
+        out.append({"key": f"stoppage:{s['key']}", "kind": kind, "who": who, "fixing": fixing, "title": al["title"] + (f" — {al['target']['label']}" if al.get("target") else ""),
                     "action": al["todo"] or "判断して止まりを解く", "detail": al["detail"], "url": url, "since": s["started_at"],
                     "ref": (s["correlation_id"] or ":").split(":", 1)[1], "announced": True,   # 開いたときに停止の通知で一度知らせている
-                    "answer": ans, "also": []})
+                    "answer": ans, "also": [], **({"once": True} if kind == "notice" else {})})   # お知らせは知らせ直さず、代理にも回さない
     return out
 
 
@@ -482,7 +492,7 @@ def view(cur, now: datetime | None = None) -> dict:
     xs = items(cur, now, include_answered=True)
     by_who: dict[str, int] = {}
     for i in xs:
-        if not i.get("answered"):
+        if not i.get("answered") and i["kind"] != "notice":   # お知らせは人の出番に数えない
             by_who[i["who"]] = by_who.get(i["who"], 0) + 1
     return {"count": sum(by_who.values()), "by_who": by_who, "who": WHO, "kinds": KINDS,
             "items": [{**{k: v for k, v in i.items() if k not in ("announced", "once", "also")}, "since": _iso(i["since"]), "answer": _public(i.get("answer"))}
@@ -604,6 +614,10 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
             return qa_gate.block(cur, ref, by, via, note)
         import ship
         return ship.request_approve(cur, ref, by, via)
+    if kind == "notice":   # 見たら消す。操業コンソールの「工場の不調」の × と同じ記録にして、両方から消す
+        import alerts
+        alerts.set_dismissed(cur, ref, True, by)
+        return True, "お知らせを消した"
     if kind == "resume_line":
         import drain
         drain.set_drain(cur, False, by, note or "受信トレイから再開")
