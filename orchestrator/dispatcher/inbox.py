@@ -330,12 +330,17 @@ def _release_item(cur, repo: str) -> dict | None:
     else:
         detail = [{"label": "QA の関門", "text": "この版は関門を通っていない（判定と探索の報告がない）"}]
         action = "staging で確かめて「本番に出す」を押す"
+    # いつから答えられるか。関門の報告を待つ間は出さないので、届いた時刻は報告ができた時刻にする
+    # （11/15: 0.36.0 は staging 17:53 UTC・報告 20:30 UTC で、受信トレイでは 17:53 に届いたように見え、2.5 時間遅れて見えた）
+    since = d["occurred_at"] if d else None
+    if g and g["state"] == "decided" and g["decided"].get("at") and (since is None or g["decided"]["at"] > since):
+        since = g["decided"]["at"]
     contracts = _contracts_between(cur, repo, pr.get("release_id"), rid)
     if contracts:   # ADR 0057 の決定 4: 出すと前の版に戻せなくなることを、押す前に知らせる
         detail.append({"label": "DB の contract", "text": f"この版を出すと DB から列・表を消すマイグレーションが当たり、{pr.get('release_id') or '前の版'} "
                        f"より前には戻せなくなる（{'・'.join(contracts)}）"})
     return {"key": f"release:{rid}", "kind": "release", "who": "owner", "title": f"{repo} の {ver} が本番待ち",
-            "action": action, "detail": detail, "url": "/#ship", "since": d["occurred_at"] if d else None, "ref": repo,
+            "action": action, "detail": detail, "url": "/#ship", "since": since, "ref": repo,
             "processing": pending["payload"] if pending else None,
             "answer": {"type": "approve", "options": [{"id": "approve", "label": f"本番に出す（{ver}）"}],
                        "extra": [{"id": "block", "label": "見送る（ブロッカーにする）", "note_required": True}] if g else [],

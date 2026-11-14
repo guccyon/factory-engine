@@ -202,6 +202,9 @@ def test_approval_waits_for_report_and_carries_it(cur):
     qa_gate.step(cur, gh, REPO, now=NOW)
     [it] = inbox._releases(cur)
     assert "候補が 1 件" in it["action"] and any(r["label"] == "候補 1" for r in it["detail"])
+    cur.execute("update events set occurred_at = now() + interval '2 hours' where name='qa.gate_decided'")   # 報告は staging の 2 時間後にできた
+    [it] = inbox._releases(cur)
+    assert it["since"] == qa_gate.gate(cur, rid)["decided"]["at"]   # 届いた時刻は報告ができた時刻（staging に出た時刻ではない）
     assert [e["id"] for e in it["answer"]["extra"]] == ["block"]
     ok, msg = ship.request_approve(cur, rid, "owner", "factoryctl")
     assert ok
