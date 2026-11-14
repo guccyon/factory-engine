@@ -76,6 +76,7 @@ import report
 import report_kpi
 import sendback
 import serialize
+import spike_line
 import ship
 import stoppage
 import train
@@ -1570,6 +1571,16 @@ def cost_cap_step(cur):
         log("cost cap step failed", repr(e)[:200])
 
 
+def spike_inbox_step(cur):
+    """方針確認（スパイクの出口）をラベルで承認したら、受信トレイの件も閉じる（spike_line.settle_inbox）"""
+    try:
+        if not DRY_RUN:
+            for k in spike_line.settle_inbox(cur, gh):
+                log("spike inbox settled", k)
+    except Exception as e:  # noqa: BLE001
+        log("spike inbox step failed", repr(e)[:200])
+
+
 def recover_step(cur):
     """時間切れ・途中終了で落ちた実装のチケットを自動で立て直す（dispatcher/recover.py）"""
     try:
@@ -1628,6 +1639,7 @@ def tick():
         workflow_shadow_step(cur)
         cost_cap_step(cur)
         recover_step(cur)
+        spike_inbox_step(cur)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
         stage_step(cur, manifests)

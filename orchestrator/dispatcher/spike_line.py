@@ -145,3 +145,31 @@ def act(cur, repo: str, issue: int, corr: str, job_id: int, did: int, result: di
         return "human"
     swap_label(repo, issue, [RUNNING_LABEL], [PLAN_LABEL])
     return "plan"
+
+
+SPIKE_KEY = re.compile(r"^spike:([^#]+)#(\d+):(\d+)$")
+
+
+def settle_inbox(cur, gh) -> list[str]:
+    """受信トレイの方針確認（spike_exit）のうち、Issue から factory:spike-human が外れた（人がラベルを替えて承認した・閉じた）ものを閉じる。
+    2026-11-14 rally #1465: ラベルを factory:plan に替えて工場は先へ進んだのに、受信トレイに「答えられない」まま残った。
+    受信トレイから手で答えると同じ方針をもう一度プランナーに積むおそれがあるので、ラベルを正本にしてここで閉じる。閉じたキーを返す"""
+    import inbox
+    cur.execute("select distinct o.payload->>'key' as key from events o where o.name='inbox.requested' and o.payload->>'kind'='spike_exit' "
+                "and not exists (select 1 from events r where r.name='inbox.resolved' and r.payload->>'key'=o.payload->>'key' and r.id > o.id)")
+    done = []
+    for r in cur.fetchall():
+        m = SPIKE_KEY.match(r["key"] or "")
+        if not m:
+            continue
+        try:
+            it = gh("GET", f"repos/{m.group(1)}/issues/{m.group(2)}") or {}
+        except Exception:  # noqa: BLE001  読めなければ次の周期にもう一度見る
+            continue
+        labels = {l.get("name") for l in it.get("labels") or [] if isinstance(l, dict)}
+        if it.get("state") == "open" and HUMAN_LABEL in labels:
+            continue
+        outcome = "closed" if it.get("state") != "open" else "approved_by_label"
+        if inbox.resolve(cur, r["key"], "label", outcome):
+            done.append(r["key"])
+    return done
