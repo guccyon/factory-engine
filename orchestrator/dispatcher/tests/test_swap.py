@@ -401,3 +401,18 @@ def test_build_removes_only_its_own_worktree(tmp_path):
     listed = g("worktree", "list", "--porcelain")
     assert str(hidden) in listed
     assert "swap-src-4242" not in listed and not os.path.exists("/tmp/swap-src-4242")
+
+
+@needs_db
+def test_tick_stops_waiting_for_relay_jobs_after_a_while_and_urgent_does_not_wait(cur):
+    """中継を使うジョブを待つのは RELAY_WAIT_SEC まで。急ぎは待たない（2026-11-14 #466 が QA 待ちで 40 分以上止まった）"""
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state) values ('c', 'o/r', 1, 'qa', 'running')")
+    sid = swap.request(cur, "main", "builder")
+    launched = []
+    later = datetime.now(timezone.utc) + timedelta(seconds=swap.RELAY_WAIT_SEC + 5)
+    swap.tick(cur, lambda *a: None, launch_fn=lambda i: launched.append(i) or swap.container(i), now=later)
+    assert launched == [sid]
+    swap.record(cur, sid, "swap.completed")
+    sid2 = swap.request(cur, "main", "builder", urgency="urgent")
+    swap.tick(cur, lambda *a: None, launch_fn=lambda i: launched.append(i) or swap.container(i))
+    assert launched == [sid, sid2]
