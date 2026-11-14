@@ -44,6 +44,7 @@ import qa_line
 import defect
 import runner_relay
 import design_system_line
+import disk_guard
 import desk_answer
 import desk_task
 import desk_investigate
@@ -1635,8 +1636,15 @@ def distribute_loop():
 def swap_loop():
     """工場の更新（ADR 0031）。Issue の郵便受け（factory:swap）から依頼を拾い、受けた依頼の時刻になったら、使い捨ての更新役のコンテナを起動する。
     更新役が消えていたら人に回す。進み具合は依頼の Issue に返す"""
-    last_mail = 0.0
+    last_mail, last_disk = 0.0, 0.0
     while True:
+        if disk_guard.ENABLED and time.time() - last_disk >= disk_guard.INTERVAL_SEC:   # ビルドのキャッシュで Docker のディスクが満杯にならないように片付ける
+            last_disk = time.time()
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    disk_guard.step(cur, log)
+            except Exception as e:  # noqa: BLE001  見張りの失敗で更新の周回を止めない
+                log("disk guard error", repr(e)[:200])
         if swap_mailbox.enabled() and time.time() - last_mail >= SWAP_MAILBOX_INTERVAL:
             last_mail = time.time()
             try:
