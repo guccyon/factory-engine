@@ -584,6 +584,10 @@ events:
     source: control_plane
     required: [swap_id, error]
     note: "ADR 0031。更新役を起動できなかったか、結果を書かずに消えた（dispatcher が見つけて停止 swap:<id> を開く）"
+  job.auto_recovered:
+    source: control_plane
+    required: [previous, error, action, attempt, max]
+    note: "2026-11-14。時間切れ・途中終了で落ちた実装のチケットを、supervisor が自動で立て直した（dispatcher/recover.py）。action は continue（続きから）・rerun（積み直し）・resplit（プランナーに切らせる）。job_id は新しいジョブ。チケットごとに max 回まで"
   job.reattached:
     source: control_plane
     required: [container]

@@ -69,6 +69,7 @@ import patrol_watch
 import plan_outcome
 import process_learn
 import qa_line
+import recover
 import quality_learn
 import report
 import report_kpi
@@ -1564,6 +1565,15 @@ def cost_cap_step(cur):
         log("cost cap step failed", repr(e)[:200])
 
 
+def recover_step(cur):
+    """時間切れ・途中終了で落ちた実装のチケットを自動で立て直す（dispatcher/recover.py）"""
+    try:
+        if not DRY_RUN:
+            recover.step(cur, log=log)
+    except Exception as e:  # noqa: BLE001
+        log("recover step failed", repr(e)[:200])
+
+
 def ticket_sync_step(cur):
     """着手中なのに Issue が閉じたチケットを台帳から外す（ticket_sync.py、2026-11-10 オーナー）。
     Issue が閉じたかは PR の見張りが残す github.issue_closed を読む（ADR 0050）。GitHub は見ない"""
@@ -1612,6 +1622,7 @@ def tick():
         plan_outcome_step(cur)
         workflow_shadow_step(cur)
         cost_cap_step(cur)
+        recover_step(cur)
         # 同時に流しているチケットの数を heartbeat に残す（操業コンソールの流量の表示が読む。コンソールは GitHub を見ないため）
         cur.execute("update events set payload = payload || %s where id = %s", (Jsonb({"tickets_inflight": inflight_count(cur, open_prs)}), hb))
         stage_step(cur, manifests)
