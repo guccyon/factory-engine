@@ -89,6 +89,15 @@ EXCLUSIVE_ENV_WHERE = (
     f"or (not {_EXCLUSIVE.format(j='q')} and exists (select 1 from jobs w where w.state = 'queued' and not w.cancel_requested "
     f"and w.kind = 'qa' and w.repo = q.repo and w.enqueued_at < q.enqueued_at and {_EXCLUSIVE.format(j='w')}))))")
 
+# 同じ PR のブランチに書くジョブを並べない。知見の委員会（committee_review）は議決を PR のブランチに push するので、
+# 同じ PR の実装の続き（衝突の解消など）と同時に動くと、後から push した方が non-fast-forward で弾かれる（2026-11-14 の調査で 5 件。job 5112 など）。
+# 片方が動いている間はもう片方を取り出さない（委員会のジョブの相関は committee:<PR の URL>、実装の相関はチケットで、PR は artifacts で結ぶ）
+SAME_BRANCH_WHERE = (
+    "not (q.kind = 'committee_review' and exists (select 1 from jobs r join artifacts a on a.type = 'PR' and a.correlation_id = r.correlation_id "
+    "where r.state = 'running' and r.kind = 'implement' and 'committee:' || (a.payload->>'pr_url') = q.correlation_id)) "
+    "and not (q.kind = 'implement' and exists (select 1 from jobs r join artifacts a on a.type = 'PR' and a.correlation_id = q.correlation_id "
+    "where r.state = 'running' and r.kind = 'committee_review' and r.correlation_id = 'committee:' || (a.payload->>'pr_url')))")
+
 
 def _claim(cur, where: str, corrs: list[str] | None = None, min_priority: int | None = None) -> dict | None:
     """corrs か min_priority を渡すと、そのどちらかに当たるジョブに絞る（一時停止中の drain allow）"""
@@ -96,7 +105,7 @@ def _claim(cur, where: str, corrs: list[str] | None = None, min_priority: int | 
     if corrs is not None and not conds:
         conds = ["false"]
     extra = f" and ({' or '.join(conds)})" if conds else ""
-    cur.execute(f"""select q.id from jobs q where q.state='queued' and not q.cancel_requested and {where}{extra} and {EXCLUSIVE_ENV_WHERE}
+    cur.execute(f"""select q.id from jobs q where q.state='queued' and not q.cancel_requested and {where}{extra} and {EXCLUSIVE_ENV_WHERE} and {SAME_BRANCH_WHERE}
                       and not exists (select 1 from tickets t where t.held and (t.id = q.ticket_id or (t.source = 'github' and 'github:' || t.source_ref = q.correlation_id)))
                     order by q.priority desc, q.enqueued_at for update skip locked limit 1""",
                 {**ARGS, "corrs": corrs or [], "minp": min_priority})

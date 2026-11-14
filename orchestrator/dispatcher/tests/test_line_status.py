@@ -58,3 +58,25 @@ def test_exclusive_qa_does_not_overlap_other_qa(cur):
     assert line.claim_line(cur) is None                 # 時刻の QA が動いている間は、ほかの QA を取り出さない
     cur.execute("update jobs set state='succeeded' where id=%s", (t,))
     assert line.claim_line(cur)["id"] == late
+
+
+def test_committee_and_implement_on_same_pr_do_not_overlap(cur):
+    """同じ PR のブランチに書く知見の委員会と実装の続きを並べない（2026-11-14 の調査で non-fast-forward が 5 件）"""
+    line.scale(cur, "t", workers=5, governance=2)
+    pr = "https://github.com/o/r/pull/1022"
+    cur.execute("insert into artifacts(type, correlation_id, payload) values ('PR', 'github:o/r#961', %s)", (Jsonb({"pr_url": pr}),))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind, state) "
+                "values ('committee:' || %s, 'o/r', 1022, 't', 'committee_review', 'running')", (pr,))
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values ('github:o/r#961', 'o/r', 961, 't', 'implement') returning id")
+    impl = cur.fetchone()["id"]
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) values ('github:o/r#5', 'o/r', 5, 't', 'implement') returning id")
+    other = cur.fetchone()["id"]
+    got = line.claim_line(cur)
+    assert got and got["id"] == other            # 委員会が動いている PR の続きは飛ばし、ほかのチケットを取る
+    assert line.claim_line(cur) is None
+    cur.execute("update jobs set state='succeeded' where kind='committee_review'")
+    assert line.claim_line(cur)["id"] == impl    # 委員会が終われば取り出す
+    # 逆向き: 実装の続きが動いている間は、同じ PR の委員会を取り出さない
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, kind) "
+                "values ('committee:' || %s, 'o/r', 1022, 't', 'committee_review') returning id", (pr,))
+    assert line.claim_governance(cur) is None
