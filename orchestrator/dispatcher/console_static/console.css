@@ -140,3 +140,9 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 .ask-m.me{justify-self:end;background:var(--accent-soft)}.ask-m .b{white-space:pre-wrap;overflow-wrap:anywhere}
 .ask-reply{display:grid;gap:var(--space-2)}.ask-close{text-align:right}
 @media (max-width:599px){.ask-m{max-width:100%}.ask-r .c-m{flex-basis:100%;white-space:normal}}
+/* 製品のページ（#475） */
+.pp-h{margin-top:var(--space-4)}.pp-h h1{margin:var(--space-1) 0 var(--space-2)}
+.pp-tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto}
+.pp-tabs button{font:inherit;padding:8px 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--ink-sub);cursor:pointer;white-space:nowrap}
+.pp-tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.pp-s{padding-top:var(--space-3)}.pp-s .c-tiles button.c-tile{font:inherit;text-align:left;color:inherit;cursor:pointer}.pp-s .c-gate{margin-top:var(--space-2);max-width:640px}
