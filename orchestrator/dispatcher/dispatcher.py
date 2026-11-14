@@ -117,6 +117,7 @@ HEARTBEAT_MIN = int(ENV.get("WATCH_HEARTBEAT_MIN", "30"))    # supervisor の he
 STALL_MIN = int(ENV.get("WATCH_STALL_MIN", "15"))            # 実行中のジョブの出力がこの分数止まったら停止（完了まで定期的に見る。2026-10-31 オーナー）
 LAST_OUTPUT: dict[int, float] = {}                           # 実行中のジョブが最後に出力した時刻（run_job が更新し、番人が読む）
 MERGE_WAIT_MIN = int(ENV.get("WATCH_MERGE_WAIT_MIN", "30"))  # 工場がマージしない PR が、判定からこの分数マージも閉じもされないと停止
+PR_WAIT_MIN = int(ENV.get("WATCH_PR_WAIT_MIN", "120"))     # 工場の PR の最新の head がこの分数たってもマージの判定に進まなければ停止（prwait:。仮置き）
 INSPECT_WAIT_MIN = int(ENV.get("WATCH_INSPECT_WAIT_MIN", "30"))  # マージを判定した最新の head に検査がないまま、この分数たったら停止（rally #976）
 INSPECT_ENABLED = ENV.get("SUPERVISOR_INSPECT", "1") == "1"        # supervisor と同じ値（検査を止めていれば見ない）
 DRAIN_MIN = int(ENV.get("WATCH_DRAIN_MIN", "30"))            # ラインの一時停止がこの分数続いたら停止（再開の忘れ。ADR 0020）
@@ -1303,6 +1304,7 @@ def watch_once():
                     "from jobs", (IDLE_MIN,))
         j = cur.fetchone()
         idle_open = stoppage.open_keys(cur, "idle:")
+        slot_open = stoppage.open_keys(cur, "slot:")
         budget_open = stoppage.open_keys(cur, "budget:")
         draining = drain.state(cur)
         paused = budget_paused(cur)
@@ -1315,12 +1317,25 @@ def watch_once():
                     stoppage.open_stoppage(cur, f"budget:{p.get('window_start')}", "budget",
                                            f"使用量の枠の予算を使い切ったので新しいタスクを投入していない（{p.get('spent_usd')} / ${p.get('budget_usd')}）",
                                            waiting_for="次の使用量の枠の始まり（supervisor が自分で投入を再開する）", started_at=paused["occurred_at"])
+            elif slot_full(cur):
+                # 同時に流せるチケットの枠が開いた PR でふさがっている。ラインが空（idle）とは分ける（11-10 rally #1358 が枠 1 を約 33 時間ふさいだのを
+                # 「空」と記録していた）。進まない PR そのものは prwait: が知らせる
+                for k in idle_open:
+                    stoppage.close_stoppage(cur, k, remedy="枠のふさがりによる待ちとして開き直した", quiet=True)
+                if not slot_open and not draining and j["last"] and j["long_idle"]:
+                    n, cap = slot_full(cur)
+                    stoppage.open_stoppage(cur, f"slot:{j['last']:%Y%m%dT%H%M%S}", "ticket",
+                                           f"同時に流せるチケットの枠（{cap}）が開いた PR {n} 件でふさがっていて、新しい作業を始めていない（ラインが空なのではない）",
+                                           waiting_for="開いた PR が判定・マージに進むこと（進まない PR は prwait: の停止を見る）", started_at=j["last"], quiet=True)
             elif not idle_open and not draining and j["last"] and j["long_idle"]:   # 一時停止中は drain: で知らせる
                 stoppage.open_stoppage(cur, f"idle:{j['last']:%Y%m%dT%H%M%S}", "idle", "ラインが空（実行中・投入可能のジョブがない）",
                                        waiting_for="次の Ticket（factory:implement / factory:request のラベル）か、承認待ちの PR の判断", started_at=j["last"])
         else:
             for k in idle_open:
                 stoppage.close_stoppage(cur, k, remedy="ジョブが投入された")
+        if j["r"] or j["q"] or not slot_full(cur):
+            for k in slot_open:
+                stoppage.close_stoppage(cur, k, remedy="ジョブが投入された、または枠が空いた", quiet=True)
         if not paused or j["r"] or j["q"]:
             for k in budget_open:
                 stoppage.close_stoppage(cur, k, remedy="次の枠に入り、投入を再開した")
@@ -1437,6 +1452,65 @@ def watch_once():
 
         # 8) 検査の積み忘れ
         inspect_missing_step(cur)
+
+        # 9) 判定に進まない PR（CI の結果が出ない・CI が通ったのにマージの判定が付かない）。枠をふさいだまま黙って止まる（11-10 rally #1358）
+        prwait_step(cur)
+
+
+def slot_full(cur) -> tuple[int, int] | None:
+    """同時に流せるチケットの枠がふさがっているなら (流している数, 枠)。supervisor が heartbeat に残した数と、ラインの宣言の枠で見る"""
+    n = line.tickets_inflight(cur)
+    cap = line.spec(cur).get("tickets")
+    if n is None or not cap or n < cap:
+        return None
+    return n, cap
+
+
+def prwait_step(cur):
+    """工場の PR の最新の head が PR_WAIT_MIN 分たってもマージの判定（supervisor.merge_decided）に進んでいなければ、停止 prwait:<PR> を開く。
+    人を待つ PR（judge: / sendback: / ci: / hold: / merge: / inspect: の停止が開いている）・ドラフト・続きのジョブが動いている PR・
+    知見の PR（製品ごとに直列に流す）は除く。判定が付く、head が動く、PR が片付くと閉じる（#308 の追加、窓口の分析 11-14）"""
+    cur.execute("select distinct on (payload->>'pr_url') payload->>'pr_url' as pr_url, payload->>'head_sha' as sha, "
+                "(payload->>'draft')::boolean as draft, occurred_at, correlation_id, "
+                "now() - occurred_at > make_interval(mins => %s) as long_wait from events "
+                "where name='pr.head_updated' and occurred_at > now() - interval '14 days' order by payload->>'pr_url', id desc", (PR_WAIT_MIN,))
+    heads = cur.fetchall()
+    open_now = set(stoppage.open_keys(cur, ""))
+    waiting = {}
+    for h in heads:
+        url, sha = h["pr_url"], h["sha"]
+        if not url or not sha or h["draft"]:
+            continue
+        cur.execute("select 1 from events where name in ('pr.merged','pr.closed_unmerged') and payload->>'pr_url'=%s limit 1", (url,))
+        if cur.fetchone():
+            continue
+        cur.execute("select 1 from events where name='supervisor.merge_decided' and payload->>'pr_url'=%s and payload->>'head_sha'=%s limit 1", (url, sha))
+        if cur.fetchone():
+            continue
+        if {f"{p}:{url}" for p in ("judge", "sendback", "ci", "hold", "inspect")} & open_now or f"merge:{url.rsplit('/', 1)[-1]}" in open_now:
+            continue
+        cur.execute("select 1 from jobs where correlation_id=%s and state in ('queued','running') limit 1", (h["correlation_id"],))
+        if cur.fetchone():
+            continue
+        cur.execute("select 1 from events where name='knowledge.case_filed' and correlation_id=%s limit 1", (h["correlation_id"],))
+        if cur.fetchone():
+            continue
+        cur.execute("select name from events where name in ('pr.ci_passed','pr.ci_failed','pr.conflicted','pr.ci_unstarted') "
+                    "and payload->>'pr_url'=%s and payload->>'head_sha'=%s", (url, sha))
+        seen = {r["name"] for r in cur.fetchall()}
+        waiting[f"prwait:{url}"] = (h, seen)
+    for k, (h, seen) in waiting.items():
+        if not h["long_wait"]:
+            continue
+        ci = ("CI は通った" if "pr.ci_passed" in seen else "CI が起動しなかった" if "pr.ci_unstarted" in seen
+              else "CI が落ちた" if "pr.ci_failed" in seen else "衝突している" if "pr.conflicted" in seen else "CI の結果が出ていない")
+        stoppage.open_stoppage(cur, k, "factory-bug",
+                               f"工場の PR（{h['pr_url']}）の head {h['sha'][:7]} が {PR_WAIT_MIN} 分たってもマージの判定に進んでいない（{ci}）。同時に流す枠をふさいでいる",
+                               waiting_for="建設者が、PR の状態（必須のチェック・mergeable_state）と supervisor のログを確かめる",
+                               started_at=h["occurred_at"], correlation_id=h["correlation_id"])
+    for k in stoppage.open_keys(cur, "prwait:"):
+        if k not in waiting:
+            stoppage.close_stoppage(cur, k, remedy="マージの判定が付いた、head が動いた、人の待ちに移った、または PR が片付いた")
 
 
 def inspect_missing_step(cur):
