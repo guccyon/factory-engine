@@ -57,6 +57,7 @@ import desk_investigate
 import drain
 import ephemeral
 import factory_incident
+import fault
 import judgment
 import line
 import major_defect
@@ -145,6 +146,7 @@ DEP_RE = re.compile(r"(?:依存|depends\s+on)\s*[:：]\s*((?:#\d+[\s,、]*)+)", 
 
 def log(*a):
     print(datetime.now(timezone.utc).strftime("%H:%M:%S"), "[supervisor]", *a, flush=True)
+    fault.note_log("supervisor", a)   # 握りつぶした例外を数える（束ねて factory.fault に。#308）
 
 
 def db():
@@ -1655,6 +1657,15 @@ def tick():
         quality_learn_step(cur)
 
 
+def fault_flush():
+    """握りつぶした例外の数を書く（tick とは別の接続。tick が毎回落ちても書けるように）"""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            fault.flush(cur)
+    except Exception as e:  # noqa: BLE001
+        print(datetime.now(timezone.utc).strftime("%H:%M:%S"), "[supervisor] fault flush failed", repr(e)[:200], flush=True)
+
+
 def main():
     log(f"supervisor up: repos={REPOS} interval={INTERVAL}s max_inflight={MAX_INFLIGHT} dry_run={DRY_RUN}")
     while True:
@@ -1662,6 +1673,7 @@ def main():
             tick()
         except Exception as e:  # noqa: BLE001  一周の失敗で止めない。heartbeat が途絶えれば番人が拾う
             log("tick error", repr(e))
+        fault_flush()
         time.sleep(INTERVAL)
 
 

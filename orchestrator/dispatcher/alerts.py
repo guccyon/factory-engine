@@ -194,6 +194,19 @@ def describe(cur, s: dict) -> dict:
                      links=[{"label": "ラインで見る", "href": "/line", "nav": True}] + ([{"label": "作業の記録（最後の部分）", "log": int(rest)}] if rest.isdigit() else []))
             t = _ticket(cur, s.get("correlation_id"))
             a["target"] = _target(t)
+        elif prefix == "prwait" and url:   # 判定に進まない PR（#308 の追加）
+            t = _ticket(cur, s.get("correlation_id"))
+            a.update(group="PR が進めない", who="builder", target=_target(t) or {"label": _pr(url), "url": url},
+                     title=f"{_pr(url)} がマージの判定に進まず、同時に流す枠をふさいでいる",
+                     todo="建設者が PR の必須のチェックと状態を確かめ、CI の再実行・作り直し・差し戻しのどれかをする",
+                     links=[{"label": _pr(url) + " を開く", "href": url}])
+        elif prefix == "slot":
+            a.update(group="ライン", who="none", title="同時に流せる枠が開いた PR でふさがっていて、新しい作業を待っている",
+                     todo="何もしなくてよい。PR が進まないときは「判定に進まない PR」の件が別に出る")
+        elif prefix == "repeat":   # 繰り返すエラーを束ねた停止（repeat_watch.py、#308）
+            a.update(group="工場の不調", who="builder",
+                     todo="建設者が原因を調べて直す。工場は止まらずに回っているが、この工程は同じところで落ち続けている",
+                     links=[{"label": "受信トレイで見る", "href": f"/inbox/stoppage:{key}", "nav": True}])
         elif prefix == "ship":
             a.update(group="工場の不調", title=_plain(s.get("what")).replace("出荷の失敗", "出荷に失敗した"),
                      todo="出荷のページで状態を見て、もう一度出すか前の版に戻す", links=[{"label": "出荷を開く", "href": "/ship", "nav": True}])
