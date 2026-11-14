@@ -45,6 +45,12 @@ def O(ready=True, steps=("ui_design", "implement"), scale="screen", given=False,
     (O(ready=False, questions=Q), DS, 3, ("escalate", ["ui_design", "implement"], ["rounds_exhausted"], [])),
     (O(ready=False), DS, 1, ("escalate", ["ui_design", "implement"], ["no_questions"], [])),
     (O(steps=[], scale="none"), DS, 1, ("escalate", [], ["empty_steps"], [])),
+    # 前のチケットを待つと宣言したら、問いがなくても・経路が空でも人へ回さず待つ（rally #1401・#1492）
+    ({**O(ready=False, steps=[], scale="none"), "workflow": {"start": {"mode": "after", "after": [1404]}}}, DS, 1, ("wait", [], [], [])),
+    ({**O(steps=[], scale="none"), "workflow": {"start": {"mode": "after", "after": ["1493", 1454]}}}, DS, 1, ("wait", [], [], [])),
+    ({**O(ready=False, steps=[], scale="none"), "workflow": {"start": {"mode": "after", "after": []}}}, DS, 1, ("escalate", [], ["no_questions"], [])),
+    ({**O(ready=False, steps=[], scale="none"), "workflow": {"start": {"mode": "now", "after": [1404]}}}, DS, 1, ("escalate", [], ["no_questions"], [])),
+    ({**O(ready=False, steps=[], scale="none"), "workflow": {"start": {"mode": "after", "after": [1404]}}}, DS, 3, ("escalate", [], ["rounds_exhausted"], [])),
 ])
 def test_decide(out, facts, round_, want):
     assert pl.decide(out, facts, round_, DEFS) == want
@@ -130,7 +136,7 @@ def test_schema_matches_definitions():
     assert s["steps"]["items"]["properties"]["effort"]["enum"] == list(DEFS["efforts"])
     assert "alternatives" in pl.schema(DEFS)["required"]
     assert set(DEFS["guards"]) == {"no_design_system", "low_confidence", "rounds_exhausted", "no_questions", "empty_steps", "oversized",
-                                   "spike_exhausted", "spike_no_questions", "verify_with_roles"}
+                                   "spike_exhausted", "spike_no_questions", "verify_with_roles", "wait_closed"}
     assert set(DEFS["advisories"]) == {"small_change_with_designer", "screen_without_designer", "design_after_implement", "no_size", "split_after_design",
                                        "no_requirements", "no_stories", "unknown_story", "story_exists", "unknown_kpi",
                                        "unknown_adr", "unknown_contract", "breaking_contract", "no_contract_diff"}

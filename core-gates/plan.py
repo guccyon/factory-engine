@@ -3,6 +3,7 @@
 
 - 経路: タスクに合わせて、どの役（definitions/planner.yaml の roles）をどの順で通すかの並び（steps）。型から選ばない
 - 判断: ready（最初の役のラベルを付ける）／ ask（起票者に問いを返す）／ escalate（人へ）／ split（大きいので、タスクのまとまりに切る。ADR 0036）
+  ／ wait（問いはないが、前のチケット（workflow.start の after）が閉じるのを待つ。閉じたら判定し直す。2026-11-14）
 - 大きさ: 実装役に回す仕事の触る層・見込みのターンの帯を見積もる。切る基準（planner.yaml の sizing.split）に当たれば、窓口の相談役と同じ型の
   タスクのまとまり（desk_consult の tasks）に切る。プロダクトデザイナーが前にいる経路は、画面が決まってから（実装の手前の判定で）切る
 - エージェントの答えに重ねる決定論は安全のための最小限（guards）だけ。よくある例との食い違いは advisories として印を付けるだけで経路は変えない
@@ -34,7 +35,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 DEFS = Path(os.environ.get("PLANNER_DEFINITIONS") or HERE.parent / "definitions" / "planner.yaml")
 DESK_DEFS = Path(os.environ.get("DESK_DEFINITIONS") or HERE.parent / "definitions" / "desk.yaml")
-DECISIONS = ["ready", "ask", "escalate", "split"]
+DECISIONS = ["ready", "ask", "escalate", "split", "spike", "wait"]
 BANDS_ORDER = ["S", "M", "L", "XL"]
 MAX_TEXT = 20000
 
@@ -220,6 +221,15 @@ def advisories(roles: list[str], scale: str) -> list[str]:
     return out
 
 
+def waits_on(out: dict) -> list[int]:
+    """プランナーが「前のチケットが閉じるのを待つ」と宣言した番号（workflow.start の mode: after）。宣言がなければ空"""
+    wf = out.get("workflow") if isinstance(out.get("workflow"), dict) else {}
+    st = wf.get("start") if isinstance(wf.get("start"), dict) else {}
+    if st.get("mode") != "after":
+        return []
+    return sorted({int(x) for x in st.get("after") or [] if isinstance(x, int) or (isinstance(x, str) and x.isdigit())})
+
+
 def decide(out: dict, f: dict, round_: int, defs: dict) -> tuple[str, list[str], list[str], list[str]]:
     """エージェントの答えに安全のための最小限の決定論（guards）を当てる。返り値は (判断, 経路の役の並び, 当てた guard, 印)"""
     a = defs["asking"]
@@ -244,8 +254,8 @@ def decide(out: dict, f: dict, round_: int, defs: dict) -> tuple[str, list[str],
             if not isinstance(conf, (int, float)) or conf < a["human_below_confidence"]:
                 return "escalate", roles, ["low_confidence"], marks
             return "ready", roles, [], marks
-    if ready and not roles:
-        return "escalate", roles, ["empty_steps"], marks
+    if ready and not roles:   # 経路が組めないが、前のチケットを待つと宣言した → 待って判定し直す（rally #1492）
+        return ("wait", roles, [], marks) if waits_on(out) else ("escalate", roles, ["empty_steps"], marks)
     if ready and "ui_design" in roles and "design_system" not in roles and not f.get("has_design_system") and not out.get("design_direction_given"):
         ready, guards = False, ["no_design_system"]                          # デザインシステムがなく、進め方の指定もない（ADR 0026 の 0）
         if not out.get("questions"):
@@ -257,8 +267,8 @@ def decide(out: dict, f: dict, round_: int, defs: dict) -> tuple[str, list[str],
         return "ready", roles, guards, marks
     if round_ > a["max_rounds"]:
         return "escalate", roles, guards + ["rounds_exhausted"], marks
-    if not out.get("questions"):
-        return "escalate", roles, guards + ["no_questions"], marks
+    if not out.get("questions"):   # 問いはないが、前のチケットを待つと宣言した → 待って判定し直す（rally #1401）
+        return ("wait", roles, guards, marks) if waits_on(out) else ("escalate", roles, guards + ["no_questions"], marks)
     return "ask", roles, guards, marks
 
 

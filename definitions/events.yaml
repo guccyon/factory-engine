@@ -863,7 +863,7 @@ events:
   plan.decided:
     source: control_plane
     required: [plan_id, repo, issue, round, decision, steps, efforts, design_scale, guards, advisories, alternatives, confidence, versions, model, cost_usd]
-    note: "ADR 0025・0026・0036・0038。workflow はワークフローの宣言の要約（skip・deep・caps・start・after・handoff）、workflow_marks は決まりで直した印（mandatory_skip・cap_clamped・no_workflow など）。decision は ready / ask / escalate / split。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
+    note: "ADR 0025・0026・0036・0038。workflow はワークフローの宣言の要約（skip・deep・caps・start・after・handoff）、workflow_marks は決まりで直した印（mandatory_skip・cap_clamped・no_workflow など）。decision は ready / ask / escalate / split / spike / wait。size は実装役に回す仕事の見積もり（触る層・ターンの帯・根拠）、oversize は当たった切る基準、tasks は切ったタスクの数、phase は実装の手前の判定なら implement。プランナーが 1 件のチケットを判定した（ready は最初の役のラベルを付けた）。steps は役の並び、guards は当てた決まり、advisories はよくある例との食い違いの印、versions は入力の版。経路ごとの結果・費用・時間と突き合わせて見返す起点"
   plan.serialized:
     source: control_plane
     required: [file, behind, hot, why]
@@ -924,6 +924,14 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, after, role]
     note: "ADR 0026。前の役のチケット（after）が閉じたので、経路の次の役（role）のラベルを付けた"
+  plan.waiting:
+    source: control_plane
+    required: [plan_id, repo, issue, after]
+    note: "2026-11-14。プランナーが、問いはないが前のチケット（workflow.start の after）が閉じるのを待つ、と判定した（decision=wait。経路が組めない・問いがないのに人へ回していた rally #1401・#1492 の直し）。factory:waiting-steps で待つ。判定の時点で前がもう閉じていれば人へ（guard wait_closed）"
+  plan.released:
+    source: control_plane
+    required: [plan_id, repo, issue, after]
+    note: "2026-11-14。plan.waiting で待っていたチケットの前（after）がすべて閉じたので、着手判定（factory:plan）に戻した。dedupe は plan.released:<plan_id>"
   design_system.concepts_drafted:
     source: control_plane
     required: [repo, issue, concept_artifact_id, concepts, recommended, round, cost_usd]
