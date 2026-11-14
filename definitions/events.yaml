@@ -256,7 +256,7 @@ events:
   factory.fault:
     source: control_plane
     required: [signature, component, label, exc, count]
-    note: "factory-engine#308。supervisor と dispatcher が握りつぶした例外（log の「… failed / … error」と例外の repr）の数。fault.py がメモリに貯め、FAULT_FLUSH_SEC（既定 300 秒）に 1 回、印（プロセス:文言:例外の型）ごとに 1 行で書く。番人の repeat_watch が直近 60 分の合計で繰り返しを見て、停止 repeat:<印>#<始まり> を開く"
+    note: "factory-engine#308。supervisor と dispatcher が握りつぶした例外（log の「… failed / … error」と例外の repr）の数。fault.py がメモリに貯め、FAULT_FLUSH_SEC（既定 300 秒）に 1 回、印ごとに 1 行で書く。印はどの工程かでなく、どんなエラーか（例外の型と、回ごとに変わる数・引用した値を落とした中身の要約。名前解決・接続の失敗は env:network）。label は最後に出た工程。番人の repeat_watch が直近 60 分の合計で繰り返しを見て、停止 repeat:<印>#<始まり> を開く"
   github.pr_closed:
     source: pr_events
     required: [pr_url, repo, pr, merged, closed_at]

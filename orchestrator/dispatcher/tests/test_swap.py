@@ -160,6 +160,7 @@ class Fake:
         self.tagged, self.live, self.head, self.calls = PREV[:7], PREV[:7], PREV, []
         self.images = {"factory-dispatcher:p0", "factory-shipper:p2", "factory-worker:p0", "factory-worker:design"}
         self.t = 0.0
+        self.not_ancestor: set[tuple[str, str]] = set()   # (a, b): a は b の祖先でない
 
     def run(self, args, cwd=None, timeout=0, check=True):
         self.calls.append(args)
@@ -172,6 +173,8 @@ class Fake:
         elif a[:3] == ["git", "rev-parse", "--verify"]:
             ref = [x for x in a[3:] if not x.startswith("--")][0].split("^")[0]
             out = PREV if PREV.startswith(ref) else TARGET
+        elif a[:3] == ["git", "merge-base", "--is-ancestor"]:
+            rc = 1 if (a[3], a[4]) in self.not_ancestor else 0
         elif a[:3] == ["git", "rev-parse", "HEAD"]:
             out = self.head
         elif a[:3] == ["git", "diff", "--name-only"]:
@@ -264,6 +267,20 @@ def test_prev_comes_from_the_running_image_not_the_worktree(cur, tmp_path):
     assert sw.main() != 0
     diffs = [c for c in fake.calls if c[:3] == ["git", "diff", "--name-only"]]
     assert diffs and diffs[0][3:5] == [PREV, TARGET]
+    assert "swap.applied" not in names(cur, sid)
+
+
+@needs_db
+def test_older_target_than_running_is_not_sent_to_a_human(cur, tmp_path):
+    """頼んだ版より新しい版がもう動いているときは、作業ツリーの外れとして人に回さない（11-14 swap が e56feb2 を頼んだまま 51d8a90 が動いていて止まった）"""
+    import stoppage
+    fake = Fake(cur)
+    fake.head = PREV
+    fake.not_ancestor = {(PREV, TARGET)}   # 今の版は頼んだ版の先にある
+    sid, sw = make(cur, tmp_path, fake)
+    assert sw.main() == 1
+    assert stoppage.open_keys(cur, "swap:") == []
+    assert "もう入っている" in swap.get(cur, sid)["events"][-1]["payload"]["error"]
     assert "swap.applied" not in names(cur, sid)
 
 

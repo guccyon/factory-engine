@@ -8,8 +8,10 @@
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
@@ -22,6 +24,7 @@ WHO_JA = {"owner": "オーナー", "builder": "建設者", "none": "対応は要
 GROUPS = ("判断待ち", "工場の更新", "ライン", "工場の不調", "PR が進めない", "作業の失敗", "予算・上限", "そのほか")
 # 工場の更新を人に回す決まり（definitions/swap.yaml の escalate の id）を、エンジニアでなくても読める言葉に
 SWAP_ESCALATE_JA = {"secrets_permissions": "工場の守りに関わる設定（パスワードや鍵の扱い、外からつながる入口）が変わる"}
+TZ = ZoneInfo(os.environ.get("REPORT_TZ", "Asia/Tokyo"))   # 受信トレイに出す時刻
 PR_RE = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 OLD_WORDS = (("入れ替え", "更新"),)   # 古い記録の言葉（11-07 に「入れ替え」は「更新」に統一）
 
@@ -204,6 +207,13 @@ def describe(cur, s: dict) -> dict:
             a.update(group="ライン", who="none", title="同時に流せる枠が開いた PR でふさがっていて、新しい作業を待っている",
                      todo="何もしなくてよい。PR が進まないときは「判定に進まない PR」の件が別に出る")
         elif prefix == "repeat":   # 繰り返すエラーを束ねた停止（repeat_watch.py、#308）
+            import repeat_watch
+            lv = repeat_watch.live(cur, key)
+            if lv is not None:   # 開いた時点の数でなく、最新の回数・時刻で見せる（11-14 オーナー）
+                when = lv["last_at"].astimezone(TZ).strftime("%H:%M") if lv["last_at"] else None
+                a["title"] = ((f"工場の環境の不調（名前解決・接続が落ちている）" if lv["env"] else f"同じエラーが繰り返している（{lv.get('exc')}）")
+                              + (f": 直近 {repeat_watch.WINDOW_MIN} 分に {lv['n']} 回、最後は {when} の {lv['label']}" if when
+                                 else f": 直近 {repeat_watch.WINDOW_MIN} 分は出ていない（収まれば自動で閉じる）"))
             a.update(group="工場の不調", who="builder",
                      todo=("工場を動かしている機械の不調（名前解決・接続）。Docker の VM のディスク・メモリを確かめ、続くなら再起動する。収まれば自動で閉じる"
                            if rest.startswith("env:") else
@@ -234,6 +244,26 @@ def set_dismissed(cur, key: str, on: bool, by: str) -> bool:
     return True
 
 
+def _bundle_members(cur, rows) -> dict[str, str]:
+    """開いている job:<id> の停止のうち、同じ種類・同じ失敗の束ねた停止（repeat:job:）が開いているもの。job の key → 束ねた停止の key"""
+    import repeat_watch
+    bundles = {k[len(repeat_watch.JOB_PREFIX):].rsplit("#", 1)[0]: k for k in (r["key"] for r in rows) if k.startswith(repeat_watch.JOB_PREFIX)}
+    jobs = [r for r in rows if r["key"].startswith("job:")]
+    if not bundles or not jobs:
+        return {}
+    ids = [r.get("job_id") or int(r["key"].split(":", 1)[1]) for r in jobs if r.get("job_id") or r["key"].split(":", 1)[1].isdigit()]
+    cur.execute("select distinct on (j.id) j.id, j.kind, e.payload->>'error' as error from jobs j "
+                "left join events e on e.job_id=j.id and e.name='job.finished' where j.id = any(%s) order by j.id, e.id desc", (ids,))
+    sig = {r["id"]: repeat_watch.job_signature(r["kind"], r["error"]) for r in cur.fetchall()}
+    out = {}
+    for r in jobs:
+        jid = r.get("job_id") or (int(r["key"].split(":", 1)[1]) if r["key"].split(":", 1)[1].isdigit() else None)
+        b = bundles.get(sig.get(jid, ""))
+        if b:
+            out[r["key"]] = b
+    return out
+
+
 def view(cur, now: datetime | None = None) -> dict:
     """開いている停止のアラート。open は画面に出すもの、dismissed は消したもの（停止は開いたまま）"""
     now = now or datetime.now(timezone.utc)
@@ -241,8 +271,15 @@ def view(cur, now: datetime | None = None) -> dict:
     rows = cur.fetchall()
     gone = dismissed(cur)
     out = {"open": [], "dismissed": []}
+    members = _bundle_members(cur, rows)
     for s in rows:
+        if s["key"] in members:   # 束ねた停止が開いている同じ失敗のジョブは、束ねた 1 件の中に数えて 1 行ずつは出さない（11-14 オーナー）
+            continue
         a = describe(cur, s)
+        if s["key"].startswith("repeat:job:"):
+            ids = [k.split(":", 1)[1] for k, b in members.items() if b == s["key"]]
+            if ids:
+                a["detail"].append({"label": "まとめたジョブの停止", "text": f"{len(ids)} 件（ジョブ {', '.join(ids[:20])}{' ほか' if len(ids) > 20 else ''}）"})
         a["who_ja"] = WHO_JA.get(a["who"], a["who"])
         a["inbox"] = s["category"] == "human"   # 人の判断待ちの停止は受信トレイにも出る。画面は「判断待ち」に寄せ、「工場の不調」には出さない（11-08）
         st = s.get("started_at")
