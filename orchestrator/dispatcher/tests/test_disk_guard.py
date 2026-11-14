@@ -50,7 +50,7 @@ def open_keys(cur):
 def test_quiet_when_small(cur):
     d = Docker("3GB")
     assert dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB) is None
-    assert d.calls == [["system", "df"]]
+    assert d.calls == [["ps", "--size"], ["system", "df"]]
 
 
 @needs_db
@@ -92,3 +92,36 @@ def test_stale_images_keep_recent_releases_used_ones_and_new_before_tags():
     now = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
     out = dg.stale_images(rows, {"rally-backend:0.9.0", "sha:used"}, keep_releases=3, before_days=7, now=now)
     assert sorted(out) == ["factory-dispatcher:p0-before-a", "factory-dispatcher:p0-before-b", "rally-backend:0.10.0", "rally-backend:0.4.0"]
+
+
+class PsDocker(Docker):
+    def __call__(self, args, timeout=600):
+        if args[:2] == ["ps", "--size"]:
+            self.calls.append(args[:2])
+            rows = [{"Names": "factory-job-9290", "Size": "54.6GB (virtual 60GB)", "Labels": "factory.job=9290,x=y"},
+                    {"Names": "factory-job-9297", "Size": "4.65GB (virtual 9GB)", "Labels": "factory.job=9297"}]
+            return subprocess.CompletedProcess(args, 0, "\n".join(json.dumps(r) for r in rows), "")
+        if args[0] == "kill":
+            self.calls.append(args)
+        return super().__call__(args, timeout)
+
+
+@needs_db
+def test_oversized_job_container_is_stopped_and_sent_to_a_person(cur):
+    cur.execute("truncate jobs restart identity cascade")
+    cur.execute("insert into jobs(id, correlation_id, repo, issue_number, kind, state) values (9290, 'c', 'o/r', 1, 'implement', 'running')")
+    d = PsDocker("1GB")
+    dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
+    assert ["kill", "factory-job-9290"] in d.calls and ["kill", "factory-job-9297"] not in d.calls
+    cur.execute("select job_id, payload from events where name='ops.job_disk_killed'")
+    r = cur.fetchone()
+    assert r["job_id"] == 9290 and r["payload"]["size_gb"] == 54.6
+    import stoppage
+    assert stoppage.open_keys(cur, "diskjob:") == ["diskjob:9290"]
+
+
+def test_too_low(monkeypatch):
+    monkeypatch.setattr(dg, "free_bytes", lambda: 5 * GB)
+    assert dg.too_low()
+    monkeypatch.setattr(dg, "free_bytes", lambda: 50 * GB)
+    assert not dg.too_low()

@@ -924,6 +924,10 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, after, role]
     note: "ADR 0026。前の役のチケット（after）が閉じたので、経路の次の役（role）のラベルを付けた"
+  ops.job_disk_killed:
+    source: control_plane
+    required: [container, size_gb, max_gb]
+    note: "2026-11-14。動いているジョブのコンテナの書き込み層が上限（DISK_JOB_MAX_GB）を超えたので、dispatcher のディスクの見張りが止めた。停止 diskjob:<job> を開く（rust のジョブ 1 本で 54GB になり Mac の空きが 23GB まで減った）"
   ops.disk_pruned:
     source: control_plane
     required: [cache_gb, free_gb_before, free_gb_after, actions]
