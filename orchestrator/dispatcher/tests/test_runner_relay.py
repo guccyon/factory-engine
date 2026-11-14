@@ -71,6 +71,16 @@ def test_auth_scope_and_expiry():
     assert r.revoke(9) == 1 and rpc(r, tok2, "tools/list")[0] == 401
 
 
+def test_regrant_with_the_same_token_after_restart():
+    """dispatcher を上げ直すと合言葉は消える。つなぎ直したジョブはコンテナに渡した合言葉のまま認め直す（ジョブ 8918 の 401）"""
+    r, _, _, _ = relay()
+    tok = r.grant(7, "qa", 60)
+    r2, _, _, _ = relay()   # 上げ直した dispatcher
+    assert rpc(r2, tok, "tools/list")[0] == 401
+    assert r2.grant(7, "qa", 60, token=tok) == tok
+    assert rpc(r2, tok, "tools/list")[0] == 200
+
+
 def test_call_records_without_arguments():
     r, calls, recs, _ = relay()
     tok = r.grant(7, "qa", 60)
