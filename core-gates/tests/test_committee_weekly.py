@@ -67,3 +67,14 @@ def test_empty_store_skips_agent(tmp_path, monkeypatch):
     out = tmp_path / "out.json"
     assert cw.main(["--repo-dir", str(repo), "--input", str(tmp_path / "in.json"), "--out", str(out), "--today", str(TODAY)]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["result"]["summary"] == "知見も議決もまだない"
+
+
+def test_unused_only_deliverable_and_old_and_not_used():
+    base = {"status": "active", "confidence": "confirmed", "verified_at": "2026-10-01"}
+    items = [{"id": "K-0001", **base},                                   # 60 日以上・渡っていない → 候補
+             {"id": "K-0002", **base},                                   # 渡っている → 外す
+             {"id": "K-0003", **base, "confidence": "hypothesis"},       # 渡せない → 外す
+             {"id": "K-0004", **base, "verified_at": "2026-11-01"},      # まだ 60 日たっていない → 外す
+             {"id": "K-0005", **base, "status": "retired"}]
+    got = cw.unused(items, {"K-0002": "2026-12-10"}, TODAY)
+    assert [u["id"] for u in got] == ["K-0001"]

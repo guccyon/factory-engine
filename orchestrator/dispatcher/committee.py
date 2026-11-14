@@ -247,6 +247,9 @@ def weekly_issue(gh, repo: str, label: str = WEEKLY_LABEL) -> int:
     return gh("POST", f"repos/{repo}/issues", {"title": WEEKLY_TITLE, "body": body, "labels": [label]})["number"]
 
 
+UNUSED_DAYS = 60   # definitions/knowledge.yaml の invalidation「60 日使われていない」
+
+
 def weekly_input(cur, repo: str, now) -> dict:
     """その週（7 日）の議決と起票（委員会の定例の材料）。制御プレーンの記録だけで組み立てる"""
     from datetime import timedelta
@@ -265,7 +268,11 @@ def weekly_input(cur, repo: str, now) -> dict:
                      and payload->>'repo'=%s order by id""", (since, repo))
     reach = [{"signal": "missed" if r["name"] == "knowledge.missed" else "delivered_failed",
               **{k: r["payload"].get(k) for k in ("id", "incident", "reason", "scope", "work", "role")}} for r in cur.fetchall()]
-    return {"decisions": decisions, "case_filed": filed, "enforce_filed": enforce, "reach": reach}
+    # 形骸化の信号（ADR 0024 の失効のきっかけ「60 日使われていない」）: 直近 60 日に渡した知見の id と最後に渡した日
+    cur.execute("""select id, max(occurred_at) as last from (select jsonb_array_elements_text(payload->'ids') as id, occurred_at from events
+                     where name='knowledge.used' and occurred_at >= %s and payload->>'repo'=%s) u group by id""", (now - timedelta(days=UNUSED_DAYS), repo))
+    used = {r["id"]: r["last"].date().isoformat() for r in cur.fetchall()}
+    return {"decisions": decisions, "case_filed": filed, "enforce_filed": enforce, "reach": reach, "used": used}
 
 
 def _items(xs: list[dict]) -> str:
@@ -313,14 +320,19 @@ def weekly_issues(week: str, result: dict) -> list[tuple[str, str, str]]:
     f, r = result.get("facts") or {}, result.get("report") or {}
     out = []
     stale = [s["id"] for s in f.get("stale") or []]
+    unused = [u["id"] for u in f.get("unused") or []]
     review = {"contradictions": r.get("contradictions") or [], "promote": r.get("promote") or [], "retire": r.get("retire") or [],
               "widen": r.get("widen") or []}
-    if stale or any(review.values()):
+    if stale or unused or any(review.values()):
         body = f"""知見の委員会の週 1 の定例（{week}）で決めた見直しを、1 本の変更セットの PR にしてください（ADR 0024）。
 
 ## 期限切れ（要再確認）
 {chr(10).join('- ' + s for s in stale) or '- なし'}
 根拠をたどり直し、まだ正しければ `verified_at` と `review_by` を更新（recheck）、崩れていれば retire にする。
+
+## 使われない知見（{UNUSED_DAYS} 日。形骸化の候補）
+{chr(10).join('- ' + u for u in unused) or '- なし'}
+エージェントに渡せる知見なのに {UNUSED_DAYS} 日渡っていない。scope が狭すぎるなら広げ（widen と同じ直し方）、役目を終えていれば retire にする。理由を PR の本文に書く。
 
 ## 矛盾・重複（amend・supersede・retire）
 {_items(review['contradictions'])}

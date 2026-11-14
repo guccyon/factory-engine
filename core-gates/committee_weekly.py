@@ -44,6 +44,22 @@ def facts(repo: Path, today: date, structure_over: int) -> dict:
             "stale": kc.inventory(items, today)}
 
 
+UNUSED_DAYS = 60   # definitions/knowledge.yaml の invalidation「60 日使われていない」
+
+
+def unused(items: list[dict], used: dict, today: date) -> list[dict]:
+    """形骸化の候補: エージェントに渡せる知見（active・confirmed 以上）なのに、確認日から 60 日以上たち、直近 60 日に一度も渡っていない。
+    渡した記録（knowledge.used）は制御プレーンにあるので、dispatcher が weekly_input の used に入れて渡す"""
+    out = []
+    for k in items:
+        verified = kc.as_date(k.get("verified_at"))
+        if k.get("status") != "active" or k.get("confidence") not in ("confirmed", "settled") or verified is None:
+            continue
+        if (today - verified).days >= UNUSED_DAYS and k.get("id") not in used:
+            out.append({"id": k.get("id"), "theme": k.get("theme"), "confidence": k.get("confidence"), "verified_at": str(verified)})
+    return out
+
+
 def schema(defs: dict) -> dict:
     ids = {"type": "array", "items": {"type": "string"}}
     item = {"type": "object", "properties": {"ids": ids, "why": {"type": "string"}, "proposal": {"type": "string"}}, "required": ["ids", "why", "proposal"]}
@@ -74,7 +90,7 @@ def prompt(defs: dict, f: dict) -> str:
 - week.json: この週の議決（committee.decided）、起票した知見の Issue、担保の Issue、決定論で出した数（facts）、
   効き目の信号（reach。事例の分析で真因と同じだった知見が、その回に届かなかった missed と理由・届いたのに差し戻された delivered_failed）
 
-決定論で出したこと（facts の要点）: 知見 {f['items']} 件、事例 {f['cases']} 件、議決 {f['decisions']} 件、期限切れ {len(f['stale'])} 件、置き場の直下の知見のファイル {f['files_in_root']} 件{'（構造を見直す目安を超えた）' if f['structure_signal'] else ''}
+決定論で出したこと（facts の要点）: 知見 {f['items']} 件、事例 {f['cases']} 件、議決 {f['decisions']} 件、期限切れ {len(f['stale'])} 件、{UNUSED_DAYS} 日使われない知見 {len(f.get('unused') or [])} 件、置き場の直下の知見のファイル {f['files_in_root']} 件{'（構造を見直す目安を超えた）' if f['structure_signal'] else ''}
 
 出すもの（どれも、無ければ空にする）:
 - summary: この週のまとめ（3〜5 文）。議決の傾向、委員会の割れ方、気になること
@@ -127,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         print("[committee_weekly] no knowledge root", file=sys.stderr)
         return 2
     f = facts(repo, today, int((defs["committee"].get("weekly") or {}).get("structure_review_over", 150)))
+    f["unused"] = unused(kc.load(repo)[0], inp.get("used") or {}, today)
     f["reach"] = {"missed": sum(1 for x in inp.get("reach") or [] if x.get("signal") == "missed"),
                   "missed_scope": sum(1 for x in inp.get("reach") or [] if x.get("signal") == "missed" and x.get("scope")),
                   "delivered_failed": sum(1 for x in inp.get("reach") or [] if x.get("signal") == "delivered_failed")}
