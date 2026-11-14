@@ -82,7 +82,7 @@ import touch
 import usage
 import usage_page
 import version
-from console_page import PAGE, APP_PATH
+from console_page import PAGE, APP_PATH, CATALOG, static_file
 
 ENV = os.environ
 DATABASE_URL = ENV["DATABASE_URL"]
@@ -521,6 +521,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"text": text}) if text is not None else self._json(404, {"error": "作業の記録が見つからない"})
         if self.path in ("/", "/index.html") or APP_PATH.fullmatch(urlsplit(self.path).path):   # 画面のページ（中身は画面の中で URL に合わせて描く）
             return self._send(200, PAGE.replace("__TOKEN__", TOKEN).encode(), "text/html; charset=utf-8")
+        if urlsplit(self.path).path in ("/catalog", "/catalog/"):   # 部品のカタログ（ADR 0059。PR の画面のキャプチャもここから撮る）
+            return self._send(200, CATALOG.encode(), "text/html; charset=utf-8")
+        if urlsplit(self.path).path.startswith("/static/"):   # 画面の CSS・JS（console_static/。ADR 0059）
+            f = static_file(urlsplit(self.path).path[len("/static/"):])
+            return self._send(200, *f) if f else self._json(404, {"error": "not found"})
         url = urlsplit(self.path)
         m = re.fullmatch(r"/api/choices/(\d+)/image/([A-Za-z0-9_-]{1,20})", url.path)
         if m:

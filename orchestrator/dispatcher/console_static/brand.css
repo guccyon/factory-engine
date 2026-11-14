@@ -1,0 +1,35 @@
+/* 操業コンソールのブランドの層（ADR 0059、作業フォルダの 17_console-design-system.md）。
+   主の色・灰・信号の原色・字の族だけを持つ。ブランドの刷新ではこのファイルだけを差し替える。
+   部品とページの CSS はここの名前を直接使わない（tokens.css の意味の名前を使う） */
+:root {
+  --brand-50: #e8f3f0;
+  --brand-100: #cfe7e0;
+  --brand-300: #7fc2b0;
+  --brand-400: #4fae95;
+  --brand-500: #23876f;
+  --brand-600: #176b58;
+  --brand-700: #105546;
+  --brand-900: #0a3029;
+  --neutral-0: #ffffff;
+  --neutral-25: #f6f7f6;
+  --neutral-50: #eef1ef;
+  --neutral-100: #e2e6e4;
+  --neutral-200: #cdd3d0;
+  --neutral-400: #8d9692;
+  --neutral-500: #6a7470;
+  --neutral-600: #525b57;
+  --neutral-800: #262d2a;
+  --neutral-850: #1d2321;
+  --neutral-900: #161b19;
+  --neutral-950: #101413;
+  --green-600: #2a7a3f;
+  --green-300: #7fd093;
+  --amber-600: #9a5b00;
+  --amber-300: #f0b45a;
+  --red-600: #bf3526;
+  --red-300: #ff8f80;
+  --blue-600: #2d5fae;
+  --blue-300: #8fb4f0;
+  --font-sans: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
