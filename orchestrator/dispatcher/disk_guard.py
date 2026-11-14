@@ -13,6 +13,7 @@ dispatcher の周回（swap_loop）から DISK_GUARD_INTERVAL_SEC ごとに呼�
 - 空きが DISK_MIN_FREE_GB を割っている間は、dispatcher が新しいジョブを取らない（too_low。_claim_loop が見る）
 - 動いているジョブのコンテナの書き込み層が DISK_JOB_MAX_GB（既定 30）を超えたら、そのコンテナを止めて人へ回す（ジョブは exit=137 で落ち、自動の立て直しはしない）。
   11/14 夜、rust のジョブ 1 本の書き込み層が 54GB になり、Mac の空きが 23GB まで減った
+- 大きさは docker の表記と同じ 10 進の GB で比べる。ビルドのキャッシュはエンジンの API から共有分も含めて測る（CLI が古いと小さく出る）
 DISK_GUARD=0 で止める。
 """
 from __future__ import annotations
@@ -39,7 +40,8 @@ JOB_MAX_GB = float(ENV.get("DISK_JOB_MAX_GB", "30"))
 JOB_LABEL = "factory.job"   # reattach.JOB_LABEL と同じ
 STOPPAGE_KEY = "disk:low"
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-GB = 1024 ** 3
+GB = 1000 ** 3   # docker の表記（10 進）と同じ単位で比べる（11/14: 1024³ と 10 進を混ぜ、21.36GB のキャッシュを上限 20GB より下と見ていた）
+DOCKER_SOCK = ENV.get("DOCKER_SOCK", "/var/run/docker.sock")
 UNITS = {"b": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4}
 
 
@@ -53,18 +55,48 @@ def size_bytes(s: str) -> float:
     return float(m.group(1)) * UNITS[m.group(2).lower()] if m else 0.0
 
 
-def build_cache_bytes(docker=_docker) -> float:
+def engine_build_cache_bytes(sock: str | None = None) -> float | None:
+    """ビルドのキャッシュの全体（共有分も含む）を Docker Engine の API（/system/df）から。読めなければ None。
+    dispatcher のイメージの docker CLI はエンジンより古く（11/14: CLI 26.1.5・エンジン 29.9.2）、system df が共有分を抜いて
+    小さく出す（21.36GB。ホストの CLI では 45.43GB）。CLI の版に左右されないよう、エンジンに直接聞く"""
+    import http.client
+    import socket
+    path = sock or DOCKER_SOCK
+    if not os.path.exists(path):
+        return None
+
+    class _Conn(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(self.timeout)
+            self.sock.connect(path)
+    try:
+        c = _Conn("localhost", timeout=120)
+        c.request("GET", "/system/df?type=build-cache")
+        r = c.getresponse()
+        if r.status != 200:
+            return None
+        rows = json.loads(r.read().decode() or "{}").get("BuildCache") or []
+        return float(sum(int(x.get("Size") or 0) for x in rows))
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+
+
+def build_cache_bytes(docker=_docker, engine=engine_build_cache_bytes) -> float:
+    """ビルドのキャッシュの大きさ。エンジンの API と CLI の system df の大きい方（どちらかが読めなくても見張りは止めない）"""
+    vals = []
     r = docker(["system", "df", "--format", "{{json .}}"], timeout=120)
-    if r.returncode != 0:
-        return 0.0
-    for line in (r.stdout or "").splitlines():
+    for line in (r.stdout or "").splitlines() if r.returncode == 0 else []:
         try:
             row = json.loads(line)
         except ValueError:
             continue
         if row.get("Type") == "Build Cache":
-            return size_bytes(row.get("Size") or "")
-    return 0.0
+            vals.append(size_bytes(row.get("Size") or ""))
+    e = engine() if engine else None
+    if e is not None:
+        vals.append(e)
+    return max(vals or [0.0])
 
 
 def free_bytes() -> float:
@@ -193,7 +225,7 @@ def step(cur, log=print, *, docker=_docker, free=free_bytes) -> dict | None:
         return None
     import stoppage
     stop_oversized_jobs(cur, log, docker=docker)
-    cache, avail = build_cache_bytes(docker), free()
+    cache, avail = build_cache_bytes(docker, engine_build_cache_bytes if docker is _docker else None), free()   # 試験の偽の docker では本物のエンジンに聞かない
     low = avail < MIN_FREE_GB * GB
     if cache <= CACHE_MAX_GB * GB and not low:
         stoppage.close_stoppage(cur, STOPPAGE_KEY, remedy="ディスクの空きが戻った", closed_by="dispatcher")

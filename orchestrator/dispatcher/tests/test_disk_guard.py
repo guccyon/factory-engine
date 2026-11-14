@@ -140,3 +140,32 @@ def test_job_is_not_stopped_when_du_inside_is_small(cur):
     d = DuDocker("1GB")
     dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
     assert not any(c[0] == "kill" for c in d.calls)
+
+
+def test_build_cache_uses_decimal_gb_and_engine_total(tmp_path):
+    """11/14: 古い CLI が共有分を抜いた 21.36GB を返し、1024³ の上限（約 21.47e9）より下と見て片付けが 5 時間走らなかった"""
+    assert dg.CACHE_MAX_GB * dg.GB < dg.size_bytes("21.36GB")
+    assert dg.build_cache_bytes(Docker("21.36GB"), engine=lambda: 45.43e9) == 45.43e9   # エンジンの全体を使う
+    assert dg.build_cache_bytes(Docker("21.36GB"), engine=lambda: None) == dg.size_bytes("21.36GB")   # エンジンが読めなければ CLI
+    assert dg.engine_build_cache_bytes(str(tmp_path / "none.sock")) is None
+
+
+def test_engine_build_cache_reads_the_socket(tmp_path):
+    import socket
+    import threading
+    path = str(tmp_path / "d.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(1)
+    body = json.dumps({"BuildCache": [{"Size": 30_000_000_000, "Shared": False}, {"Size": 15_430_000_000, "Shared": True}]}).encode()
+
+    def serve():
+        c, _ = srv.accept()
+        c.recv(65536)
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+        c.close()
+    t = threading.Thread(target=serve)
+    t.start()
+    assert dg.engine_build_cache_bytes(path) == 45.43e9
+    t.join()
+    srv.close()
