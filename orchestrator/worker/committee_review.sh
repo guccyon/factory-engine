@@ -15,7 +15,7 @@ echo "[committee] job=${JOB_ID} pr=${PR_URL} engine=${ENGINE_REPO}@${ENGINE_REF}
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
 git config --global user.name "factory-committee"
 git config --global user.email "factory-committee@users.noreply.github.com"
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 read -r HEAD_REF BASE_REF HEAD_REPO < <(gh pr view "${PR_URL}" --json headRefName,baseRefName,headRepository,headRepositoryOwner \
   -q '"\(.headRefName) \(.baseRefName) \(.headRepositoryOwner.login)/\(.headRepository.name)"')
 if [ "${HEAD_REPO}" != "${REPO}" ]; then

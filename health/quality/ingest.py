@@ -22,7 +22,7 @@ import yaml
 WORKFLOW = "quality.yml"
 ARTIFACT = "quality-snapshot"
 MAX_BYTES = 1_000_000
-KEEP = ("sha", "score", "metrics", "counts", "distributions", "lines", "measured_languages", "hotspots", "tool_versions")
+KEEP = ("sha", "score", "metrics", "counts", "distributions", "lines", "measured_languages", "unmeasured_languages", "hotspots", "tool_versions")
 PR_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/(\d+)$")
 
 

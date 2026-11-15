@@ -93,6 +93,36 @@ def _gh(method: str, path: str, body: dict | None = None):
         return json.loads(data) if data else None
 
 
+def visibility_problem(gh=None) -> str | None:
+    """工場状況の宛先（STATUS_REPO）が公開で、工場の製品のどれかが非公開なら、止める理由を返す（#226）。
+
+    github-issue の通知（番人の停止・出荷の失敗・notify の github-issue）はすべて STATUS_REPO に書くので、
+    ここが公開だと非公開の製品の Issue の題やジョブの中身が外に出る。公開範囲が分からない（API の失敗）ときは止めない。
+    """
+    if not STATUS_REPO:
+        return None
+    gh = gh or _gh
+    products = [r.strip() for r in ENV.get("FACTORY_REPOS", "").split(",") if r.strip() and r.strip() != STATUS_REPO]
+    if not products:
+        return None
+
+    def private(repo: str) -> bool | None:
+        try:
+            got = gh("GET", f"repos/{repo}") or {}
+        except Exception as e:  # noqa: BLE001  分からないときは止めない（起動を GitHub の不調に巻き込まない）
+            _log(f"visibility of {repo} unknown: {e}")
+            return None
+        return bool(got.get("private"))
+
+    if private(STATUS_REPO) is not False:
+        return None
+    hidden = [r for r in products if private(r)]
+    if not hidden:
+        return None
+    return (f"工場状況の宛先 STATUS_REPO={STATUS_REPO} は公開のリポジトリで、非公開の製品 {', '.join(hidden)} の情報が出てしまう。"
+            "STATUS_REPO を非公開のリポジトリにするか、空にして製品のリポジトリに書くようにしてから起動し直す（#226）")
+
+
 def _status_issue() -> int:
     if STATUS_NUMBER.isdigit():
         return int(STATUS_NUMBER)
