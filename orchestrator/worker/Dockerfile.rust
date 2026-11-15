@@ -7,9 +7,9 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libpq-dev && rm -rf /var/lib/apt/lists/*
 USER worker
 ENV RUSTUP_HOME=/home/worker/.rustup CARGO_HOME=/home/worker/.cargo PATH=/home/worker/.cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt --component clippy \
+ && cargo --version && rustfmt --version && cargo clippy --version
 # デバッグ情報は行番号だけにする（失敗のバックトレースの行は残る）。11/15 夜: rally の backend の target/debug がジョブ 1 本で 16 分に 6GB になり、
 # 2 本並ぶと Mac の空きが満杯の手前まで減った。デバッグ情報が成果物の大半を占める。使い捨てのワーカーなので増分ビルドも切る
 ENV CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only CARGO_INCREMENTAL=0
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt --component clippy \
- && cargo --version && rustfmt --version && cargo clippy --version
 WORKDIR /work
