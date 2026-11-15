@@ -66,3 +66,26 @@ def test_other_errors_still_raise(monkeypatch):
         raise AssertionError("should raise")
     except urllib.error.HTTPError as e:
         assert e.code == 404
+
+
+def test_list_all_reads_until_short_page():
+    # 1 ページだけ読むと 51 件目から見えなくなる（rally の factory:planned 71 件で p0 が積まれなかった）
+    items = list(range(230))
+    asked = []
+
+    def get(path):
+        asked.append(path)
+        page = int(path.rsplit("page=", 1)[1])
+        return items[(page - 1) * 100: page * 100]
+
+    assert ghapi.list_all(get, "repos/o/r/issues?state=open&labels=x") == items
+    assert asked == [f"repos/o/r/issues?state=open&labels=x&per_page=100&page={n}" for n in (1, 2, 3)]
+
+
+def test_list_all_stops_on_exact_multiple_and_cap():
+    pages = {1: list(range(100)), 2: []}
+    assert ghapi.list_all(lambda p: pages[int(p.rsplit("page=", 1)[1])], "repos/o/r/issues") == list(range(100))
+    asked = []
+    assert len(ghapi.list_all(lambda p: asked.append(p) or [0] * 10, "x", per_page=10, max_pages=3)) == 30
+    assert asked[0] == "x?per_page=10&page=1" and len(asked) == 3
+    assert ghapi.list_all(lambda p: None, "x") == []
