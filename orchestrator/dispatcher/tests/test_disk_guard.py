@@ -172,3 +172,21 @@ def test_engine_build_cache_reads_the_socket(tmp_path):
     assert dg.engine_build_cache_bytes(path) == 30e9   # イメージと共有している分は prune で消えないので数えない
     t.join()
     srv.close()
+
+
+@needs_db
+def test_critical_free_stops_the_biggest_job_even_under_the_cap(cur):
+    """11/15 夜: 上限 30GB の内の rust のジョブ 2 本で満杯の手前まで行った。空きが下限の下限を割ったら、いちばん大きい 1 本だけ止める"""
+    d = DuDocker("1GB")   # 中の du は 13GB で上限の内
+    dg.step(cur, lambda *a: None, docker=d, free=lambda: 4 * GB)
+    kills = {tuple(c) for c in d.calls if c[0] == "kill"}   # PsDocker は kill を 2 回数える
+    assert kills == {("kill", "factory-job-9290")}
+    cur.execute("select payload from events where name='ops.job_disk_killed'")
+    assert cur.fetchone()["payload"]["critical_free_gb"] == dg.CRITICAL_FREE_GB
+
+
+@needs_db
+def test_no_critical_kill_while_there_is_room(cur):
+    d = DuDocker("1GB")
+    dg.step(cur, lambda *a: None, docker=d, free=lambda: 12 * GB)   # 新しいジョブは取らないが、動いているものは止めない
+    assert not any(c[0] == "kill" for c in d.calls)
