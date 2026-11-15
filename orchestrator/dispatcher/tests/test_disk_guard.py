@@ -69,7 +69,7 @@ def test_low_disk_prunes_images_too_and_opens_then_closes_the_stoppage(cur):
     d = Docker("1GB")
     dg.step(cur, lambda *a: None, docker=d, free=lambda: 2 * GB)
     assert ["builder", "prune"] in d.calls and ["image", "prune"] in d.calls
-    assert "--filter" not in next(a for a in d.full if a[:2] == ["builder", "prune"])   # 空きが足りないときは新しい層も消す
+    assert next(a for a in d.full if a[:2] == ["builder", "prune"]) == ["builder", "prune", "-f"]   # 空きが足りないときは新しい層も、残す量もなく消す
     assert open_keys(cur) == ["disk:low"]
     dg.step(cur, lambda *a: None, docker=Docker("1GB"), free=lambda: 100 * GB)
     assert open_keys(cur) == []
