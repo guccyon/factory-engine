@@ -37,7 +37,8 @@ def test_initialize_and_list():
     assert m.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     names = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
     assert names == ["desk_open", "desk_reply", "desk_read", "desk_confirm", "desk_list", "desk_ticket", "desk_set_priority",
-                     "inbox_list", "inbox_read", "inbox_answer", "desk_preferences", "desk_preference_set", "desk_preference_delete"]
+                     "inbox_list", "inbox_read", "inbox_answer", "desk_preferences", "desk_preference_set",
+                     "onboarding_status", "onboarding_provide", "onboarding_run", "onboarding_doc", "desk_preference_delete"]
     assert "inbox_answer" in r["instructions"] and "本人がはっきり選んだ" in r["instructions"]
     assert rpc("nope")["error"]["code"] == -32601
 
@@ -133,3 +134,24 @@ def test_stdio_end_to_end_against_desk_api(monkeypatch):
     assert read["messages"][-2]["body"] == "予約まわりの通知を先に進めて" and read["draft"] is None
     assert read["messages"][-1]["kind"] == "ack"   # 受付の即時の返事（ADR 0039）
     assert out[3]["result"]["isError"] and json.loads(out[3]["result"]["content"][0]["text"])["status"] == 403
+
+
+
+def test_onboarding_tools_map_to_api(tmp_path):
+    """オンボーディングの道具（ADR 0045 の追記 2026-11-15）: 製品のパス、手元のファイルを base64 にして渡す"""
+    import base64
+    f = tmp_path / "設計.md"
+    f.write_text("# 構成\n", encoding="utf-8")
+    rec = Rec()
+    rpc("tools/call", {"name": "onboarding_status", "arguments": {"product": "acme/web"}}, call=rec)
+    rpc("tools/call", {"name": "onboarding_provide", "arguments": {"product": "acme/web", "answers": [
+        {"question": "repos", "value": [{"repo": "acme/api", "role": "backend", "access": "read"}]},
+        {"question": "docs", "file": {"path": str(f)}}]}}, call=rec)
+    rpc("tools/call", {"name": "onboarding_run", "arguments": {"product": "acme/web"}}, call=rec)
+    rpc("tools/call", {"name": "onboarding_doc", "arguments": {"product": "acme/web", "name": "api.yaml"}}, call=rec)
+    assert [c[:2] for c in rec.calls] == [("GET", "/api/desk/onboarding/acme/web"), ("POST", "/api/desk/onboarding/acme/web/answers"),
+                                          ("POST", "/api/desk/onboarding/acme/web/run"), ("GET", "/api/desk/onboarding/acme/web/docs/api.yaml")]
+    sent = rec.calls[1][2]["answers"][1]["file"]
+    assert sent["name"] == "設計.md" and base64.b64decode(sent["content_b64"]).decode() == "# 構成\n" and "path" not in sent
+    r = rpc("tools/call", {"name": "onboarding_status", "arguments": {"product": "web"}}, call=Rec())["result"]
+    assert r["isError"]

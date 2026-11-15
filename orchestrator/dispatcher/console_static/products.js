@@ -63,3 +63,19 @@ function ppShipRedirect(s) {
   const rs = s.releases || [];
   history.replaceState(null, "", rs.length === 1 ? `/products/${rs[0].repo}?tab=release` : "/products");
 }
+// オンボーディングで渡すもの（ADR 0045 の追記 2026-11-15。products_page.py の intake_section）。答えは POST /api/products/<製品>/intake
+const obB64 = f => new Promise((ok, ng) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] || ""); r.onerror = ng; r.readAsDataURL(f) });
+document.addEventListener("click", async e => {
+  const b = e.target.closest("#prod-b button[data-ob]"); if (!b) return;
+  const p = b.dataset.p, q = b.dataset.ob, path = "/api/products/" + p.split("/").map(encodeURIComponent).join("/");
+  if (q === "_run") { if (await post(path + "/onboard", {reason: "コンソールから"})) loadProd(p); return }
+  const box = b.closest("[data-obq]"), kind = box.dataset.kind, inp = box.querySelector("[data-obv]"), note = (box.querySelector("[data-obn]") || {}).value || "";
+  const ans = {question: q};
+  if (b.dataset.skip) ans.skip = true;
+  else if (kind === "repos") ans.value = inp.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => { const [repo, role, access, main] = l.split(/\s+/); return {repo, role, access, main: main === "main"} });
+  else if (kind === "file") { const f = inp.files && inp.files[0]; if (!f) { toast("ファイルを選んでください"); return } if (f.size > 8 * 1048576) { toast("8MB まで"); return } ans.file = {name: f.name, content_b64: await obB64(f)} }
+  else if (kind === "confirm") ans.value = "はい";
+  else { ans.value = inp.value.trim(); if (!ans.value) { toast("答えを入れてください（無いときは「無い・分からない」）"); return } }
+  if (note.trim()) ans.note = note.trim();
+  if (await post(path + "/intake", {answers: [ans]})) loadProd(p);
+});

@@ -13,6 +13,10 @@
   GET  /api/ask と /api/ask/<id>          問い合わせ: 窓口の相談の一覧と会話（ADR 0059。POST で開く・返事・確認・閉じる。console_ask.py）
   GET  /api/committees と /api/committees/<id>  委員会の開催の一覧（?committee=knowledge|incident）と議事録（console_committee.py）
   GET  /api/maint                       工場の保守: 見回りの結果・事故の台帳・最近うまくいかなかったジョブ（ADR 0059、#477。console_maint.py）
+  GET  /api/products/<owner>/<repo>/intake   オンボーディングで渡すもの（問いと答え・足りないもの・製品の構成・解析の要約。ADR 0045 の追記 2026-11-15）
+  GET  /api/products/<owner>/<repo>/docs/<名前>  解析が起こした文書（architecture.md・api.yaml・screens.md・glossary.yaml）
+  POST /api/products/<owner>/<repo>/intake   {"answers": [{question, value?, note?, skip?, file?}]} 答えを渡す（窓口の onboarding_provide と同じ口）
+  POST /api/products/<owner>/<repo>/onboard  {"reason"?} 棚卸しと解析をすぐにやり直す
   GET  /api/connectors                    設定の「サービスとの連携」: 工場の生産に使う間接のサービスの取り込み元（鍵の値は出さない）
   GET  /api/state                         ライン（依存待ち・順番待ち・作業中・PR の検査と判定・人の出番・今日の済み）と工場の状態
   POST /api/tickets/<id>/priority         {"level": "p0".."p3"} か {"priority": 0..100}。p0 は作業中のものを止めてでも先に流す
@@ -302,7 +306,25 @@ def product_body(cur, product: str) -> str:
                                    'compose で console に ../definitions を載せる</div></section>')
     if not product:
         return products_page.body_list(onboarding.summaries(cur, defs))
-    return products_page.body_product(onboarding.page(cur, defs, product), product)
+    return products_page.body_product(onboarding.page(cur, defs, product), product, intake=intake_summary(cur, product))
+
+
+def intake_summary(cur, product: str) -> dict | None:
+    """オンボーディングで渡すもの（ADR 0045 の追記 2026-11-15）。答えも解析も無い製品（1 号機など）は None で、画面に出さない"""
+    import onboarding_intake
+    try:
+        defs = onboarding_intake.load()
+    except FileNotFoundError:
+        return None
+    st = onboarding_intake.state(cur, defs, product)
+    if not st["last_intake_id"] and not st["analysis"]:
+        return None
+    return onboarding_intake.summary(defs, st)
+
+
+def store_put(key: str, data: bytes, content_type: str):
+    import io
+    store().put_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key, io.BytesIO(data), len(data), content_type=content_type)
 
 
 def host_view(cur) -> dict | None:
@@ -382,6 +404,17 @@ def act(cur, path: str, body: dict) -> tuple[int, dict]:
         else:
             t = ops.set_held(cur, tid, what == "hold", by, reason)
         return (200, {"ticket": {"id": t["id"], "priority": t["priority"], "held": t["held"]}}) if t else (404, {"error": "no such ticket"})
+    m = re.fullmatch(r"/api/products/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(intake|onboard)", path)
+    if m:   # オンボーディングで渡すもの（ADR 0045 の追記 2026-11-15）。答えは onboarding_intake.provide が唯一の口
+        import onboarding_intake
+        try:
+            if m.group(2) == "onboard":
+                return 202, {"requested": onboarding_intake.request_run(cur, m.group(1), by, "console", reason)}
+            defs = onboarding_intake.load()
+            res = onboarding_intake.provide(cur, defs, m.group(1), body.get("answers"), by, "console", put=store_put if store() else None)
+            return 201, res
+        except onboarding_intake.IntakeError as e:
+            return e.status, {"error": str(e)}
     if path == "/api/releases/approve":   # 本番に出すのも受信トレイの件（release:<id>）への答え。開いていなければ出荷の側の理由を返す
         rid = str(body.get("release_id") or "")
         res, msg = inbox.answer(cur, f"release:{rid}", "approve", by, "console")
@@ -490,6 +523,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")   # 解析の文書（text/plain）を HTML として読ませない
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
@@ -590,6 +624,22 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": "p は owner/repo"})
                 return self._send(200, product_body(cur, p).encode(), "text/html; charset=utf-8")
             p = u.path.removeprefix("/api/products/")
+            m = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(intake|docs/([A-Za-z0-9_.-]+))", p)
+            if m:   # オンボーディングで渡すものと、解析が起こした文書（ADR 0045 の追記 2026-11-15）
+                if m.group(2) == "intake":
+                    sm = intake_summary(cur, m.group(1))
+                    return self._json(200, sm) if sm else self._json(404, {"error": "その製品の答えがまだない"})
+                import onboarding_intake
+                docs = (onboarding_intake.latest_analysis(cur, m.group(1)) or {}).get("docs") or {}
+                if m.group(3) not in docs or not store():
+                    return self._json(404, {"error": "その文書はまだない"})
+                obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), docs[m.group(3)])
+                try:
+                    data = obj.read()
+                finally:
+                    obj.close()
+                    obj.release_conn()
+                return self._send(200, data, "text/plain; charset=utf-8")
             defs = readiness_defs()
             page = onboarding.page(cur, defs, p) if defs and onboarding.PRODUCT.match(p) else None
             return self._json(200, page) if page else self._json(404, {"error": "その製品の判定の記録がない"})

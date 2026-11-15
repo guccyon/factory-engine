@@ -149,6 +149,47 @@ else
   git checkout -q -b "${BRANCH}"
 fi
 
+# 参照のリポ（ADR 0045 の追記 2026-11-15）: 製品の構成で「読み取りだけ」のリポ（既存の backend・モバイルなど）を .factory-ref/ に取る。
+# 読むだけのトークン（REF_GH_TOKEN、owner ごとは REF_GH_TOKENS）で取り、.git/info/exclude に入れてコミットに混ざらないようにする
+REF_NOTE=""
+if [ -n "${REFERENCE_REPOS:-}" ]; then
+  cat > /work/refcred.sh <<'CRED'
+#!/usr/bin/env bash
+path=""
+while IFS= read -r line; do
+  [ -z "${line}" ] && break
+  case "${line}" in path=*) path="${line#path=}" ;; esac
+done
+owner="${path%%/*}"
+tok="${REF_GH_TOKEN:-}"
+for pair in ${REF_GH_TOKENS:-}; do
+  [ "${pair%%=*}" = "${owner}" ] && tok="${pair#*=}"
+done
+echo "username=x-access-token"
+echo "password=${tok}"
+CRED
+  chmod 700 /work/refcred.sh
+  echo ".factory-ref/" >> .git/info/exclude
+  for ENTRY in ${REFERENCE_REPOS}; do
+    RREPO="${ENTRY%%:*}"; RROLE="${ENTRY#*:}"
+    [[ "${RREPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || continue
+    RDIR=".factory-ref/${RREPO/\//__}"
+    if git -c credential.helper= -c credential.helper=/work/refcred.sh -c credential.useHttpPath=true \
+         clone --quiet --depth 1 "https://github.com/${RREPO}.git" "${RDIR}" 2>/dev/null; then
+      REF_NOTE="${REF_NOTE}
+- ${RDIR}/: ${RREPO}（${RROLE}）"
+    else
+      echo "[worker] reference clone failed ${RREPO}"
+    fi
+  done
+  [ -n "${REF_NOTE}" ] && REF_NOTE="
+# 参照のリポ（読むだけ）
+この製品は複数のリポでできている。次のリポは工場が書かないリポで、参照のために取ってある。呼ぶ API・画面の流れ・用語はここで確かめる。
+ここは書き換えない・コミットしない（.git/info/exclude で外してある）。変更が要るときは仮決めの scope に書き、別のチケットにする。${REF_NOTE}
+"
+  echo "[worker] reference repos: $(echo "${REF_NOTE}" | grep -c '^- ')"
+fi
+
 ISSUE_JSON=$(gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json title,body,labels)
 # 共有ファイルの取りまとめ（ADR 0027 の 1、ADR 0051 の 2）: エージェントを使わず、宣言したファイル（既定は CHANGELOG.md）に断片を移す。
 # 断片がなければ変更なしで終わる。ラベルは今までの factory:changelog のまま
@@ -252,7 +293,7 @@ ${CONTINUE_NOTE}
 # Issue: ${TITLE}
 
 ${BODY}
-${KNOWLEDGE_NOTE}${AGGREGATE_NOTE}
+${KNOWLEDGE_NOTE}${AGGREGATE_NOTE}${REF_NOTE}
 # 約束
 - 先に README と specs/（あれば specs/README.md と、そこで最初に読むよう指示されたファイル）と docs/ を読み、用語・境界・不変条件をそれに合わせる。手元の推測で定義を作らない
 - リポジトリの CLAUDE.md や README の規約に従う。コード・テスト・文書は同じ変更に含める（三位一体）

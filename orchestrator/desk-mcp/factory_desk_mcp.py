@@ -26,6 +26,10 @@ Claude Code への登録の例:
   inbox_list            受信トレイのうち、自分が答えてよい判断待ち（ADR 0034 の順番 2）
   inbox_read            受信トレイの 1 件（問い・今の案・他の案・見立てなど、答え方と推奨）
   inbox_answer          受信トレイの 1 件に答える（本人がはっきり選んだときだけ）
+  onboarding_status     オンボーディングで渡すもの: 問いと今の答え・足りないもの・製品の構成・解析の要約と判定（ADR 0045 の追記 2026-11-15）
+  onboarding_provide    オンボーディングの答えを渡す（リポの一覧・ロールの ARN・文・手元のファイル）。鍵の値は渡さない
+  onboarding_run        棚卸しと解析をすぐにやり直す
+  onboarding_doc        解析が起こした文書を読む（architecture.md・api.yaml・screens.md・glossary.yaml）
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SERVER = {"name": "factory-desk", "version": "0.5.0"}
+SERVER = {"name": "factory-desk", "version": "0.6.0"}
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 HTTP_TIMEOUT = 75   # 会話を読むときの待ち（最大 60 秒）より長く
 
@@ -122,6 +126,32 @@ TOOLS = [
          "product": {"type": "string"}, "statement": {"type": "string", "description": "好み（400 字まで）"},
          "work": {"type": "array", "items": {"type": "string"},
                   "description": "効く業務（例 desk.converse 窓口のやりとり、analyze.report 報告書、dev.design 画面のデザイン）。省くとすべての作業"}}}},
+    {"name": "onboarding_status",
+     "description": "オンボーディング（既存の製品を工場に載せる）で、事業主が渡すものの一覧と今の状態を読む。questions（問い・答えたか・説明）、"
+                    "missing（仕事ごとに足りない問い。dev は開発を始める）、composition（製品のリポと工場の扱い）、analysis（工場の解析の要約と、"
+                    "解析が足した a- で始まる問い）、assessment（準備度の判定と仕事ごとのお願い）。まずこれを読み、足りないものを本人に聞く",
+     "inputSchema": {"type": "object", "properties": {"product": {"type": "string", "description": "製品（owner/repo。工場が主に書くリポの名前）"}},
+                     "required": ["product"]}},
+    {"name": "onboarding_provide",
+     "description": "オンボーディングの答えを渡す。answers は [{question, value?, note?, skip?, file?}]。question は onboarding_status の id。"
+                    "repos は value に [{repo: owner/name, role: backend|mobile|web|bff|infra|docs|other, access: read|write, main?: true}]。"
+                    "choice は options のキー、arn は IAM ロールの ARN、confirm は value に「はい」。無い・分からないは skip: true。"
+                    "file は {path: 手元のファイルのパス} か {name, text}（8MB まで）。鍵・パスワード・トークンの値は絶対に渡さない（置き場の名前を渡す）。"
+                    "1 件でも問題があれば何も記録されないので、返ってきた理由を直して渡し直す。本人が答えた内容だけを渡す",
+     "inputSchema": {"type": "object", "properties": {
+         "product": {"type": "string"},
+         "answers": {"type": "array", "items": {"type": "object", "properties": {
+             "question": {"type": "string"}, "value": {}, "note": {"type": "string"}, "skip": {"type": "boolean"},
+             "file": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}, "text": {"type": "string"}}}},
+             "required": ["question"]}}},
+         "required": ["product", "answers"]}},
+    {"name": "onboarding_run",
+     "description": "棚卸しと解析をすぐにやり直してもらう（答えを渡したときは工場が自分で流すので、ふつうは要らない）",
+     "inputSchema": {"type": "object", "properties": {"product": {"type": "string"}, "reason": {"type": "string"}}, "required": ["product"]}},
+    {"name": "onboarding_doc",
+     "description": "工場の解析が起こした文書を読む。name は architecture.md・api.yaml・screens.md・glossary.yaml のどれか（onboarding_status の analysis.docs）。"
+                    "本人に「こう読んだ」を見せ、読み違いがなければ onboarding_provide で reading_confirmed に「はい」を渡す",
+     "inputSchema": {"type": "object", "properties": {"product": {"type": "string"}, "name": {"type": "string"}}, "required": ["product", "name"]}},
     {"name": "desk_preference_delete",
      "description": "好みを消す（行ごと消える）。本人が消してと言ったときだけ呼ぶ",
      "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}},
@@ -172,6 +202,32 @@ def _inbox_path(key) -> str:
     return "/api/desk/inbox/" + urllib.parse.quote(key, safe="")
 
 
+MAX_FILE_BYTES = 8 * 1024 * 1024
+
+
+def _onboarding_path(product) -> str:
+    if not isinstance(product, str) or product.count("/") != 1:
+        raise ValueError("product は owner/repo")
+    return "/api/desk/onboarding/" + "/".join(urllib.parse.quote(p, safe="") for p in product.split("/"))
+
+
+def _answers(answers) -> list:
+    """手元のファイル（file.path）を読んで base64 にする。MCP は事業主の手元で動くので、ファイルの本文はここで読む"""
+    import base64
+    out = []
+    for a in answers or []:
+        a = dict(a)
+        f = a.get("file")
+        if isinstance(f, dict) and f.get("path"):
+            path = os.path.expanduser(str(f["path"]))
+            if os.path.getsize(path) > MAX_FILE_BYTES:
+                raise ValueError(f"{path} が大きすぎる（8MB まで）")
+            with open(path, "rb") as fh:
+                a["file"] = {"name": f.get("name") or os.path.basename(path), "content_b64": base64.b64encode(fh.read()).decode()}
+        out.append(a)
+    return out
+
+
 def call_tool(name: str, a: dict, call=http) -> dict:
     """道具 1 つを API 1 回に写す"""
     if name == "desk_open":
@@ -210,6 +266,14 @@ def call_tool(name: str, a: dict, call=http) -> dict:
         if a.get("id"):
             return call("POST", "/api/desk/preferences/" + urllib.parse.quote(str(a["id"]), safe=""), body)
         return call("POST", "/api/desk/preferences", body)
+    if name == "onboarding_status":
+        return call("GET", _onboarding_path(a["product"]))
+    if name == "onboarding_provide":
+        return call("POST", _onboarding_path(a["product"]) + "/answers", {"answers": _answers(a.get("answers"))})
+    if name == "onboarding_run":
+        return call("POST", _onboarding_path(a["product"]) + "/run", {"reason": a.get("reason") or ""})
+    if name == "onboarding_doc":
+        return call("GET", _onboarding_path(a["product"]) + "/docs/" + urllib.parse.quote(str(a["name"]), safe=""))
     if name == "desk_preference_delete":
         return call("POST", "/api/desk/preferences/" + urllib.parse.quote(str(a["id"]), safe="") + "/delete", {})
     raise KeyError(name)
