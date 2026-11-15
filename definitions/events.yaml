@@ -779,7 +779,7 @@ events:
   qa.gate_plan:
     source: control_plane
     required: [release_id, repo, time_stories]
-    note: "ADR 0055 の決定 3。関門を開いた最初の周回で、時刻をまたぐストーリー（specs/stories の time があるもの）を判定から外して、判定と探索のあとに流すと決めた。other_stories は判定で流す残り。製品のストーリーを読めなかったときは time_stories が空で other_stories が null（分けない）と error。dedupe は qa.gate_plan:<release_id>。ADR 0054: 版ごとの Issue にシナリオごとのジョブを積むときは、issue・corr（版のチケット）・units（[{unit, which, story か charter}]）・cap_usd（版のチケットの費用の上限 = ジョブの上限の合計 × 係数）を足す。積めないとき（単位の列がない・ストーリーがない・Issue を作れない）は units がなく legacy_why に理由（今までの形で動く）"
+    note: "ADR 0055 の決定 3。関門を開いた最初の周回で、時刻をまたぐストーリー（specs/stories の time があるもの）を判定から外して、判定と探索のあとに流すと決めた。other_stories は判定で流す残り。製品のストーリーを読めなかったときは time_stories が空で other_stories が null（分けない）と error。dedupe は qa.gate_plan:<release_id>。ADR 0054: 版ごとの Issue にシナリオごとのジョブを積むときは、issue・corr（版のチケット）・units（[{unit, which, story か charter}]）・cap_usd（版のチケットの費用の上限 = ジョブの上限の合計 × 係数）を足す。積めないとき（単位の列がない・ストーリーがない・Issue を作れない）は units がなく legacy_why に理由（今までの形で動く）。ADR 0060: 流すストーリーを選んだときは selection（{<story>: {run, why: never|changed|stale|fresh, prs?, last?}}）と skipped（流さなかったストーリーと理由の文）を足し、units は流すものだけ"
   qa.gate_job:
     source: control_plane
     required: [release_id, repo, which, job_id, attempt]
