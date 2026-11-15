@@ -157,11 +157,20 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 .live-job.is-run{animation:live-pulse 2s ease-in-out infinite}
 @keyframes live-pulse{50%{opacity:.55}}
 @media (prefers-reduced-motion:reduce){.live-job{transition:none}.live-job.is-run{animation:none}}
-.live-axis{display:grid;grid-template-columns:88px 1fr 1fr 1fr 56px;gap:var(--space-3)}.live-axis span:first-child{grid-column:2}.live-axis span:nth-child(2){text-align:center}.live-axis span:last-child{text-align:right}
+.live-axis{display:grid;grid-template-columns:88px 26fr 56fr 18fr 56px;gap:var(--space-3);margin-top:4px}.live-axis span{text-align:center;font-size:11px}
+.live-track{position:relative;overflow:visible}.live-z{position:absolute;top:0;bottom:0;border-radius:var(--radius-s,4px)}
+.live-z-wait{left:0;width:26%}.live-z-work{left:26%;width:56%;background:color-mix(in srgb,var(--accent) 12%,transparent);border-left:1px dashed var(--line-strong,var(--ink-sub));border-right:1px dashed var(--line-strong,var(--ink-sub))}.live-z-next{left:82%;width:18%}
+.live-job{z-index:1;padding:0;border:0;cursor:pointer}.live-job:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.live-tip{position:absolute;z-index:50;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.18);font-size:13px}
+.live-tip dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:6px 0 0}.live-tip dt{color:var(--ink-sub)}.live-tip dd{margin:0;overflow-wrap:anywhere}.live-tip-l{margin-top:6px;display:flex;gap:12px}.live-tip a{color:var(--accent)}.live-leg{flex-wrap:wrap}
+.live-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);margin-right:4px;vertical-align:-1px}.live-dot.is-stuck{background:var(--bad)}.live-dot.is-run{animation:live-pulse 2s ease-in-out infinite}
+#live-leg .live-leg{flex-wrap:wrap;gap:6px var(--space-4);margin-top:var(--space-3)}
+.live-chart-w{position:relative}.live-ymax{position:absolute;left:0;top:-2px;font-size:11px}.live-svg .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.live-x{display:flex;justify-content:space-between;font-size:11px}
 .live-svg{display:block;width:100%;height:140px}.live-svg path{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}.live-svg .r{stroke:var(--accent)}.live-svg .q{stroke:var(--ink-sub);stroke-dasharray:4 3}
 .live-leg{display:flex;gap:var(--space-4)}.live-leg .r{color:var(--accent);font-weight:600}
 #lanes.lnlist{display:block;padding:0}.lnsec.human{border-color:var(--bad)}.lnsec h2{font-size:15px}
-@media (max-width:599px){.live-lanes .c-lane{grid-template-columns:64px minmax(0,1fr) 44px}.live-axis{grid-template-columns:64px 1fr 1fr 1fr 44px}}
+@media (max-width:599px){.live-lanes .c-lane{grid-template-columns:64px minmax(0,1fr) 44px}.live-axis{grid-template-columns:64px 26fr 56fr 18fr 44px}}
 
 /* ---- 工場の保守（ADR 0059、#477） ---- */
 .mt > .m { margin: 0 0 var(--space-3); }
