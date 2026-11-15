@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -37,6 +38,48 @@ RETRY_BASE = float(os.environ.get("AGENT_RETRY_BASE", "20"))   # 一時的な失
 
 class AgentError(RuntimeError):
     pass
+
+
+# 契約の使用量の上限に当たった印（claude CLI は rc=1 で終わり、stderr は空のまま、stdout の JSON の result に理由を書く）。
+# 2026-11-15 07:00〜07:24 JST にジョブ 15 本が「rc=1・stderr 空・トークン 0」で落ち、理由がどこにも残らず factory-bug の停止になった
+# rate limit（一時的な 429）は数秒で戻るので含めない（_retry が待って繰り返す）
+USAGE_LIMIT_RE = re.compile(r"usage limit|limit reached|hit your (?:usage )?limit|out of (?:extra )?usage|extra_usage|weekly limit|session limit", re.I)
+
+
+def usage_limit(res: dict | None, stderr: str = "") -> str | None:
+    """runner の出力（claude の JSON）と stderr から、使用量の上限に当たったかを見る。当たっていればその文（短く）、なければ None"""
+    res = res if isinstance(res, dict) else {}
+    texts = [str(res.get(k) or "") for k in ("result", "error", "subtype", "api_error_status")] + [stderr or ""]
+    for t in texts:
+        if t and USAGE_LIMIT_RE.search(t):
+            return " ".join(t.split())[:300]
+    return None
+
+
+def exit_note(rc: int, res: dict | None, raw_stdout: str = "", stderr: str = "") -> str:
+    """rc が 0 でないときに残す 1 行。stdout の JSON の要点（subtype・is_error・result の頭）と stderr の終わり。
+    これまでは rc=1 のとき何も残らず、原因を追えなかった"""
+    res = res if isinstance(res, dict) else {}
+    parts = [f"rc={rc}"]
+    for k in ("subtype", "is_error", "api_error_status", "num_turns"):
+        if k in res:
+            parts.append(f"{k}={res[k]}")
+    body = str(res.get("result") or "") if res else (raw_stdout or "")
+    parts.append("stdout=" + (" ".join(body.split())[:300] or "(空)"))
+    parts.append("stderr=" + (" ".join((stderr or "").split())[-300:] or "(空)"))
+    return " ".join(parts)
+
+
+def _note_exit(rc: int, res: dict | None, raw_stdout: str = "", stderr: str = "") -> str | None:
+    """rc が 0 でなければ理由をログに出す。上限なら dispatcher が見分ける印（[agent_runner] usage limit:）も出す。上限の文を返す"""
+    if rc == 0:
+        return None
+    out = _heartbeat_out()
+    print(f"[agent_runner] claude exited {exit_note(rc, res, raw_stdout, stderr)}", file=out, flush=True)
+    lim = usage_limit(res, stderr if res else (raw_stdout or "") + " " + (stderr or ""))
+    if lim:
+        print(f"[agent_runner] usage limit: {lim}", file=out, flush=True)
+    return lim
 
 
 @dataclass
@@ -59,6 +102,7 @@ class Result:
     num_turns: int = 0
     exit: int = 0
     resumed: bool = False   # runner の会話の記録から続きを再開した（--state-dir の近道が効いた）
+    usage_limit: str | None = None   # 使用量の上限に当たって終わった（runner の出した理由の文）
 
 
 def load_agents(path: Path = AGENTS_FILE) -> dict:
@@ -93,16 +137,28 @@ def resolve(step: str, tier: str | None = None, conf: dict | None = None) -> Age
     return Agent(step=step, tier=tier, runner=runner, model=model, mode=s.get("mode", "oneshot"), tools=s.get("tools", "default"))
 
 
+def _parse(stdout: str) -> dict | None:
+    try:
+        v = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return v if isinstance(v, dict) else None
+
+
 def _retry(cmd: list[str], *, input: str | None, retries: int, cwd: str | None = None) -> str:
-    last = None
+    last, lim = None, None
     for i in range(retries + 1):
         r = subprocess.run(cmd, input=input, capture_output=True, text=True, cwd=cwd)
         if r.returncode == 0:
             return r.stdout
         last = r
+        res = _parse(r.stdout)
+        lim = _note_exit(r.returncode, res, r.stdout, r.stderr)
+        if lim:
+            break   # 使用量の上限は待ってもリセットまで戻らない。繰り返さない
         if i < retries:
             time.sleep(RETRY_BASE * (2 ** i))
-    raise AgentError(f"{cmd[0]} failed (rc={last.returncode}): {last.stderr[-300:]}")
+    raise AgentError(f"{cmd[0]} failed ({'usage limit: ' + lim if lim else exit_note(last.returncode, _parse(last.stdout), last.stdout, last.stderr)})")
 
 
 # --- runner: claude-code -------------------------------------------------------------------------------
@@ -271,7 +327,7 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
         res = json.loads(r.stdout)
     except json.JSONDecodeError:
         res = {}
-    if resumed and r.returncode != 0 and not res.get("num_turns"):
+    if resumed and r.returncode != 0 and not res.get("num_turns") and not usage_limit(res):
         # 記録から再開できなかった（版の違い・記録の破損）。近道をあきらめて新しい会話で続ける（引き継ぎの記録はプロンプトにある）
         print("[agent_runner] resume failed; starting a new session", file=sys.stderr)
         resumed = False
@@ -281,11 +337,12 @@ def _claude_agentic(a: Agent, prompt: str, max_turns: int, cwd: str | None, stat
             res = json.loads(r.stdout)
         except json.JSONDecodeError:
             res = {}
+    lim = _note_exit(r.returncode, res, r.stdout)
     total = float(res.get("total_cost_usd") or 0.0)
     _claude_save(state, res.get("session_id"), total)
     cost = max(total - prior_cost, 0.0) if resumed else total   # 再開したら前のジョブまでの累計を引く（引かないと続きのたびに前の分を数え直す）
     return Result(output=res.get("result") or "", cost_usd=round(cost, 6), usage=res.get("usage") or {},
-                  model=a.model, runner=a.runner, num_turns=res.get("num_turns") or 0, exit=r.returncode, resumed=resumed)
+                  model=a.model, runner=a.runner, num_turns=res.get("num_turns") or 0, exit=r.returncode, resumed=resumed, usage_limit=lim)
 
 
 ONESHOT = {"claude-code": _claude_oneshot}

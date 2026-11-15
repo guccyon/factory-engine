@@ -936,6 +936,14 @@ events:
     source: control_plane
     required: [container, size_gb, max_gb]
     note: "2026-11-14。動いているジョブのコンテナの書き込み層が上限（DISK_JOB_MAX_GB）を超えたので、dispatcher のディスクの見張りが止めた。停止 diskjob:<job> を開く（rust のジョブ 1 本で 54GB になり Mac の空きが 23GB まで減った）"
+  usage.limit_hit:
+    source: control_plane
+    required: [text, until, parsed]
+    note: "2026-11-15。ジョブが契約の使用量の上限に当たって落ちた（agent_runner の [agent_runner] usage limit: の行。text は claude の出した文）。dispatcher は until（文から読めた戻る時刻＋2 分。読めなければ USAGE_HOLD_MIN 分後。parsed）まで新しいジョブを取り出さず、明けたら 1 本だけ流して確かめる。止めている間は停止 usage:<時刻>（budget）を 1 件だけ開く（usage_hold.py）。11/15 07:00〜07:24 JST に上限のまま 15 本を流して全部落とした"
+  usage.limit_released:
+    source: control_plane
+    required: [by]
+    note: "2026-11-15。人が使用量の上限の止めを早めに解いた（factoryctl usage release）。これより前の usage.limit_hit は止めに使わない"
   ops.disk_pruned:
     source: control_plane
     required: [cache_gb, free_gb_before, free_gb_after, actions]

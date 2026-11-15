@@ -441,6 +441,10 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
             for k, v in (res.usage or {}).items():
                 if isinstance(v, (int, float)):
                     usage[k] = usage.get(k, 0) + v
+            stop = runner_stop(res)
+            if stop:   # 上限・起動の失敗。直させても同じなので、成果物を探さずに理由を返す
+                errs = [stop]
+                break
             doc = _load(root / "out" / "explore.yaml")
             errs = (validate_explore(doc, defs, charter, {s["id"] for s in stories}, root / "out",
                                      {o["number"] for o in inp.get("open_defects") or [] if isinstance(o.get("number"), int)} or None)
@@ -642,6 +646,10 @@ def run_synthetic(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
                 for k, v in (res.usage or {}).items():
                     if isinstance(v, (int, float)):
                         usage[k] = usage.get(k, 0) + v
+                stop = runner_stop(res)
+                if stop:   # 上限・起動の失敗。直させても同じなので、成果物を探さずに理由を返す
+                    errs = [stop]
+                    break
                 doc = _load(root / "out" / "walk.yaml")
                 errs = validate_synthetic(doc, sd, plan, events, entries) if not isinstance(doc, str) else [doc]
                 if not errs:
@@ -700,6 +708,10 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
             for k, v in (res.usage or {}).items():
                 if isinstance(v, (int, float)):
                     usage[k] = usage.get(k, 0) + v
+            stop = runner_stop(res)
+            if stop:   # 上限・起動の失敗。直させても同じなので、成果物を探さずに理由を返す
+                errs = [stop]
+                break
             doc = _load(root / "out" / "verdicts.yaml")
             errs = validate(doc, stories, defs, root / "out") if not isinstance(doc, str) else [doc]
             if not errs:
@@ -721,6 +733,16 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
 def knowledge(root: Path, repo_dir: Path) -> dict:
     """QA の業務（ops.qa）で選んだ知見を knowledge/knowledge.md に置く（ADR 0040 の決定 7 の 5）。product/ の知見のディレクトリは丸ごと読ませない"""
     return knowledge_context.stage(repo_dir, root / "knowledge", "qa")
+
+
+def runner_stop(res) -> str | None:
+    """エージェントが作業せずに終わった理由（使用量の上限、またはターン 0 のまま rc≠0）。なければ None。
+    2026-11-15 に上限で落ちた QA が「out/verdicts.yaml がない」とだけ残し、原因が分からなかった"""
+    if getattr(res, "usage_limit", None):
+        return f"使用量の上限でエージェントが動けなかった（usage limit: {res.usage_limit}）"
+    if res.exit and not res.num_turns:
+        return f"エージェントが 1 ターンも動かずに終わった（rc={res.exit}。理由は作業の記録の [agent_runner] の行）"
+    return None
 
 
 def _load(p: Path):

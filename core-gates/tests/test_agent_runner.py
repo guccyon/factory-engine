@@ -3,6 +3,7 @@
   python3 -m unittest discover -s core-gates/tests
 """
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -30,6 +31,13 @@ with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps(args + ["STDIN:" + stdin]) + "\\n")
 if os.environ.get("FAKE_FAIL_ONCE") and not os.path.exists(os.environ["FAKE_FAIL_ONCE"]):
     open(os.environ["FAKE_FAIL_ONCE"], "w").close()
+    sys.exit(1)
+if os.environ.get("FAKE_LIMIT"):
+    # 使用量の上限: rc=1、stderr は空、stdout の JSON の result に理由（2026-11-15）
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": True, "result": os.environ["FAKE_LIMIT"], "num_turns": 1,
+                      "total_cost_usd": 0, "usage": {"input_tokens": 0}}))
+    sys.exit(1)
+if os.environ.get("FAKE_SILENT_FAIL"):
     sys.exit(1)
 if "--resume" in args and os.environ.get("FAKE_RESUME_FAIL"):
     print("{}"); sys.exit(1)
@@ -90,7 +98,7 @@ class RunTest(unittest.TestCase):
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
         self.log = d / "log.jsonl"
         self.env = {"PATH": f"{d}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(self.log)}
-        self._old = {k: os.environ.get(k) for k in [*self.env, "FAKE_FAIL_ONCE", "FAKE_RC", "FAKE_RESUME_FAIL", "FAKE_PRIOR_COST", "HOME"]}
+        self._old = {k: os.environ.get(k) for k in [*self.env, "FAKE_FAIL_ONCE", "FAKE_RC", "FAKE_RESUME_FAIL", "FAKE_PRIOR_COST", "FAKE_LIMIT", "FAKE_SILENT_FAIL", "HOME"]}
         os.environ.update(self.env)
         ar.RETRY_BASE = 0
 
@@ -132,6 +140,41 @@ class RunTest(unittest.TestCase):
         os.environ["FAKE_FAIL_ONCE"] = str(Path(self.tmp.name) / "failed")
         self.assertEqual(ar.run("inspect", "x", schema={}).output, {"ok": True})
         self.assertEqual(len(self.calls()), 2)
+
+    def test_oneshot_does_not_retry_usage_limit_and_says_why(self):
+        os.environ["FAKE_LIMIT"] = "You've hit your limit · resets 11am (Asia/Tokyo)"
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err), self.assertRaises(ar.AgentError) as cm:
+            ar.run("inspect", "x", schema={})
+        self.assertEqual(len(self.calls()), 1)                       # 上限は待っても戻らないので繰り返さない
+        self.assertIn("usage limit: You've hit your limit", str(cm.exception))
+        self.assertIn("[agent_runner] usage limit: You've hit your limit", err.getvalue())
+
+    def test_oneshot_failure_keeps_stdout_and_rc(self):
+        os.environ["FAKE_SILENT_FAIL"] = "1"
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err), self.assertRaises(ar.AgentError) as cm:
+            ar.run("inspect", "x", schema={}, retries=0)
+        self.assertIn("rc=1", str(cm.exception))
+        self.assertIn("stdout=(空)", str(cm.exception))
+        self.assertIn("[agent_runner] claude exited rc=1", err.getvalue())
+        self.assertNotIn("usage limit", err.getvalue())
+
+    def test_agentic_usage_limit_is_reported(self):
+        os.environ["FAKE_LIMIT"] = "Claude AI usage limit reached|1794708000"
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            r = ar.run_agentic("implement", "作業して")
+        self.assertEqual(r.exit, 1)
+        self.assertEqual(r.usage_limit, "Claude AI usage limit reached|1794708000")
+        self.assertIn("is_error=True", err.getvalue())
+        self.assertIn("stdout=Claude AI usage limit reached", err.getvalue())
+
+    def test_usage_limit_needs_a_limit_phrase(self):
+        self.assertIsNone(ar.usage_limit({"result": "API Error: 429 rate limit"}))   # 一時的な 429 は上限としない
+        self.assertIsNone(ar.usage_limit({"result": "Reached max turns"}))
+        self.assertTrue(ar.usage_limit({"result": "5-hour limit reached ∙ resets 3pm"}))
+        self.assertTrue(ar.usage_limit({}, "error: extra_usage_unavailable"))
 
     def test_cli_exec_passes_exit_code_and_normalizes(self):
         env = {**os.environ, "FAKE_RC": "3"}
