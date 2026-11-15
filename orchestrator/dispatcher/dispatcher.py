@@ -352,18 +352,18 @@ def poll_loop():
                     planner.advance_steps(cur, gh, swap_label, comment, REPOS)
             except Exception as e:  # noqa: BLE001
                 log("plan answers poll failed", repr(e))
-            try:   # 窓口で確認された下書きを製品の Issue として起票し、依存が閉じたタスクをプランナーに回す（ADR 0030 の 3）
-                with db() as conn, conn.cursor() as cur:
-                    desk_line.file_confirmed(cur, gh, REPOS)
-                    desk_line.advance_waiting(cur, gh, swap_label, comment, REPOS)
-                with db() as conn, conn.cursor() as cur:   # 確認の済んだ決まった操作を動かして提出する（ADR 0039 の順番 2）
-                    desk_line.run_operations(cur)
-                with db() as conn, conn.cursor() as cur:   # 応答時間の目安を見て、途中の様子と遅れを書く（ADR 0039 の順番 3）
-                    desk_line.watch(cur)
-                with db() as conn, conn.cursor() as cur:   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる（ADR 0039 の順番 5）
-                    desk_line.send_notices(cur)
-            except Exception as e:  # noqa: BLE001
-                log("desk filing failed", repr(e))
+            # 窓口の周回（ADR 0030 の 3・ADR 0039 の順番 2・3・5）。段ごとに包み、1 つが落ちても残りは回す。どの段で落ちたかをログに出す
+            # （11/14: 1 つの try で 5 つをまとめて包み、名前解決の失敗の 43 回がどこで落ちたか分からなかった）
+            for stage, run in (("file_confirmed", lambda cur: desk_line.file_confirmed(cur, gh, REPOS)),   # 確認された下書きを製品の Issue に起票
+                               ("advance_waiting", lambda cur: desk_line.advance_waiting(cur, gh, swap_label, comment, REPOS)),   # 依存が閉じたタスクをプランナーへ
+                               ("run_operations", desk_line.run_operations),   # 確認の済んだ決まった操作を動かして提出する
+                               ("watch", desk_line.watch),   # 応答時間の目安を見て、途中の様子と遅れを書く
+                               ("send_notices", desk_line.send_notices)):   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる
+                try:
+                    with db() as conn, conn.cursor() as cur:
+                        run(cur)
+                except Exception as e:  # noqa: BLE001
+                    log("desk filing failed", stage, repr(e))
             try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の工程を積む（ADR 0025・0026）
                 with db() as conn, conn.cursor() as cur:
                     design_system_line.apply_choices(cur, swap_label, comment)
