@@ -117,6 +117,35 @@ def test_enqueue_step_holds_second_task_on_same_hot_file(cur, monkeypatch):
     assert s and s[0]["behind"] == "github:o/r#41" and s[0]["file"] == LIB
 
 
+def test_enqueue_step_reads_every_page_of_planned(cur, monkeypatch):
+    # rally で factory:planned の open が 71 件になり、作った順の 51 件目より後（p0 を含む）が一度も積まれなかった。全ページ読む
+    issues = [{"number": n, "title": f"T{n}", "body": "", "labels": [{"name": "factory:planned"}], "created_at": f"{n:04d}"}
+              for n in range(1, 131)]
+    issues[-1]["labels"].append({"name": "factory:priority:p0"})
+    posted, pages = [], []
+
+    def fake_gh(method, path, body=None):
+        if "issues?state=open" in path:
+            page = int(path.rsplit("page=", 1)[1])
+            pages.append(page)
+            return issues[(page - 1) * 100: page * 100]
+        if method == "POST" and path.endswith("/labels"):
+            posted.append(int(path.split("/")[-2]))
+        return {}
+
+    monkeypatch.setattr(supervisor, "gh", fake_gh)
+    monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
+    monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "SERIALIZE", False)
+    monkeypatch.setattr(supervisor, "over_budget", lambda cur: None)
+    monkeypatch.setattr(supervisor, "factory_prs", lambda cur: [])
+    supervisor.enqueue_step(cur, set())
+    assert pages == [1, 2]
+    assert posted and posted[0] == 130          # 2 ページ目の p0 が真っ先に積まれる
+    cur.execute("select count(*) as n from tickets where source='github' and repo='o/r' and state<>'closed'")
+    assert cur.fetchone()["n"] == 130           # 2 ページ目の分も台帳に残る（見えないものを閉じない）
+
+
 def test_purpose_drops_pr_number_tail():
     assert serialize.purpose(" 担保: K-0012 を ci_check で決定論にする (#1122) ") == "担保: K-0012 を ci_check で決定論にする"
 

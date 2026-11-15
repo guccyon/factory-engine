@@ -55,3 +55,20 @@ def request(method: str, path: str, body: dict | None = None, *, user_agent: str
         stats["not_modified"] += 1
         data = cached[1]
     return json.loads(data) if data else None
+
+
+def list_all(get, path: str, *, per_page: int = 100, max_pages: int = 30) -> list:
+    """一覧の API を最後のページまで読む。get は gh("GET", path) と同じ形の関数（テストで差し替えられるように受け取る）。
+
+    1 ページだけ読むと、件数が per_page を超えた分が黙って見えなくなる（rally で factory:planned の open が 71 件になり、
+    作った順の 51 件目より後の p0 が一度も積まれなかった）。返った件数が per_page 未満なら最後のページ。
+    max_pages は暴走の歯止めで、届いたら打ち切る（そこまでで 3,000 件）。
+    """
+    sep = "&" if "?" in path else "?"
+    out: list = []
+    for page in range(1, max_pages + 1):
+        got = get(f"{path}{sep}per_page={per_page}&page={page}") or []
+        out += got
+        if len(got) < per_page:
+            break
+    return out

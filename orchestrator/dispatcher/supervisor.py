@@ -737,7 +737,8 @@ def enqueue_step(cur, open_prs: set):
 
     ready, seen = [], []
     for repo in REPOS:
-        issues = gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(PLANNED_LABEL)}&per_page=50&sort=created&direction=asc") or []
+        # 全ページ読む（1 ページ 50 件だけだと、それより後の p0 が積まれず、台帳からも消えていた）
+        issues = ghapi.list_all(lambda p: gh("GET", p), f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(PLANNED_LABEL)}&sort=created&direction=asc")
         for it in issues:
             if "pull_request" in it:
                 continue
