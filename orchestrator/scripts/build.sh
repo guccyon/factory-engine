@@ -12,6 +12,8 @@
 # - ワーカーは、まず版のラベルなしで <名前>-core を作り、そこに版のラベルだけを重ねる。派生は土台の -core に乗せる。
 #   ラベルを直接付けると、中身が同じでも土台のイメージの ID が版ごとに変わり、派生（flutter・rust・design）が毎回まるごと作り直されて
 #   1 回の更新で数 GB の層とビルドのキャッシュができる（2026-11-14、Mac のディスクが詰まった）。-core はラベルがないので、変わっていなければキャッシュがそのまま当たる
+# - 来歴（provenance）と SBOM の添付は付けない（--provenance=false --sbom=false）。containerd のイメージストアではイメージの ID が
+#   添付込みの index の digest になり、添付にはビルドの時刻が入るので、層が同じでも毎回 ID が変わって派生のキャッシュが外れる（2026-11-15）
 #
 # 作ったら、すべてのサービスを上げる: docker compose up -d   その後 docker compose exec dispatcher factoryctl version --expect <コミット>
 set -euo pipefail
@@ -26,6 +28,7 @@ if [[ -n "$(git status --porcelain -- . ../definitions ../core-gates ../health)"
 fi
 
 run() { echo "+ $*"; [[ $DRY == 1 ]] || "$@"; }
+NOATTEST=(--provenance=false --sbom=false)
 exists() { docker image inspect "$1" >/dev/null 2>&1; }
 
 # name|context|dockerfile|always(1)/when-exists(0)|base（ワーカーの派生が乗る土台の -core。空なら土台なし）
@@ -50,11 +53,11 @@ for step in "${STEPS[@]}"; do
     core="$name-core"
     args=()
     [[ -n $base ]] && args=(--build-arg "BASE=$base")
-    run docker build -t "$core" -f "$file" ${args[@]+"${args[@]}"} "$ctx"   # bash 3.2（mac）の set -u で空の配列が落ちないように
+    run docker build "${NOATTEST[@]}" -t "$core" -f "$file" ${args[@]+"${args[@]}"} "$ctx"   # bash 3.2（mac）の set -u で空の配列が落ちないように
     # 版のラベルだけを重ねる（層は増えない）
-    printf 'FROM %s\nLABEL factory.engine_version=%s\n' "$core" "$VERSION" | run docker build -t "$name" -t "$repo:${name#*:}-$VERSION" -
+    printf 'FROM %s\nLABEL factory.engine_version=%s\n' "$core" "$VERSION" | run docker build "${NOATTEST[@]}" -t "$name" -t "$repo:${name#*:}-$VERSION" -
   else
-    run docker build -t "$name" -t "$repo:${name#*:}-$VERSION" -f "$file" \
+    run docker build "${NOATTEST[@]}" -t "$name" -t "$repo:${name#*:}-$VERSION" -f "$file" \
       --build-arg "ENGINE_VERSION=$VERSION" --label "factory.engine_version=$VERSION" "$ctx"
   fi
 done
