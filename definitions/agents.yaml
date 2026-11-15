@@ -87,6 +87,7 @@ steps:
     mode: agentic
   pairwise:                   # 判定器のペア比較の評価（health/evals/pairwise_judge.py）
     tier: tier-judge
+    tools: none                 # 校正する judge と同じく道具なし（2026-11-14: gh で specs を探しに行き、ターン上限 3 を使い切った golden 0023）
 
 # 工程のモデルを比べる試し（2026-11-08 オーナー「確信度の高い工程から安いモデルを試す」）。
 # 既定の tier はそのまま、条件に当たるチケットの一部だけ別の tier で流し、工程ごとの記録（費用・作業と待ちの時間・一発で通ったか・混入した Defect）を

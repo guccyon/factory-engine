@@ -16,7 +16,7 @@ ENGINE_REF="${ENGINE_REF:-main}"
 cat > /work/input.json
 echo "[ui_design] job=${JOB_ID} repo=${REPO}#${ISSUE_NUMBER} engine=${ENGINE_REPO}@${ENGINE_REF}"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 DEFAULT_BRANCH=$(gh repo view "${REPO}" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)
 git clone --quiet --depth 1 --branch "${DEFAULT_BRANCH}" "https://github.com/${REPO}.git" /work/product
 gh issue view "${ISSUE_NUMBER}" -R "${REPO}" --json number,title,body | jq --arg repo "${REPO}" '. + {repo:$repo}' > /work/issue.json

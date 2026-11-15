@@ -20,10 +20,11 @@ def test_size_bytes():
 
 class Docker:
     def __init__(self, cache="30GB"):
-        self.cache, self.calls = cache, []
+        self.cache, self.calls, self.full = cache, [], []
 
     def __call__(self, args, timeout=600):
         self.calls.append(args[:2])
+        self.full.append(args)
         out = ""
         if args[:2] == ["system", "df"]:
             out = "\n".join(json.dumps(r) for r in [{"Type": "Images", "Size": "40GB"}, {"Type": "Build Cache", "Size": self.cache}])
@@ -50,7 +51,7 @@ def open_keys(cur):
 def test_quiet_when_small(cur):
     d = Docker("3GB")
     assert dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB) is None
-    assert d.calls == [["system", "df"]]
+    assert d.calls == [["ps", "--size"], ["system", "df"]]
 
 
 @needs_db
@@ -58,6 +59,7 @@ def test_prunes_cache_when_large(cur):
     d = Docker("30GB")
     rec = dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
     assert rec["cache_gb"] > 20 and ["builder", "prune"] in d.calls and ["image", "prune"] not in d.calls
+    assert ["--filter", "until=24h"] == next(a for a in d.full if a[:2] == ["builder", "prune"])[-2:]   # 作ったばかりの層は残す
     cur.execute("select count(*) as n from events where name='ops.disk_pruned'")
     assert cur.fetchone()["n"] == 1 and open_keys(cur) == []
 
@@ -67,6 +69,106 @@ def test_low_disk_prunes_images_too_and_opens_then_closes_the_stoppage(cur):
     d = Docker("1GB")
     dg.step(cur, lambda *a: None, docker=d, free=lambda: 2 * GB)
     assert ["builder", "prune"] in d.calls and ["image", "prune"] in d.calls
+    assert "--filter" not in next(a for a in d.full if a[:2] == ["builder", "prune"])   # 空きが足りないときは新しい層も消す
     assert open_keys(cur) == ["disk:low"]
     dg.step(cur, lambda *a: None, docker=Docker("1GB"), free=lambda: 100 * GB)
     assert open_keys(cur) == []
+
+
+def test_free_takes_the_smaller_of_vm_and_host(monkeypatch, tmp_path):
+    """Mac 本体の側の満杯も見る（11/14 の 2 回目は仮想ディスクの中に 356GB 空きがあった）"""
+    import shutil as sh
+    monkeypatch.setattr(dg, "HOST_PATH", str(tmp_path))
+    monkeypatch.setattr(sh, "disk_usage", lambda p: sh._ntuple_diskusage(100, 0, 2 if p == str(tmp_path) else 50))
+    assert dg.free_bytes() == 2
+    monkeypatch.setattr(dg, "HOST_PATH", str(tmp_path / "none"))
+    assert dg.free_bytes() == 50
+
+
+def test_stale_images_keep_recent_releases_used_ones_and_new_before_tags():
+    from datetime import datetime, timezone
+    R = lambda repo, tag, created="2026-11-01 10:00:00 +0900 JST", i="sha:x": {"Repository": repo, "Tag": tag, "CreatedAt": created, "ID": i}  # noqa: E731
+    rows = [R("rally-backend", f"0.{n}.0") for n in (4, 9, 10, 31, 32, 33)] + [R("rally-web", "0.5.0", i="sha:used")] + [
+        R("factory-dispatcher", "p0-before-a", "2026-11-01 10:00:00 +0900 JST"), R("factory-dispatcher", "p0-before-b", "2026-11-02 10:00:00 +0900 JST"),
+        R("factory-dispatcher", "p0-before-c", "2026-11-03 10:00:00 +0900 JST"), R("factory-dispatcher", "p0-before-d", "2026-11-13 10:00:00 +0900 JST"),
+        R("factory-dispatcher", "p0-1314e88"), R("<none>", "<none>")]
+    now = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+    out = dg.stale_images(rows, {"rally-backend:0.9.0", "sha:used"}, keep_releases=3, before_days=7, now=now)
+    assert sorted(out) == ["factory-dispatcher:p0-before-a", "factory-dispatcher:p0-before-b", "rally-backend:0.10.0", "rally-backend:0.4.0"]
+
+
+class PsDocker(Docker):
+    def __call__(self, args, timeout=600):
+        if args[:2] == ["ps", "--size"]:
+            self.calls.append(args[:2])
+            rows = [{"Names": "factory-job-9290", "Size": "54.6GB (virtual 60GB)", "Labels": "factory.job=9290,x=y"},
+                    {"Names": "factory-job-9297", "Size": "4.65GB (virtual 9GB)", "Labels": "factory.job=9297"}]
+            return subprocess.CompletedProcess(args, 0, "\n".join(json.dumps(r) for r in rows), "")
+        if args[0] == "kill":
+            self.calls.append(args)
+        return super().__call__(args, timeout)
+
+
+@needs_db
+def test_oversized_job_container_is_stopped_and_sent_to_a_person(cur):
+    cur.execute("truncate jobs restart identity cascade")
+    cur.execute("insert into jobs(id, correlation_id, repo, issue_number, kind, state) values (9290, 'c', 'o/r', 1, 'implement', 'running')")
+    d = PsDocker("1GB")
+    dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
+    assert ["kill", "factory-job-9290"] in d.calls and ["kill", "factory-job-9297"] not in d.calls
+    cur.execute("select job_id, payload from events where name='ops.job_disk_killed'")
+    r = cur.fetchone()
+    assert r["job_id"] == 9290 and r["payload"]["size_gb"] == 54.6
+    import stoppage
+    assert stoppage.open_keys(cur, "diskjob:") == ["diskjob:9290"]
+
+
+def test_too_low(monkeypatch):
+    monkeypatch.setattr(dg, "free_bytes", lambda: 5 * GB)
+    assert dg.too_low()
+    monkeypatch.setattr(dg, "free_bytes", lambda: 50 * GB)
+    assert not dg.too_low()
+
+
+class DuDocker(PsDocker):
+    """中の du では 13GB（ps -s は 54.6GB と多めに出る）"""
+    def __call__(self, args, timeout=600):
+        if args[0] == "exec":
+            return subprocess.CompletedProcess(args, 0, "13000\t/\n", "")
+        return super().__call__(args, timeout)
+
+
+@needs_db
+def test_job_is_not_stopped_when_du_inside_is_small(cur):
+    d = DuDocker("1GB")
+    dg.step(cur, lambda *a: None, docker=d, free=lambda: 100 * GB)
+    assert not any(c[0] == "kill" for c in d.calls)
+
+
+def test_build_cache_uses_decimal_gb_and_engine_total(tmp_path):
+    """11/14: 古い CLI が共有分を抜いた 21.36GB を返し、1024³ の上限（約 21.47e9）より下と見て片付けが 5 時間走らなかった"""
+    assert dg.CACHE_MAX_GB * dg.GB < dg.size_bytes("21.36GB")
+    assert dg.build_cache_bytes(Docker("45.43GB"), engine=lambda: 7.86e9) == 7.86e9   # エンジンが読めればそれ（CLI の版で数え方が違う）
+    assert dg.build_cache_bytes(Docker("21.36GB"), engine=lambda: None) == dg.size_bytes("21.36GB")   # エンジンが読めなければ CLI
+    assert dg.engine_build_cache_bytes(str(tmp_path / "none.sock")) is None
+
+
+def test_engine_build_cache_reads_the_socket(tmp_path):
+    import socket
+    import threading
+    path = str(tmp_path / "d.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(1)
+    body = json.dumps({"BuildCache": [{"Size": 30_000_000_000, "Shared": False}, {"Size": 15_430_000_000, "Shared": True}]}).encode()
+
+    def serve():
+        c, _ = srv.accept()
+        c.recv(65536)
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+        c.close()
+    t = threading.Thread(target=serve)
+    t.start()
+    assert dg.engine_build_cache_bytes(path) == 30e9   # イメージと共有している分は prune で消えないので数えない
+    t.join()
+    srv.close()

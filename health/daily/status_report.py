@@ -51,7 +51,7 @@ JST = timezone(timedelta(hours=9))   # slim イメージに tzdata がないの�
 HERE = Path(__file__).resolve().parent
 ROADMAP = Path(ENV.get("ROADMAP") or HERE.parent.parent / "definitions" / "roadmap.yaml")
 DEFECTS = ROADMAP.parent / "defects.yaml"   # Defect の型と品質の指標（ADR 0028 の決定 5）
-STATUS_REPO = ENV.get("STATUS_REPO", "guccyon/factory-engine")
+STATUS_REPO = ENV.get("STATUS_REPO") or "guccyon/factory-engine"   # 建設状況（建設者の報告）の置き場。compose から空で渡っても既定に戻す（#226）
 REPOS = [r.strip() for r in ENV.get("REPORT_REPOS", "guccyon/rally,guccyon/factory-engine").split(",") if r.strip()]
 BUILD_WORK_DIR = ENV.get("BUILD_WORK_DIR", "")
 DATABASE_URL = ENV.get("DATABASE_URL", "")

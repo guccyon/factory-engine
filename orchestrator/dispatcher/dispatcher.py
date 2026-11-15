@@ -45,6 +45,7 @@ import defect
 import runner_relay
 import design_system_line
 import disk_guard
+import usage_hold
 import desk_answer
 import desk_task
 import desk_investigate
@@ -133,6 +134,7 @@ NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "conn
 # GitHub 側の一時的な push の拒否（やり直すと通る）。保護ブランチなど理由のある拒否は含めない
 PUSH_TRANSIENT_REASONS = ("(failed)", "(missing necessary objects)")
 NET_RETRY_MAX = int(ENV.get("NET_RETRY_MAX", "3"))   # 同じチケットで 30 分のうちに自動でやり直す上限
+USAGE_RETRY_WINDOW_MIN = int(ENV.get("USAGE_RETRY_WINDOW_MIN", "1440"))   # 使用量の上限で落ちたジョブの積み直しは、同じチケットで 1 日に NET_RETRY_MAX 回まで
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
@@ -352,18 +354,18 @@ def poll_loop():
                     planner.advance_steps(cur, gh, swap_label, comment, REPOS)
             except Exception as e:  # noqa: BLE001
                 log("plan answers poll failed", repr(e))
-            try:   # 窓口で確認された下書きを製品の Issue として起票し、依存が閉じたタスクをプランナーに回す（ADR 0030 の 3）
-                with db() as conn, conn.cursor() as cur:
-                    desk_line.file_confirmed(cur, gh, REPOS)
-                    desk_line.advance_waiting(cur, gh, swap_label, comment, REPOS)
-                with db() as conn, conn.cursor() as cur:   # 確認の済んだ決まった操作を動かして提出する（ADR 0039 の順番 2）
-                    desk_line.run_operations(cur)
-                with db() as conn, conn.cursor() as cur:   # 応答時間の目安を見て、途中の様子と遅れを書く（ADR 0039 の順番 3）
-                    desk_line.watch(cur)
-                with db() as conn, conn.cursor() as cur:   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる（ADR 0039 の順番 5）
-                    desk_line.send_notices(cur)
-            except Exception as e:  # noqa: BLE001
-                log("desk filing failed", repr(e))
+            # 窓口の周回（ADR 0030 の 3・ADR 0039 の順番 2・3・5）。段ごとに包み、1 つが落ちても残りは回す。どの段で落ちたかをログに出す
+            # （11/14: 1 つの try で 5 つをまとめて包み、名前解決の失敗の 43 回がどこで落ちたか分からなかった）
+            for stage, run in (("file_confirmed", lambda cur: desk_line.file_confirmed(cur, gh, REPOS)),   # 確認された下書きを製品の Issue に起票
+                               ("advance_waiting", lambda cur: desk_line.advance_waiting(cur, gh, swap_label, comment, REPOS)),   # 依存が閉じたタスクをプランナーへ
+                               ("run_operations", desk_line.run_operations),   # 確認の済んだ決まった操作を動かして提出する
+                               ("watch", desk_line.watch),   # 応答時間の目安を見て、途中の様子と遅れを書く
+                               ("send_notices", desk_line.send_notices)):   # 提出・断り・知らせ直しを依頼者の選んだ手段で知らせる
+                try:
+                    with db() as conn, conn.cursor() as cur:
+                        run(cur)
+                except Exception as e:  # noqa: BLE001
+                    log("desk filing failed", stage, repr(e))
             try:   # 人が選んだ（戻した）コンセプトの案から、デザインシステムのデザイナー役の次の工程を積む（ADR 0025・0026）
                 with db() as conn, conn.cursor() as cur:
                     design_system_line.apply_choices(cur, swap_label, comment)
@@ -470,6 +472,7 @@ def run_job(job: dict, reattaching: bool = False):
             if not reattaching:
                 prov = provenance(repo, image)
                 prov["model_tier"] = job["model_tier"] or MODEL_TIER
+                prov["engine_ref"] = (_investigate_ref(cur, job_id) if kind == "investigate" else worker_engine_ref()) or "main"   # ワーカーが取った Engine の版（#235）
                 prov["mode"], prov["mode_basis"] = judgment.current_mode(cur, ENV.get("FACTORY_MODE") or "attended", ENV.get("MODE_SCHEDULE", ""))   # 製造を始めた時点のモード（制御プレーンの切り替え > 時間帯 > 既定）
                 record_event(cur, "job.started", corr, job_id, {"attempt": job["attempt"], "model_tier": job["model_tier"], "image": image, "provenance": prov})
             name = job.get("container_id") or f"factory-job-{job_id}"
@@ -497,7 +500,12 @@ def run_job(job: dict, reattaching: bool = False):
                    "-e", f"JOB_DEADLINE={int(time.time()) + JOB_TIMEOUT}",   # 打ち切りの時刻（epoch 秒）。ワーカーはエージェントをこれより前に止め、後処理の時間を残す
                    "-e", f"WORKER_DRY_RUN={ENV.get('WORKER_DRY_RUN', '')}",
                    "-e", f"KNOWLEDGE_CONTEXT={ENV.get('KNOWLEDGE_CONTEXT', '1')}",   # 知見を文脈に渡す（ADR 0024 の 6）。0 で止める
-                   *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
+                   *(["-e", f"CARGO_BUILD_JOBS={ENV['WORKER_CARGO_BUILD_JOBS']}"] if ENV.get("WORKER_CARGO_BUILD_JOBS") else []),
+                   # Rust の target を小さくする（増分コンパイルの中間物とデバッグ情報が target の大半。1 ジョブで書き込み層が 54GB になった。2026-11-14）。0 で止める
+                   # 結合テストを 1 ファイル 1 バイナリでリンクすると、1 本 130MB 前後が百本以上になる（rally の server で 6.7GB）。デバッグ情報を持たせず剥がす
+                   *(["-e", "CARGO_INCREMENTAL=0", "-e", "CARGO_PROFILE_DEV_DEBUG=0", "-e", "CARGO_PROFILE_TEST_DEBUG=0",
+                      "-e", "CARGO_PROFILE_DEV_STRIP=debuginfo", "-e", "CARGO_PROFILE_TEST_STRIP=debuginfo"]
+                     if ENV.get("WORKER_CARGO_LEAN", "1") == "1" else []),   # 同時の Rust ビルドで CPU を取り合わない（機械ごとに override で。2026-11-01）
                    # ワーカー 1 本が使える CPU の上限（docker run --cpus）。重いビルドが並ぶと Docker の VM が飽和し、DNS と制御プレーンの DB の認証が
                    # 時間切れになった（2026-11-14 01:38〜01:52 UTC、rust のジョブ 2 本と QA の staging の作り直しが重なった）。機械ごとに override で
                    *(["--cpus", ENV["WORKER_CPUS"]] if ENV.get("WORKER_CPUS") else []),
@@ -524,7 +532,8 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_task.sh"] if kind == "desk_task" else []),   # 窓口の依頼の実行役（ADR 0037 の決定 5）。道具は中継（relay_env）で渡す
-                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh", "-e", f"ENGINE_REF={_investigate_ref(cur, job_id)}"] if kind == "investigate" else []),   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
+                   *(["-i", "--entrypoint", "/usr/local/bin/investigate.sh", "-e", f"ENGINE_REF={_investigate_ref(cur, job_id)}"] if kind == "investigate" else []),
+                   *(["-e", f"ENGINE_REF={ref}"] if kind != "investigate" and (ref := worker_engine_ref()) else []),   # ワーカーの版を工場の版にそろえる（#235、WORKER_ENGINE_PIN=1 のとき）   # 工場の中での一次調査（ADR 0048）。道具は中継（relay_env）で渡す
                    # QA 役（ADR 0028 の決定 2）。触れる環境（工場の機械に公開した staging の画面）に host.docker.internal で届く（Linux の Docker でも）
                    *(["-i", "--entrypoint", "/usr/local/bin/qa.sh", "--add-host", "host.docker.internal:host-gateway"] if kind == "qa" else []),
                    *([] if reattaching else relay_env(job_id, kind, repo)),   # Mac ランナーへの中継（one_orchestrator）。合言葉はこのジョブの間だけ
@@ -624,8 +633,13 @@ def run_job(job: dict, reattaching: bool = False):
             usage = (result or {}).get("usage") or {}
             total_tokens = sum(int(v) for k, v in usage.items() if isinstance(v, (int, float)) and k.endswith("tokens"))
             billable_tokens = sum(int(usage.get(k, 0) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))   # 予算はキャッシュ読みを除く
-            usage_limited = state == "failed" and any(m in l.lower() for l in lines[-30:] for m in USAGE_LIMIT_MARKERS)   # 契約の使用量上限（S15）
+            limit_text = usage_hold.limit_text(lines) if state == "failed" else None   # agent_runner が出す上限の印（ログのどこにあっても拾う。2026-11-15）
+            usage_limited = state == "failed" and (bool(limit_text) or any(m in l.lower() for l in lines[-30:] for m in USAGE_LIMIT_MARKERS))   # 契約の使用量上限（S15）
+            if usage_limited:   # 戻るまで新しいジョブを取り出さない（usage_hold.py）
+                until = usage_hold.record_hit(cur, job_id, corr, limit_text or "")
+                log(f"job {job_id} hit the usage limit; holding new jobs until {until.isoformat()}")
             record_event(cur, "job.finished", corr, job_id, {"state": state, "error": err, "exit": proc.returncode, "usage_limited": usage_limited,
+                                                             **({"usage_limit": limit_text} if limit_text else {}),
                                                              "total_tokens": total_tokens, "billable_tokens": billable_tokens, "over_budget": billable_tokens > TOKEN_BUDGET,
                                                              "incomplete": bool((result or {}).get("incomplete")), "claude_exit": (result or {}).get("claude_exit"),
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
@@ -661,7 +675,9 @@ def run_job(job: dict, reattaching: bool = False):
                 requeue_preempted(cur, job, preempted_for, (result or {}).get("cost_usd"))
             elif state == "failed" and (err or "").startswith("exit=") and (net_transient(lines) or (cont and push_raced(lines))) \
                     and requeue_transient(cur, job):
-                pass   # 一時的なネットワークの失敗か、続きのジョブの push がほかの push（委員会の議決など）と重なった。同じジョブを積み直した（人の調査に回さない）
+                pass
+            elif usage_limited and kind != "qa" and requeue_transient(cur, job, by="usage_retry", window_min=USAGE_RETRY_WINDOW_MIN):
+                pass   # 使用量の上限。同じジョブを積み直し、上限が戻ってから取り出す（QA は関門が積み直すので積まない）   # 一時的なネットワークの失敗か、続きのジョブの push がほかの push（委員会の議決など）と重なった。同じジョブを積み直した（人の調査に回さない）
             elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
                              {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars"),
@@ -936,27 +952,27 @@ def push_raced(lines: list[str]) -> bool:
     return any("[rejected]" in l and ("(non-fast-forward)" in l or "(fetch first)" in l) for l in tail)
 
 
-def requeue_transient(cur, job: dict) -> bool:
+def requeue_transient(cur, job: dict, by: str = "net_retry", window_min: int = 30) -> bool:
     """一時的なネットワークの失敗で落ちたジョブを、そのまま順番待ちに積み直す。同じチケットで 30 分に NET_RETRY_MAX 回まで。
     積み直したら True（番人の job: の停止は、同じ流れの次のジョブが始まると閉じる）"""
-    cur.execute("select count(*) as n from jobs where correlation_id=%s and enqueued_by='net_retry' and enqueued_at > now() - interval '30 minutes'",
-                (job["correlation_id"],))
+    cur.execute("select count(*) as n from jobs where correlation_id=%s and enqueued_by=%s and enqueued_at > now() - make_interval(mins => %s)",
+                (job["correlation_id"], by, window_min))
     if cur.fetchone()["n"] >= NET_RETRY_MAX:
         return False
     import factoryctl   # 積み直しの入力の引き継ぎは factoryctl rerun と同じものを使う
     kind = job.get("kind") or "implement"
     try:
         cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
-                    "select correlation_id, repo, issue_number, attempt + 1, 'net_retry', model_tier, kind, ticket_id, priority from jobs where id=%s returning id",
-                    (job["id"],))
+                    "select correlation_id, repo, issue_number, attempt + 1, %s, model_tier, kind, ticket_id, priority from jobs where id=%s returning id",
+                    (by, job["id"]))
     except psycopg.errors.UniqueViolation:
         return False   # 同じチケットのジョブがもう積まれている
     new_id = cur.fetchone()["id"]
-    record_event(cur, "job.enqueued", job["correlation_id"], new_id, {"by": "net_retry", "attempt": job["attempt"] + 1, "previous": job["id"],
+    record_event(cur, "job.enqueued", job["correlation_id"], new_id, {"by": by, "attempt": job["attempt"] + 1, "previous": job["id"],
                                                                       "ticket_id": job.get("ticket_id"), "priority": job.get("priority"),
                                                                       **(continuation.carry_over(cur, job["id"]) if kind == "implement" else {}),
                                                                       **factoryctl.carried_input(cur, job["id"], kind)})
-    log(f"job {job['id']} failed on a transient network error, requeued as {new_id}")
+    log(f"job {job['id']} failed ({by}), requeued as {new_id}")
     return True
 
 
@@ -1006,11 +1022,19 @@ def _claim_loop(name: str, claim):
     数を下げても、動いているジョブは最後まで流す（新しく取り出さないだけ）"""
     while True:
         job = None
+        if disk_guard.too_low():   # ディスクの空きが下限を割っている間は新しいジョブを取らない（2026-11-14 夜: rust のジョブ 2 本で Mac が満杯に近づいた）
+            time.sleep(30)
+            continue
         try:
             with db() as conn, conn.cursor() as cur:
-                job = claim(cur)
+                held = bool(usage_hold.held(cur) or usage_hold.probing(cur))   # 契約の使用量の上限の間は取り出さない（2026-11-15: 上限のまま 15 本を流して全部落とした）
+                job = None if held else claim(cur)
         except Exception as e:  # noqa: BLE001
             log(f"{name} claim error", e)
+            held = False
+        if held:
+            time.sleep(30)
+            continue
         if not job:
             time.sleep(3)
             continue
@@ -1400,6 +1424,10 @@ def watch_once():
         except Exception as e:  # noqa: BLE001  束ねるのに失敗しても 1 件ずつの停止は開く
             log("repeat job step failed", repr(e)[:200])
         bundled = repeat_watch.bundled_job_signatures(cur)
+        try:   # 使用量の上限で取り出しを止めている間は usage: を 1 件だけ開く（上限で落ちたジョブ 1 件ずつの停止は通知しない）
+            usage_hold.watch(cur, stoppage)
+        except Exception as e:  # noqa: BLE001
+            log("usage hold watch failed", repr(e)[:200])
         cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload, j.kind from events e left join jobs j on j.id=e.job_id "
                     "where e.name='job.finished' and e.payload->>'state'='failed' and e.occurred_at >= %s order by e.id", (since,))
         for e in cur.fetchall():
@@ -1407,7 +1435,7 @@ def watch_once():
             if c:
                 stoppage.open_stoppage(cur, f"job:{e['job_id']}", c[0], c[1], waiting_for=c[2], cause=e["payload"].get("error") or "",
                                        started_at=e["occurred_at"], correlation_id=e["correlation_id"], job_id=e["job_id"],
-                                       quiet=repeat_watch.job_signature(e["kind"], e["payload"].get("error")) in bundled)
+                                       quiet=bool(e["payload"].get("usage_limited")) or repeat_watch.job_signature(e["kind"], e["payload"].get("error")) in bundled)
         for k in stoppage.open_keys(cur, "job:"):
             remedy = job_failure_settled(cur, int(k.split(":", 1)[1]))
             if remedy:
@@ -1793,6 +1821,18 @@ def _job_blob_key(job_id: int) -> str | None:
     return (r or {}).get("k")
 
 
+WORKER_ENGINE_PIN = ENV.get("WORKER_ENGINE_PIN", "") == "1"
+
+
+def worker_engine_ref(env=None) -> str | None:
+    """ワーカーが取る Engine の版（#235）。WORKER_ENGINE_PIN=1 なら工場の版（dispatcher のイメージの版）にそろえる。
+    既定は渡さない（ワーカーは main を取る。今までどおり）。版が分からなければ渡さない"""
+    if not (WORKER_ENGINE_PIN if env is None else env.get("WORKER_ENGINE_PIN", "") == "1"):
+        return None
+    v = version.engine_version(ENV if env is None else env)
+    return v if re.fullmatch(r"[0-9a-f]{7,40}", v) else None
+
+
 def _investigate_ref(cur, job_id: int) -> str:
     """調査役が読む Engine の版（ADR 0048）。窓口の依頼は入っている版、評価セットの再生は直す前の版。形が違えば main"""
     cur.execute("select payload->'input'->>'engine_ref' as ref from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
@@ -1825,6 +1865,9 @@ def main():
     global RELAY
     with db() as conn, conn.cursor() as cur:
         cur.execute("select 1")
+    if (problem := stoppage.visibility_problem()):   # 公開の宛先に非公開の製品の情報を出さない（#226）。直すまで上がらない
+        log(f"refuse to start: {problem}")
+        return 1
     reattached = recover()
     with db() as conn, conn.cursor() as cur:   # 上がった印。更新役が新しい版で上がったかを見る（ADR 0031）
         record_event(cur, "dispatcher.started", None, None, {"engine_version": version.engine_version(ENV), "reattaching": len(reattached)})

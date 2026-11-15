@@ -1,6 +1,8 @@
 # Rust ツールチェーン付きの使い捨てワーカー（rally のバックエンド用。P1 Walking Skeleton から）
 # ベースの worker と同じ entrypoint。cargo / rustfmt / clippy が使える。toolchain は stable（rust-toolchain.toml をリポジトリに置けばそれが優先される）。
-FROM factory-worker:p0 AS base
+# 土台は build.sh が版のラベルなしの factory-worker:p0-core を渡す（派生のキャッシュを版ごとに捨てないため）。手で作るときは既定の p0
+ARG BASE=factory-worker:p0
+FROM ${BASE} AS base
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libpq-dev && rm -rf /var/lib/apt/lists/*
 USER worker

@@ -172,3 +172,29 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 .mt-jh .c-g { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mt-err { margin: var(--space-1) 0; overflow-wrap: anywhere; }
 .mt-job .acts { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-1); }
+
+/* ---- 委員会（開催と議事録） ---- */
+.cm { display: grid; grid-template-columns: minmax(320px, 440px) minmax(0, 1fr); gap: var(--space-3); align-items: start; }
+.cm-l > .m { margin: 0 0 var(--space-2); }
+.cm-f { margin-bottom: var(--space-2); }
+.cm-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; min-width: 0; }
+.cm-row:hover { background: var(--surface); }
+.cm-row.sel { background: var(--surface); box-shadow: inset 3px 0 0 var(--accent); }
+.cm-t { flex: 1; min-width: 0; display: grid; }
+.cm-t b, .cm-t .m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-o { display: grid; justify-items: end; font-size: 12px; white-space: nowrap; }
+.cm-r { position: sticky; top: calc(var(--top-h) + var(--space-3)); }
+.cm-doc h2 { margin: 0 0 var(--space-1); }
+.cm-doc h3 { font-size: 13px; margin: var(--space-3) 0 var(--space-1); color: var(--ink-sub); }
+.cm-doc p { margin: 0; }
+.cm-doc ul { margin: 0; padding-left: 1.2em; }
+.cm-doc li { margin: 2px 0; overflow-wrap: anywhere; }
+.cm-out { margin-top: var(--space-2); font-weight: 600; }
+.cm-back { display: none; }
+@media (max-width: 1199px) {
+  .cm { grid-template-columns: 1fr; }
+  .cm.open .cm-l { display: none; }
+  .cm:not(.open) .cm-r { display: none; }
+  .cm-r { position: static; }
+  .cm-back { display: inline-block; margin-bottom: var(--space-2); }
+}

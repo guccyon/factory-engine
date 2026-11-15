@@ -47,6 +47,31 @@ STORIES_DIR = "specs/stories"
 RECORD_GRACE = timedelta(minutes=10)   # ジョブが終わってから dispatcher が結果を記録するまでの猶予
 TERMINAL = ("succeeded", "failed", "cancelled")
 SEV_JA = {"s1": "S1", "s2": "S2", "s3": "S3", "s4": "S4"}
+LIMITED_EXTRA = 3                      # 使用量の上限で落ちた分は積み直しの回数に数えない。ただし単位ごとに attempts + これ を超えては積まない
+FAIL_STREAK = 3                        # 関門の中で、作業せずに落ちたジョブがこの数続いたら、新しく積むのを FAIL_BACKOFF だけ待つ
+FAIL_BACKOFF = timedelta(minutes=30)
+
+
+def limited_jobs(cur, job_ids: list[int]) -> set[int]:
+    """使用量の上限で落ちたジョブ（job.finished の usage_limited）。上限は工場全体の都合で、その単位を確かめられなかったのではない"""
+    if not job_ids:
+        return set()
+    cur.execute("select job_id from events where name='job.finished' and job_id = any(%s) and (payload->>'usage_limited')::boolean", (list(job_ids),))
+    return {r["job_id"] for r in cur.fetchall()}
+
+
+def fail_streak(cur, job_ids: list[int], now: datetime) -> dict | None:
+    """関門のジョブのうち、終わった新しいものから FAIL_STREAK 本が続けて失敗し、最後の失敗から FAIL_BACKOFF たっていなければ
+    {jobs, until}。2026-11-15 に上限のまま 13 本の QA を次々に積んで全部落とした。同じ理由で落ち続ける間は積み直しても無駄になる"""
+    if len(job_ids) < FAIL_STREAK:
+        return None
+    cur.execute("select id, state, finished_at from jobs where id = any(%s) and state = any(%s) order by finished_at desc limit %s",
+                (list(job_ids), list(TERMINAL), FAIL_STREAK))
+    rows = cur.fetchall()
+    if len(rows) < FAIL_STREAK or any(r["state"] != "failed" for r in rows):
+        return None
+    until = rows[0]["finished_at"] + FAIL_BACKOFF
+    return {"jobs": [r["id"] for r in rows], "until": until} if now < until else None
 
 
 def _ev(cur, name: str, payload: dict, dedupe: str | None = None, now: datetime | None = None) -> bool:
@@ -372,16 +397,22 @@ def step_units(cur, gh, repo: str, g: dict, defs: dict, gd: dict, now: datetime,
     left = workflow_guard.cost_left(cur, pl["corr"])["ticket.cost_usd"]
     capped = left["cap"] > 0 and left["left"] <= 0   # 版のチケットの費用の上限。残りを積まず、そろった分で報告を作る
     last = {u["unit"]: (g["units"].get(u["unit"]) or [None])[-1] for u in pl["units"]}
+    all_ids = [j["job_id"] for js in g["units"].values() for j in js if j.get("job_id")]
+    limited = limited_jobs(cur, all_ids)
+    streak = fail_streak(cur, [i for i in all_ids if i not in limited], now)   # 上限は dispatcher が取り出しを止めて待つ（usage_hold.py）
+    if streak and may_enqueue:
+        log("qa gate backoff", repo, pl["release_id"], f"jobs {streak['jobs']} failed in a row; next enqueue after {streak['until'].isoformat()}")
     done = {u["unit"]: (outcome[u["which"]](cur, last[u["unit"]]["job_id"], now) if last[u["unit"]] else None) for u in pl["units"]}
     running = {w: sum(1 for u in pl["units"] if u["which"] == w and last[u["unit"]] and done[u["unit"]] is None) for w in ALL}
     limit = {"verdict": int(gd["parallel"]), "explore": len(pl["units"]), TIME: 1}   # 判定は端末の数まで。時刻をまたぐものは 1 本ずつ
     for u in pl["units"]:   # 並びは 判定 → 探索 → 時刻をまたぐもの
         k, w, tried, r = u["unit"], u["which"], len(g["units"].get(u["unit"]) or []), done[u["unit"]]
-        want = tried == 0 or (bool(r) and r["status"] == "unconfirmed" and tried < int(gd["attempts"]))
+        counted = sum(1 for j in g["units"].get(k) or [] if j.get("job_id") not in limited)   # 上限で落ちた分は数えない
+        want = tried == 0 or (bool(r) and r["status"] == "unconfirmed" and counted < int(gd["attempts"]) and tried < int(gd["attempts"]) + LIMITED_EXTRA)
         alone = w != TIME or all(res.get(o["unit"]) for o in pl["units"] if o["which"] != TIME)   # 時計を合わせる間、環境を 1 つのジョブだけが使う
         if want and capped:
             r = r or {"status": "unconfirmed", "why": "費用の上限で流せなかった", "candidates": [], "notes": [], "stories": {}, "tried": 0}
-        elif want and may_enqueue and alone and running[w] < limit[w]:
+        elif want and may_enqueue and alone and running[w] < limit[w] and not streak:
             r = None
             try:
                 got = enqueue_unit(cur, gh, repo, pl, u, tried + 1, defs, gd, now)
@@ -394,7 +425,7 @@ def step_units(cur, gh, repo: str, g: dict, defs: dict, gd: dict, now: datetime,
             except Exception as e:  # noqa: BLE001  次の周回でやり直す
                 log("qa gate enqueue failed", repo, pl["release_id"], k, repr(e)[:200])
         elif want:
-            r = None   # 順番待ち（同時に流す数・ほかの単位の終わり・予算の枠）
+            r = None   # 順番待ち（同時に流す数・ほかの単位の終わり・予算の枠・失敗が続いた後の待ち）
         res[k] = r
     timed_out = now - g["opened_at"] > timedelta(hours=float(gd["hours"]))
     if not timed_out and any(v is None for v in res.values()):
