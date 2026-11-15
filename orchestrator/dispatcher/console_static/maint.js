@@ -1,4 +1,4 @@
-// 工場の保守（ADR 0059、#477）。提供元が直す工場の側の件を 1 か所に集める：工場の不調・建設者宛ての件・見回りの結果・最近うまくいかなかったジョブ
+// 稼働状況の「保守」タブ（ADR 0059、#477。2026-11-16 に工場の保守のページから移した）。提供元が直す工場の側の件を 1 か所に集める：工場の不調・建設者宛ての件・見回りの結果・最近うまくいかなかったジョブ
 // 建設者宛てのお知らせ（工場の不調と同じもの）は不調の欄と重なるので、建設者宛ての欄は判断の件だけ
 // ほかのページ（ホーム・ライン）には件数とここへのリンクだけを残す
 // console.js の esc・put・dur・ibHref・alertsView・alLog・S を使う（console.js の後に読む）。記録の表示・積み直しは不調と同じボタン（data-allog・data-rerun）
@@ -6,10 +6,10 @@ let mtData = null, mtAt = 0;
 async function mtLoad() {
   mtAt = Date.now();
   try { mtData = await (await fetch("/api/maint")).json() } catch (e) { mtData = {error: true} }
-  if (route()[0] === "maint" && S) mtRender(S);
+  if (route()[0] === "live" && S) mtRender(S);
 }
 function mtSkeleton() {
-  return `<div class="mt"><h1 class="t-heading">工場の保守</h1><p class="m">提供元（建設者）が直す工場の側の件です。事業主が判断するものは受信トレイに出ます</p>
+  return `<div class="mt"><p class="m">提供元（建設者）が直す工場の側の件です。事業主が判断するものは受信トレイに出ます</p>
     <div id="mt-tiles"></div><div id="mt-alerts"></div><section class="card"><h2>建設者宛ての件</h2><div id="mt-builder"></div></section>
     <section class="card"><h2>見回り</h2><div id="mt-patrols"><div class="m">読み込み中…</div></div></section>
     <section class="card"><h2>事故の台帳</h2><div id="mt-inc"></div></section>

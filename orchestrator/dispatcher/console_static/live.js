@@ -1,4 +1,5 @@
-// 事業部の様子（ADR 0059、#476）。工程ごとの段の上をチケットが流れていく様子と、作業中・順番待ちの数の推移。顧客の安心とデモに使う。
+// 稼働状況（ADR 0059、#476。2026-11-16 に「事業部の様子」から改め、工場の保守を「保守」タブに入れた）。
+// 「流れ」タブは工程ごとの段の上をチケットが流れていく様子と、作業中・順番待ちの数の推移。顧客の安心とデモに使う。「保守」タブは maint.js
 // 段は工程（計画・実装・検査・QA・出荷。委員会・窓口は動いているときだけ）。どの工程かはいまのジョブの種類で決める（/api/live の steps）。
 // 段の中の左右は状態: 左の「待ち」→ 中の「作業中」（経過に合わせて進む）→ 右の「次へ渡す待ち」。人の対応待ちは赤
 // 丸に触れる（マウスを載せる・押す）と、チケット・状態・ジョブ・経過を出す
@@ -11,10 +12,23 @@ async function liveLoadMeta() {
   if (route()[0] === "live" && S) liveRender(S);
 }
 function liveSkeleton() {
-  return `<div class="live"><div class="live-h"><h1 class="t-heading">事業部の様子</h1><span class="m" id="live-conn"></span><a class="m" href="/line" data-nav>ラインの一覧 →</a></div>
-    <div id="live-tiles"></div><section class="card"><h2>工程ごとの流れ <span class="m">丸 1 つがチケット 1 件。触れると詳しく</span></h2><div id="live-lanes"></div><div id="live-leg"></div></section>
-    <section class="card"><h2>作業中と順番待ちの推移 <span class="m" id="live-ch"></span></h2><div id="live-chart"></div></section></div>`;
+  liveTab = new URLSearchParams(location.search).get("tab") === "maint" ? "maint" : "flow";
+  return `<div class="live"><div class="live-h"><h1 class="t-heading">稼働状況</h1><span class="m" id="live-conn"></span><a class="m" href="/line" data-nav>ラインの一覧 →</a></div>
+    <nav class="pp-tabs" role="tablist">${LIVE_TABS.map(([k, n]) => `<button role="tab" data-livetab="${k}" aria-selected="${k === liveTab}">${n}<span class="c-count" data-n="live-${k}" hidden></span></button>`).join("")}</nav>
+    <div class="live-s" data-live="maint" ${liveTab === "maint" ? "" : "hidden"}>${mtSkeleton()}</div>
+    <div class="live-s" data-live="flow" ${liveTab === "flow" ? "" : "hidden"}><div id="live-tiles"></div><section class="card"><h2>工程ごとの流れ <span class="m">丸 1 つがチケット 1 件。触れると詳しく</span></h2><div id="live-lanes"></div><div id="live-leg"></div></section>
+    <section class="card"><h2>作業中と順番待ちの推移 <span class="m" id="live-ch"></span></h2><div id="live-chart"></div></section></div></div>`;
 }
+const LIVE_TABS = [["flow", "流れ"], ["maint", "保守"]];
+let liveTab = "flow";
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-livetab]"); if (!b) return;
+  liveTab = b.dataset.livetab;
+  document.querySelectorAll("[data-livetab]").forEach(x => x.setAttribute("aria-selected", x.dataset.livetab === liveTab));
+  document.querySelectorAll(".live-s").forEach(x => x.hidden = x.dataset.live !== liveTab);
+  history.replaceState(null, "", location.pathname + (liveTab === "maint" ? "?tab=maint" : ""));
+  liveTip(null);
+});
 const LIVE_ZONES = [["wait", "待ち"], ["work", "作業中"], ["next", "次へ渡す待ち"]];
 function liveStepOf(i, steps) {
   if (i.kind) { const st = steps.find(x => x.kinds.includes(i.kind)); if (st) return st.id }
@@ -117,6 +131,10 @@ function liveRender(s) {
   if (liveMeta) put("live-ch", `直近 ${liveMeta.trend_hours} 時間`);
   put("live-chart", liveChart(s));
   put("live-conn", liveStreamOn ? "● リアルタイム" : "10 秒ごとに更新");
+  // 保守のタブ（maint.js）。タブの数は、工場の不調と建設者宛ての判断の件
+  mtRender(s);
+  const n = mtCounts(s), mn = n.al + n.b + n.late, cb = document.querySelector('.c-count[data-n="live-maint"]');
+  if (cb) { cb.textContent = mn || ""; cb.hidden = !mn; cb.classList.toggle("is-new", mn > 0) }
   // 開いている詳しい表示は、描き直したあとの同じ丸に付け直す（中身も新しくする）
   if (liveTipFor != null) { const b = [...document.querySelectorAll(".live-job[data-key]")].find(x => x.dataset.key === liveTipFor); b ? liveTip(b, liveTipPinned) : liveTip(null) }
 }
