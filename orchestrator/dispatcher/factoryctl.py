@@ -158,6 +158,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
 
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
+  factoryctl usage status|release                 # 契約の使用量の上限で取り出しを止めているか / 止めを早めに解く（usage_hold.py。2026-11-15）
   factoryctl report usage [--days 14] [--json]    # 使用量（トークンの消費と費用、日ごと・役割・モデル・契約の週、アカウントを足すかの判断の材料）。コンソールの /usage と同じ
   factoryctl report send <report.factory_health|report.product|all> [--date YYYY-MM-DD] [--to 宛先] [--html 出力先]
                                                   # 定期レポート（ADR 0032）を今のコードで組み立て、通知の設定の宛先に今すぐ送る（試し送り。既定は前日の分）。--html は送らずに報告書を書き出す
@@ -1362,6 +1363,12 @@ def main(argv):
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")
         hold_report(cur)
+    elif cmd == "usage" and len(argv) > 2 and argv[2] in ("status", "release"):
+        import usage_hold
+        if argv[2] == "release":
+            usage_hold.release(cur, "factoryctl")
+        h = usage_hold.held(cur)
+        print(f"使用量の上限で取り出しを止めている（{h['until'].isoformat()} まで。{h['text'][:120]}）" if h else "使用量の上限による止めはない")
     elif cmd == "budget":
         if len(argv) > 2 and argv[2] == "set":
             try:

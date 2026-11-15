@@ -45,6 +45,7 @@ import defect
 import runner_relay
 import design_system_line
 import disk_guard
+import usage_hold
 import desk_answer
 import desk_task
 import desk_investigate
@@ -133,6 +134,7 @@ NET_TRANSIENT_MARKERS = ("could not resolve host", "failed to connect to", "conn
 # GitHub 側の一時的な push の拒否（やり直すと通る）。保護ブランチなど理由のある拒否は含めない
 PUSH_TRANSIENT_REASONS = ("(failed)", "(missing necessary objects)")
 NET_RETRY_MAX = int(ENV.get("NET_RETRY_MAX", "3"))   # 同じチケットで 30 分のうちに自動でやり直す上限
+USAGE_RETRY_WINDOW_MIN = int(ENV.get("USAGE_RETRY_WINDOW_MIN", "1440"))   # 使用量の上限で落ちたジョブの積み直しは、同じチケットで 1 日に NET_RETRY_MAX 回まで
 # 差し戻し（ADR 0006 後半 / D5）。上限は仮置き（差し戻しが 20 件溜まったら見直す）
 SENDBACK_PER_PR = int(ENV.get("SENDBACK_PER_PR", "1"))
 SENDBACK_DAILY_MAX = int(ENV.get("SENDBACK_DAILY_MAX", "5"))
@@ -629,8 +631,13 @@ def run_job(job: dict, reattaching: bool = False):
             usage = (result or {}).get("usage") or {}
             total_tokens = sum(int(v) for k, v in usage.items() if isinstance(v, (int, float)) and k.endswith("tokens"))
             billable_tokens = sum(int(usage.get(k, 0) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))   # 予算はキャッシュ読みを除く
-            usage_limited = state == "failed" and any(m in l.lower() for l in lines[-30:] for m in USAGE_LIMIT_MARKERS)   # 契約の使用量上限（S15）
+            limit_text = usage_hold.limit_text(lines) if state == "failed" else None   # agent_runner が出す上限の印（ログのどこにあっても拾う。2026-11-15）
+            usage_limited = state == "failed" and (bool(limit_text) or any(m in l.lower() for l in lines[-30:] for m in USAGE_LIMIT_MARKERS))   # 契約の使用量上限（S15）
+            if usage_limited:   # 戻るまで新しいジョブを取り出さない（usage_hold.py）
+                until = usage_hold.record_hit(cur, job_id, corr, limit_text or "")
+                log(f"job {job_id} hit the usage limit; holding new jobs until {until.isoformat()}")
             record_event(cur, "job.finished", corr, job_id, {"state": state, "error": err, "exit": proc.returncode, "usage_limited": usage_limited,
+                                                             **({"usage_limit": limit_text} if limit_text else {}),
                                                              "total_tokens": total_tokens, "billable_tokens": billable_tokens, "over_budget": billable_tokens > TOKEN_BUDGET,
                                                              "incomplete": bool((result or {}).get("incomplete")), "claude_exit": (result or {}).get("claude_exit"),
                                                              "cost_usd": (result or {}).get("cost_usd"), "blob_key": blob_key})
@@ -666,7 +673,9 @@ def run_job(job: dict, reattaching: bool = False):
                 requeue_preempted(cur, job, preempted_for, (result or {}).get("cost_usd"))
             elif state == "failed" and (err or "").startswith("exit=") and (net_transient(lines) or (cont and push_raced(lines))) \
                     and requeue_transient(cur, job):
-                pass   # 一時的なネットワークの失敗か、続きのジョブの push がほかの push（委員会の議決など）と重なった。同じジョブを積み直した（人の調査に回さない）
+                pass
+            elif usage_limited and kind != "qa" and requeue_transient(cur, job, by="usage_retry", window_min=USAGE_RETRY_WINDOW_MIN):
+                pass   # 使用量の上限。同じジョブを積み直し、上限が戻ってから取り出す（QA は関門が積み直すので積まない）   # 一時的なネットワークの失敗か、続きのジョブの push がほかの push（委員会の議決など）と重なった。同じジョブを積み直した（人の調査に回さない）
             elif kind == "body_fix":
                 record_event(cur, "pr.body_amended" if state == "succeeded" else "pr.body_amend_failed", corr, job_id,
                              {"pr_url": (result or {}).get("pr_url"), "defects": len(judge_inp.get("defects", [])), "chars": (result or {}).get("chars"),
@@ -941,27 +950,27 @@ def push_raced(lines: list[str]) -> bool:
     return any("[rejected]" in l and ("(non-fast-forward)" in l or "(fetch first)" in l) for l in tail)
 
 
-def requeue_transient(cur, job: dict) -> bool:
+def requeue_transient(cur, job: dict, by: str = "net_retry", window_min: int = 30) -> bool:
     """一時的なネットワークの失敗で落ちたジョブを、そのまま順番待ちに積み直す。同じチケットで 30 分に NET_RETRY_MAX 回まで。
     積み直したら True（番人の job: の停止は、同じ流れの次のジョブが始まると閉じる）"""
-    cur.execute("select count(*) as n from jobs where correlation_id=%s and enqueued_by='net_retry' and enqueued_at > now() - interval '30 minutes'",
-                (job["correlation_id"],))
+    cur.execute("select count(*) as n from jobs where correlation_id=%s and enqueued_by=%s and enqueued_at > now() - make_interval(mins => %s)",
+                (job["correlation_id"], by, window_min))
     if cur.fetchone()["n"] >= NET_RETRY_MAX:
         return False
     import factoryctl   # 積み直しの入力の引き継ぎは factoryctl rerun と同じものを使う
     kind = job.get("kind") or "implement"
     try:
         cur.execute("insert into jobs(correlation_id, repo, issue_number, attempt, enqueued_by, model_tier, kind, ticket_id, priority) "
-                    "select correlation_id, repo, issue_number, attempt + 1, 'net_retry', model_tier, kind, ticket_id, priority from jobs where id=%s returning id",
-                    (job["id"],))
+                    "select correlation_id, repo, issue_number, attempt + 1, %s, model_tier, kind, ticket_id, priority from jobs where id=%s returning id",
+                    (by, job["id"]))
     except psycopg.errors.UniqueViolation:
         return False   # 同じチケットのジョブがもう積まれている
     new_id = cur.fetchone()["id"]
-    record_event(cur, "job.enqueued", job["correlation_id"], new_id, {"by": "net_retry", "attempt": job["attempt"] + 1, "previous": job["id"],
+    record_event(cur, "job.enqueued", job["correlation_id"], new_id, {"by": by, "attempt": job["attempt"] + 1, "previous": job["id"],
                                                                       "ticket_id": job.get("ticket_id"), "priority": job.get("priority"),
                                                                       **(continuation.carry_over(cur, job["id"]) if kind == "implement" else {}),
                                                                       **factoryctl.carried_input(cur, job["id"], kind)})
-    log(f"job {job['id']} failed on a transient network error, requeued as {new_id}")
+    log(f"job {job['id']} failed ({by}), requeued as {new_id}")
     return True
 
 
@@ -1016,9 +1025,14 @@ def _claim_loop(name: str, claim):
             continue
         try:
             with db() as conn, conn.cursor() as cur:
-                job = claim(cur)
+                held = bool(usage_hold.held(cur) or usage_hold.probing(cur))   # 契約の使用量の上限の間は取り出さない（2026-11-15: 上限のまま 15 本を流して全部落とした）
+                job = None if held else claim(cur)
         except Exception as e:  # noqa: BLE001
             log(f"{name} claim error", e)
+            held = False
+        if held:
+            time.sleep(30)
+            continue
         if not job:
             time.sleep(3)
             continue
@@ -1408,6 +1422,10 @@ def watch_once():
         except Exception as e:  # noqa: BLE001  束ねるのに失敗しても 1 件ずつの停止は開く
             log("repeat job step failed", repr(e)[:200])
         bundled = repeat_watch.bundled_job_signatures(cur)
+        try:   # 使用量の上限で取り出しを止めている間は usage: を 1 件だけ開く（上限で落ちたジョブ 1 件ずつの停止は通知しない）
+            usage_hold.watch(cur, stoppage)
+        except Exception as e:  # noqa: BLE001
+            log("usage hold watch failed", repr(e)[:200])
         cur.execute("select e.job_id, e.correlation_id, e.occurred_at, e.payload, j.kind from events e left join jobs j on j.id=e.job_id "
                     "where e.name='job.finished' and e.payload->>'state'='failed' and e.occurred_at >= %s order by e.id", (since,))
         for e in cur.fetchall():
@@ -1415,7 +1433,7 @@ def watch_once():
             if c:
                 stoppage.open_stoppage(cur, f"job:{e['job_id']}", c[0], c[1], waiting_for=c[2], cause=e["payload"].get("error") or "",
                                        started_at=e["occurred_at"], correlation_id=e["correlation_id"], job_id=e["job_id"],
-                                       quiet=repeat_watch.job_signature(e["kind"], e["payload"].get("error")) in bundled)
+                                       quiet=bool(e["payload"].get("usage_limited")) or repeat_watch.job_signature(e["kind"], e["payload"].get("error")) in bundled)
         for k in stoppage.open_keys(cur, "job:"):
             remedy = job_failure_settled(cur, int(k.split(":", 1)[1]))
             if remedy:

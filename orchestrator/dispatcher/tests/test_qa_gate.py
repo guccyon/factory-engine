@@ -543,3 +543,39 @@ def test_qa_ticket_scope_written_as_files(cur):
     qa_gate.step(cur, gh, REPO, now=NOW)
     pl = qa_gate.gate(cur, qa_gate.ticket_key(REPO, 30))["plan"]
     assert [u["unit"] for u in pl["units"]] == ["verdict:b-chat"] and not pl.get("unknown")
+
+
+# ------------------------------------------------------------------ 使用量の上限・失敗が続くとき（2026-11-15: 上限のまま 13 本の QA を積んで全部落とした）
+def limited(cur, job_id):
+    finish(cur, job_id, "failed")
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.finished','c',%s,%s)",
+                (job_id, Jsonb({"state": "failed", "error": "exit=1", "usage_limited": True})))
+
+
+def test_usage_limited_job_does_not_use_up_the_retry(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    limited(cur, units_of(cur, rid)["verdict:b-chat"][-1])
+    assert [x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"]] == ["verdict:b-chat"]
+    limited(cur, units_of(cur, rid)["verdict:b-chat"][-1])
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert [x["unit"] for x in out["enqueued"]] == ["verdict:b-chat"]   # 上限で落ちた分は数えないので、もう 1 回積む
+    finish(cur, units_of(cur, rid)["verdict:b-chat"][-1], "failed")     # 本当に確かめられなかった 1 回目
+    assert [x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"]] == ["verdict:b-chat"]
+    finish(cur, units_of(cur, rid)["verdict:b-chat"][-1], "failed")     # 2 回目。ここで打ち切る
+    assert "verdict:b-chat" not in [x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW + timedelta(hours=1))["enqueued"]]
+
+
+def test_gate_waits_after_failures_in_a_row(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    for u in ("verdict:b-chat", "explore:detour"):
+        finish(cur, units_of(cur, rid)[u][-1], "failed")
+    assert sorted(x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"]) == ["explore:detour", "verdict:b-chat"]   # 2 本ではまだ待たない
+    finish(cur, units_of(cur, rid)["verdict:b-chat"][-1], "failed")
+    out = qa_gate.step(cur, gh, REPO, now=NOW, log=lambda *a: None)
+    assert out["enqueued"] == [] and out["decided"] is None              # 3 本続けて落ちた: d-cs を積まずに待つ
+    later = qa_gate.step(cur, gh, REPO, now=NOW + qa_gate.FAIL_BACKOFF)
+    assert [x["unit"] for x in later["enqueued"]] == ["verdict:d-cs"]
