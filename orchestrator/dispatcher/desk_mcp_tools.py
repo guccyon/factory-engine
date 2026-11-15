@@ -7,7 +7,7 @@ import json
 SNAPSHOT = json.loads(r'''{
  "server": {
   "name": "factory-desk",
-  "version": "0.5.0"
+  "version": "0.6.0"
  },
  "setup": "事業部の窓口の MCP サーバー（stdio）。ADR 0030 の順番 3。\n\n依頼者の手元の Claude Code・Claude Desktop から窓口の API（orchestrator/dispatcher/desk_api.py）を呼ぶための薄い包み。\n判断も状態も持たない。道具ごとに API を 1 回呼び、返ってきた JSON をそのまま返す（API が正本）。\n相談役（プランナー）の返事は非同期に来るので、会話を読む道具は最大の待ち時間（wait、60 秒まで）を渡せる。\n\n依存: python3（3.9 以上、標準ライブラリだけ）。どこに置いても動く（工場のリポジトリの外に写してよい）。\n\n設定（環境変数）:\n  FACTORY_DESK_URL         窓口の API（既定 http://localhost:8792）\n  FACTORY_DESK_TOKEN       窓口のトークン（factoryctl desk token create で発行。fdk_...）\n  FACTORY_DESK_TOKEN_FILE  トークンを置いたファイル（FACTORY_DESK_TOKEN がなければこれを読む）\n\nClaude Code への登録の例:\n  claude mcp add factory-desk -e FACTORY_DESK_TOKEN_FILE=$HOME/.config/factory/desk.token -- python3 /path/to/factory_desk_mcp.py",
  "tools": [
@@ -304,6 +304,110 @@ SNAPSHOT = json.loads(r'''{
       "description": "効く業務（例 desk.converse 窓口のやりとり、analyze.report 報告書、dev.design 画面のデザイン）。省くとすべての作業"
      }
     }
+   }
+  },
+  {
+   "name": "onboarding_status",
+   "description": "オンボーディング（既存の製品を工場に載せる）で、事業主が渡すものの一覧と今の状態を読む。questions（問い・答えたか・説明）、missing（仕事ごとに足りない問い。dev は開発を始める）、composition（製品のリポと工場の扱い）、analysis（工場の解析の要約と、解析が足した a- で始まる問い）、assessment（準備度の判定と仕事ごとのお願い）。まずこれを読み、足りないものを本人に聞く",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "product": {
+      "type": "string",
+      "description": "製品（owner/repo。工場が主に書くリポの名前）"
+     }
+    },
+    "required": [
+     "product"
+    ]
+   }
+  },
+  {
+   "name": "onboarding_provide",
+   "description": "オンボーディングの答えを渡す。answers は [{question, value?, note?, skip?, file?}]。question は onboarding_status の id。repos は value に [{repo: owner/name, role: backend|mobile|web|bff|infra|docs|other, access: read|write, main?: true}]。choice は options のキー、arn は IAM ロールの ARN、confirm は value に「はい」。無い・分からないは skip: true。file は {path: 手元のファイルのパス} か {name, text}（8MB まで）。鍵・パスワード・トークンの値は絶対に渡さない（置き場の名前を渡す）。1 件でも問題があれば何も記録されないので、返ってきた理由を直して渡し直す。本人が答えた内容だけを渡す",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "product": {
+      "type": "string"
+     },
+     "answers": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "question": {
+         "type": "string"
+        },
+        "value": {},
+        "note": {
+         "type": "string"
+        },
+        "skip": {
+         "type": "boolean"
+        },
+        "file": {
+         "type": "object",
+         "properties": {
+          "path": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "text": {
+           "type": "string"
+          }
+         }
+        }
+       },
+       "required": [
+        "question"
+       ]
+      }
+     }
+    },
+    "required": [
+     "product",
+     "answers"
+    ]
+   }
+  },
+  {
+   "name": "onboarding_run",
+   "description": "棚卸しと解析をすぐにやり直してもらう（答えを渡したときは工場が自分で流すので、ふつうは要らない）",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "product": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "product"
+    ]
+   }
+  },
+  {
+   "name": "onboarding_doc",
+   "description": "工場の解析が起こした文書を読む。name は architecture.md・api.yaml・screens.md・glossary.yaml のどれか（onboarding_status の analysis.docs）。本人に「こう読んだ」を見せ、読み違いがなければ onboarding_provide で reading_confirmed に「はい」を渡す",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "product": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "product",
+     "name"
+    ]
    }
   },
   {

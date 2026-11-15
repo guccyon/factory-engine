@@ -48,6 +48,14 @@ CSS = """
 .prod .trend{display:flex;gap:2px;align-items:flex-end;height:26px;margin-top:4px}.prod .trend i{display:block;width:8px;border-radius:2px 2px 0 0}
 .prod .rows a{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;padding:10px 0;border-top:1px solid var(--line);color:var(--ink);text-decoration:none}
 .prod .rows a:first-child{border-top:0}.prod .rows a:hover b{color:var(--accent)}
+.prod .obq{border-top:1px solid var(--line);padding:8px 0}.prod .obq .qh{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.prod .obq .qh b{font-size:13px}.prod .obq .val{font-size:12px;margin:4px 0;word-break:break-word}
+.prod .obq .in{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;align-items:flex-start}
+.prod .obq input[type=text],.prod .obq textarea,.prod .obq select{font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;
+background:var(--surface);color:var(--ink);min-width:0;flex:1 1 220px;max-width:100%}
+.prod .obq textarea{min-height:64px;flex-basis:100%}.prod .obq button,.prod button.obrun{font:inherit;font-size:12px;padding:4px 10px;border-radius:6px;
+border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}.prod .obq button.go{background:var(--accent);border-color:var(--accent);color:#fff}
+.prod .obq details{font-size:12px;color:var(--ink-sub)}.prod .need{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 4px}
 """
 
 
@@ -178,10 +186,83 @@ def _stack(p: dict) -> str:
             '工場の生産に使うサービス（バックログ管理・デザインの資料など）は設定の<a href="/settings/connectors" data-nav>サービスとの連携</a></div></section>')
 
 
-def body_product(p: dict | None, product: str = "") -> str:
+TARGET_JA = {"dev": "開発を始める", "ship": "本番に出す", "store": "ストアに出す", "ops": "運用を引き受ける"}
+GROUP_JA = {"scope": "引き受けの範囲と製品の構成", "people": "体制と連絡", "build": "作り方と動かす環境", "ship": "出し方と配信の場所", "ops": "運用",
+            "material": "資料", "analysis": "工場の解析からの問い"}
+
+
+def _input(q: dict) -> str:
+    k = q["kind"]
+    if k == "repos":
+        return ('<textarea data-obv placeholder="1 行に 1 本: owner/name 役割 扱い [main]（例 acme/api backend read、acme/web web write main）。'
+                '役割は backend・mobile・web・bff・infra・docs・other、扱いは read（読むだけ）か write（工場が PR を出す）"></textarea>')
+    if k == "choice":
+        return "<select data-obv>" + "".join(f'<option value="{esc(o)}">{esc(v)}</option>' for o, v in (q.get("options") or {}).items()) + "</select>"
+    if k == "file":
+        return '<input type="file" data-obv>'
+    if k == "confirm":
+        return ""
+    ph = {"arn": "arn:aws:iam::123456789012:role/名前", "url": "https://..."}.get(k, "答え（鍵やパスワードの値は書かない）")
+    return f'<input type="text" data-obv placeholder="{esc(ph)}">'
+
+
+def _question(q: dict, product: str) -> str:
+    state = ('<span class="good">済</span>' if q["answered"] and not q["skipped"] else '<span class="m">無い・分からない</span>' if q["skipped"]
+             else '<span class="warn">確かめ直し</span>' if q["stale"] else '<span class="m">まだ</span>')
+    need = "".join(f'<span class="need">{esc(TARGET_JA.get(t, t))}に要る</span>' for t in q["required"])
+    val = f'<div class="val">{esc(q["value"])}</div>' if q["value"] else ""
+    note = f'<div class="val m">補足: {esc(q["note"])}</div>' if q.get("note") else ""
+    by = f'<span class="m">{esc(q.get("by") or "")} {when(q.get("at"))}</span>' if q["answered"] else ""
+    go = "はい（読みを確かめた）" if q["kind"] == "confirm" else "渡す"
+    skip = '' if q["kind"] in ("confirm", "repos") else f'<button data-ob="{esc(q["id"])}" data-p="{esc(product)}" data-skip="1">無い・分からない</button>'
+    return (f'<div class="obq" data-obq data-kind="{esc(q["kind"])}"><div class="qh"><b>{esc(q["ja"])}</b>{state}{need}{by}</div>{val}{note}'
+            f'<details><summary>説明</summary>{esc(q.get("help") or "")}</details>'
+            f'<div class="in">{_input(q)}<input type="text" data-obn placeholder="補足（任意）">'
+            f'<button class="go" data-ob="{esc(q["id"])}" data-p="{esc(product)}">{go}</button>{skip}</div></div>')
+
+
+def intake_section(sm: dict | None, product: str) -> str:
+    """オンボーディングで事業主が渡すもの（ADR 0045 の追記 2026-11-15）。答えの入力と、製品の構成・解析の要約"""
+    if not sm:
+        return ""
+    comp = sm["composition"]
+    rows = "".join(f'<tr><td>{esc(r["repo"])}</td><td>{esc(r.get("role"))}</td><td>{"工場が PR を出す" if r.get("access") == "write" else "読むだけ"}'
+                   f'{"（主）" if r["repo"] == comp["main"] else ""}</td></tr>' for r in comp["repos"])
+    miss = "".join(f'<li>{esc(TARGET_JA.get(t, t))}: {esc("、".join(next((q["ja"] for q in sm["questions"] if q["id"] == i), i) for i in ids))}</li>'
+                   for t, ids in sm["missing"].items() if ids)
+    an = sm.get("analysis")
+    an_html = '<div class="m">まだ。リポを渡すと、工場が全リポを読み取りで取って棚卸しと解析をする（続けて答えているあいだは 10 分待つ）</div>'
+    if an:
+        c = an.get("counts") or {}
+        docs = "".join(f'<a href="/api/products/{quote(product, safe="/")}/docs/{esc(n)}" target="_blank" rel="noopener">{esc(n)}</a> '
+                       for n in (an.get("docs") or {}))
+        net = an.get("network") or {}
+        an_html = (f'<div>{esc(an.get("summary") or "")}</div><div class="m" style="margin-top:4px">ジョブ {esc(an.get("job_id"))} · リポ {c.get("repos", 0)} · '
+                   f'API {c.get("endpoints", 0)} · 画面 {c.get("screens", 0)} · 外部サービス {c.get("services", 0)}</div>'
+                   + (f'<div class="m">Web から backend へ: 入口 {esc(net.get("backend_entry"))} · 認証 {esc(net.get("auth"))} · {esc(net.get("bff_note"))}</div>' if net else "")
+                   + (f'<div style="margin-top:4px">起こした文書: {docs}</div>' if docs else ""))
+    groups: dict[str, list[str]] = {}
+    for q in sm["questions"]:
+        groups.setdefault(q.get("group") or "analysis", []).append(_question(q, product))
+    qs = "".join(f'<h3>{esc(GROUP_JA.get(g, g))}</h3>{"".join(xs)}' for g, xs in groups.items())
+    lv = sm.get("levels_from_answers") or {}
+    return (f'<section><h2>オンボーディングで渡すもの</h2>'
+            f'<div class="m">事業主（とその代理の Claude）は窓口の MCP（onboarding_status・onboarding_provide）からも渡せる。鍵・パスワード・トークンの値は受け取らない。'
+            f'答えると工場が準備度を測り直し、リポや資料が変わったら解析をやり直す</div>'
+            + (f'<h3>足りないもの</h3><ul class="ls">{miss}</ul>' if miss else '<div class="good" style="margin-top:6px">必須の問いはそろった</div>')
+            + f'<h3>製品の構成</h3>{f"<div class=tbl><table><tr><th>リポジトリ</th><th>役割</th><th>工場の扱い</th></tr>{rows}</table></div>" if rows else "<div class=m>まだ</div>"}'
+            + f'<h3>工場の解析</h3>{an_html}<div style="margin-top:6px"><button class="obrun" data-ob="_run" data-p="{esc(product)}">棚卸しと解析をやり直す</button></div>'
+            + (f'<div class="m" style="margin-top:6px">答えから出した粒度: {esc("、".join(f"{k} {v}" for k, v in lv.items()))}</div>' if lv else "")
+            + f'{qs}</section>')
+
+
+def body_product(p: dict | None, product: str = "", intake: dict | None = None) -> str:
     if not p:
+        if intake:
+            return _wrap(f'<div class="head"><h1>{esc(product)}</h1><a class="m" href="{PATH}" data-nav>製品の一覧</a></div>'
+                         '<div class="m">判定の記録はまだない（答えを渡すと工場が測る）</div>' + intake_section(intake, product))
         return _wrap(f'<section><h2>{esc(product)}</h2><div class="m">この製品の判定の記録がない。<a href="{PATH}" data-nav>製品の一覧へ</a></div></section>')
     head = (f'<div class="head"><h1>{esc(p["product"])}</h1><a class="m" href="{PATH}" data-nav>製品の一覧</a>'
             f'<span class="m">記録した道具・人 {esc(p.get("by") or "—")}</span></div>'
             + (f'<div class="m">{esc(p["note"])}</div>' if p.get("note") else ""))
-    return _wrap(head + _ladder(p) + _meter(p) + _stack(p))
+    return _wrap(head + _ladder(p) + _meter(p) + intake_section(intake, product or p["product"]) + _stack(p))

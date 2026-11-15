@@ -1,0 +1,203 @@
+# オンボーディングで事業主から受け取るもの（質問票。ADR 0045 の追記 2026-11-15「受け取る口と、棚卸しと解析のジョブ」）
+# 事業主（とその代理の Claude）が窓口の API・MCP、操業コンソールの製品のページ、factoryctl onboarding provide から渡す。
+# ここに置くのはどの製品にも効く問いだけ。その製品の答えは工場の記録（events の onboarding.intake）に置き、ここには書かない
+# （公開のリポジトリなので先方の情報も書かない）。
+#
+# 読み方（dispatcher/onboarding_intake.py）:
+#   kind: 答えの形
+#     repos   リポジトリの一覧。1 件ずつ {repo: owner/name, role, access: read|write, main?: true, note?}。remove: true で外す
+#     text    文。url と arn も文の一種で、形だけ確かめる
+#     choice  options のどれか（note を添えてよい）
+#     file    書き出したファイル（設計資料・Figma の書き出し・手順書など）。本文はオブジェクトストアに置き、記録には名前と大きさと指紋だけ
+#     confirm 事業主の確かめ（「はい」）。いちばん新しい解析の後に答えたものだけ効く
+#   for: この問いが効く仕事（準備度の targets）。required: 無いとその仕事の「足りない」に並べる仕事
+#   raises: 答えがそろうと準備度の項目（onboarding_readiness.yaml）をどこまで上げてよいか。needs の問いもそろっているときだけ
+#           値ごとに変えるときは by_value（choice）。repos は access で決まる（読み取りだけ → 1、書けるリポがある → 2）
+#   鍵・パスワード・トークンの値は受け取らない。鍵らしい文字列があれば記録せずに断る（置き場の名前を渡してもらう）
+#
+# Gen1 のプロトタイプ。Gen1.5 でモデリングからやり直す。
+
+schema_version: "0.1"
+status: draft
+
+kinds: [repos, text, url, arn, choice, file, confirm]
+repo_roles: {backend: backend・API, mobile: モバイルアプリ, web: Web アプリ, bff: BFF, infra: インフラ（IaC）, docs: 文書, other: その他}
+repo_access: {read: 読み取りだけ（工場は書かない）, write: 工場が PR を出す}
+
+groups:
+  scope: 引き受けの範囲と製品の構成
+  people: 体制と連絡
+  build: 作り方と動かす環境
+  ship: 出し方と配信の場所
+  ops: 運用
+  material: 資料
+
+questions:
+  - id: repos
+    group: scope
+    ja: 製品のリポジトリ
+    kind: repos
+    for: [dev, ship, ops]
+    required: [dev]
+    help: >-
+      この製品のリポジトリをすべて並べ、役割（backend・モバイル・Web・BFF・インフラ）と工場の扱い（読み取りだけか、工場が PR を出すか）を付けてください。
+      工場が主に書くリポには main: true を付けます。工場の GitHub App（無ければ工場のアカウント）が読めるようにしてから渡してください
+  - id: web_scope
+    group: scope
+    ja: 最初に作るもの
+    kind: text
+    for: [dev]
+    required: [dev]
+    help: 最初の仕事で何を作るか（例：モバイルのどの画面・流れを Web にするか）。工場はこれを製品の最初のチケットの材料にします
+  - id: review_rules
+    group: scope
+    ja: レビューとブランチの決まり
+    kind: text
+    for: [dev]
+    raises: {item: p-repo, level: 3, needs: [repos]}
+    help: PR のレビューの決まり、ブランチの名前、マージのしかた。文書があれば場所でよい
+  - id: backlog
+    group: people
+    ja: バックログの置き場
+    kind: choice
+    options: {github_issues: GitHub の Issues, jira: Jira, other: そのほか}
+    for: [dev]
+    required: [dev]
+    raises: {item: p-backlog, by_value: {github_issues: 2, jira: 1, other: 1}}
+    help: チケットを置く場所。GitHub の Issues なら工場がそのまま読み書きします。ほかのサービスは書き出しかコネクタで受け取ります
+  - id: notify
+    group: people
+    ja: 通知の宛先
+    kind: text
+    for: [dev, ship, ops]
+    required: [dev]
+    raises: {item: p-notify, level: 1}
+    help: 工場からの知らせを受ける場所（Slack のチャンネルなど）
+  - id: approvers
+    group: people
+    ja: 承認する人
+    kind: text
+    for: [dev, ship]
+    required: [dev, ship]
+    raises: {item: p-notify, level: 2, needs: [notify]}
+    help: 稼働 ready・本番に出す・仕様の確かめを承認する人の名前（GitHub のアカウントなど）
+  - id: contacts
+    group: people
+    ja: 判断の受け手と社内の開発の窓口
+    kind: text
+    for: [dev]
+    raises: {item: p-notify, level: 3, needs: [notify, approvers]}
+    help: 製品の判断を受ける人（事業主の側）と、社内の開発者の窓口（コードの読み違いを聞ける人）
+  - id: staging
+    group: build
+    ja: 既存の staging の入口
+    kind: url
+    for: [dev, ship]
+    help: 既存の backend の staging（検証の環境）の URL。工場の BFF や Web はここに向けて動かします。無ければ「無い」と書いてください
+  - id: test_accounts
+    group: build
+    ja: テスト用のアカウントの置き場
+    kind: text
+    for: [dev]
+    help: staging で使うテスト用のアカウントの置き場（例：Secrets Manager のシークレットの名前）。パスワードの値は書かないでください
+  - id: auth_flow
+    group: build
+    ja: ログインのしかた
+    kind: text
+    for: [dev]
+    help: モバイルがどうログインし、どんなトークンで backend を呼んでいるか。Web から同じ流れを使えるか分かっていれば書いてください
+  - id: aws_account
+    group: ship
+    ja: 配信に使う AWS アカウント
+    kind: text
+    for: [ship, ops]
+    required: [ship]
+    raises: {item: p-cloud, level: 1}
+    help: アカウントの ID とリージョン。既存の backend と同じアカウントか別かも書いてください
+  - id: aws_deploy_role
+    group: ship
+    ja: 配信用のロール
+    kind: arn
+    for: [ship]
+    required: [ship]
+    raises: {item: p-cloud, level: 2, needs: [aws_account]}
+    help: >-
+      GitHub の OIDC で引き受ける IAM ロールの ARN。信頼する相手は「工場が作るリポの、決めた環境のワークフロー」に絞ってください。
+      工場はアクセスキーを受け取りません
+  - id: aws_read_role
+    group: ops
+    ja: 読み取り用のロール
+    kind: arn
+    for: [ops]
+    required: [ops]
+    raises: {item: p-cloud, level: 3, needs: [aws_deploy_role, aws_boundary]}
+    help: ログ・メトリクス・配信の資源を読むための IAM ロールの ARN（障害の調査に使う）
+  - id: aws_boundary
+    group: ship
+    ja: AWS で触ってよい範囲
+    kind: text
+    for: [ship, ops]
+    help: 既存の資源のうち工場が触らないもの（タグ・名前の決まり・アカウントの分け方）。新しく作る資源の名前の決まりがあれば
+  - id: domain
+    group: ship
+    ja: 配信のドメイン
+    kind: text
+    for: [ship]
+    help: Web を出すドメイン（既存のドメインのサブドメインなど）と、DNS を持っているアカウント
+  - id: ship_existing
+    group: ship
+    ja: 既存の出し方
+    kind: text
+    for: [ship]
+    raises: {item: p-prod, level: 1}
+    help: 既存の backend とアプリをどう出しているか（GitHub Actions・CodePipeline・手作業など）。リポから読める分は工場が読みます
+  - id: flags
+    group: ship
+    ja: feature flag の仕組み
+    kind: choice
+    options: {none: 無い, saas: サービスを使っている（LaunchDarkly など）, own: 自前の設定}
+    for: [ship]
+    raises: {item: p-flag, by_value: {saas: 1, own: 1}}
+    help: 機能の出し入れを切り替える仕組み。無ければ「無い」
+  - id: store
+    group: ship
+    ja: ストア配信
+    kind: text
+    for: [store]
+    raises: {item: p-store, level: 1}
+    help: アプリのストアのアカウントと、今どこからビルドを上げているか（署名の鍵は渡さないでください）
+  - id: monitoring
+    group: ops
+    ja: 監視とログの置き場
+    kind: text
+    for: [ship, ops]
+    raises: {item: p-monitor, level: 1}
+    help: 監視とログを見ている場所（CloudWatch・Datadog など）と、アラートが今どこに届いているか
+  - id: design
+    group: material
+    ja: デザインの資料
+    kind: file
+    for: [dev]
+    raises: {item: p-design, level: 1}
+    help: Figma などの書き出し（画像・トークンの JSON）。OAuth のコネクタはまだ無いので、書き出したファイルで受け取ります
+  - id: docs
+    group: material
+    ja: 既存の文書
+    kind: file
+    for: [dev, ops]
+    raises: {item: p-docs, level: 1}
+    help: 仕様・設計・運用の手順・障害の記録の書き出し。何度でも足せます
+  - id: reading_confirmed
+    group: scope
+    ja: 工場の読みを確かめた
+    kind: confirm
+    for: [dev]
+    help: 工場が解析から起こした「こう読んだ」（構成・API・画面・用語）を見て、大きな読み違いが無いと確かめたら「はい」。直したいところは文で添えてください
+
+# 解析のジョブ（onboard）が足す問い。id は a- で始まり、kind は text。答え方は上の問いと同じ
+analysis_question_prefix: "a-"
+limits:
+  text_chars: 4000
+  file_bytes: 8388608        # 1 ファイル 8MB
+  file_text_to_job: 60000    # 文の資料は解析のジョブにこの字数まで渡す
+  repos: 20

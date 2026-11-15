@@ -49,6 +49,8 @@ import usage_hold
 import desk_answer
 import desk_task
 import desk_investigate
+import onboarding_intake
+import onboarding_line
 import investigate_bench
 import desk_line
 import planner
@@ -181,18 +183,19 @@ def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
 # 始めるときに Issue のラベルを替えない種類（ADR 0004 / 0006 / 0022 / 0024 / 0025 / 0030 / 0048）。issue_number は PR か固定 Issue の番号か、
 # Issue のない仮の負の数（窓口の会話・一次調査とその評価セット）。仮の番号のラベルを替えると GitHub が 404 を返してジョブが落ちる（2026-11-10）
 NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
-                  "ui_design_review", "desk_consult", "desk_answer", "desk_task", "investigate")
+                  "ui_design_review", "desk_consult", "desk_answer", "desk_task", "investigate", "onboard")
 # ジョブ専用の空の DB を作らない種類（製品のテストを流さない）。一次調査は制御プレーンを調査用の接続（INVESTIGATE_DATABASE_URL）で読むだけ。
 # 中継（relay_env）を使う種類は --network を中継の側で付けるので、ここに入れないと --network が 2 回付いて docker run が 125 で落ちる（2026-11-10）
 NO_JOB_DB_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
-                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike")
+                   "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike",
+                   "onboard")
 # 入力（job.enqueued の input）を標準入力で渡す種類。ワーカーの入口が最初に標準入力を読む
 PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan",
-               "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike")
+               "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike", "onboard")
 # PR を作らない種類で、終了コード 0 と結果の ok で成功とみなすもの
 OK_RESULT_KINDS = ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan",
-                   "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike")
-ISSUELESS_KINDS = ("desk_consult", "desk_answer", "desk_task", "investigate")   # issue_number が仮の負の数の種類
+                   "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike", "onboard")
+ISSUELESS_KINDS = ("desk_consult", "desk_answer", "desk_task", "investigate", "onboard")   # onboard はオンボーディングの解析（ADR 0045 の追記 2026-11-15）   # issue_number が仮の負の数の種類
 
 
 def image_for(repo: str, issue: int) -> str:
@@ -511,7 +514,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["--memory", ENV["WORKER_MEMORY"]] if ENV.get("WORKER_MEMORY") else []),
                    "-e", f"MODEL_TIER={job['model_tier'] or MODEL_TIER}", "-e", f"MAX_TURNS={ENV.get('MAX_TURNS', '40')}",
                    *(["-e", f"MAX_BUDGET_USD={budget}"] if budget is not None else []),
-                   "-e", f"GH_TOKEN={'' if kind == 'investigate' else ghapp.job_token(repo)}",   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）。一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）
+                   *gh_token_env(cur, job_id, kind, repo),   # ジョブのリポジトリだけに絞った短命のトークン（App のとき。ADR 0041）。一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）
                     "-e", f"CLAUDE_CODE_OAUTH_TOKEN={ENV['CLAUDE_CODE_OAUTH_TOKEN']}",
                    *(["-e", f"CONTINUE_BRANCH={cont['branch']}", "-e", f"CONTINUE_PR={cont['pr_number']}", "-e", f"CONTINUE_REASON={cont['reason']}"] if cont else []),
                    *(["--entrypoint", "/usr/local/bin/clarify.sh"] if kind == "clarify" else []),
@@ -527,6 +530,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design_review.sh"] if kind == "ui_design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/plan.sh"] if kind == "plan" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/spike.sh"] if kind == "spike" else []),   # スパイクの System Architect（ADR 0055）
+                   *(["-i", "--entrypoint", "/usr/local/bin/onboard.sh"] if kind == "onboard" else []),   # オンボーディングの棚卸しと解析（ADR 0045 の追記 2026-11-15）
                    *(["-i", "--entrypoint", "/usr/local/bin/design_system.sh"] if kind == "design_system" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_consult.sh"] if kind == "desk_consult" else []),   # 窓口の相談役（ADR 0030 の 3）
                    *(["-i", "--entrypoint", "/usr/local/bin/desk_answer.sh"] if kind == "desk_answer" else []),   # 窓口の回答役（ADR 0030 の 4）
@@ -756,6 +760,12 @@ def run_job(job: dict, reattaching: bool = False):
                     desk_line.record(cur, job, result, state, err)
                 except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
                     log("desk consult record failed", job_id, repr(e))
+            elif kind == "onboard":
+                # オンボーディングの棚卸しと解析（ADR 0045 の追記 2026-11-15）: 解析の要約と文書を残し、判定を測り直す。失敗も記録する
+                try:
+                    onboarding_line.record(cur, job, result or {}, state, err, put=store_put)
+                except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
+                    log("onboard record failed", job_id, repr(e))
             elif kind == "investigate":
                 # 工場の中での一次調査（ADR 0048）: 結果を成果物に残し、報告を会話に提出する。失敗も提出する
                 try:
@@ -1071,6 +1081,11 @@ def desk_loop():
                 log(f"enqueued investigate job {jid}")
         except Exception as e:  # noqa: BLE001
             log("investigate enqueue failed", repr(e))
+        try:   # オンボーディングの棚卸しと解析（ADR 0045 の追記 2026-11-15）。積むのは窓口の周回、取り出すのは governance の枠
+            for jid in onboarding_line.enqueue(cur, MODEL_TIER, store_get=store_get):
+                log(f"enqueued onboard job {jid}")
+        except Exception as e:  # noqa: BLE001
+            log("onboard enqueue failed", repr(e))
         return line.claim_desk(cur)
     _claim_loop("desk", claim)
 
@@ -1825,6 +1840,29 @@ def _investigate_ref(cur, job_id: int) -> str:
     r = cur.fetchone()
     ref = (r or {}).get("ref") or ""
     return ref if investigate_bench.REF.match(ref) else "main"
+
+
+def gh_token_env(cur, job_id: int, kind: str, repo: str) -> list[str]:
+    """ジョブに渡す GitHub のトークン。ふつうはジョブのリポジトリだけに絞った短命のもの（App のとき。ADR 0041）。
+    一次調査には渡さない（GitHub は中継の inv_github で読む。ADR 0048）。オンボーディングの解析は製品の全リポを読むだけ（ADR 0045 の追記 2026-11-15）。
+    実装は、製品の構成に読み取りのリポ（既存の backend・モバイルなど）があれば、参照で読むトークンを別に渡す（REF_GH_TOKEN）"""
+    if kind == "investigate":
+        return ["-e", "GH_TOKEN="]
+    if kind == "onboard":
+        tok, toks = ghapp.read_tokens(onboarding_line.job_repos(cur, job_id))
+        return ["-e", f"GH_TOKEN={tok}", "-e", f"GH_TOKENS={toks}"]
+    out = ["-e", f"GH_TOKEN={ghapp.job_token(repo)}"]
+    if kind == "implement":
+        try:
+            refs = onboarding_intake.reference_repos(cur, repo)
+        except Exception as e:  # noqa: BLE001  参照が無くても実装はできる
+            log("reference repos failed", job_id, repr(e))
+            refs = []
+        if refs:
+            tok, toks = ghapp.read_tokens([r["repo"] for r in refs])
+            out += ["-e", "REFERENCE_REPOS=" + " ".join(f"{r['repo']}:{r.get('role') or 'other'}" for r in refs),
+                    "-e", f"REF_GH_TOKEN={tok}", "-e", f"REF_GH_TOKENS={toks}"]
+    return out
 
 
 def relay_env(job_id: int, kind: str, repo: str | None = None) -> list[str]:

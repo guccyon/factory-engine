@@ -121,10 +121,10 @@ def test_inbox_asks_wait_for_remeasure(cur):
     later["levels"]["p-monitor"] = 3
     onboarding.record(cur, DEFS, later, "test")
     again = next(i for i in inbox.items(cur) if i["key"] == ops["key"])
-    assert [d["label"] for d in again["detail"]] == ["既存の文書（Confluence など）", "技術スタックと外部サービスの地図"]
+    assert [d["label"] for d in again["detail"]] == ["配信の場所（クラウドのアカウント）", "既存の文書（Confluence など）", "技術スタックと外部サービスの地図"]
     # 全部そろえば件は閉じる
     full = copy.deepcopy(later)
-    full["levels"].update({"p-store": 3, "o-stack": 3, "p-docs": 3})
+    full["levels"].update({"p-store": 3, "o-stack": 3, "p-docs": 3, "p-cloud": 3, "p-flag": 2})
     onboarding.record(cur, DEFS, full, "test")
     assert not [i for i in inbox.items(cur) if i["kind"] == "readiness_ask"]
 

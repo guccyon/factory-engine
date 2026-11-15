@@ -77,10 +77,29 @@ items:
   - id: p-prod
     group: provided
     ja: 本番の出荷の仕組み
-    levels: [無い, 構成図だけ, 差分の確認（plan）まで, 承認つきで先方の出荷を起動でき、出す前の DB の控えがある（先方の控えでよい。ADR 0057）]
-    req: {ship: {min: 3, goal: 3, must: true, weight: 3}}
+    # 2026-11-15 12_ship-targets の 10 の直し案に合わせた（先方の出荷のワークフローを工場が起動する形）
+    levels: [無い, 仕組みが分かる（棚卸しの見立て）, 工場が staging を起動して確かめ・戻せる, ＋本番を事業主の承認つきで工場が起動でき、出す前の DB の控えがある（先方の控えでよい。ADR 0057）]
+    req: {ship: {min: 2, goal: 3, must: true, weight: 3}}
     warn: 本番に出せない
-    ask: 本番の出荷の仕組みを、承認つきで工場から起動できる形にし、本番に出す前の DB の控えの取り方（先方の仕組みがあればそれ）を教えてください
+    ask: 本番の出荷の仕組みに、工場のアカウントを起動と承認の役として入れ、本番に出す前の DB の控えの取り方（先方の仕組みがあればそれ）を教えてください
+  - id: p-cloud
+    group: provided
+    ja: 配信の場所（クラウドのアカウント）
+    # 2026-11-15 追加。工場が新しく作るものを事業主のクラウドに出すとき。鍵は受け取らず、GitHub の OIDC で引き受けるロールだけ
+    levels: [無い, アカウントだけ, 配信のロール（OIDC）, ＋読み取りのロールと触ってよい範囲]
+    req:
+      ship: {min: 0, goal: 2, must: false, weight: 2}
+      ops:  {min: 0, goal: 3, must: false, weight: 1}
+    warn: 工場が新しく作るものを出す場所が無い（既存の出し方に乗せるなら要らない）
+    ask: 配信に使うクラウドのアカウントに、工場のリポのワークフローが OIDC で引き受けるロールを作り、ARN を教えてください
+  - id: p-flag
+    group: provided
+    ja: feature flag の仕組み
+    # 2026-11-15 追加（12_ship-targets の 10）。無ければ配備＝公開で出す
+    levels: [無い, ある, 工場から読める, 工場から割合を変えて切れる]
+    req: {ship: {min: 0, goal: 2, must: false, weight: 1}}
+    warn: 出した機能をすぐに切れず、配備がそのまま公開になる
+    ask: feature flag の仕組みがあれば、工場から読める（できれば切り替えられる）ようにしてください
   - id: p-store
     group: provided
     ja: ストア配信
