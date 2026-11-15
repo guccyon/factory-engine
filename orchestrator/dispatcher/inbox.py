@@ -47,7 +47,8 @@ MODEL_TIER = os.environ.get("MODEL_TIER", "tier-large")   # 人が案を戻し�
 ANSWER_TYPES = ("choose", "approve", "ack", "text")
 VIAS = ("console", "review_page", "factoryctl", "mcp", "github", "slack")   # 入口（ADR 0034 の決定 3）
 EXTRA = {"return": {"id": "return", "label": "どれも違う（戻す）", "note_required": True},
-         "flag": {"id": "flag", "label": "違和感の印", "note_required": True, "closes": False}}   # 印は件を閉じない（何度でも付けられる）
+         "flag": {"id": "flag", "label": "違和感の印", "note_required": True, "closes": False},   # 印は件を閉じない（何度でも付けられる）
+         "fix": {"id": "fix", "label": "直してほしい（Issue にする）", "note_required": True, "closes": False}}   # 印＋プランナー宛ての Issue（capture_fix.py）
 CHOICE_EFFECTS = {
     "design_variants": "選んだ体験の案で実装のタスクに切って投入する。戻すとコメントを直しの指摘にしてデザイナー役が作り直す",
     "design_look": "選んだ見た目の案を実装に反映する。戻すとコメントを直しの指摘にしてデザイナー役が作り直す",
@@ -329,12 +330,17 @@ def _release_item(cur, repo: str) -> dict | None:
     else:
         detail = [{"label": "QA の関門", "text": "この版は関門を通っていない（判定と探索の報告がない）"}]
         action = "staging で確かめて「本番に出す」を押す"
+    # いつから答えられるか。関門の報告を待つ間は出さないので、届いた時刻は報告ができた時刻にする
+    # （11/15: 0.36.0 は staging 17:53 UTC・報告 20:30 UTC で、受信トレイでは 17:53 に届いたように見え、2.5 時間遅れて見えた）
+    since = d["occurred_at"] if d else None
+    if g and g["state"] == "decided" and g["decided"].get("at") and (since is None or g["decided"]["at"] > since):
+        since = g["decided"]["at"]
     contracts = _contracts_between(cur, repo, pr.get("release_id"), rid)
     if contracts:   # ADR 0057 の決定 4: 出すと前の版に戻せなくなることを、押す前に知らせる
         detail.append({"label": "DB の contract", "text": f"この版を出すと DB から列・表を消すマイグレーションが当たり、{pr.get('release_id') or '前の版'} "
                        f"より前には戻せなくなる（{'・'.join(contracts)}）"})
     return {"key": f"release:{rid}", "kind": "release", "who": "owner", "title": f"{repo} の {ver} が本番待ち",
-            "action": action, "detail": detail, "url": "/#ship", "since": d["occurred_at"] if d else None, "ref": repo,
+            "action": action, "detail": detail, "url": "/#ship", "since": since, "ref": repo,
             "processing": pending["payload"] if pending else None,
             "answer": {"type": "approve", "options": [{"id": "approve", "label": f"本番に出す（{ver}）"}],
                        "extra": [{"id": "block", "label": "見送る（ブロッカーにする）", "note_required": True}] if g else [],
@@ -502,8 +508,8 @@ def view(cur, now: datetime | None = None) -> dict:
 # ------------------------------------------------------------------ 答える（ADR 0034 の決定 1・4・5）
 def _choice_answer(aid: int, p: dict, who: str) -> dict:
     if p.get("kind") == "exit_capture":
-        return {"type": "ack", "options": [{"id": "seen", "label": "見た（ほかに違和感なし）"}], "extra": [EXTRA["flag"]],
-                "effect": "印のない画面を違和感のなかった画面として閉じる", "allowed": [who], "target": ("choice", aid)}
+        return {"type": "ack", "options": [{"id": "seen", "label": "見た（ほかに違和感なし）"}], "extra": [EXTRA["flag"], EXTRA["fix"]],
+                "effect": "印のない画面を違和感のなかった画面として閉じる。「直してほしい」は印を付けたうえで、直す Issue をプランナー宛てに起票する（件は閉じない）", "allowed": [who], "target": ("choice", aid)}
     return {"type": "choose", "options": [{"id": o["id"], "label": o.get("label") or o["id"]} for o in p.get("options") or []],
             "recommended": p.get("recommended"), "extra": [EXTRA["return"], EXTRA["flag"]],
             "effect": CHOICE_EFFECTS.get(p.get("kind"), "選んだ案を記録する"), "allowed": [who], "target": ("choice", aid)}
@@ -604,6 +610,9 @@ def _apply(cur, target: tuple, option: str, by: str, via: str, note: str, flag_o
     if kind == "choice":
         if option == "flag":
             return choice.flag(cur, ref, note, by, flag_option, viewpoint)
+        if option == "fix":
+            import capture_fix
+            return capture_fix.request(cur, ref, note, by, flag_option, viewpoint)
         return _answer_choice(cur, ref, option, by, note)
     if kind == "captures":
         n = sum(1 for aid in ref if choice.mark_seen(cur, aid, by, note)[0])

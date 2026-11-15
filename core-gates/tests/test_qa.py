@@ -94,6 +94,32 @@ def test_run_retries_once_and_returns_verdicts_with_known_gaps(tmp_path, monkeyp
     assert "coach-replies" in calls[0] and "host.docker.internal:13100" in calls[0]
 
 
+def test_run_stops_at_usage_limit_without_asking_to_fix(tmp_path, monkeypatch):
+    """使用量の上限で落ちたら、成果物がないと言わずに理由を返す。直させる 2 回目も呼ばない（2026-11-15）"""
+    d, calls = product(tmp_path), []
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        calls.append(text)
+        return sys.modules["agent_runner"].Result(output="", exit=1, num_turns=1, usage_limit="You've hit your limit · resets 11am")
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)
+    res = qa.run(d, {}, tmp_path / "o", DEFS)
+    assert not res["ok"] and len(calls) == 1
+    assert res["errors"] == ["使用量の上限でエージェントが動けなかった（usage limit: You've hit your limit · resets 11am）"]
+
+
+def test_run_stops_when_agent_never_ran(tmp_path, monkeypatch):
+    d, calls = product(tmp_path), []
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        calls.append(text)
+        return sys.modules["agent_runner"].Result(output="", exit=1, num_turns=0)
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)
+    res = qa.run(d, {}, tmp_path / "o", DEFS)
+    assert len(calls) == 1 and "1 ターンも動かずに" in res["errors"][0] and "rc=1" in res["errors"][0]
+
+
 def test_run_without_stories_or_entries(tmp_path):
     d = product(tmp_path, [])
     assert not qa.run(d, {}, tmp_path / "o", DEFS)["ok"]

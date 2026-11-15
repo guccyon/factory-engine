@@ -779,7 +779,7 @@ events:
   qa.gate_plan:
     source: control_plane
     required: [release_id, repo, time_stories]
-    note: "ADR 0055 の決定 3。関門を開いた最初の周回で、時刻をまたぐストーリー（specs/stories の time があるもの）を判定から外して、判定と探索のあとに流すと決めた。other_stories は判定で流す残り。製品のストーリーを読めなかったときは time_stories が空で other_stories が null（分けない）と error。dedupe は qa.gate_plan:<release_id>。ADR 0054: 版ごとの Issue にシナリオごとのジョブを積むときは、issue・corr（版のチケット）・units（[{unit, which, story か charter}]）・cap_usd（版のチケットの費用の上限 = ジョブの上限の合計 × 係数）を足す。積めないとき（単位の列がない・ストーリーがない・Issue を作れない）は units がなく legacy_why に理由（今までの形で動く）"
+    note: "ADR 0055 の決定 3。関門を開いた最初の周回で、時刻をまたぐストーリー（specs/stories の time があるもの）を判定から外して、判定と探索のあとに流すと決めた。other_stories は判定で流す残り。製品のストーリーを読めなかったときは time_stories が空で other_stories が null（分けない）と error。dedupe は qa.gate_plan:<release_id>。ADR 0054: 版ごとの Issue にシナリオごとのジョブを積むときは、issue・corr（版のチケット）・units（[{unit, which, story か charter}]）・cap_usd（版のチケットの費用の上限 = ジョブの上限の合計 × 係数）を足す。積めないとき（単位の列がない・ストーリーがない・Issue を作れない）は units がなく legacy_why に理由（今までの形で動く）。ADR 0060: 流すストーリーを選んだときは selection（{<story>: {run, why: never|changed|stale|fresh, prs?, last?}}）と skipped（流さなかったストーリーと理由の文）を足し、units は流すものだけ"
   qa.gate_job:
     source: control_plane
     required: [release_id, repo, which, job_id, attempt]
@@ -824,6 +824,14 @@ events:
     source: control_plane
     required: [opportunity_id, repo, issue]
     note: "起票を頼まれた提案を、プランナー宛ての Issue（factory:plan）にした。correlation_id はその Issue。要否と経路はプランナーが決める。dedupe は opportunity.ticket_filed:<opportunity_id>"
+  capture.fix_requested:
+    source: control_plane
+    required: [artifact_id, repo, note, by]
+    note: "実装後の画面（exit_capture）に受信トレイで「直してほしい（Issue にする）」と答えた（2026-11-15 オーナー）。同じ答えで taste.flagged も残す。確認の件は閉じず、マージも止めない。受信トレイの入口は GitHub のトークンを持たないので頼みだけを残し、supervisor が次の周期に Issue を作る（capture_fix.py）。dedupe は capture.fix_requested:<artifact_id>:<画面とコメントの要約>"
+  capture.fix_filed:
+    source: control_plane
+    required: [request_id, repo, issue]
+    note: "直す頼みを、画面の PR と同じリポジトリのプランナー宛ての Issue（factory:plan）にした。correlation_id はその Issue。dedupe は capture.fix_filed:<request_id>"
   quality.learned:
     source: control_plane
     required: [repo, week, window_days, defects, incidents, by_found_in, hotspots, after_merge_viewpoints, stories, escape_prevention, focus, proposal]
@@ -924,6 +932,18 @@ events:
     source: control_plane
     required: [plan_id, repo, issue, after, role]
     note: "ADR 0026。前の役のチケット（after）が閉じたので、経路の次の役（role）のラベルを付けた"
+  ops.job_disk_killed:
+    source: control_plane
+    required: [container, size_gb, max_gb]
+    note: "2026-11-14。動いているジョブのコンテナの書き込み層が上限（DISK_JOB_MAX_GB）を超えたので、dispatcher のディスクの見張りが止めた。停止 diskjob:<job> を開く（rust のジョブ 1 本で 54GB になり Mac の空きが 23GB まで減った）"
+  usage.limit_hit:
+    source: control_plane
+    required: [text, until, parsed]
+    note: "2026-11-15。ジョブが契約の使用量の上限に当たって落ちた（agent_runner の [agent_runner] usage limit: の行。text は claude の出した文）。dispatcher は until（文から読めた戻る時刻＋2 分。読めなければ USAGE_HOLD_MIN 分後。parsed）まで新しいジョブを取り出さず、明けたら 1 本だけ流して確かめる。止めている間は停止 usage:<時刻>（budget）を 1 件だけ開く（usage_hold.py）。11/15 07:00〜07:24 JST に上限のまま 15 本を流して全部落とした"
+  usage.limit_released:
+    source: control_plane
+    required: [by]
+    note: "2026-11-15。人が使用量の上限の止めを早めに解いた（factoryctl usage release）。これより前の usage.limit_hit は止めに使わない"
   ops.disk_pruned:
     source: control_plane
     required: [cache_gb, free_gb_before, free_gb_after, actions]

@@ -13,7 +13,7 @@ ENGINE_REF="${ENGINE_REF:-main}"
 cat > /work/input.json
 echo "[body_fix] job=${JOB_ID} pr=${PR_URL} engine=${ENGINE_REPO}@${ENGINE_REF} input=$(wc -c < /work/input.json)B"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-git clone --quiet --depth 1 --branch "${ENGINE_REF}" "https://github.com/${ENGINE_REPO}.git" /work/engine
+/usr/local/bin/clone_engine.sh "${ENGINE_REPO}" "${ENGINE_REF}"
 
 # この製品の知見（ADR 0040 の決定 7 の 2）: 本文の直しは業務 dev.describe（work.yaml の from_agent_steps.body_fix）。
 # 製品の .factory-config だけを取り、core-gates/knowledge_context.py（決定論）で選ぶ。取れなくても直しは続ける。KNOWLEDGE_CONTEXT=0 で止める

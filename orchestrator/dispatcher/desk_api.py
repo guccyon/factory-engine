@@ -29,6 +29,13 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
   POST /api/desk/preferences                           {"product", "statement", "work"?: [業務のノード]} 好みを足す（依頼者が自分で言ったので確認済み）
   POST /api/desk/preferences/<P-NNNN>                  {"statement"?, "work"?} 直す（工場の推し量りを依頼者が直したら確認済みになる）
   POST /api/desk/preferences/<P-NNNN>/delete           消す（行ごと消す。events には id だけ残る）
+  GET  /api/desk/onboarding/<owner>/<repo>             オンボーディングで渡すもの（ADR 0045 の追記 2026-11-15）: 問いと今の答え・足りないもの（仕事ごと）・
+                                                       製品の構成・答えから出した粒度・いちばん新しい解析の要約と判定
+  POST /api/desk/onboarding/<owner>/<repo>/answers     {"answers": [{"question", "value"?, "note"?, "skip"?, "file"?: {"name", "text"|"content_b64"}}]}
+                                                       答えを渡す（onboarding_intake.provide が唯一の口）。1 件でも問題があれば何も記録しない（400）。
+                                                       鍵・パスワード・トークンの値は受け取らない（置き場の名前を渡す）。repos は {repo, role, access, main?}
+  POST /api/desk/onboarding/<owner>/<repo>/run         {"reason"?} 棚卸しと解析をすぐにやり直す（答えを足したときは工場が自分で流す）
+  GET  /api/desk/onboarding/<owner>/<repo>/docs/<名前>  解析が起こした文書（architecture.md・api.yaml・screens.md・glossary.yaml）
   （参照の # は URL では %23、key の / は %2F にする）
 
 守り:
@@ -49,6 +56,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 import desk
+import onboarding_intake
 import requester_prefs
 
 ENV = os.environ
@@ -57,6 +65,69 @@ ALLOWED_HOSTS = {h.strip() for h in ENV.get("DESK_ALLOWED_HOSTS", "localhost,127
 MAX_WAIT_SEC = 60
 POLL_SEC = 1.0
 MAX_REQUEST_BYTES = 64 * 1024
+MAX_ONBOARDING_BYTES = 12 * 1024 * 1024   # オンボーディングの答えはファイル（8MB まで）を base64 で含む
+_store = None
+
+
+def store():
+    """オンボーディングで受け取るファイルと、解析の文書の置き場（オブジェクトストア）。設定がなければ None（ファイルは受け取らない）"""
+    global _store
+    if _store is None and ENV.get("OBJECTSTORE_ENDPOINT"):
+        from minio import Minio
+        _store = Minio(ENV["OBJECTSTORE_ENDPOINT"], access_key=ENV.get("OBJECTSTORE_ACCESS_KEY"), secret_key=ENV.get("OBJECTSTORE_SECRET_KEY"), secure=False)
+    return _store
+
+
+def store_put(key: str, data: bytes, content_type: str):
+    import io
+    store().put_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key, io.BytesIO(data), len(data), content_type=content_type)
+
+
+def store_get(key: str) -> bytes:
+    obj = store().get_object(ENV.get("OBJECTSTORE_BUCKET", "factory-artifacts"), key)
+    try:
+        return obj.read()
+    finally:
+        obj.close()
+        obj.release_conn()
+
+
+def onboarding_route(cur, who: dict, method: str, rest: list[str], body: dict, put=None, get=None) -> tuple[int, dict] | None:
+    """オンボーディングで事業主が渡す口（ADR 0045 の追記 2026-11-15）。rest は onboarding の後ろ（owner, repo, ...）"""
+    if len(rest) < 2:
+        return None
+    product = f"{rest[0]}/{rest[1]}"
+    if not desk.can_product(who, product):
+        raise desk.DeskError(404, "その製品は扱えない")
+    tail = rest[2:]
+    try:
+        defs = onboarding_intake.load()
+        if method == "GET" and not tail:
+            import onboarding
+            import readiness
+            st = onboarding_intake.state(cur, defs, product)
+            out = onboarding_intake.summary(defs, st)
+            rec = (onboarding.latest(cur, product) or [None])[0]
+            rdefs = readiness.load()
+            out["assessment"] = onboarding.summary(rdefs, rec, onboarding.approval(cur, product)) if rec else None
+            if rec:   # 仕事ごとの判定とお願い（どれを渡せば進むか）
+                out["assessment"]["targets"] = {t: {"ja": rdefs["targets"][t]["ja"], "verdict": readiness.band_ja(rdefs, j["verdict"]),
+                                                    "ratio": j["ratio"], "asks": [a.get("ask") for a in j["asks"]]}
+                                                for t, j in rec["result"]["targets"].items()}
+            return 200, out
+        if method == "POST" and tail == ["answers"]:
+            res = onboarding_intake.provide(cur, defs, product, body.get("answers"), who["name"], "desk", put=put)
+            return 201, {**res, "status": onboarding_intake.summary(defs, onboarding_intake.state(cur, defs, product))}
+        if method == "POST" and tail == ["run"]:
+            return 202, {"requested": onboarding_intake.request_run(cur, product, who["name"], "desk", str(body.get("reason") or ""))}
+        if method == "GET" and len(tail) == 2 and tail[0] == "docs":
+            docs = (onboarding_intake.latest_analysis(cur, product) or {}).get("docs") or {}
+            if tail[1] not in docs or get is None:
+                raise desk.DeskError(404, "その文書はまだない")
+            return 200, {"name": tail[1], "text": get(docs[tail[1]]).decode("utf-8", "replace")}
+    except onboarding_intake.IntakeError as e:
+        raise desk.DeskError(e.status, str(e))
+    return None
 
 
 def db():
@@ -72,7 +143,7 @@ def _int(v, name: str, default: int = 0) -> int:
         raise desk.DeskError(400, f"{name} は整数")
 
 
-def route(method: str, path: str, query: dict, body: dict, token: str | None, connect=db) -> tuple[int, dict]:
+def route(method: str, path: str, query: dict, body: dict, token: str | None, connect=db, put=None, get=None) -> tuple[int, dict]:
     """要求を 1 つ処理して (状態コード, JSON)。HTTP から切り離してテストできるようにしてある"""
     parts = [unquote(p) for p in path.strip("/").split("/")]
     if parts[:2] != ["api", "desk"]:
@@ -134,6 +205,10 @@ def route(method: str, path: str, query: dict, body: dict, token: str | None, co
                 return 200, {"preference": requester_prefs.update(cur, who, rest[1], body.get("statement"), body.get("work"))}
             if method == "POST" and len(rest) == 3 and rest[2] == "delete":
                 return 200, requester_prefs.delete(cur, who, rest[1])
+        if rest[:1] == ["onboarding"]:
+            r = onboarding_route(cur, who, method, rest[1:], body, put=put, get=get)
+            if r:
+                return r
         if rest[:1] == ["tickets"] and len(rest) >= 2:
             key = rest[1]
             if method == "GET" and len(rest) == 2:
@@ -171,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
         body: dict = {}
         if method == "POST":
             n = int(self.headers.get("Content-Length") or 0)
-            if n > MAX_REQUEST_BYTES:
+            if n > (MAX_ONBOARDING_BYTES if u.path.startswith("/api/desk/onboarding/") else MAX_REQUEST_BYTES):
                 return self._send(413, {"error": "要求が大きすぎる"})
             try:
                 body = json.loads(self.rfile.read(n) or b"{}")
@@ -182,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization") or ""
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
         try:
-            status, obj = route(method, u.path, query, body, token)
+            has_store = store() is not None
+            status, obj = route(method, u.path, query, body, token, put=store_put if has_store else None, get=store_get if has_store else None)
         except (desk.DeskError, requester_prefs.PrefError) as e:
             status, obj = e.status, {"error": str(e)}
         except Exception as e:  # noqa: BLE001  落とさずに返し、ログに残す

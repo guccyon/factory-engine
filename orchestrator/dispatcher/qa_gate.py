@@ -36,6 +36,7 @@ import yaml
 from psycopg.types.json import Jsonb
 
 import qa_line
+import qa_select
 import workflow_guard
 
 WHICH = ("verdict", "explore")   # 並行に流すもの
@@ -46,6 +47,31 @@ STORIES_DIR = "specs/stories"
 RECORD_GRACE = timedelta(minutes=10)   # ジョブが終わってから dispatcher が結果を記録するまでの猶予
 TERMINAL = ("succeeded", "failed", "cancelled")
 SEV_JA = {"s1": "S1", "s2": "S2", "s3": "S3", "s4": "S4"}
+LIMITED_EXTRA = 3                      # 使用量の上限で落ちた分は積み直しの回数に数えない。ただし単位ごとに attempts + これ を超えては積まない
+FAIL_STREAK = 3                        # 関門の中で、作業せずに落ちたジョブがこの数続いたら、新しく積むのを FAIL_BACKOFF だけ待つ
+FAIL_BACKOFF = timedelta(minutes=30)
+
+
+def limited_jobs(cur, job_ids: list[int]) -> set[int]:
+    """使用量の上限で落ちたジョブ（job.finished の usage_limited）。上限は工場全体の都合で、その単位を確かめられなかったのではない"""
+    if not job_ids:
+        return set()
+    cur.execute("select job_id from events where name='job.finished' and job_id = any(%s) and (payload->>'usage_limited')::boolean", (list(job_ids),))
+    return {r["job_id"] for r in cur.fetchall()}
+
+
+def fail_streak(cur, job_ids: list[int], now: datetime) -> dict | None:
+    """関門のジョブのうち、終わった新しいものから FAIL_STREAK 本が続けて失敗し、最後の失敗から FAIL_BACKOFF たっていなければ
+    {jobs, until}。2026-11-15 に上限のまま 13 本の QA を次々に積んで全部落とした。同じ理由で落ち続ける間は積み直しても無駄になる"""
+    if len(job_ids) < FAIL_STREAK:
+        return None
+    cur.execute("select id, state, finished_at from jobs where id = any(%s) and state = any(%s) order by finished_at desc limit %s",
+                (list(job_ids), list(TERMINAL), FAIL_STREAK))
+    rows = cur.fetchall()
+    if len(rows) < FAIL_STREAK or any(r["state"] != "failed" for r in rows):
+        return None
+    until = rows[0]["finished_at"] + FAIL_BACKOFF
+    return {"jobs": [r["id"] for r in rows], "until": until} if now < until else None
 
 
 def _ev(cur, name: str, payload: dict, dedupe: str | None = None, now: datetime | None = None) -> bool:
@@ -179,12 +205,12 @@ def explore_outcome(cur, job_id: int, now: datetime, blocker_severities=("s1", "
 
 
 # ------------------------------------------------------------------ 時刻をまたぐストーリーを分ける（ADR 0055 の決定 3）
-def time_stories(gh, repo: str) -> tuple[list[str], list[str]]:
-    """製品の specs/stories/ の active なユーザーストーリーを、time があるもの・ないものに分ける（id の並び）。読めなければ例外"""
+def story_docs(gh, repo: str) -> list[dict]:
+    """製品の specs/stories/ の active なユーザーストーリー（ファイル名の順。id は文字列にそろえる）。読めなければ例外"""
     listing = gh("GET", f"repos/{repo}/contents/{STORIES_DIR}") or []
     if not isinstance(listing, list):
         raise RuntimeError(f"{STORIES_DIR} の一覧が読めない")
-    with_time, without = [], []
+    docs = []
     for f in sorted((x for x in listing if isinstance(x, dict) and x.get("type") == "file"), key=lambda x: x.get("name") or ""):
         if not str(f.get("name") or "").endswith(".yaml") or f["name"] == "actors.yaml":
             continue
@@ -192,8 +218,17 @@ def time_stories(gh, repo: str) -> tuple[list[str], list[str]]:
         doc = yaml.safe_load(base64.b64decode(got.get("content") or "").decode("utf-8")) if isinstance(got, dict) else None
         if not isinstance(doc, dict) or doc.get("type") != "UserStory" or doc.get("status", "active") != "active" or not doc.get("id"):
             continue
-        (with_time if doc.get("time") else without).append(str(doc["id"]))
-    return with_time, without
+        docs.append({**doc, "id": str(doc["id"])})
+    return docs
+
+
+def split_time(docs: list[dict]) -> tuple[list[str], list[str]]:
+    return [d["id"] for d in docs if d.get("time")], [d["id"] for d in docs if not d.get("time")]
+
+
+def time_stories(gh, repo: str) -> tuple[list[str], list[str]]:
+    """製品の specs/stories/ の active なユーザーストーリーを、time があるもの・ないものに分ける（id の並び）。読めなければ例外"""
+    return split_time(story_docs(gh, repo))
 
 
 def plan(cur, gh, g: dict, now: datetime, log=print, defs: dict | None = None, gd: dict | None = None) -> dict:
@@ -203,14 +238,23 @@ def plan(cur, gh, g: dict, now: datetime, log=print, defs: dict | None = None, g
     if g.get("plan") is not None:
         return g["plan"]
     rid, repo = g["release_id"], g["repo"]
+    docs: list[dict] = []
     try:
-        with_time, without = time_stories(gh, repo)
+        docs = story_docs(gh, repo)
+        with_time, without = split_time(docs)
         p = {"release_id": rid, "repo": repo, "time_stories": with_time, "other_stories": without}
     except Exception as e:  # noqa: BLE001  分けられないだけで、関門は今までどおり流す
         log("qa gate plan failed", repo, rid, repr(e)[:200])
         p = {"release_id": rid, "repo": repo, "time_stories": [], "other_stories": None, "error": repr(e)[:200]}
     if defs is not None and gd is not None:
-        p.update(plan_units(cur, gh, p, defs, gd))
+        selection = None
+        if gd.get("select") and docs and qa_line.unit_ready(cur):   # 変更に関係するものと、しばらく確かめていないものだけ（ADR 0060）
+            try:
+                selection = qa_select.select(cur, gh, repo, docs, gd["stale_hours"], now)
+            except Exception as e:  # noqa: BLE001  選べなければ全部を流す
+                log("qa gate select failed", repo, rid, repr(e)[:200])
+                p["select_error"] = repr(e)[:200]
+        p.update(plan_units(cur, gh, p, defs, gd, selection))
     _ev(cur, "qa.gate_plan", p, f"qa.gate_plan:{rid}", now)
     g["plan"] = p
     return p
@@ -271,14 +315,19 @@ def ticket_cap(units: list[dict], gd: dict) -> float:
     return round(sum(float(gd[UNIT_COST[u["which"]]]) for u in units) * float(gd["ticket_cap_factor"]), 2)
 
 
-def plan_units(cur, gh, p: dict, defs: dict, gd: dict) -> dict:
-    """計画に足すもの。シナリオごとの単位と版ごとの Issue（issue・corr・cap_usd・units）。積めないときは理由だけ（legacy_why。今までの形で動く）"""
+def plan_units(cur, gh, p: dict, defs: dict, gd: dict, selection: dict | None = None) -> dict:
+    """計画に足すもの。シナリオごとの単位と版ごとの Issue（issue・corr・cap_usd・units）。積めないときは理由だけ（legacy_why。今までの形で動く）。
+    selection（ADR 0060）があれば、流すと決めたストーリーだけを単位にし、選び方を計画に残す"""
     rid, repo = p["release_id"], p["repo"]
     stories, timed = list(p.get("other_stories") or []), list(p.get("time_stories") or [])
     if not qa_line.unit_ready(cur):
         return {"legacy_why": "jobs に単位の列がない（009_job_unit.sql の前）"}
     if not stories and not timed:
         return {"legacy_why": "active なストーリーを数えられなかった"}
+    skipped = []
+    if selection is not None:
+        skipped = [qa_select.line(s, selection[s], qa_line.JST) for s in stories + timed if s in selection and not selection[s]["run"]]
+        stories, timed = qa_select.ordered(stories, selection), qa_select.ordered(timed, selection)
     charter = next_charter(cur, repo, defs)
     units = [{"unit": f"verdict:{s}", "which": "verdict", "story": s} for s in stories]
     units.append({"unit": f"explore:{charter}", "which": "explore", "charter": charter})
@@ -289,11 +338,15 @@ def plan_units(cur, gh, p: dict, defs: dict, gd: dict) -> dict:
                 f"- 判定: ストーリー {len(stories) + len(timed)} 本（1 本につき 1 ジョブ"
                 + (f"。うち時刻をまたぐもの {len(timed)} 本は最後に流す" if timed else "") + "）\n"
                 f"- 探索: チャーター {charter}\n- 費用の上限: ${cap:.2f}\n\n"
-                "結果がそろったら、ここに報告を書いて閉じます。見つけた Defect は別の Issue（factory:qa-defect）に起票します。")
+                + ("".join(["流すストーリー（変更に関係するものと、しばらく確かめていないもの。ADR 0060）:\n"]
+                           + [f"- {qa_select.line(s, selection[s], qa_line.JST)}\n" for s in stories + timed if s in selection]
+                           + (["\n流さないストーリー:\n"] + [f"- {x}\n" for x in skipped] if skipped else []) + ["\n"]) if selection is not None else "")
+                + "結果がそろったら、ここに報告を書いて閉じます。見つけた Defect は別の Issue（factory:qa-defect）に起票します。")
         issue = gh("POST", f"repos/{repo}/issues", {"title": f"QA: {rid.split('@')[-1]}", "body": body, "labels": [gd["release_issue_label"]]})["number"]
     except Exception as e:  # noqa: BLE001
         return {"legacy_why": f"版ごとの Issue を作れなかった: {repr(e)[:120]}"}
-    return {"issue": issue, "corr": f"github:{repo}#{issue}", "cap_usd": cap, "units": units}
+    return {"issue": issue, "corr": f"github:{repo}#{issue}", "cap_usd": cap, "units": units,
+            **({"selection": selection, "skipped": skipped} if selection is not None else {})}
 
 
 def enqueue_unit(cur, gh, repo: str, pl: dict, u: dict, attempt: int, defs: dict, gd: dict, now: datetime) -> dict:
@@ -344,16 +397,22 @@ def step_units(cur, gh, repo: str, g: dict, defs: dict, gd: dict, now: datetime,
     left = workflow_guard.cost_left(cur, pl["corr"])["ticket.cost_usd"]
     capped = left["cap"] > 0 and left["left"] <= 0   # 版のチケットの費用の上限。残りを積まず、そろった分で報告を作る
     last = {u["unit"]: (g["units"].get(u["unit"]) or [None])[-1] for u in pl["units"]}
+    all_ids = [j["job_id"] for js in g["units"].values() for j in js if j.get("job_id")]
+    limited = limited_jobs(cur, all_ids)
+    streak = fail_streak(cur, [i for i in all_ids if i not in limited], now)   # 上限は dispatcher が取り出しを止めて待つ（usage_hold.py）
+    if streak and may_enqueue:
+        log("qa gate backoff", repo, pl["release_id"], f"jobs {streak['jobs']} failed in a row; next enqueue after {streak['until'].isoformat()}")
     done = {u["unit"]: (outcome[u["which"]](cur, last[u["unit"]]["job_id"], now) if last[u["unit"]] else None) for u in pl["units"]}
     running = {w: sum(1 for u in pl["units"] if u["which"] == w and last[u["unit"]] and done[u["unit"]] is None) for w in ALL}
     limit = {"verdict": int(gd["parallel"]), "explore": len(pl["units"]), TIME: 1}   # 判定は端末の数まで。時刻をまたぐものは 1 本ずつ
     for u in pl["units"]:   # 並びは 判定 → 探索 → 時刻をまたぐもの
         k, w, tried, r = u["unit"], u["which"], len(g["units"].get(u["unit"]) or []), done[u["unit"]]
-        want = tried == 0 or (bool(r) and r["status"] == "unconfirmed" and tried < int(gd["attempts"]))
+        counted = sum(1 for j in g["units"].get(k) or [] if j.get("job_id") not in limited)   # 上限で落ちた分は数えない
+        want = tried == 0 or (bool(r) and r["status"] == "unconfirmed" and counted < int(gd["attempts"]) and tried < int(gd["attempts"]) + LIMITED_EXTRA)
         alone = w != TIME or all(res.get(o["unit"]) for o in pl["units"] if o["which"] != TIME)   # 時計を合わせる間、環境を 1 つのジョブだけが使う
         if want and capped:
             r = r or {"status": "unconfirmed", "why": "費用の上限で流せなかった", "candidates": [], "notes": [], "stories": {}, "tried": 0}
-        elif want and may_enqueue and alone and running[w] < limit[w]:
+        elif want and may_enqueue and alone and running[w] < limit[w] and not streak:
             r = None
             try:
                 got = enqueue_unit(cur, gh, repo, pl, u, tried + 1, defs, gd, now)
@@ -366,7 +425,7 @@ def step_units(cur, gh, repo: str, g: dict, defs: dict, gd: dict, now: datetime,
             except Exception as e:  # noqa: BLE001  次の周回でやり直す
                 log("qa gate enqueue failed", repo, pl["release_id"], k, repr(e)[:200])
         elif want:
-            r = None   # 順番待ち（同時に流す数・ほかの単位の終わり・予算の枠）
+            r = None   # 順番待ち（同時に流す数・ほかの単位の終わり・予算の枠・失敗が続いた後の待ち）
         res[k] = r
     timed_out = now - g["opened_at"] > timedelta(hours=float(gd["hours"]))
     if not timed_out and any(v is None for v in res.values()):
@@ -375,7 +434,9 @@ def step_units(cur, gh, repo: str, g: dict, defs: dict, gd: dict, now: datetime,
            "explore": next((res.get(u["unit"]) for u in pl["units"] if u["which"] == "explore"), None)}
     if any(u["which"] == TIME for u in pl["units"]):
         out[TIME] = merge_verdicts(pl["units"], res, TIME)
-    if out["verdict"] is None:   # 全部が時刻をまたぐ
+    if pl.get("skipped"):
+        out["skipped"] = pl["skipped"]
+    if out["verdict"] is None:   # 全部が時刻をまたぐ・判定で流すものがない
         out["verdict"] = {"status": "done", "why": None, "candidates": [], "notes": [], "stories": {}}
     return enq, out
 
@@ -481,6 +542,9 @@ def report(results: dict, timed_out: bool) -> list[dict]:
                      + (f" ほか {len(missing) - 8} 件" if len(missing) > 8 else "")})
     if results.get("capped"):
         rows.append({"label": "費用の上限", "text": "版のチケットの費用の上限に当たったので、残りのシナリオは流していない"})
+    if results.get("skipped"):   # 変更に関係がなく、最近確かめたので流さなかったストーリー（ADR 0060）
+        sk = results["skipped"]
+        rows.append({"label": "流さなかったシナリオ", "text": "；".join(sk[:8]) + (f" ほか {len(sk) - 8} 件" if len(sk) > 8 else "")})
     if x:
         rows.append({"label": "探索（推論）", "text": f"チャーター {x.get('charter')}・試したこと {x.get('tried')} 件・見つけたもの "
                      f"{len(x['candidates']) + len(x['notes'])} 件" if x["status"] == "done" else f"確かめられなかった: {x.get('why')}"})

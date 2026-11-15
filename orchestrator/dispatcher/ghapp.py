@@ -32,6 +32,8 @@ GRANTS: dict[str, dict[str, str]] = {
     "observe": {"contents": "read", "pull_requests": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read"},
     # 作る: 今の PAT（Contents・Pull requests・Issues の読み書き）＋ CI の結果を読む（続きのジョブが失敗のログを読む）
     "build": {"contents": "write", "pull_requests": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read"},
+    # 読むだけ（オンボーディングの棚卸しと解析、開発のジョブが参照で読む既存のリポ。ADR 0045 の追記 2026-11-15）。先方のリポに書かない
+    "read": {"contents": "read", "actions": "read"},
     # 工程を変える（特権のライン。順番 4 で使う）: 作るに加えてワークフロー
     "privileged": {"contents": "write", "pull_requests": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read",
                    "workflows": "write"},
@@ -153,3 +155,23 @@ def job_token(repo: str | None, grant: str = "build") -> str:
         owner, name = repo.split("/", 1)
         return _mint(owner, [name], perms)[0]
     return _mint(_default_owner(), None, perms)[0]   # リポジトリを持たないジョブ（ケースの講評など）
+
+
+def read_tokens(repos: list[str]) -> tuple[str, str]:
+    """複数のリポを読むだけのトークン（オンボーディングの解析と、開発のジョブの参照のリポ。ADR 0045 の追記 2026-11-15）。
+    返り値は (GH_TOKEN, GH_TOKENS)。App のときは owner ごとに対象のリポだけに絞って発行し、GH_TOKENS に「owner=トークン」を空白で並べる
+    （GH_TOKEN は最初の owner のもの）。App が無ければ GH_TOKEN（PAT は絞れない）と空"""
+    if not enabled():
+        return os.environ.get("GH_TOKEN", ""), ""
+    by_owner: dict[str, list[str]] = {}
+    for r in repos:
+        if "/" in r:
+            owner, name = r.split("/", 1)
+            by_owner.setdefault(owner, []).append(name)
+    pairs = []
+    for owner, names in by_owner.items():
+        try:
+            pairs.append((owner, _mint(owner, sorted(set(names)), GRANTS["read"])[0]))
+        except Exception:  # noqa: BLE001  App が入っていない owner は読めない（ジョブの側で「取れなかった」と出る）
+            continue
+    return (pairs[0][1] if pairs else ""), " ".join(f"{o}={t}" for o, t in pairs)

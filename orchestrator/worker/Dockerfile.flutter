@@ -1,7 +1,9 @@
 # Flutter 付きの使い捨てワーカー（rally の student-app 用。P1 Walking Skeleton の T17 から）
 # ベースの worker と同じ entrypoint。flutter / dart が使える。iOS ビルドは P0〜P1 対象外なので Android SDK も入れない。
 # 確認は flutter analyze と flutter test（Linux 上の VM で走る単体・ウィジェットテスト）まで。
-FROM factory-worker:p0
+# 土台は build.sh が版のラベルなしの factory-worker:p0-core を渡す（派生のキャッシュを版ごとに捨てないため）。手で作るときは既定の p0
+ARG BASE=factory-worker:p0
+FROM ${BASE}
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends unzip xz-utils zip libglu1-mesa && rm -rf /var/lib/apt/lists/*
 USER worker

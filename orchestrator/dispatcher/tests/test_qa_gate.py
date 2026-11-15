@@ -202,6 +202,9 @@ def test_approval_waits_for_report_and_carries_it(cur):
     qa_gate.step(cur, gh, REPO, now=NOW)
     [it] = inbox._releases(cur)
     assert "候補が 1 件" in it["action"] and any(r["label"] == "候補 1" for r in it["detail"])
+    cur.execute("update events set occurred_at = now() + interval '2 hours' where name='qa.gate_decided'")   # 報告は staging の 2 時間後にできた
+    [it] = inbox._releases(cur)
+    assert it["since"] == qa_gate.gate(cur, rid)["decided"]["at"]   # 届いた時刻は報告ができた時刻（staging に出た時刻ではない）
     assert [e["id"] for e in it["answer"]["extra"]] == ["block"]
     ok, msg = ship.request_approve(cur, rid, "owner", "factoryctl")
     assert ok
@@ -540,3 +543,82 @@ def test_qa_ticket_scope_written_as_files(cur):
     qa_gate.step(cur, gh, REPO, now=NOW)
     pl = qa_gate.gate(cur, qa_gate.ticket_key(REPO, 30))["plan"]
     assert [u["unit"] for u in pl["units"]] == ["verdict:b-chat"] and not pl.get("unknown")
+
+
+# ------------------------------------------------------------------ 流すストーリーを選ぶ（ADR 0060）
+def test_release_gate_runs_only_changed_and_stale_stories(cur):
+    """最近確かめたストーリーは、変更に関係がなければ流さない。流さなかったものと理由は Issue の本文と報告に載る"""
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    for story in ("a-prejoin", "b-chat", "d-cs"):
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, started_at, finished_at) "
+                    "values ('c',%s,7,'qa','succeeded',%s,%s) returning id", (REPO, NOW - timedelta(hours=2), NOW - timedelta(hours=2)))
+        verdicts(cur, cur.fetchone()["id"], [(story, "pass", [])])
+    corr = f"github:{REPO}#5"
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, result) values (%s,%s,5,'implement','succeeded',%s)",
+                (corr, REPO, Jsonb({"pr_url": f"https://github.com/{REPO}/pull/50"})))
+    cur.execute("insert into artifacts(type, correlation_id, payload) values ('Plan',%s,%s)",
+                (corr, Jsonb({"decision": "ready", "stories": [{"id": "d-cs", "action": "keep"}]})))
+    cur.execute("insert into events(name, correlation_id, payload) values ('release.created',%s,%s)",
+                (f"release:{rid}", Jsonb({"release_id": rid, "repo": REPO, "app_version": "0.9.0", "prs": [f"https://github.com/{REPO}/pull/50"]})))
+    ship.record(cur, "release.deployed", rid, {"repo": REPO, "env": "staging", "ok": True, "request_id": 0})
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    plan = qa_gate.gate(cur, rid)["plan"]
+    assert [u["unit"] for u in plan["units"]] == ["verdict:d-cs", "explore:detour"]
+    assert plan["selection"]["d-cs"]["why"] == "changed" and plan["selection"]["b-chat"]["why"] == "fresh"
+    assert plan["time_stories"] == ["a-prejoin"] and plan["cap_usd"] == (3 + 5) * 1.5
+    assert sorted(x["unit"] for x in out["enqueued"]) == ["explore:detour", "verdict:d-cs"]
+    body = next(b["body"] for m, p, b in gh.calls if m == "POST" and p.endswith("/issues"))
+    assert "d-cs（変更に関係する: #50）" in body and "b-chat（変更に関係なし" in body
+    ex = units_of(cur, rid)["explore:detour"][0]
+    finish(cur, ex)
+    explored(cur, ex, [])
+    d = judged(cur, gh, rid, "verdict:d-cs", "pass")["decided"]
+    assert d["verdict"]["stories"] == {"pass": 1} and gh.closed() == [51]
+    assert any(r["label"] == "流さなかったシナリオ" and "a-prejoin" in r["text"] and "b-chat" in r["text"] for r in d["report"])
+
+
+def test_release_gate_select_off_runs_everything(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    cur.execute("insert into jobs(correlation_id, repo, issue_number, kind, state, started_at) values ('c',%s,7,'qa','succeeded',%s) returning id",
+                (REPO, NOW - timedelta(hours=1)))
+    verdicts(cur, cur.fetchone()["id"], [("b-chat", "pass", [])])
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW, defs={**qa_line.load_defs(), "gate": {**qa_line.DEFS["gate"], "select": False}})
+    plan = qa_gate.gate(cur, rid)["plan"]
+    assert "selection" not in plan and len(plan["units"]) == 4
+
+
+# ------------------------------------------------------------------ 使用量の上限・失敗が続くとき（2026-11-15: 上限のまま 13 本の QA を積んで全部落とした）
+def limited(cur, job_id):
+    finish(cur, job_id, "failed")
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.finished','c',%s,%s)",
+                (job_id, Jsonb({"state": "failed", "error": "exit=1", "usage_limited": True})))
+
+
+def test_usage_limited_job_does_not_use_up_the_retry(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    limited(cur, units_of(cur, rid)["verdict:b-chat"][-1])
+    assert [x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"]] == ["verdict:b-chat"]
+    limited(cur, units_of(cur, rid)["verdict:b-chat"][-1])
+    out = qa_gate.step(cur, gh, REPO, now=NOW)
+    assert [x["unit"] for x in out["enqueued"]] == ["verdict:b-chat"]   # 上限で落ちた分は数えないので、もう 1 回積む
+    finish(cur, units_of(cur, rid)["verdict:b-chat"][-1], "failed")     # 本当に確かめられなかった 1 回目
+    assert [x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"]] == ["verdict:b-chat"]
+    finish(cur, units_of(cur, rid)["verdict:b-chat"][-1], "failed")     # 2 回目。ここで打ち切る
+    assert "verdict:b-chat" not in [x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW + timedelta(hours=1))["enqueued"]]
+
+
+def test_gate_waits_after_failures_in_a_row(cur):
+    gh, rid = ReleaseGH(), "o/app@0.9.0"
+    deploy(cur, rid)
+    qa_gate.step(cur, gh, REPO, now=NOW)
+    for u in ("verdict:b-chat", "explore:detour"):
+        finish(cur, units_of(cur, rid)[u][-1], "failed")
+    assert sorted(x["unit"] for x in qa_gate.step(cur, gh, REPO, now=NOW)["enqueued"]) == ["explore:detour", "verdict:b-chat"]   # 2 本ではまだ待たない
+    finish(cur, units_of(cur, rid)["verdict:b-chat"][-1], "failed")
+    out = qa_gate.step(cur, gh, REPO, now=NOW, log=lambda *a: None)
+    assert out["enqueued"] == [] and out["decided"] is None              # 3 本続けて落ちた: d-cs を積まずに待つ
+    later = qa_gate.step(cur, gh, REPO, now=NOW + qa_gate.FAIL_BACKOFF)
+    assert [x["unit"] for x in later["enqueued"]] == ["verdict:d-cs"]

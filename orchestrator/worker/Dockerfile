@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 RUN useradd -m -u 1001 worker && mkdir -p /handoff && chown worker:worker /handoff   # チケットの引き継ぎのボリュームを付けるところ（ADR 0017）
 USER worker
 WORKDIR /work
+COPY --chown=worker:worker clone_engine.sh /usr/local/bin/clone_engine.sh
 COPY --chown=worker:worker entrypoint.sh /usr/local/bin/entrypoint.sh
 # clarify（intake → clarify の最小経路）とその要求者ペルソナ
 COPY --chown=worker:worker clarify.sh /usr/local/bin/clarify.sh
@@ -36,6 +37,8 @@ COPY --chown=worker:worker design_system.sh /usr/local/bin/design_system.sh
 COPY --chown=worker:worker plan.sh /usr/local/bin/plan.sh
 # スパイクのレーンの System Architect のジョブ（ADR 0055。方針が決まっていないチケットの原因と直し方の設計書）
 COPY --chown=worker:worker spike.sh /usr/local/bin/spike.sh
+# オンボーディングの棚卸しと解析のジョブ（ADR 0045 の追記 2026-11-15。既存の製品の複数のリポを読むだけ）
+COPY --chown=worker:worker onboard.sh /usr/local/bin/onboard.sh
 # 窓口の相談役のジョブ（ADR 0030 の 3。依頼の壁打ちとタスクのまとまりの下書き）
 COPY --chown=worker:worker desk_consult.sh /usr/local/bin/desk_consult.sh
 # 窓口の回答役のジョブ（ADR 0030 の 4。問い合わせに根拠つきで答える。読むだけ）

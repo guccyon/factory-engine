@@ -65,6 +65,7 @@ import ticket_sync
 import learn
 import version
 import ops
+import capture_fix
 import opportunity
 import patrol_watch
 import plan_outcome
@@ -571,6 +572,14 @@ def body_fix_pending(cur, pr_url: str) -> bool:
     return cur.fetchone() is not None
 
 
+def pr_job_priority(cur, corr: str) -> int:
+    """PR に紐づけて積むジョブ（検査・judge）の優先度。もとのチケットの優先度を引き継ぐ（ticket_id は付けない。費用はこれまでどおり）。
+    引き継がないと既定の 50 で積まれ、p1 の implement に抜かれ続けて、p0 の直しの PR が判定を何十分も待った（#523）"""
+    cur.execute("select priority from tickets where source='github' and 'github:' || source_ref = %s order by id desc limit 1", (corr,))
+    t = cur.fetchone()
+    return t["priority"] if t else 50
+
+
 def enqueue_inspect(cur, p: dict, sha: str):
     """検証の起動: CI を通った工場の PR の head ごとに 1 回、検査ジョブを積む。実行は dispatcher（worker の inspect.sh）"""
     if not INSPECT_ENABLED:
@@ -578,8 +587,9 @@ def enqueue_inspect(cur, p: dict, sha: str):
     if not record(cur, "supervisor.inspect_enqueued", p["corr"], {"pr_url": p["url"], "head_sha": sha}, f"supervisor.inspect:{p['url']}@{sha}"):
         return
     try:
-        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','inspect') returning id",
-                    (p["corr"], p["repo"], p["number"]))
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, priority) "
+                    "values (%s,%s,%s,'supervisor','tier-judge','inspect',%s) returning id",
+                    (p["corr"], p["repo"], p["number"], pr_job_priority(cur, p["corr"])))
     except psycopg.errors.UniqueViolation:
         # 同じ PR のジョブ（judge・委員会・body_fix など）がまだ動いている。次の周回で積み直せるよう記録を消す（judge_step と同じ）。
         # 消さないと、この head の検査は二度と積まれず、検査役の承認が「検査待ち」のまま止まる（rally #458）。
@@ -650,8 +660,9 @@ def judge_step(cur, manifests: dict):
         if nothing or DRY_RUN:
             continue
         try:
-            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','judge') returning id",
-                        (r["corr"], repo, number))
+            cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind, priority) "
+                        "values (%s,%s,%s,'supervisor','tier-judge','judge',%s) returning id",
+                        (r["corr"], repo, number, pr_job_priority(cur, r["corr"])))
         except psycopg.errors.UniqueViolation:   # 同じ PR のジョブ（検査など）がまだ動いている。次の周期で積み直せるよう記録を消す
             cur.execute("delete from events where dedupe_key=%s", (f"supervisor.judge:{r['pr_url']}@{r['sha']}",))
             continue
@@ -736,7 +747,8 @@ def enqueue_step(cur, open_prs: set):
 
     ready, seen = [], []
     for repo in REPOS:
-        issues = gh("GET", f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(PLANNED_LABEL)}&per_page=50&sort=created&direction=asc") or []
+        # 全ページ読む（1 ページ 50 件だけだと、それより後の p0 が積まれず、台帳からも消えていた）
+        issues = ghapi.list_all(lambda p: gh("GET", p), f"repos/{repo}/issues?state=open&labels={urllib.parse.quote(PLANNED_LABEL)}&sort=created&direction=asc")
         for it in issues:
             if "pull_request" in it:
                 continue
@@ -1448,6 +1460,7 @@ def opportunity_ticket_step(cur):
         return
     try:
         opportunity.file_requested(cur, gh, log=log)
+        capture_fix.file_requested(cur, gh, log=log)   # 実装後の画面への「直してほしい」も同じ周期で起票する
     except Exception as e:  # noqa: BLE001  起票の失敗でラインを止めない。次の周回でやり直す
         log("opportunity ticket step error", repr(e)[:300])
 

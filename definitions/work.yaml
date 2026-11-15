@@ -123,6 +123,7 @@ from_agent_steps:             # agents.yaml の steps（ワークフローの外
   design_system: [dev.design.system]
   ui_design_review: [dev.review.design]
   plan: [plan.workflow]
+  onboard: null                       # オンボーディングの棚卸しと解析（ADR 0045 の追記 2026-11-15。Gen1 のプロトタイプ。業務のノードは Gen1.5 のモデリングで足す）
   spike: null                         # スパイクの System Architect（ADR 0055。プロトタイプ。知見を渡す業務は Gen1.5 でスパイクの業務を足すときに）
   desk.consult: [desk.converse, plan.route]
   desk.answer: [desk.converse]

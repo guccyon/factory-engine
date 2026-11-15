@@ -114,6 +114,9 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
 オンボーディングの判定の記録（ADR 0045 の追記。操業コンソールの製品のページ・受信トレイの準備のお願いと稼働 ready の承認が読む）:
   factoryctl readiness record <file.yaml|-> [--by ..]   # 製品の今の粒度と根拠・満たした条件・技術スタックと外部サービス・取り込み元を記録し、判定を出す（標準入力は docker exec -i で）
   factoryctl readiness show [<owner/repo>]              # 製品ごとのいちばん新しい判定（レベル・仕事ごとの判定・お願いの数）
+  factoryctl onboarding show <owner/repo>               # オンボーディングで渡すもの: 問いと答え・足りないもの・製品の構成・解析の要約（ADR 0045 の追記 2026-11-15）
+  factoryctl onboarding provide <owner/repo> <file.yaml|-> [--by ..]   # 答えを渡す（answers: [{question, value?, note?, skip?, file?: {name, text}}]）
+  factoryctl onboarding run <owner/repo> [--reason ..]  # 棚卸しと解析をすぐにやり直す（答えを渡したときは工場が自分で流す）
 
 事業部の窓口（ADR 0030）。依頼者のトークンと相談の一覧:
   factoryctl desk token create <名前> --role operator|requester [--product owner/repo,...]   # トークンはこのときだけ出る
@@ -158,6 +161,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
 
 Learn ループ（ADR 0013）:
   factoryctl report learning [--days 30]          # 教師信号の束（signature ごとの件数・チケット・段階の候補・eval の元）
+  factoryctl usage status|release                 # 契約の使用量の上限で取り出しを止めているか / 止めを早めに解く（usage_hold.py。2026-11-15）
   factoryctl report usage [--days 14] [--json]    # 使用量（トークンの消費と費用、日ごと・役割・モデル・契約の週、アカウントを足すかの判断の材料）。コンソールの /usage と同じ
   factoryctl report send <report.factory_health|report.product|all> [--date YYYY-MM-DD] [--to 宛先] [--html 出力先]
                                                   # 定期レポート（ADR 0032）を今のコードで組み立て、通知の設定の宛先に今すぐ送る（試し送り。既定は前日の分）。--html は送らずに報告書を書き出す
@@ -1289,6 +1293,45 @@ def readiness_cmd(cur, argv) -> int:
     return 2
 
 
+def onboarding_cmd(cur, argv) -> int:
+    """オンボーディングで事業主から受け取るもの（onboarding_intake.py）と、棚卸しと解析（onboarding_line.py）"""
+    import onboarding_intake
+    sub = argv[2] if len(argv) > 2 else "show"
+    product = argv[3] if len(argv) > 3 else ""
+    defs = onboarding_intake.load()
+    try:
+        if sub == "provide" and len(argv) > 4:
+            text = sys.stdin.read() if argv[4] == "-" else open(argv[4], encoding="utf-8").read()
+            doc = yaml.safe_load(text) or {}
+            answers = doc.get("answers") if isinstance(doc, dict) else doc
+            res = onboarding_intake.provide(cur, defs, product, answers, opt(argv, "--by", "factoryctl"), "factoryctl")
+            print(f"受け取った（events #{res['id']}）: {'、'.join(res['accepted'])}")
+            return 0
+        if sub == "run" and product:
+            rid = onboarding_intake.request_run(cur, product, opt(argv, "--by", "factoryctl"), "factoryctl", opt(argv, "--reason", ""))
+            print(f"やり直しを頼んだ（events #{rid}）。次の窓口の周回で解析のジョブを積む")
+            return 0
+        if sub == "show" and product:
+            sm = onboarding_intake.summary(defs, onboarding_intake.state(cur, defs, product))
+            comp = sm["composition"]
+            print(f"{product}  主に書くリポ {comp['main'] or '（未定）'}  参照 {len(comp['refs'])} 本")
+            for q in sm["questions"]:
+                mark = "済" if q["answered"] else "要" if q["required"] else "・"
+                print(f"  [{mark}] {q['id']:<18} {q['ja']}" + (f": {str(q['value'])[:60]}" if q["value"] else ""))
+            for t, ids in sm["missing"].items():
+                if ids:
+                    print(f"  足りない（{t}）: {'、'.join(ids)}")
+            print(f"  答えから出した粒度: {sm['levels_from_answers']}")
+            an = sm["analysis"]
+            print(f"  解析: {'ジョブ ' + str(an['job_id']) + '・' + str(an.get('counts')) if an else 'まだ'}")
+            return 0
+    except onboarding_intake.IntakeError as e:
+        print(f"受け取らなかった: {e}")
+        return 1
+    print(__doc__)
+    return 2
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "version":   # サービスごとの版（ADR 0031）。DB を使わない。--expect <コミット> で、ずれたら終了コード 1
         import version
@@ -1362,6 +1405,12 @@ def main(argv):
         if drain.active(cur):
             print("ラインは一時停止中（宣言の数に関わらず、ラインの枠は取り出さない）")
         hold_report(cur)
+    elif cmd == "usage" and len(argv) > 2 and argv[2] in ("status", "release"):
+        import usage_hold
+        if argv[2] == "release":
+            usage_hold.release(cur, "factoryctl")
+        h = usage_hold.held(cur)
+        print(f"使用量の上限で取り出しを止めている（{h['until'].isoformat()} まで。{h['text'][:120]}）" if h else "使用量の上限による止めはない")
     elif cmd == "budget":
         if len(argv) > 2 and argv[2] == "set":
             try:
@@ -1609,6 +1658,8 @@ def main(argv):
         return 0 if t else 1
     elif cmd == "readiness":
         return readiness_cmd(cur, argv)
+    elif cmd == "onboarding":
+        return onboarding_cmd(cur, argv)
     elif cmd == "qa":
         return qa_cmd(cur, argv)
     elif cmd == "incident":
