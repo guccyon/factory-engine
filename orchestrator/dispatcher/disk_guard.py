@@ -243,8 +243,10 @@ def step(cur, log=print, *, docker=_docker, free=free_bytes) -> dict | None:
     actions = []
     # 作ったばかりの層は消さない（11/15: 更新で作り直した worker の Flutter の層 1.79GB を 7 秒後に消し、次の更新でまた作っていた）。
     # 空きが下限を割っているときは新しい層も消す（止まるよりは作り直す方がよい）
-    r = docker(["builder", "prune", "-f", "--keep-storage", f"{int(CACHE_KEEP_GB * 1000)}MB"]
-               + ([] if low else ["--filter", f"until={CACHE_MIN_AGE_H}h"]))
+    # 空きが下限を割っているときは、残す量（--keep-storage）も付けずに全部消す（11/15 夜: 8GB を残したまま空き 13〜15GB で 1 時間以上ジョブを取らず、
+    # 消せるキャッシュが 5.2GB 残っていた）
+    r = docker(["builder", "prune", "-f"] + ([] if low else
+                                              ["--keep-storage", f"{int(CACHE_KEEP_GB * 1000)}MB", "--filter", f"until={CACHE_MIN_AGE_H}h"]))
     actions.append({"cmd": "builder prune", "ok": r.returncode == 0, "out": (r.stdout or r.stderr or "").strip()[-200:]})
     actions.append(remove_stale_images(docker))
     if free() < MIN_FREE_GB * GB:
