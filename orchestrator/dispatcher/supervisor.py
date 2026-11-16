@@ -432,6 +432,29 @@ def human_fix_step(cur, p: dict, pr: dict):
             log("needs-judgment label removal failed", p["url"], repr(e))
 
 
+FACTORY_BRANCH_RE = re.compile(r"^factory/issue-\d+-job-\d+$")
+
+
+def delete_merged_branch(p: dict, pr: dict) -> bool:
+    """マージを見届けた工場の PR の作業ブランチを消す（2026-11-16、rally にマージ済みのブランチが 659 本溜まっていた）。
+    リポ設定の「マージ後に自動で消す」は製品のリポで有効とは限らない（既存のリポを預かることもある）ので、工場が自分で消す。
+    消すのは工場が作ったブランチ（factory/issue-N-job-M）で、同じリポから出したものだけ。人のブランチ・フォークには触らない。
+    消せなくても（設定で消えていた・権限がない）ラインは止めない。返り値は消したか"""
+    head = pr.get("head") or {}
+    ref = head.get("ref") or ""
+    if (head.get("repo") or {}).get("full_name") != p["repo"] or not FACTORY_BRANCH_RE.match(ref):
+        return False
+    if DRY_RUN:
+        return False
+    try:
+        gh("DELETE", f"repos/{p['repo']}/git/refs/heads/{urllib.parse.quote(ref, safe='/')}")
+    except Exception as e:  # noqa: BLE001
+        log("merged branch delete failed", p["url"], ref, repr(e))
+        return False
+    log("merged branch deleted", p["url"], ref)
+    return True
+
+
 def merge_step(cur, rules: dict, manifests: dict) -> set:
     """返り値は、同時上限に数える開いた工場の PR の correlation_id（人を待つ PR は数えない）"""
     open_corrs: set = set()
@@ -449,8 +472,9 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             if pr.get("merged_at"):
                 cur.execute("update tickets set state='closed', updated_at=now() where source='github' and source_ref=%s and state<>'closed'",
                             (p["corr"].split(":", 1)[1],))   # チケットは済み（ADR 0009）
-                record(cur, "pr.merged", p["corr"], {"pr_url": p["url"], "merged_at": pr["merged_at"], "merged_by": (pr.get("merged_by") or {}).get("login"),
-                                                     "merge_commit": pr.get("merge_commit_sha"), "decided": (d or {}).get("payload")}, f"pr.merged:{p['url']}")
+                if record(cur, "pr.merged", p["corr"], {"pr_url": p["url"], "merged_at": pr["merged_at"], "merged_by": (pr.get("merged_by") or {}).get("login"),
+                                                        "merge_commit": pr.get("merge_commit_sha"), "decided": (d or {}).get("payload")}, f"pr.merged:{p['url']}"):
+                    delete_merged_branch(p, pr)
             else:
                 record(cur, "pr.closed_unmerged", p["corr"], {"pr_url": p["url"], "closed_at": pr["closed_at"], "decided": (d or {}).get("payload")},
                        f"pr.closed_unmerged:{p['url']}")
