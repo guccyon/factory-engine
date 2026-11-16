@@ -1,6 +1,6 @@
 # ADR 0061: 知見の委員会をチケットのレトロにする
 
-- 状態: 提案（2026-11-16）
+- 状態: 承認（2026-11-16 オーナー、#534）
 - 関係: ADR 0024（知見の蓄積と委員会。本 ADR が委員会の開き方と構成を置き換える）、ADR 0023（学習の体系・事例型の分析役）、ADR 0013（Learn ループ）、ADR 0027（工程の信号）、ADR 0040（知見の作用先）、`definitions/knowledge.yaml`、`orchestrator/dispatcher/committee.py`、`core-gates/committee_review.py`、`core-gates/committee_weekly.py`
 
 ## 文脈
