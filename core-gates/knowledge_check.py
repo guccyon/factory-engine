@@ -58,7 +58,7 @@ WORK_NODES = [
 ARTIFACT_TYPES = [
     "Signal", "Request", "TaskSetDraft", "Opportunity", "Requirements", "Ticket", "PR", "InspectionReport", "Release", "Incident",
     "KPIReport", "Retrospective", "ProcessRetrospective", "HumanChoice", "DesignConcept", "DesignSystemSpec", "Plan", "DesignReview",
-    "CaseAnalysis", "CommitteeDecision", "CommitteeWeekly", "RetroMinutes", "Lesson", "Question", "Approval", "Routine", "Judgment", "Stoppage",
+    "CaseAnalysis", "CommitteeDecision", "CommitteeWeekly", "RetroMinutes", "KnowledgeSnapshot", "Lesson", "Question", "Approval", "Routine", "Judgment", "Stoppage",
     "FactoryHealthReport", "PR.code", "PR.body",
 ]
 CLOSED_AXES = {

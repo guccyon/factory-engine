@@ -200,6 +200,9 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 .cm-doc li { margin: 2px 0; overflow-wrap: anywhere; }
 .cm-out { margin-top: var(--space-2); font-weight: 600; }
 .cm-back { display: none; }
+.kn-fs { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.kn-fs input { flex: 1 1 160px; min-width: 0; }
+.kn-fs select { flex: 0 1 auto; min-width: 0; }
 @media (max-width: 1199px) {
   .cm { grid-template-columns: 1fr; }
   .cm.open .cm-l { display: none; }

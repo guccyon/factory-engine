@@ -124,6 +124,7 @@ function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if((m=p.match(/^\/ask(?:\/(new|\d+))?$/)))return["ask",m[1]||""];
  if((m=p.match(/^\/committees(?:\/(\d+))?$/)))return["committees",m[1]||""];
+ if((m=p.match(/^\/knowledge(?:\/([\w.-]+\/[\w.-]+\/K-\d+))?$/)))return["knowledge",m[1]||""];
  if(p==="/line"||p==="/ship"||p==="/cost"||p==="/live")return[p.slice(1),""];
  if(p==="/maint"){history.replaceState(null,"","/live?tab=maint");return["live",""]}   // 工場の保守は稼働状況の「保守」タブへ（2026-11-16）
  if(p==="/usage"){history.replaceState(null,"","/cost");return["cost",""]}   // 前の名前（使用量）のリンクは費用へ（ADR 0059、#478）
@@ -463,13 +464,13 @@ function settingsBody(sec,s){const f=s.factory;
 // ---- 描画
 // 骨組み（ADR 0059、#471）。PC は左の縦のメニュー、タブレットはアイコンだけ、スマホは下のタブ。並びはワークベンチで変わり、どのページにもたどれる
 const ICON={home:'<path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/>',inbox:'<path d="M4 5h16v14H4zM4 13h5l1 2h4l1-2h5"/>',ask:'<path d="M4 5h16v11H9l-5 4z"/>',
- products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',committees:'<path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3 3-5 6-5s6 2 6 5M14 15.5c.6-.3 1.3-.5 2-.5 3 0 6 2 6 5"/>',maint:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
+ products:'<path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/>',line:'<path d="M4 6h16M4 12h16M4 18h10"/>',live:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',committees:'<path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3 3-5 6-5s6 2 6 5M14 15.5c.6-.3 1.3-.5 2-.5 3 0 6 2 6 5"/>',knowledge:'<path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2zM4 21V5M8 7h6M8 11h6"/>',maint:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',ship:'<path d="M3 15l9 5 9-5M12 3v12M8 7l4-4 4 4"/>',
  cost:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
  help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01"/>',more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'};
 const icon=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]||ICON.more}</svg>`;
-const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","稼働状況"],products:["/products","製品"],line:["/line","ライン"],committees:["/committees","委員会"],cost:["/cost","費用"]};
+const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","稼働状況"],products:["/products","製品"],line:["/line","ライン"],committees:["/committees","委員会"],knowledge:["/knowledge","知見"],cost:["/cost","費用"]};
 // main は主のメニュー、それ以外は「すべてのページ」の下。tabs はスマホの下のタブ（最後に「その他」が付く）
-const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","committees","ask","products","cost"],tabs:["home","inbox","ask","products"]},
+const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","committees","knowledge","ask","products","cost"],tabs:["home","inbox","ask","products"]},
  product:{name:"製品",main:["home","inbox","ask","products","live","cost"],tabs:["home","inbox","ask","products"]}};
 const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 let wb=WORKBENCHES[store.get("console.workbench")]?store.get("console.workbench"):"factory";
@@ -509,6 +510,7 @@ function skeleton(v,arg){
  if(v==="ask")return askSkeleton(arg);
  if(v==="live")return liveSkeleton();
  if(v==="committees")return cmSkeleton(arg);
+ if(v==="knowledge")return knSkeleton(arg);
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
  if(v==="products")return arg?ppSkeleton(arg):`<div id="prod-b"><div class="m" style="margin-top:12px">読み込み中…</div></div>`;
@@ -531,7 +533,7 @@ function usageGo(o){const f=document.querySelector("#usage-b form.usage-q");cons
 document.addEventListener("submit",e=>{if(!e.target.matches("form.usage-q"))return;e.preventDefault();usageGo({})});
 document.addEventListener("click",e=>{const g=e.target.closest("#usage-b [data-ugrain]"),p=e.target.closest("#usage-b [data-ustart]");
  if(g)usageGo({grain:g.dataset.ugrain});else if(p)usageGo({start:p.dataset.ustart,end:p.dataset.uend})});
-function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):v==="ask"||v==="products"?arg:v==="committees"?(arg?"open":""):"");
+function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):v==="ask"||v==="products"?arg:v==="committees"||v==="knowledge"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));
  document.getElementById("gear").classList.toggle("on",v==="settings");document.getElementById("help-i").classList.toggle("on",v==="help");
@@ -553,6 +555,7 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
  else if(v==="ask")askRender(arg)
  else if(v==="live")liveRender(s)
  else if(v==="committees")cmRender(arg)
+ else if(v==="knowledge")knRender(arg)
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="products"&&arg)ppRender(s,arg)
  else if(v==="products"){if(prodOf!==arg||Date.now()-prodAt>60000||!document.querySelector("#prod-b .prod"))loadProd(arg)}

@@ -40,7 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SERVER = {"name": "factory-desk", "version": "0.6.0"}
+SERVER = {"name": "factory-desk", "version": "0.7.0"}
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 HTTP_TIMEOUT = 75   # 会話を読むときの待ち（最大 60 秒）より長く
 
@@ -152,6 +152,21 @@ TOOLS = [
      "description": "工場の解析が起こした文書を読む。name は architecture.md・api.yaml・screens.md・glossary.yaml のどれか（onboarding_status の analysis.docs）。"
                     "本人に「こう読んだ」を見せ、読み違いがなければ onboarding_provide で reading_confirmed に「はい」を渡す",
      "inputSchema": {"type": "object", "properties": {"product": {"type": "string"}, "name": {"type": "string"}}, "required": ["product", "name"]}},
+    {"name": "knowledge_search",
+     "description": "事業部の知見（工場の開発者が全員知っておく、ドメインならではの開発の知見や工程の知見）を探す。チケットの振り返りで見つけ、"
+                    "知見のレビューを通したもの。id・主張・テーマ・確かさ（hypothesis 仮説／confirmed 確認済み／settled 定着）・状態・効く範囲・"
+                    "ワーカーに渡した回数を返す。ドメインの業務知識（工場に依存しない業務・利用者・法律）は製品の docs/ にあり、products[].docs_url を案内する",
+     "inputSchema": {"type": "object", "properties": {
+         "product": {"type": "string", "description": "製品（owner/repo）で絞る"},
+         "q": {"type": "string", "description": "言葉（空白で区切るとすべてを含むもの）"},
+         "theme": {"type": "integer", "description": "テーマ（1 利用者の体験・2 信頼性と性能・3 ドメインの理解・4 役割間の言葉と伝達・5 成果物の品質・6 工程の進め方・7 判断の精度・8 人の意図と好み）"},
+         "confidence": {"type": "string", "enum": ["hypothesis", "confirmed", "settled"]},
+         "status": {"type": "string", "description": "draft・active・stale・superseded・retired・all。省くと廃止と置き換え済みは出さない"}}}},
+    {"name": "knowledge_read",
+     "description": "事業部の知見を 1 件読む（主張・効く範囲・確かさ・根拠・無効になる条件・関わる知見・決めた記録・製品リポの URL）",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "description": "K-NNNN"},
+                                                      "product": {"type": "string", "description": "製品（owner/repo）。省くと最初に見つかったもの"}},
+                     "required": ["id"]}},
     {"name": "desk_preference_delete",
      "description": "好みを消す（行ごと消える）。本人が消してと言ったときだけ呼ぶ",
      "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}},
@@ -274,6 +289,12 @@ def call_tool(name: str, a: dict, call=http) -> dict:
         return call("POST", _onboarding_path(a["product"]) + "/run", {"reason": a.get("reason") or ""})
     if name == "onboarding_doc":
         return call("GET", _onboarding_path(a["product"]) + "/docs/" + urllib.parse.quote(str(a["name"]), safe=""))
+    if name == "knowledge_search":
+        q = {k: a[k] for k in ("product", "q", "theme", "confidence", "status") if a.get(k) not in (None, "")}
+        return call("GET", "/api/desk/knowledge", None, q or None)
+    if name == "knowledge_read":
+        return call("GET", "/api/desk/knowledge/" + urllib.parse.quote(str(a["id"]), safe=""), None,
+                    {"product": a["product"]} if a.get("product") else None)
     if name == "desk_preference_delete":
         return call("POST", "/api/desk/preferences/" + urllib.parse.quote(str(a["id"]), safe="") + "/delete", {})
     raise KeyError(name)
