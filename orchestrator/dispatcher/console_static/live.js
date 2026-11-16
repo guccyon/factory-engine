@@ -79,13 +79,20 @@ function liveLegend() {
   return `<div class="live-leg m"><span><i class="live-dot is-run"></i>作業中（点滅）</span><span><i class="live-dot"></i>待ち・次へ渡す待ち</span><span><i class="live-dot is-stuck"></i>人の対応待ち</span>
     <span>右端の数は「作業中 · その工程の全部」</span><span>検査で指摘が付くと「指摘の直し」で実装に戻り、直したら検査にかけ直す</span></div>`;
 }
+// チケットの URL。記録に URL がなければ、GitHub の「owner/repo#番号」から作る
+function liveTicketUrl(i) {
+  if (i.url && /^https:\/\//.test(i.url)) return i.url;
+  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(i.ref || "");
+  return m && (!i.source || i.source === "github") ? `https://github.com/${m[1]}/issues/${m[2]}` : "";
+}
 function liveTipHtml(d) {
-  const i = d.i;
-  return `<b>${esc(i.ref || "")}</b>${i.title ? `<div>${esc(i.title)}</div>` : ""}<dl>
+  const i = d.i, u = liveTicketUrl(i);
+  const a = t => u ? `<a href="${esc(u)}" target="_blank" rel="noopener" title="チケットを開く">${t}</a>` : t;
+  return `<b>${a(esc(i.ref || ""))}</b>${i.title ? `<div>${a(esc(i.title))}</div>` : ""}<dl>
     <dt>工程</dt><dd>${esc(d.step)}</dd><dt>状態</dt><dd>${esc(d.state)}</dd>
     ${d.kind ? `<dt>ジョブ</dt><dd>${esc(d.kind)}${i.attempt > 1 ? `（${i.attempt} 回目）` : ""}${i.job_id ? ` · #${i.job_id}` : ""}</dd>` : ""}
     ${i.priority != null ? `<dt>優先度</dt><dd>${i.priority}</dd>` : ""}</dl>
-    <div class="live-tip-l">${i.url ? link(i.url, "チケット") : ""} ${i.pr_url ? link(i.pr_url, "PR") : ""}</div>`;
+    ${i.pr_url ? `<div class="live-tip-l">${link(i.pr_url, "PR を開く")}</div>` : ""}`;
 }
 function liveTip(btn, pin) {
   let tip = document.getElementById("live-tip");
@@ -99,8 +106,17 @@ function liveTip(btn, pin) {
   const below = r.bottom + 8 + tip.offsetHeight < innerHeight;
   tip.style.top = (below ? r.bottom + 8 : r.top - tip.offsetHeight - 8) + scrollY + "px";
 }
-document.addEventListener("mouseover", e => { const b = e.target.closest(".live-job[data-li]"); if (b && !liveTipPinned) liveTip(b, false) });
-document.addEventListener("mouseout", e => { const b = e.target.closest(".live-job[data-li]"); if (b && !liveTipPinned && !e.relatedTarget?.closest?.("#live-tip")) liveTip(null) });
+// 丸から詳しい表示へマウスを移してリンクを押せるよう、閉じるのを少し待つ（表示の上にいる間は閉じない）
+let liveTipHide = 0;
+const liveTipLater = () => { clearTimeout(liveTipHide); liveTipHide = setTimeout(() => { if (!liveTipPinned) liveTip(null) }, 250) };
+document.addEventListener("mouseover", e => {
+  if (e.target.closest("#live-tip")) { clearTimeout(liveTipHide); return }
+  const b = e.target.closest(".live-job[data-li]"); if (b && !liveTipPinned) { clearTimeout(liveTipHide); liveTip(b, false) }
+});
+document.addEventListener("mouseout", e => {
+  if (liveTipPinned || e.relatedTarget?.closest?.("#live-tip,.live-job[data-li]")) return;
+  if (e.target.closest(".live-job[data-li],#live-tip")) liveTipLater();
+});
 document.addEventListener("focusin", e => { const b = e.target.closest(".live-job[data-li]"); if (b) liveTip(b, false) });
 document.addEventListener("click", e => {
   const b = e.target.closest(".live-job[data-li]");
