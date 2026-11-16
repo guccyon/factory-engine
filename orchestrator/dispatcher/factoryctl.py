@@ -57,6 +57,7 @@
   factoryctl release trains [--limit 10]                    # 最近の便（定期・緊急）と載った Release、承認待ち
   factoryctl release train <repo> --emergency --reason ".." [--by ..]   # 緊急便。まだ Release に入っていないマージ済みの PR を今すぐ出す
   factoryctl release train-approve <train_id> [--by ..] [--skip-qa --reason ..]   # 便に載った Release をまとめて prod へ承認する（本番を立てない段階の製品は飛ばす）
+  factoryctl release train-dismiss <train_id> --reason ".." [--by ..]   # 承認待ちの便を承認せずに見送る（中身が後の便で本番に出たときなど）。Release と環境には触らない
   factoryctl report provenance [--from YYYY-MM-DD] [--to YYYY-MM-DD]   # 来歴の付与率と Release への紐付け率
 
 週次の KPI の Report ライン（ADR 0043 の O2・O3）。supervisor が毎週月曜 7 時（JST）に staging で測る。今すぐ 1 回測るには --measure:
@@ -601,7 +602,8 @@ def release_trains(cur, limit: int) -> int:
     for t in rows:
         a = t.get("approval") or {}
         mark = ("承認は要らない（本番を立てない段階）" if not a.get("required") else
-                f"承認済み（{t['approved'].get('by')}）" if t.get("approved") else "承認待ち " + "・".join(a.get("pending") or []))
+                f"承認済み（{t['approved'].get('by')}）" if t.get("approved") else
+                f"見送り（{t['dismissed'].get('by')}: {t['dismissed'].get('reason')}）" if t.get("dismissed") else "承認待ち " + "・".join(a.get("pending") or []))
         print(f"{t['at']:%m-%d %H:%M} {t['train_id']}  {'緊急' if t['kind'] == 'emergency' else '定期'}  {mark}" +
               (f"  理由: {t['reason']}" if t.get("reason") else ""))
         for r in t.get("releases") or []:
@@ -1610,6 +1612,10 @@ def main(argv):
     elif cmd == "release" and len(argv) > 3 and argv[2] == "train-approve":
         ok, msg = train.approve(cur, argv[3], opt(argv, "--by", "builder"), "factoryctl",
                                 skip_qa=opt(argv, "--reason", "") if "--skip-qa" in argv else None)
+        print(msg)
+        return 0 if ok else 1
+    elif cmd == "release" and len(argv) > 3 and argv[2] == "train-dismiss":
+        ok, msg = train.dismiss(cur, argv[3], opt(argv, "--by", "builder"), opt(argv, "--reason", ""))
         print(msg)
         return 0 if ok else 1
     elif cmd == "release" and len(argv) > 3 and argv[2] == "status":
