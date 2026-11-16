@@ -79,6 +79,7 @@ nodes:
   learn:                      { ja: Learn（学ぶ）, domain: cross }
   learn.case:                 { ja: 出来事を分析する, domain: cross, artifacts: [CaseAnalysis] }
   learn.committee:            { ja: 知見を審査する, domain: cross, artifacts: [CommitteeDecision, CommitteeWeekly] }
+  learn.retro:                { ja: チケットを振り返って知見を抽出する, domain: cross, artifacts: [RetroMinutes], note: "ADR 0061。消化したチケット N 件ごとの振り返り。ロールの委員と事業部のリーダー" }
   learn.signals:              { ja: 教師信号から振り返る, domain: cross, note: "ADR 0052。振り返り・ルールの移り変わり・品質の Learn（ADR 0013・0043）。決定論で LLM を使わない" }
 
 # 成果物の型の細分（knowledge.yaml の軸 artifacts の語彙に足す）。artifacts.yaml の型の下に「型.部分」で置く。親の型に付いた知見は部分にも効く
@@ -130,6 +131,8 @@ from_agent_steps:             # agents.yaml の steps（ワークフローの外
   desk.task: [desk.converse]
   committee_review: [learn.committee]
   committee_weekly: [learn.committee]
+  retro.role: [learn.retro]
+  retro.lead: [learn.retro]
   incident.patrol: [govern.patrol]
   incident.record: [govern.incident_review]
   incident.review: [govern.incident_review]

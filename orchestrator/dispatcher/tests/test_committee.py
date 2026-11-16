@@ -113,6 +113,7 @@ def test_supervisor_enqueues_weekly_once(cur, monkeypatch):
     monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
     monkeypatch.setattr(supervisor, "DRY_RUN", False)
     monkeypatch.setattr(supervisor, "COMMITTEE_WEEKLY", True)
+    monkeypatch.setattr(supervisor, "RETRO", False)   # 振り返り（ADR 0061）を止めたときだけ週 1 の定例が動く
     monkeypatch.setattr(supervisor, "KNOWLEDGE_DEFS", os.path.join(os.path.dirname(__file__), "..", "..", "..", "definitions", "knowledge.yaml"))
     monkeypatch.setattr(supervisor, "knowledge_root_exists", lambda repo: True)
     monkeypatch.setattr(supervisor, "gh", lambda m, p, b=None: [] if m == "GET" else {"number": 50})

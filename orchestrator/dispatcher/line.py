@@ -20,7 +20,7 @@ FIELDS = ("workers", "tickets", "governance", "desk")
 LIMIT = 50
 
 # 委員会と知見の流れのジョブ（ADR 0024 の 2026-11-04 の追記）。jobs を q と呼ぶ SQL の条件
-GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "case_review", "incident_review", "investigate", "onboard")   # incident_review は事故の調査委員会（ADR 0046）。知見の委員会とは別なので COMMITTEE_KINDS に入れない。investigate は工場の中での一次調査（ADR 0048。長くかかるので窓口の枠は塞がない）。onboard はオンボーディングの解析（ADR 0045 の追記 2026-11-15）も同じ理由
+GOVERNANCE_KINDS = ("committee_review", "committee_weekly", "retro", "case_review", "incident_review", "investigate", "onboard")   # incident_review は事故の調査委員会（ADR 0046）。知見の委員会とは別なので COMMITTEE_KINDS に入れない。investigate は工場の中での一次調査（ADR 0048。長くかかるので窓口の枠は塞がない）。onboard はオンボーディングの解析（ADR 0045 の追記 2026-11-15）も同じ理由
 GOVERNANCE_WHERE = ("(q.kind = any(%(gov_kinds)s) or q.correlation_id like 'committee:%%' "
                     "or q.correlation_id in (select f.correlation_id from events f where f.name='knowledge.case_filed'))")
 # 窓口の相談のジョブ（ADR 0030 の 6）。ラインにも委員会の枠にも数えない
@@ -29,7 +29,7 @@ DESK_WHERE = "(q.kind = any(%(desk_kinds)s))"
 LINE_WHERE = f"(not {GOVERNANCE_WHERE} and not {DESK_WHERE})"
 # 知見の委員会は同時に 1 つだけ（2026-11-08 オーナー）。並べて流すと知見が競合・矛盾する。後の検討が前の議決を直すこともあるので、
 # 検討の課題はジョブとして順番待ちに積み、委員会は 1 つずつ順に処理する。governance の枠を増やしても委員会どうしは並ばない
-COMMITTEE_KINDS = ("committee_review", "committee_weekly")
+COMMITTEE_KINDS = ("committee_review", "committee_weekly", "retro")   # retro は振り返り（ADR 0061）
 ARGS = {"gov_kinds": list(GOVERNANCE_KINDS), "desk_kinds": list(DESK_KINDS), "committee_kinds": list(COMMITTEE_KINDS)}
 
 
