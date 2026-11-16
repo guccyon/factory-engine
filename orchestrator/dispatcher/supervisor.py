@@ -72,6 +72,7 @@ import plan_outcome
 import process_learn
 import qa_line
 import recover
+import retro
 import quality_learn
 import report
 import report_kpi
@@ -121,6 +122,7 @@ CASE_REVIEW_DEFS = ENV.get("LEARNING_TAXONOMY", "/definitions/learning_taxonomy.
 KNOWLEDGE_ISSUES = ENV.get("KNOWLEDGE_ISSUES", "1") == "1"   # 事例の分析から、知見の変更セットの Issue を起票する（ADR 0024 の 3）。0 で止める
 COMMITTEE = ENV.get("COMMITTEE", "1") == "1"   # 知見の変更セットの PR を委員会の 4 役に審査させる（ADR 0024 の 4）。0 で止める（人の承認だけになる）
 COMMITTEE_WEEKLY = ENV.get("COMMITTEE_WEEKLY", "1") == "1"   # 知見の委員会の週 1 の定例（ADR 0024）。0 で止める
+RETRO = ENV.get("RETRO", "1") == "1"   # 振り返り（ADR 0061）。消化したチケットを数え、N 件でスプリントを閉じる。0 で止める
 KNOWLEDGE_DEFS = ENV.get("KNOWLEDGE_DEFINITIONS", "/definitions/knowledge.yaml")
 KNOWLEDGE_ISSUES_PER_DAY = int(ENV.get("KNOWLEDGE_ISSUES_PER_DAY", "2"))   # 委員会ができるまでは知見の PR は人の承認（knowledge 種別）なので少なく
 PROCESS_ISSUES = ENV.get("PROCESS_ISSUES", "1") == "1"   # 工程の信号の束の分析から、工場への改善案の Issue を起票する（ADR 0027 の 3）。0 で止める
@@ -1349,6 +1351,29 @@ def committee_weekly_step(cur, now: datetime | None = None):
         log("committee weekly enqueued", repo, week, "job", jid)
 
 
+def retro_step(cur, now: datetime | None = None):
+    """振り返り（ADR 0061）: 製品ごとに、閉じたチケットを数える・数えないに分け、N 件たまったらスプリントを閉じる（retro.sprint_closed）。
+    振り返りのジョブは閉じたスプリントから積む（ADR 0061 の段取り 4）"""
+    if not RETRO or DRY_RUN:
+        return
+    try:
+        with open(KNOWLEDGE_DEFS, encoding="utf-8") as f:
+            defs = (yaml.safe_load(f) or {}).get("retro") or {}
+    except OSError:
+        return
+    if not defs:
+        return
+    now = now or datetime.now(timezone.utc)
+    for repo in REPOS:
+        if not knowledge_root_exists(repo):
+            continue
+        since = retro.started_at(cur, repo, now)
+        retro.classify(cur, repo, gh, defs.get("exclude_labels") or [], since)
+        s = retro.maybe_close(cur, repo, defs, now)
+        if s:
+            log("retro sprint closed", repo, s["sprint"], len(s["tickets"]), s["reason"])
+
+
 def ephemeral_step(cur):
     """PR ごとの使い捨て環境（ADR 0043 の O7）。立っている環境の PR が閉じたか、EPHEMERAL_TTL_HOURS を過ぎたら壊す依頼を書く。
     PR が閉じたかは events の記録で見る（PR の見張りの小さなポーリングが github.pr_closed を残す。ADR 0050）。GitHub は見ない"""
@@ -1706,6 +1731,7 @@ def tick():
         aggregate_issue_step(cur)
         design_review_step(cur)
         committee_weekly_step(cur)
+        retro_step(cur)
         incident_review_step(cur)
         quality_learn_step(cur)
 
