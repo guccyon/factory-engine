@@ -14,6 +14,9 @@
   core-gates/qa.py --check-explore out/explore.yaml --charter detour --repo-dir /work/product   # 夜間の探索の形
 
 入力の mode が explore なら夜間の探索（P5a の nightly_explore）: その夜のチャーターに沿って寄り道し、out/explore.yaml（試したこと・見つけたもの・印）を返す
+入力の mode が recheck なら差し止めの直しの確かめ直し（ADR 0062）: 入力の defects（Defect の Issue）の再現の手順を staging でたどり直し、
+out/recheck.yaml（Issue ごとに直っていたか）を返す
+  core-gates/qa.py --check-recheck out/recheck.yaml --issues 1798 --repo-dir /work/product
 入力の mode が synthetic なら合成の利用者（ADR 0043 の O4）: 入口ごとの中継（synthetic_proxy.py）越しにストーリーを歩き、out/walk.yaml（行動ログ）を返す。
 応答時間は中継が測り、わざと仕込む詰まり（入力の friction）も中継が入れる
   core-gates/qa.py --check-synthetic out/walk.yaml --repo-dir /work/product --env-file env.json --plan plan.json
@@ -465,6 +468,141 @@ def run_explore(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
     return {"ok": True, "files": files, "explore": {**doc, "charter": charter["id"], "findings": findings, "flags": doc.get("flags") or []}, **base}
 
 
+# ------------------------------------------------------------------ 差し止めの直しの確かめ直し（ADR 0062）
+RECHECK_FIXED = ("yes", "no", "unconfirmed")
+
+
+def validate_recheck(doc, issues: set[int], out_dir: Path | None = None) -> list[str]:
+    if not isinstance(doc, dict):
+        return ["recheck.yaml の最上位は対応表（checks・interpretation）"]
+    errs = []
+    if not doc.get("interpretation"):
+        errs.append("interpretation がない")
+    checks = doc.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return errs + ["checks は Issue ごとの答えの配列（1 件以上）"]
+    seen = set()
+    for j, c in enumerate(checks):
+        if not isinstance(c, dict):
+            errs.append(f"checks[{j}] は対応表")
+            continue
+        n = c.get("issue")
+        if not isinstance(n, int) or isinstance(n, bool) or (issues and n not in issues):
+            errs.append(f"checks[{j}].issue は渡した Issue の番号（{'・'.join(str(i) for i in sorted(issues))}）")
+        seen.add(n)
+        if c.get("fixed") not in RECHECK_FIXED:
+            errs.append(f"checks[{j}].fixed は {'・'.join(RECHECK_FIXED)} のどれか")
+        conf = c.get("confidence")
+        if not isinstance(conf, (int, float)) or isinstance(conf, bool) or not 0 <= conf <= 1:
+            errs.append(f"checks[{j}].confidence は 0〜1 の数")
+        if not c.get("saw"):
+            errs.append(f"checks[{j}].saw がない（期待どおりだったかを利用者の言葉で）")
+        tried = c.get("tried")
+        if not isinstance(tried, list) or not tried:
+            errs.append(f"checks[{j}].tried は 1 件以上の配列（たどった手順と見えたもの）")
+    for n in sorted(issues - seen):
+        errs.append(f"#{n} の答えがない（確かめられなければ fixed: unconfirmed で書く）")
+    if out_dir is not None:
+        for m in re.finditer(r"([A-Za-z0-9][A-Za-z0-9_-]{0,47}\.png)", json.dumps(checks, ensure_ascii=False)):
+            if not (out_dir / m.group(1)).is_file():
+                errs.append(f"スクリーンショット {m.group(1)} が out/ にない")
+    return errs
+
+
+def recheck_prompt(defs: dict, env: dict, inp: dict, mobile: bool = False) -> str:
+    accounts = ((inp.get("touchable") or {}).get("accounts") or [])
+    defects = inp.get("defects") or []
+    ex = {"checks": [{"issue": d.get("issue"), "fixed": "yes", "confidence": 0.8,
+                      "tried": [{"did": "再現の手順 1〜4 を生徒アプリでたどった", "saw": "確認に回数の文言が出ず、ホームの残りは 1 回のまま（02-home.png）"}],
+                      "saw": "期待どおり、体験予約のキャンセルで今月の回数が減らなかった"} for d in defects],
+          "interpretation": "どの手順をどうたどり、何を見て直ったと判断したか"}
+    rows = "\n\n".join(f"### #{d.get('issue')} {d.get('title')}\n{d.get('body') or ''}" for d in defects)
+    return f"""あなたはソフトウェア工場の QA 役です。重い不具合（S1）でラインを差し止めていました。その直しが本番に出たので、
+直ったかを確かめ直してください。あなたの答えで、工場はラインの差し止めを解きます（ADR 0062）。直ったと言えるのは、
+下の Defect の再現の手順を利用者の操作でたどり、「期待」どおりになったのを自分の目で見たときだけです。
+
+## 確かめ直す Defect（{len(defects)} 件）
+{rows}
+
+## 作業の場所
+- 作業ディレクトリ（いまの場所）。製品のチェックアウトは product/（読むだけ。書き換えない・コミットしない）
+- 環境の入口と、ログインの手がかりは env.json。ここに書いた URL 以外の環境（本番など）には繋がない
+- 成果物は out/ に置く: out/recheck.yaml（下の形）と、根拠のスクリーンショット out/<2 桁の番号>-<短い名前>.png（1 枚 600KB まで、全部で 16 枚まで）
+
+## 道具
+- 画面はヘッドレスの Chromium を playwright-core で動かす。node で `const {{ chromium }} = require('playwright-core'); const b = await chromium.launch({{ executablePath: process.env.CHROMIUM_BIN, args: ['--no-sandbox'] }});`
+  （NODE_PATH は設定済み）。スマートフォンの利用者（生徒アプリ）は幅 390・高さ 844 で開く
+- 前提のデータは画面か API で作ってよい（合成シードの環境）。ただし、ほかの利用者のログインの手がかりを使えなくする操作（退会・停止）はしない
+- サーバーの再起動と時計の進めはできない
+{MOBILE.format(api=inp.get("mobile_api_url") or defs["worker"]["mobile_api_url"], ref=mobile_ref(inp)) if mobile else ""}
+## 決まり
+- Issue ごとに fixed を 1 つ: yes（手順をたどり期待どおりだった）、no（同じ症状がまだ出る）、unconfirmed（ログインできない・前提が作れない等で手順をたどれなかった）
+- 迷ったら yes にしない。たどれなかった手順があれば unconfirmed。推測で yes にしない
+- 再現の手順の時刻の条件（開始まで 24 時間を切った枠など）は、そうなる枠を選んで満たす。満たせなければ unconfirmed
+- 別の不具合に気づいても、ここでは答えに書かない（interpretation に一言だけ）
+
+## env.json の要点
+{json.dumps(env, ensure_ascii=False, indent=1)}
+ログインの手がかり（画面のログインに使う）:
+{json.dumps(accounts, ensure_ascii=False, indent=1)}
+
+## 出力の形（out/recheck.yaml）
+{yaml.safe_dump(ex, allow_unicode=True, sort_keys=False)}
+書いたら `python3 {HERE / 'qa.py'} --check-recheck out/recheck.yaml --issues {','.join(str(d.get('issue')) for d in defects)} --repo-dir product` で形を確かめ、ok になるまで直してください。
+最後に、どの Issue が直っていたかを 1 行ずつ答えて終わってください。
+"""
+
+
+def run_recheck(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
+    import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
+    env = env_entries(repo_dir, inp.get("env") or "staging", inp.get("env_host") or defs["worker"]["env_host"])
+    env["release_id"] = inp.get("release_id")
+    base = {"mode": "recheck", "env": env["env"], "release_id": inp.get("release_id"), "stories": [], "verdicts": []}
+    issues = {d["issue"] for d in inp.get("defects") or [] if isinstance(d.get("issue"), int)}
+    if not issues:
+        return {"ok": False, "errors": ["確かめ直す Defect（入力の defects）がない"], **base}
+    if not env["entries"]:
+        return {"ok": False, "errors": [f"環境 {env['env']} の画面の入口が ship.yaml にない"], **base}
+    cost, usage, turns, model = 0.0, {}, 0, None
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "out").mkdir()
+        (root / "product").symlink_to(repo_dir.resolve(), target_is_directory=True)
+        (root / "env.json").write_text(json.dumps({**env, "accounts": (inp.get("touchable") or {}).get("accounts") or []},
+                                                  ensure_ascii=False, indent=1), encoding="utf-8")
+        state = str(root / ".agent-state")
+        mcp = relay_config(root)
+        text = recheck_prompt(defs, env, inp, mobile=bool(mcp))
+        errs: list[str] = []
+        doc = None
+        for _ in range(2):   # 形が崩れていれば同じ会話で 1 回だけ直させる
+            res = agent_runner.run_agentic("qa", text, max_turns=int((defs.get("recheck") or {}).get("max_turns") or 60), cwd=str(root),
+                                           state_dir=state, **({"mcp_config": mcp} if mcp else {}))
+            cost += res.cost_usd or 0
+            turns += res.num_turns or 0
+            model = res.model
+            for k, v in (res.usage or {}).items():
+                if isinstance(v, (int, float)):
+                    usage[k] = usage.get(k, 0) + v
+            stop = runner_stop(res)
+            if stop:
+                errs = [stop]
+                break
+            doc = _load(root / "out" / "recheck.yaml")
+            errs = validate_recheck(doc, issues, root / "out") if not isinstance(doc, str) else [doc]
+            if not errs:
+                break
+            text = "out/recheck.yaml に次の崩れがあります。直してください。\n" + "\n".join(f"- {e}" for e in errs)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        files = screenshots(root / "out")
+        for n in files:
+            shutil.copy2(root / "out" / n, out_dir / n)
+    base.update({"cost_usd": cost, "usage": usage, "num_turns": turns, "model": model, "mobile": bool(mcp)})
+    if errs:
+        return {"ok": False, "errors": errs, **base}
+    return {"ok": True, "files": files, "recheck": doc, **base}
+
+
 # ------------------------------------------------------------------ 品質の Learn の重点と回帰のシナリオ（ADR 0043 の O9）
 def focus_text(inp: dict) -> str:
     """dispatcher が入力に足した重点（厚く流すストーリー・観点）と回帰のシナリオを、プロンプトの節にする。なければ空"""
@@ -675,6 +813,8 @@ def run(repo_dir: Path, inp: dict, out_dir: Path, defs: dict) -> dict:
         os.environ["MAX_BUDGET_USD"] = str(inp["max_budget_usd"])
     if inp.get("mode") == "explore":   # 夜間の探索（nightly_explore）
         return run_explore(repo_dir, inp, out_dir, defs)
+    if inp.get("mode") == "recheck":   # 差し止めの直しの確かめ直し（ADR 0062）
+        return run_recheck(repo_dir, inp, out_dir, defs)
     if inp.get("mode") == "synthetic":   # 合成の利用者（ADR 0043 の O4）
         return run_synthetic(repo_dir, inp, out_dir, defs)
     import agent_runner   # 工程からエージェントを呼ぶ唯一の入口（ADR 0010）
@@ -759,6 +899,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check")
     ap.add_argument("--check-explore")
     ap.add_argument("--check-synthetic")
+    ap.add_argument("--check-recheck")
+    ap.add_argument("--issues", help="--check-recheck で答えが要る Issue の番号（カンマ区切り）")
     ap.add_argument("--env-file")
     ap.add_argument("--plan")
     ap.add_argument("--charter")
@@ -776,6 +918,13 @@ def main(argv: list[str] | None = None) -> int:
         envd = json.loads(Path(a.env_file).read_text(encoding="utf-8")) if a.env_file else {}
         entries = {e.get("port_env") for e in envd.get("entries") or []}
         errs = [doc] if isinstance(doc, str) else validate_synthetic(doc, defs["synthetic"], plan, event_names(repo_dir), entries)
+        print("\n".join(errs) if errs else "ok")
+        return 1 if errs else 0
+    if a.check_recheck:
+        p = Path(a.check_recheck)
+        doc = _load(p)
+        nums = {int(x) for x in (a.issues or "").split(",") if x.strip().isdigit()}
+        errs = [doc] if isinstance(doc, str) else validate_recheck(doc, nums, p.parent)
         print("\n".join(errs) if errs else "ok")
         return 1 if errs else 0
     if a.check_explore:

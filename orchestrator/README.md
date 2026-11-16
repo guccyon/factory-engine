@@ -575,7 +575,7 @@ supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は�
 重要度の基準（S1 の条件と S2〜S4）とエラーバジェットは製品の `.factory-config/quality_policy.yaml`（欄の型は `definitions/quality_policy.yaml`）。QA 役のワーカーはその条件を重要度の説明に足して読む。
 
 - Gen1 は本番を立てないので staging を本番の代わりにし、QA 役（判定・夜間の探索）が起票した Defect（known_gap を除く）を同じ重要度の Incident として残す（`dispatcher/incident.py`、events の `incident.opened` と artifacts の `Incident`）。同じ Defect の Issue は 1 件
-- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人だけ**（操業コンソールの「差し止めを解除」か下の `line release`。QA 役と工場の常駐は解除できない）
+- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人か、直しを確かめ直した QA 役**（人は操業コンソールの「差し止めを解除」か下の `line release`。名前だけで QA 役や工場の常駐を名乗る解除は断る。直しの緊急便が本番に出たら、supervisor が QA のジョブ（mode: recheck）を p0 で積み、QA 役が再現の手順で直ったと答えれば差し止めを解く。ADR 0062。`HOLD_AUTO_LIFT=0` で人だけに戻る）
 - エラーバジェット: 期間の中の Incident（演習を除く）が許容件数を超えたら `incident.budget_exceeded` を期間と重要度ごとに 1 回残し、工場の状況に知らせる
 
 ```bash

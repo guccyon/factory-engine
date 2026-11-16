@@ -754,6 +754,8 @@ def run_job(job: dict, reattaching: bool = False):
                     if state == "succeeded" and result.get("mode") == "explore":   # 夜間の探索（nightly_explore）: 1 晩 1 件の qa.explore と Defect の起票
                         keys = qa_line.store_files(store_put, job_id, design_files)
                         qa_line.record_explore(cur, gh, comment, repo, issue, corr, job_id, result, keys)
+                    elif state == "succeeded" and result.get("mode") == "recheck":   # 差し止めの直しの確かめ直し（ADR 0062）: 解くかは supervisor の hold_lift
+                        comment(repo, issue, qa_line.recheck_summary(job_id, result))
                     elif state == "succeeded" and result.get("mode") == "synthetic":   # 合成の利用者（ADR 0043 の O4）: qa.synthetic と改善の提案
                         qa_line.record_synthetic(cur, gh, comment, repo, issue, corr, job_id, result)
                     elif state == "succeeded":

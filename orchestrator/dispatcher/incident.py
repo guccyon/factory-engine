@@ -7,7 +7,8 @@ definitions/events.yaml。
   本番を立てる段階（launch・operating）の製品では、本番の見張り（prod_watch.py）と本番への出荷の失敗（ship.py）も S2 の Incident を開く
   （detected_by が prod_watch / shipper、env が prod。ADR 0057）
 - 差し止め: 重要度が HOLD_SEVERITIES（S1）の Incident が開いたら、QA 役がラインを差し止める（events の line.held_by_qa）。
-  ラインの一時停止（drain。工場の更新のための札）とは別の札で、解除は人だけ（line.hold_released。factoryctl line release か操業コンソール）。
+  ラインの一時停止（drain。工場の更新のための札）とは別の札で、解除は人（line.hold_released。factoryctl line release か操業コンソール）か、
+  直しが本番に出たのを確かめ直した QA 役（qa_lift。ADR 0062。条件を見るのは hold_lift.py）。
   差し止めの間、dispatcher はラインのジョブのうち、S1 の Defect の Issue と QA の固定 Issue のジョブ、p0 のジョブだけを取り出す
   （S1 の修正と確かめ直しは流す）。実行中のジョブは最後まで流す。委員会と窓口の枠は止めない
 - エラーバジェット: 製品の .factory-config/quality_policy.yaml の error_budget（期間と重要度ごとの許容件数）と、期間の中の Incident の数を
@@ -34,7 +35,7 @@ HOLD_SEVERITIES = ("s1",)          # definitions/quality_policy.yaml の severit
 HOLD, RELEASED = "line.held_by_qa", "line.hold_released"
 HOLD_PRIORITY_LABEL = ops.PRIORITY_LABEL_PREFIX + "p0"   # S1 の Defect の Issue に付ける（どの機能開発より優先。ADR 0028）
 POLICY_PATH = ".factory-config/quality_policy.yaml"
-# 差し止めを解除できないもの（人だけが解除する。QA 役と工場の常駐が自分の差し止めを外さない）
+# release で差し止めを解除できない名前（QA 役が解くのは、直しを確かめ直した qa_lift だけ。ADR 0062）
 NOT_HUMAN = ("qa", "supervisor", "dispatcher", "watcher", "shipper")
 JST = timezone(timedelta(hours=9))
 
@@ -146,7 +147,7 @@ def hold(cur, inc: dict, *, qa_corr: str | None, defect_corr: str | None, by: st
         stoppage.post_notice(f"**差し止めに Incident を足しました**: {what}", cur)
     else:
         stoppage.open_stoppage(cur, stoppage_key(st), "human", what, detected_by="qa", started_at=st["since"],
-                               waiting_for="手動の解除（操業コンソールの「差し止めを解除」か factoryctl line release --reason ...）。"
+                               waiting_for="直しが本番に出たのを QA 役が確かめ直して解く（ADR 0062）か、人の解除（操業コンソールの「差し止めを解除」か factoryctl line release --reason ...）。"
                                            "S1 の修正（p0）と QA の確かめ直しは差し止めの間も流れる")
     return prev is None
 
@@ -155,7 +156,7 @@ def release(cur, by: str, reason: str) -> bool:
     """人が差し止めを解除する。差し止めていなければ False。QA 役と工場の常駐は解除できない（ValueError）"""
     who = str(by or "").split(":")[0].strip()
     if not by or who in NOT_HUMAN:
-        raise ValueError("差し止めの解除は人だけ（ADR 0043 の O5）")
+        raise ValueError("差し止めの解除は人だけ（QA 役は直しを確かめ直して解く。ADR 0043 の O5、ADR 0062）")
     if not str(reason or "").strip():
         raise ValueError("解除の理由が要る（直した・演習を終えた など）")
     st = hold_state(cur)
@@ -169,6 +170,27 @@ def release(cur, by: str, reason: str) -> bool:
         # キーが合わなくても、差し止めの停止は同時に 1 つなので、開いている qa_hold: を閉じる（受信トレイに残さない。#391）
         for k in stoppage.open_keys(cur, "qa_hold:"):
             stoppage.close_stoppage(cur, k, remedy=remedy, closed_by=by, woken_by="human")
+    return True
+
+
+def qa_lift(cur, incident_ids: list[str], reason: str, checks: list[dict]) -> bool:
+    """QA 役が、直しを確かめ直した差し止めを解く（ADR 0062）。差し止めの Incident が渡したものと同じでなければ解かない（確かめている間に
+    S1 が足された）。Incident を閉じ、line.hold_released の by: qa・via: qa_verified に確かめ直しの答えを添える。返り値は解いたか"""
+    st = hold_state(cur)
+    if not st:
+        return False
+    held_ids = sorted(i.get("incident_id") for i in st.get("incidents") or [])
+    if not held_ids or held_ids != sorted(incident_ids):
+        return False
+    for iid in incident_ids:
+        close_incident(cur, iid, "qa", reason)
+    cur.execute("insert into events(name, payload) values (%s, %s)",
+                (RELEASED, Jsonb({"by": "qa", "via": "qa_verified", "reason": reason, "incidents": incident_ids,
+                                  "checks": checks, "held_minutes": st["minutes"]})))
+    remedy = f"QA 役が直ったのを確かめて差し止めを解いた（{reason}）"
+    if not stoppage.close_stoppage(cur, stoppage_key(st), remedy=remedy, closed_by="qa"):
+        for k in stoppage.open_keys(cur, "qa_hold:"):
+            stoppage.close_stoppage(cur, k, remedy=remedy, closed_by="qa")
     return True
 
 
@@ -274,7 +296,7 @@ def from_qa(cur, gh, comment, repo: str, *, key: str, severity: str, title: str,
                 comment(repo, int(num), f"重要度 {severity.upper()} の Incident（`{inc['incident_id']}`）として、QA 役がラインを差し止めました"
                                         f"（factory-engine の ADR 0043 の O5）。{'**これは演習です**（staging に仕込んだもの。直すコードはありません）。' if inc['drill'] else ''}\n\n"
                                         "差し止めの間も、この Issue（p0）と QA の確かめ直しは流れます。ほかのチケットは止まっています。" + flow
-                                        + "解除は手動で行います（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
+                                        + "直しが本番に出たら、QA 役が再現の手順で確かめ直し、直っていれば差し止めを自分で解きます（ADR 0062）。人はいつでも解除できます（操業コンソールの「差し止めを解除」か `factoryctl line release --reason ...`）。")
         elif planned:
             comment(repo, int(num), f"重要度 {severity.upper()} の不具合です。" + flow)
         if policy is None:

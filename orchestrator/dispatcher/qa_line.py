@@ -528,6 +528,15 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
     return {"explore_id": eid, "filed": filed, "seen": seen, "skipped": skipped}
 
 
+def recheck_summary(job_id: int, result: dict) -> str:
+    """確かめ直し（mode: recheck。ADR 0062）の答えを固定 Issue に書く短いまとめ"""
+    ja = {"yes": "✅ 直っていた", "no": "🛑 直っていない", "unconfirmed": "⏸ 確かめられなかった"}
+    rows = [f"- #{c.get('issue')}: {ja.get(c.get('fixed'), '⏸ 確かめられなかった')}（確信度 {c.get('confidence')}）— {str(c.get('saw') or '')[:300]}"
+            for c in ((result.get("recheck") or {}).get("checks") or []) if isinstance(c, dict)]
+    return "\n".join([f"## 直しの確かめ直し（ジョブ {job_id}・環境 {result.get('env') or '-'}・バージョン {result.get('release_id') or '-'}）", "",
+                      *(rows or ["- 答えがなかった"]), "", "差し止めを解くかは工場が決めます（ADR 0062）。"])
+
+
 def enqueue_explore(cur, gh, repo: str, night: str, *, by: str = "supervisor", defs: dict | None = None, unattended: bool = True) -> dict:
     """夜間の探索のジョブを固定 Issue に積む（入力の mode: explore）。返り値は enqueue と同じに charter を足したもの"""
     defs = defs or load_defs()

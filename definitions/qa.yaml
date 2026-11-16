@@ -165,3 +165,14 @@ synthetic:
     walk: "1 回歩いた分。{story_id, round, actor, entry, found_entry, attempts_to_entry, reached_exit, steps, felt}"
     entry: "使った画面の入口（env.json の entries の port_env）"
     steps: "1 歩ごとに {n, did, event（このとき起きたはずの行動イベントの name。製品の specs/analytics/events.yaml にあるもの。なければ null）, waited: none | short | long, stuck: 真偽, note}"
+
+# 差し止めの直しの確かめ直し（ADR 0062）。S1 の差し止めの直しが本番に出たら、supervisor（hold_lift.py）が Defect の Issue ごとに
+# QA のジョブ（入力の mode: recheck・defects）を固定 Issue（factory:qa）に p0 で積む。QA 役は staging で再現の手順をたどり直し、
+# out/recheck.yaml に Issue ごとの答えを書く。差し止めの全部の Incident が「直っていた」（確信度 confidence_min 以上）なら QA 役が差し止めを解く。
+recheck:
+  max_turns: 60
+  confidence_min: 0.7           # これより低い「直っていた」は確かめられなかったとして扱う（hold_lift.CONFIDENCE_MIN と同じ）
+  attempts: 2                   # 確かめられなかったら 1 回だけ積み直す（hold_lift.ATTEMPTS と同じ）
+  result:
+    required: [checks, interpretation]
+    check: "Defect の Issue ごとに {issue（番号）, fixed: yes | no | unconfirmed, tried（たどった手順と見えたもの 1 件以上）, saw（期待どおりだったか、利用者の言葉で 1〜2 行）, confidence（0〜1）}"
