@@ -296,7 +296,7 @@ def fmt(v: dict | None) -> list[str]:
                      f"{_m(r['work_min'])} | {_m(r['wait_min'])} | {_p(r['first_pass'])} | {r['defects']} |")
     lines += ["", "**モデルの試し（小さいチケットの実装の一部を Sonnet で）**", "", *experiment_lines(v.get("experiment")), "",
               "一発で通った: 実装は後から直し（CI 落ち・指摘・途中終了の続き）が積まれなかった割合、ほかの工程は 1 回目で失敗せずに終わった割合。"
-              "Defect は PR の最新の版を書いた実装のジョブに付けて数える"]
+              "Defect は PR の最新のバージョンを書いた実装のジョブに付けて数える"]
     return lines
 
 

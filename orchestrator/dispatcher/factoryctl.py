@@ -331,7 +331,7 @@ def plan_cmd(cur, argv) -> int:
                 print("変わる見込みのファイル: " + ", ".join(p["expected_files"]))
             for line in planner.workflow_lines(p.get("workflow"), p.get("workflow_marks")):
                 print(line)
-            print(f"入力の版: {json.dumps(p.get('versions') or {}, ensure_ascii=False)}\n")
+            print(f"入力のバージョン: {json.dumps(p.get('versions') or {}, ensure_ascii=False)}\n")
         for s in serialize.serialized(cur, f"github:{repo}#{n}"):
             print(f"並べた（{s['at']:%m-%d %H:%M}）: {s.get('why')}")
         for s in workflow_shadow.shadows(cur, f"github:{repo}#{n}"):
@@ -651,7 +651,7 @@ def report_provenance(cur, argv):
                      from events c where c.name='release.created' and c.occurred_at >= %s::date and c.occurred_at < %s::date order by c.id""", (frm, to))
     rels = cur.fetchall()
     if rels:
-        out += ["", "## 出荷（ADR 0012）", "", "| Release | PR | イメージ作り（秒） | 出した環境 | 承認の入口 | この版から戻した秒数 | contract |", "|---|---|---|---|---|---|---|"]
+        out += ["", "## 出荷（ADR 0012）", "", "| Release | PR | イメージ作り（秒） | 出した環境 | 承認の入口 | このバージョンから戻した秒数 | contract |", "|---|---|---|---|---|---|---|"]
         out += [f"| {r['rid']} | {r['prs']} | {r['built_s'] or '-'} | {r['envs'] or '-'} | {r['approved_via'] or '-'} | {r['rollback_s'] or '-'} | {r['contracts']} |" for r in rels]
     print("\n".join(out))
 
@@ -1153,7 +1153,7 @@ def qa_cmd(cur, argv) -> int:
     if sub == "gate":   # 出荷の QA の関門（ADR 0049）
         import qa_gate
         gates = qa_gate.recent(cur, repo, int(opt(argv, "--limit", "5")))
-        state_ja = {"open": "結果を待っている", "decided": "報告済み", "superseded": "次の版に替わった"}
+        state_ja = {"open": "結果を待っている", "decided": "報告済み", "superseded": "次のバージョンに替わった"}
         for g in gates:
             names = {"verdict": "判定", "explore": "探索", qa_gate.TIME: "時刻の判定"}
             jobs = "・".join(f"{names[w]} " + ",".join(str(j["job_id"]) for j in g["jobs"][w]) for w in qa_gate.ALL if g["jobs"][w])
@@ -1207,7 +1207,7 @@ def qa_cmd(cur, argv) -> int:
                                             friction=friction, unattended=False)
         except psycopg.errors.UniqueViolation:
             print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
-        print(f"enqueued job {got['job_id']}（合成の利用者・{repo}#{got['issue']}・版 {got['release_id'] or '不明'}・仕込み {sorted(got['friction']) or 'なし'}）")
+        print(f"enqueued job {got['job_id']}（合成の利用者・{repo}#{got['issue']}・バージョン {got['release_id'] or '不明'}・仕込み {sorted(got['friction']) or 'なし'}）")
         if drain.active(cur):
             if "--through-pause" in argv:
                 drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "合成の利用者（factoryctl qa synthetic --through-pause）")
@@ -1222,7 +1222,7 @@ def qa_cmd(cur, argv) -> int:
             got = qa_line.enqueue_explore(cur, gh, repo, night, by=opt(argv, "--by", "factoryctl"), unattended=False)
         except psycopg.errors.UniqueViolation:
             print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
-        print(f"enqueued job {got['job_id']}（夜間の探索・{repo}#{got['issue']}・チャーター {got['charter']}・版 {got['release_id'] or '不明'}）")
+        print(f"enqueued job {got['job_id']}（夜間の探索・{repo}#{got['issue']}・チャーター {got['charter']}・バージョン {got['release_id'] or '不明'}）")
         if drain.active(cur):
             if "--through-pause" in argv:
                 drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "夜間の探索（factoryctl qa explore --through-pause）")
@@ -1242,11 +1242,11 @@ def qa_cmd(cur, argv) -> int:
                               exclusive_env=exclusive)
     except psycopg.errors.UniqueViolation:
         print("この製品の QA のジョブがもう動いている（factoryctl list）"); return 1
-    print(f"enqueued job {got['job_id']}（QA 役・{repo}#{got['issue']}・版 {got['release_id'] or '不明'}・{level}）")
+    print(f"enqueued job {got['job_id']}（QA 役・{repo}#{got['issue']}・バージョン {got['release_id'] or '不明'}・{level}）")
     if exclusive:
         print("  時刻をまたぐストーリーを含むので、この製品のほかの QA のジョブが終わってから始まる（ADR 0055）")
     if not got["release_id"]:
-        print("  ※ 環境に出ている版の記録がない。先に factoryctl env up で触れる環境を立てる")
+        print("  ※ 環境に出ているバージョンの記録がない。先に factoryctl env up で触れる環境を立てる")
     if drain.active(cur):
         if "--through-pause" in argv:
             drain.allow(cur, [got["corr"]], opt(argv, "--by", "factoryctl"), "QA の判定（factoryctl qa run --through-pause）")
@@ -1654,7 +1654,7 @@ def main(argv):
         return 0 if ok else 1
     elif cmd == "env" and len(argv) > 3 and argv[2] == "show":
         t = touch.latest(cur, argv[3], opt(argv, "--env", "staging"))
-        print(touch.render(t) if t else "いまの版の入口の記録がない（factoryctl env up で立てる）")
+        print(touch.render(t) if t else "いまのバージョンの入口の記録がない（factoryctl env up で立てる）")
         return 0 if t else 1
     elif cmd == "readiness":
         return readiness_cmd(cur, argv)

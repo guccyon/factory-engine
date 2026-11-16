@@ -55,7 +55,7 @@ CHOICE_EFFECTS = {
     "concept_tone": "選んだコンセプトとトーン＆マナーでデザインシステムの線が進む。戻すと作り手に作り直しを頼む",
     "taste_sample": "選んだ案を内部品質の教師信号として残す。戻すと作り手に戻す",
 }
-TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直した版で更新を依頼し直すのは建設者）",
+TASK_ACK = {"swap_rolled_back": "見たとして閉じる（直したバージョンで更新を依頼し直すのは建設者）",
             "desk_waiting": "見たとして閉じる（依頼は閉じない。依頼者に直接確かめ、答えは依頼者が窓口か受信トレイから返す）",
             "desk_notice_failed": "見たとして閉じる（知らせはもう送り直さない。依頼者には直接知らせる）",
             "opportunity": "見たとして閉じる（拾うなら「起票する」で答える）"}   # 見たら閉じてよい依頼
@@ -328,7 +328,7 @@ def _release_item(cur, repo: str) -> dict | None:
         action = (f"QA の報告にブロッカーの候補が {n} 件ある。ブロッカーにするなら「見送る」、承知で出すなら「本番に出す」" if n
                   else "QA の報告にブロッカーの候補はない。staging で確かめて「本番に出す」を押す")
     else:
-        detail = [{"label": "QA の関門", "text": "この版は関門を通っていない（判定と探索の報告がない）"}]
+        detail = [{"label": "QA の関門", "text": "このバージョンは関門を通っていない（判定と探索の報告がない）"}]
         action = "staging で確かめて「本番に出す」を押す"
     # いつから答えられるか。関門の報告を待つ間は出さないので、届いた時刻は報告ができた時刻にする
     # （11/15: 0.36.0 は staging 17:53 UTC・報告 20:30 UTC で、受信トレイでは 17:53 に届いたように見え、2.5 時間遅れて見えた）
@@ -337,7 +337,7 @@ def _release_item(cur, repo: str) -> dict | None:
         since = g["decided"]["at"]
     contracts = _contracts_between(cur, repo, pr.get("release_id"), rid)
     if contracts:   # ADR 0057 の決定 4: 出すと前の版に戻せなくなることを、押す前に知らせる
-        detail.append({"label": "DB の contract", "text": f"この版を出すと DB から列・表を消すマイグレーションが当たり、{pr.get('release_id') or '前の版'} "
+        detail.append({"label": "DB の contract", "text": f"このバージョンを出すと DB から列・表を消すマイグレーションが当たり、{pr.get('release_id') or '前のバージョン'} "
                        f"より前には戻せなくなる（{'・'.join(contracts)}）"})
     return {"key": f"release:{rid}", "kind": "release", "who": "owner", "title": f"{repo} の {ver} が本番待ち",
             "action": action, "detail": detail, "url": "/#ship", "since": since, "ref": repo,

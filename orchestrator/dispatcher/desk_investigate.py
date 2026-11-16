@@ -302,7 +302,7 @@ def handoff_summary(p: dict, engine_ref: str | None) -> str:
     stop = p.get("stop_reason") or "budget"
     rows = [f"工場の中の一次調査（ADR 0048）で特定できなかった件を、工場の外の調査に引き継ぎます。",
             "", f"- 引き継ぎ資料: {p['id']}", f"- 止めた理由: {stop}（{STOP_JA.get(stop, '')}）",
-            f"- Engine の版: {engine_ref or 'unknown'}",
+            f"- Engine のバージョン: {engine_ref or 'unknown'}",
             f"- 見た事実: {len(d.get('facts') or [])} 件、仮説: {len(d.get('hypotheses') or [])} 件、打ち消した仮説: {len(d.get('ruled_out') or [])} 件、"
             f"まだ見ていない所: {len(d.get('not_looked_at') or [])} 件",
             "", f"資料の本体はその工場の中にあります（`factoryctl investigation show {p['id']}`）。一次の事実をやり直さず、資料の id から始めてください。"]

@@ -317,7 +317,7 @@ def verify_scope(wf: dict) -> dict:
 def verify_lines(wf: dict) -> list[str]:
     v = verify_scope(wf)
     return [f"- 流すストーリー: {'、'.join(v['stories']) if v['stories'] else '全部'}" + ("（探索も 1 つ足す）" if v["explore"] else ""),
-            "- staging: " + ("マージ済みで版にしていない変更があれば、先に出す（出した版は版の QA の結果を使う）" if v["stage"] else "今の版のまま流す"),
+            "- staging: " + ("マージ済みでバージョンにしていない変更があれば、先に出す（出したバージョンはバージョンの QA の結果を使う）" if v["stage"] else "今のバージョンのまま流す"),
             "- 結果はこのチケットにコメントして閉じます。不具合は別のチケットに起票します"]
 
 

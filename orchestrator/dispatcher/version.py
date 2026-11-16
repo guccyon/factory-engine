@@ -99,11 +99,11 @@ def _same(a: str, b: str) -> bool:
 def report(rows: list[dict], expect: str | None = None) -> tuple[str, int]:
     """表示する文字と終了コード（ずれがあれば 1）"""
     bad = {id(r) for r in mismatched(rows, expect)}
-    lines = [f"{'':2}{'種類':<8}{'名前':<28}{'状態':<10}{'版':<12}イメージ"]
+    lines = [f"{'':2}{'種類':<8}{'名前':<28}{'状態':<10}{'バージョン':<12}イメージ"]
     for r in rows:
         mark = "! " if id(r) in bad else "  "
         lines.append(f"{mark}{r['kind']:<8}{r['name']:<28}{r['state']:<10}{r['version']:<12}{r['image']}")
     if bad:
         target = f"（期待 {expect}）" if expect else ""
-        lines.append(f"版のずれ・止まっているサービスが {len(bad)} 件{target}: " + ", ".join(r["name"] for r in rows if id(r) in bad))
+        lines.append(f"バージョンのずれ・止まっているサービスが {len(bad)} 件{target}: " + ", ".join(r["name"] for r in rows if id(r) in bad))
     return "\n".join(lines), (1 if bad else 0)

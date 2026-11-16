@@ -59,7 +59,7 @@ function liveLanes(s) {
   const rows = steps.map(st => {
     const ys = st.id === "ship" ? ships : xs.filter(i => liveStepOf(i, steps) === st.id);
     if (!ys.length && !st.fixed) return "";
-    const placed = ys.map(i => i.ship ? ["work", 0.3, "処理中（" + ({ship_requested: "staging へ出荷", approved: "本番へ出荷", rollback_requested: "前の版へ戻す"}[i.request] || i.request) + "）"] : livePlace(i));
+    const placed = ys.map(i => i.ship ? ["work", 0.3, "処理中（" + ({ship_requested: "staging へ出荷", approved: "本番へ出荷", rollback_requested: "前のバージョンへ戻す"}[i.request] || i.request) + "）"] : livePlace(i));
     const dots = ys.map((i, k) => {
       const [zone, prog, state] = placed[k], [a, b] = LIVE_SPAN[zone];
       const same = placed.map((p, j) => [p[0], j]).filter(p => p[0] === zone).map(p => p[1]), m = same.indexOf(k);

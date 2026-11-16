@@ -127,7 +127,7 @@ def _swap(cur, s: dict, a: dict, sid: str) -> None:
     reasons = [SWAP_ESCALATE_JA.get(e.get("id"), "確認が要る決まりの変更") for e in esc.get("escalations") or []]
     files = sorted({f for e in esc.get("escalations") or [] for f in e.get("files") or []})
     a.update(group="工場の更新", who="owner", target={"label": f"更新の依頼 {sid}", "url": ""},
-             title=f"工場の更新（版 {ver or '不明'}）を自動では進めず、確認に回した",
+             title=f"工場の更新（バージョン {ver or '不明'}）を自動では進めず、確認に回した",
              todo="変更の中身を確かめてから、手で更新する。わからなければ建設者に「更新 " + sid + " を確かめて」と頼む")
     if reasons:
         a["detail"] = [{"label": "確認に回した理由", "text": "、".join(dict.fromkeys(reasons))}, {"label": "変わるファイル", "text": "、".join(files[:8])}]
@@ -221,7 +221,7 @@ def describe(cur, s: dict) -> dict:
                      links=[{"label": "受信トレイで見る", "href": f"/inbox/stoppage:{key}", "nav": True}])
         elif prefix == "ship":
             a.update(group="工場の不調", title=_plain(s.get("what")).replace("出荷の失敗", "出荷に失敗した"),
-                     todo="出荷のページで状態を見て、もう一度出すか前の版に戻す", links=[{"label": "出荷を開く", "href": "/ship", "nav": True}])
+                     todo="出荷のページで状態を見て、もう一度出すか前のバージョンに戻す", links=[{"label": "出荷を開く", "href": "/ship", "nav": True}])
     except Exception as e:  # noqa: BLE001  1 件の組み立ての失敗で一覧を止めない（記録の文のまま出す）
         a["detail"].append({"label": "組み立てに失敗", "text": repr(e)[:200]})
     if s.get("cause") and prefix not in ("job", "swap"):
