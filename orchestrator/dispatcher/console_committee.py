@@ -1,7 +1,7 @@
 """操業コンソールの委員会のページ（/committees）の中身。読むだけ（記録は書かない）。
 
 工場の委員会は 2 つ。開いた記録は events に残っているので、それを開催の一覧と議事録に組み直す。
-- 知見の委員会（ADR 0024）: 知見の PR ごとの審査（committee.decided・差し戻して直させた committee.revise）と、週 1 の定例（committee.weekly_reviewed）
+- 知見の委員会（ADR 0024・0061）: チケット N 件ごとの振り返り（retro.held）、知見の PR ごとの審査（committee.decided・差し戻して直させた committee.revise）と、週 1 の定例（committee.weekly_reviewed）
 - 事故の調査委員会（ADR 0046）: 週次の見回り・調査・記録（fincident.reviewed）
 
 議事録は {h, text?, items?} の節の並びで返す。画面は節を並べるだけで、委員会ごとの組み立てはここに閉じる。
@@ -15,6 +15,7 @@ import committee
 COMMITTEES = {"knowledge": "知見の委員会", "incident": "事故の調査委員会"}
 # event の name → (委員会, 会の種類)
 KINDS = {
+    "retro.held": ("knowledge", "振り返り"),
     "committee.decided": ("knowledge", "審査"),
     "committee.revise": ("knowledge", "審査（差し戻し）"),
     "committee.weekly_reviewed": ("knowledge", "定例"),
@@ -33,7 +34,7 @@ def _pr(url: str | None) -> str:
 
 
 def _repo(name: str, p: dict) -> str:
-    if name == "committee.weekly_reviewed":
+    if name in ("committee.weekly_reviewed", "retro.held"):
         return p.get("repo") or ""
     if name.startswith("committee."):
         return _pr(p.get("pr_url")).split("#")[0]
@@ -41,6 +42,8 @@ def _repo(name: str, p: dict) -> str:
 
 
 def _title(name: str, p: dict) -> str:
+    if name == "retro.held":
+        return f"振り返り S-{p.get('sprint')}（チケット {len(p.get('tickets') or [])} 件）"
     if name in ("committee.decided", "committee.revise"):
         return f"知見の審査 {_pr(p.get('pr_url'))}"
     if name == "committee.weekly_reviewed":
@@ -49,6 +52,8 @@ def _title(name: str, p: dict) -> str:
 
 
 def _outcome(name: str, p: dict) -> str:
+    if name == "retro.held":
+        return f"知見 {len(p.get('knowledge') or [])} 件・打ち手 {len(p.get('actions') or [])} 件"
     if name == "committee.decided":
         return committee.OUTCOME_JA.get(p.get("outcome"), p.get("outcome") or "")
     if name == "committee.revise":
@@ -64,7 +69,7 @@ def _row(r: dict) -> dict:
     com, kind = KINDS[name]
     return {"id": r["id"], "committee": com, "committee_ja": COMMITTEES[com], "kind": kind, "title": _title(name, p),
             "repo": _repo(name, p), "outcome": _outcome(name, p), "at": r["occurred_at"], "cost_usd": p.get("cost_usd"),
-            "level": "bad" if p.get("outcome") == "human" or p.get("incidents") else ""}
+            "level": "bad" if p.get("outcome") == "human" or p.get("incidents") or p.get("failed_roles") else ""}
 
 
 def list_meetings(cur, committee_id: str | None = None, limit: int = LIMIT) -> dict:
@@ -132,6 +137,69 @@ def _weekly(cur, r: dict) -> list[dict]:
     return secs
 
 
+DEST_JA = {"product_docs": "製品の docs/（ドメインの知識）", "knowledge": "事業部の知見"}
+TARGET_JA = {"engine": "Engine", "process": "工程", "product": "製品"}
+KIND_JA = {"problem": "問題", "good": "よかった", "insight": "気づき"}
+
+
+def _issue_link(repo: str, ref: str) -> str:
+    """'owner/repo#123' を Issue の URL に（画面で押せるように）"""
+    m = re.fullmatch(r"([^/#\s]+/[^/#\s]+)#(\d+)", ref or "")
+    return f"https://github.com/{m.group(1)}/issues/{m.group(2)}" if m else ref
+
+
+def _retro_review(cur, p: dict) -> list[str]:
+    """知見の変更セットの Issue → 工場が書いた PR → 知見のレビューの議決をたどる（判断の結果。ADR 0061 の決定 9）"""
+    cur.execute("select payload->>'issue' as issue from events where name='retro.filed' and payload->>'repo'=%s and (payload->>'sprint')::int=%s "
+                "and payload->>'what'='knowledge'", (p.get("repo"), p.get("sprint")))
+    row = cur.fetchone()
+    m = re.match(r"https://github\.com/([^/]+/[^/]+)/issues/(\d+)", (row or {}).get("issue") or "")
+    if not m:
+        return []
+    cur.execute("select result->>'pr_url' as pr from jobs where correlation_id=%s and result->>'pr_url' is not null order by id desc limit 1",
+                (f"github:{m.group(1)}#{m.group(2)}",))
+    pr = (cur.fetchone() or {}).get("pr")
+    if not pr:
+        return ["変更セットの PR はまだない（工場のラインで書く）"]
+    d = committee.decided(cur, pr)
+    if not d:
+        return [f"変更セットの PR {pr} をレビュー待ち"]
+    return [f"{committee.OUTCOME_JA.get(d.get('outcome'), d.get('outcome') or '')}（議決 {d.get('decision') or 'なし'}）: {pr}"]
+
+
+def _retro(cur, r: dict) -> list[dict]:
+    """振り返り（ADR 0061 の決定 9）: 対象のチケット・出席・立場ごとの意見・得られた知見と置き場・採らなかった候補・打ち手・前回の効き目・起票・次の N"""
+    p = r["payload"] or {}
+    titles = p.get("titles") or {}
+    span = f"{(p.get('from') or '')[:10]}〜{(p.get('to') or '')[:10]}" if p.get("from") else ""
+    secs = [{"h": "まとめ", "text": p.get("summary") or ""},
+            {"h": "対象のチケット" + (f"（{span}、{'件数' if p.get('reason') == 'size' else '日数'}で区切り）" if span else ""),
+             "items": [f"{_issue_link(p.get('repo'), t)} {titles.get(t, '')}".strip() for t in p.get("tickets") or []]},
+            {"h": "出席", "items": [*(p.get("roles") or []), "事業部のリーダー（取りまとめ）",
+                                   *(f"欠席: {f.get('role')}（{f.get('error') or '意見を出せなかった'}）" for f in p.get("failed_roles") or [])]}]
+    by_role: dict[str, list[str]] = {}
+    for o in p.get("opinions") or []:
+        by_role.setdefault(o.get("role") or "?", []).append(
+            f"[{o.get('perspective')}・{KIND_JA.get(o.get('kind'), o.get('kind') or '')}] {o.get('observation')}"
+            + (f" → 案: {o['proposal']}" if o.get("proposal") else "") + (f"（{', '.join(o.get('tickets') or [])}）" if o.get("tickets") else ""))
+    secs += [{"h": f"{role} の意見", "items": xs} for role, xs in by_role.items()]
+    secs.append({"h": "得られた知見", "items": [
+        f"{k.get('statement')}（置き場: {DEST_JA.get(k.get('destination'), k.get('destination') or '')}、観点: {k.get('perspective')}、"
+        f"立場: {', '.join(k.get('from_roles') or [])}、根拠: {', '.join(k.get('evidence_tickets') or [])}）" for k in p.get("knowledge") or []]})
+    secs.append({"h": "採らなかった候補", "items": [f"{x.get('statement')}（{', '.join(x.get('from_roles') or [])}）: {x.get('why')}" for x in p.get("rejected") or []]})
+    secs.append({"h": "打ち手", "items": [f"[{TARGET_JA.get(a.get('target'), a.get('target'))}] {a.get('what')}: {a.get('why')}" for a in p.get("actions") or []]})
+    secs.append({"h": "前回の打ち手の効き目", "text": p.get("previous_effect") or ""})
+    secs.append({"h": "起票した Issue（知見はレビューを通ると事業部に展開）", "items": [f"{t}: {u}" for t, u in (p.get("filed") or {}).items()]})
+    secs.append({"h": "知見のレビューの結果", "items": _retro_review(cur, p)})
+    cur.execute("select payload from events where name='retro.size_adjusted' and payload->>'repo'=%s and (payload->>'sprint')::int=%s order by id desc limit 1",
+                (p.get("repo"), p.get("sprint")))
+    a = cur.fetchone()
+    if a:
+        a = a["payload"]
+        secs.append({"h": "次のスプリントの大きさ", "text": f"N = {a.get('prev')} → {a.get('next')}（{a.get('reason') or ''}）"})
+    return secs
+
+
 def _incident(cur, r: dict) -> list[dict]:
     p = r["payload"] or {}
     secs = [{"h": "まとめ", "text": p.get("summary") or ""},
@@ -157,7 +225,9 @@ def detail(cur, mid: int) -> dict | None:
     if not r:
         return None
     p = r["payload"] or {}
-    if r["name"] in ("committee.decided", "committee.revise"):
+    if r["name"] == "retro.held":
+        secs, link = _retro(cur, r), None
+    elif r["name"] in ("committee.decided", "committee.revise"):
         secs, link = _review(cur, r), p.get("pr_url")
     elif r["name"] == "committee.weekly_reviewed":
         secs, link = _weekly(cur, r), None

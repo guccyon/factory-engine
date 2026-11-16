@@ -59,6 +59,7 @@ import ephemeral
 import factory_incident
 import fault
 import judgment
+import knowledge_snapshot
 import line
 import major_defect
 import ticket_sync
@@ -1375,6 +1376,26 @@ def retro_step(cur, now: datetime | None = None):
         enqueue_retro(cur, repo, defs)
 
 
+def knowledge_snapshot_step(cur):
+    """事業部の知見の写し（ADR 0061 の決定 8）: 製品ごとに 1 時間に 1 回ほど .factory-config/knowledge/ を読み、変わっていたら写しを残す。
+    操業コンソールの知見の一覧と窓口の knowledge_search・knowledge_read が読む（どちらも GitHub を見ない）"""
+    if DRY_RUN:
+        return
+    now = time.time()
+    for repo in REPOS:
+        if not knowledge_snapshot.due(repo, now):
+            continue
+        knowledge_snapshot._last[repo] = now
+        try:
+            if knowledge_snapshot.refresh(cur, gh, repo):
+                log("knowledge snapshot", repo)
+        except urllib.error.HTTPError as e:
+            if e.code != 404:   # 知見の置き場がない製品は写さない
+                log("knowledge snapshot failed", repo, repr(e)[:200])
+        except Exception as e:  # noqa: BLE001  次の時間に読み直す
+            log("knowledge snapshot failed", repo, repr(e)[:200])
+
+
 def enqueue_retro(cur, repo: str, defs: dict):
     """閉じたスプリントのうち、まだ振り返りを積んでいないものを古い順に 1 つ積む（委員会は 1 つずつ。line.COMMITTEE_KINDS）"""
     cur.execute("""select payload from events s where s.name='retro.sprint_closed' and s.payload->>'repo'=%s
@@ -1762,6 +1783,7 @@ def tick():
         design_review_step(cur)
         committee_weekly_step(cur)
         retro_step(cur)
+        knowledge_snapshot_step(cur)
         incident_review_step(cur)
         quality_learn_step(cur)
 
