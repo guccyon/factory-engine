@@ -14,6 +14,7 @@
 記録（events）:
   release.train           {train_id, kind: regular|emergency, releases: [{release_id, repo, prs}], approval: {unit, required, pending}, by, reason}
   release.train_approved  {train_id, by, via, approved: [release_id], skipped: [{release_id, why}]}
+  release.train_dismissed {train_id, by, reason}   承認せずに見送った便（中身が後の便で本番に出たなど）。承認待ちから外す
 """
 from __future__ import annotations
 
@@ -108,6 +109,9 @@ def approve(cur, tid: str, by: str, via: str, skip_qa: str | None = None) -> tup
     cur.execute("select 1 from events where name='release.train_approved' and payload->>'train_id'=%s", (tid,))
     if cur.fetchone():
         return False, "この便はもう承認した"
+    cur.execute("select 1 from events where name='release.train_dismissed' and payload->>'train_id'=%s", (tid,))
+    if cur.fetchone():
+        return False, "この便は見送った"
     approved, skipped = [], []
     for r in t["releases"]:
         ok, m = ship.request_approve(cur, r["release_id"], by, f"{via}（便 {tid}）", skip_qa=skip_qa)
@@ -119,9 +123,27 @@ def approve(cur, tid: str, by: str, via: str, skip_qa: str | None = None) -> tup
     return True, f"便 {tid} を承認した（{len(approved)} 件を prod へ）" + (f"。{len(skipped)} 件は承認しなかった" if skipped else "")
 
 
+def dismiss(cur, tid: str, by: str, reason: str) -> tuple[bool, str]:
+    """承認待ちの便を承認せずに見送る（11/16: 緊急便が続けて出て、後の便が先の便の中身ごと本番に出たため、先の 3 便が承認待ちのまま残った）。
+    Release と環境には触らない。記録を残して承認待ちから外すだけ"""
+    if not reason.strip():
+        return False, "見送る理由（--reason）が要る"
+    if not train_of(cur, tid):
+        return False, f"{tid} という便はない"
+    cur.execute("select name from events where name = any(%s) and payload->>'train_id'=%s limit 1",
+                (["release.train_approved", "release.train_dismissed"], tid))
+    r = cur.fetchone()
+    if r:
+        return False, "この便はもう承認した" if r["name"] == "release.train_approved" else "この便はもう見送った"
+    cur.execute("insert into events(name, correlation_id, payload) values ('release.train_dismissed',%s,%s)",
+                (tid, Jsonb({"train_id": tid, "by": by, "reason": reason})))
+    return True, f"便 {tid} を見送った（承認待ちから外した）"
+
+
 def recent(cur, limit: int = 10) -> list[dict]:
-    """最近の便。承認した便には approved（承認の記録）を付ける"""
-    cur.execute("select t.payload, t.occurred_at, a.payload as approved from events t left join lateral "
+    """最近の便。承認した便には approved（承認の記録）、見送った便には dismissed（見送りの記録）を付ける"""
+    cur.execute("select t.payload, t.occurred_at, a.payload as approved, d.payload as dismissed from events t left join lateral "
                 "(select payload from events a where a.name='release.train_approved' and a.payload->>'train_id'=t.payload->>'train_id' limit 1) a on true "
+                "left join lateral (select payload from events d where d.name='release.train_dismissed' and d.payload->>'train_id'=t.payload->>'train_id' limit 1) d on true "
                 "where t.name='release.train' order by t.id desc limit %s", (limit,))
-    return [{**r["payload"], "at": r["occurred_at"], "approved": r["approved"]} for r in cur.fetchall()]
+    return [{**r["payload"], "at": r["occurred_at"], "approved": r["approved"], "dismissed": r["dismissed"]} for r in cur.fetchall()]

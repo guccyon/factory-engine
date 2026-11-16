@@ -252,3 +252,47 @@ def test_product_severities_reach_the_prompt(tmp_path):
     assert "他人のデータが見える" in got["severities"]["s1"] and "予約が確定しない" in got["severities"]["s2"]
     assert got["severities"]["s3"] == DEFS["severities"]["s3"]
     assert "他人のデータが見える" in qa.prompt(got, [STORY], {"env": "staging", "entries": []}, {})
+
+
+# ------------------------------------------------------------------ 差し止めの直しの確かめ直し（ADR 0062）
+def recheck_doc(**kw):
+    c = {"issue": 1798, "fixed": "yes", "confidence": 0.8, "tried": [{"did": "手順 1〜4", "saw": "残り 1 回のまま"}], "saw": "回数は減らなかった"}
+    return {"checks": [{**c, **kw}], "interpretation": "手順どおりにたどった"}
+
+
+def test_validate_recheck():
+    assert qa.validate_recheck(recheck_doc(), {1798}) == []
+    assert any("fixed" in e for e in qa.validate_recheck(recheck_doc(fixed="maybe"), {1798}))
+    assert any("confidence" in e for e in qa.validate_recheck(recheck_doc(confidence=2), {1798}))
+    assert any("#1799 の答えがない" in e for e in qa.validate_recheck(recheck_doc(), {1798, 1799}))
+    assert any("tried" in e for e in qa.validate_recheck(recheck_doc(tried=[]), {1798}))
+    assert any("issue" in e for e in qa.validate_recheck(recheck_doc(issue=5), {1798}))
+
+
+def test_run_recheck(tmp_path, monkeypatch):
+    d = product(tmp_path)
+    calls = []
+
+    def fake(step, text, max_turns, cwd, state_dir, mcp_config=None):
+        calls.append((text, max_turns))
+        out = Path(cwd) / "out"
+        doc = recheck_doc(fixed="maybe") if len(calls) == 1 else recheck_doc()
+        (out / "recheck.yaml").write_text(yaml.safe_dump(doc, allow_unicode=True))
+        return sys.modules["agent_runner"].Result(output="", cost_usd=0.3, usage={}, model="m", num_turns=3)
+
+    monkeypatch.setattr(sys.modules["agent_runner"], "run_agentic", fake)
+    inp = {"mode": "recheck", "release_id": "o/app@0.54.0", "defects": [{"issue": 1798, "title": "回数が減る", "body": "## 再現\n1. 体験予約"}]}
+    res = qa.run(d, inp, tmp_path / "o", DEFS)
+    assert res["ok"] and res["mode"] == "recheck" and res["recheck"]["checks"][0]["fixed"] == "yes"
+    assert len(calls) == 2 and "崩れ" in calls[1][0] and "#1798 回数が減る" in calls[0][0] and "--check-recheck" in calls[0][0]
+    assert calls[0][1] == DEFS["recheck"]["max_turns"]
+    assert not qa.run(d, {"mode": "recheck"}, tmp_path / "o2", DEFS)["ok"]   # 確かめ直す Defect がない
+
+
+def test_check_recheck_cli(tmp_path, capsys):
+    d = product(tmp_path)
+    p = tmp_path / "out" / "recheck.yaml"
+    p.parent.mkdir()
+    p.write_text(yaml.safe_dump(recheck_doc(), allow_unicode=True))
+    assert qa.main(["--check-recheck", str(p), "--issues", "1798", "--repo-dir", str(d)]) == 0
+    assert capsys.readouterr().out.strip() == "ok"

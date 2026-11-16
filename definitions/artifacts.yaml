@@ -95,6 +95,14 @@ types:
     stage: learn
     required: [pr_url, outcome, decision, votes, enforce, added, pushed_sha]
     note: "ADR 0024。知見の委員会の議決。git の committee/D-NNNN.yaml と同じ票を、差し戻し（git に残らない）も含めて制御プレーンに残す"
+  RetroMinutes:
+    stage: learn
+    required: [repo, sprint, tickets, roles, opinions, summary, knowledge, rejected, actions]
+    note: "ADR 0061。振り返りの議事録（対象のチケット・立場ごとの意見・得られた知見と置き場・採らなかった候補・打ち手・前回の効き目・棚卸し）"
+  KnowledgeSnapshot:
+    stage: learn
+    required: [repo, at, items, shas]
+    note: "ADR 0061 の決定 8。製品の .factory-config/knowledge/ の写し（supervisor が 1 時間に 1 回ほど読み、変わったときだけ残す）。操業コンソールの知見の一覧と窓口の knowledge_search・knowledge_read が読む。機密区分 client の本文は写さない"
   CommitteeWeekly:
     stage: learn
     required: [repo, week, facts, report]

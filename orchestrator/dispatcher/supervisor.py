@@ -59,7 +59,9 @@ import ephemeral
 import factory_incident
 import fault
 import judgment
+import knowledge_snapshot
 import line
+import hold_lift
 import major_defect
 import ticket_sync
 import learn
@@ -72,6 +74,7 @@ import plan_outcome
 import process_learn
 import qa_line
 import recover
+import retro
 import quality_learn
 import report
 import report_kpi
@@ -121,6 +124,7 @@ CASE_REVIEW_DEFS = ENV.get("LEARNING_TAXONOMY", "/definitions/learning_taxonomy.
 KNOWLEDGE_ISSUES = ENV.get("KNOWLEDGE_ISSUES", "1") == "1"   # 事例の分析から、知見の変更セットの Issue を起票する（ADR 0024 の 3）。0 で止める
 COMMITTEE = ENV.get("COMMITTEE", "1") == "1"   # 知見の変更セットの PR を委員会の 4 役に審査させる（ADR 0024 の 4）。0 で止める（人の承認だけになる）
 COMMITTEE_WEEKLY = ENV.get("COMMITTEE_WEEKLY", "1") == "1"   # 知見の委員会の週 1 の定例（ADR 0024）。0 で止める
+RETRO = ENV.get("RETRO", "1") == "1"   # 振り返り（ADR 0061）。消化したチケットを数え、N 件でスプリントを閉じる。0 で止める
 KNOWLEDGE_DEFS = ENV.get("KNOWLEDGE_DEFINITIONS", "/definitions/knowledge.yaml")
 KNOWLEDGE_ISSUES_PER_DAY = int(ENV.get("KNOWLEDGE_ISSUES_PER_DAY", "2"))   # 委員会ができるまでは知見の PR は人の承認（knowledge 種別）なので少なく
 PROCESS_ISSUES = ENV.get("PROCESS_ISSUES", "1") == "1"   # 工程の信号の束の分析から、工場への改善案の Issue を起票する（ADR 0027 の 3）。0 で止める
@@ -432,6 +436,29 @@ def human_fix_step(cur, p: dict, pr: dict):
             log("needs-judgment label removal failed", p["url"], repr(e))
 
 
+FACTORY_BRANCH_RE = re.compile(r"^factory/issue-\d+-job-\d+$")
+
+
+def delete_merged_branch(p: dict, pr: dict) -> bool:
+    """マージを見届けた工場の PR の作業ブランチを消す（2026-11-16、rally にマージ済みのブランチが 659 本溜まっていた）。
+    リポ設定の「マージ後に自動で消す」は製品のリポで有効とは限らない（既存のリポを預かることもある）ので、工場が自分で消す。
+    消すのは工場が作ったブランチ（factory/issue-N-job-M）で、同じリポから出したものだけ。人のブランチ・フォークには触らない。
+    消せなくても（設定で消えていた・権限がない）ラインは止めない。返り値は消したか"""
+    head = pr.get("head") or {}
+    ref = head.get("ref") or ""
+    if (head.get("repo") or {}).get("full_name") != p["repo"] or not FACTORY_BRANCH_RE.match(ref):
+        return False
+    if DRY_RUN:
+        return False
+    try:
+        gh("DELETE", f"repos/{p['repo']}/git/refs/heads/{urllib.parse.quote(ref, safe='/')}")
+    except Exception as e:  # noqa: BLE001
+        log("merged branch delete failed", p["url"], ref, repr(e))
+        return False
+    log("merged branch deleted", p["url"], ref)
+    return True
+
+
 def merge_step(cur, rules: dict, manifests: dict) -> set:
     """返り値は、同時上限に数える開いた工場の PR の correlation_id（人を待つ PR は数えない）"""
     open_corrs: set = set()
@@ -449,8 +476,9 @@ def merge_step(cur, rules: dict, manifests: dict) -> set:
             if pr.get("merged_at"):
                 cur.execute("update tickets set state='closed', updated_at=now() where source='github' and source_ref=%s and state<>'closed'",
                             (p["corr"].split(":", 1)[1],))   # チケットは済み（ADR 0009）
-                record(cur, "pr.merged", p["corr"], {"pr_url": p["url"], "merged_at": pr["merged_at"], "merged_by": (pr.get("merged_by") or {}).get("login"),
-                                                     "merge_commit": pr.get("merge_commit_sha"), "decided": (d or {}).get("payload")}, f"pr.merged:{p['url']}")
+                if record(cur, "pr.merged", p["corr"], {"pr_url": p["url"], "merged_at": pr["merged_at"], "merged_by": (pr.get("merged_by") or {}).get("login"),
+                                                        "merge_commit": pr.get("merge_commit_sha"), "decided": (d or {}).get("payload")}, f"pr.merged:{p['url']}"):
+                    delete_merged_branch(p, pr)
             else:
                 record(cur, "pr.closed_unmerged", p["corr"], {"pr_url": p["url"], "closed_at": pr["closed_at"], "decided": (d or {}).get("payload")},
                        f"pr.closed_unmerged:{p['url']}")
@@ -908,6 +936,10 @@ def major_defect_step(cur):
         major_defect.approve_step(cur, log=log)
     except Exception as e:  # noqa: BLE001  周回は止めない
         log("major defect step failed", repr(e))
+    try:   # 直しが出たのを QA 役が確かめ直して差し止めを解く（ADR 0062）
+        hold_lift.step(cur, gh, log=log)
+    except Exception as e:  # noqa: BLE001  周回は止めない
+        log("hold lift step failed", repr(e))
 
 
 def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:
@@ -1113,8 +1145,8 @@ def knowledge_issue_step(cur, now: datetime | None = None):
     """事例の分析（case.analyzed）のうち、最初に回すテーマの学びがあるものを、知見の変更セットの Issue にする（ADR 0024 の 3）。
     工場の implement ジョブが事例記録と知見の下書き（draft・hypothesis）を 1 本の PR に書く。PR は change_type_rules の knowledge 種別。
     まだ起票していない分析がキューで、製品ごとに 1 件ずつ取り出す（committee.turn）。前の知見がマージされてから書くので、番号がぶつからない"""
-    if not KNOWLEDGE_ISSUES or DRY_RUN:
-        return
+    if not KNOWLEDGE_ISSUES or RETRO or DRY_RUN:
+        return   # 振り返り（ADR 0061）が動いている間は、事例の分析は振り返りの材料にする（単独で知見にしない）
     now = now or datetime.now(timezone.utc)
     day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
     cur.execute("select count(*) as n from events where name='knowledge.case_filed' and payload->>'day'=%s", (day,))
@@ -1290,8 +1322,8 @@ def design_review_step(cur, now: datetime | None = None):
 
 def committee_weekly_step(cur, now: datetime | None = None):
     """週 1 回、製品ごとに知見の委員会の定例のジョブを積む（ADR 0024）。固定 Issue に積み、まとめと起票は dispatcher が行う"""
-    if not COMMITTEE_WEEKLY or DRY_RUN:
-        return
+    if not COMMITTEE_WEEKLY or RETRO or DRY_RUN:
+        return   # 振り返り（ADR 0061）が動いている間は、置き場の棚卸しは振り返りの最後の議題にする
     now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
     try:
         with open(KNOWLEDGE_DEFS, encoding="utf-8") as f:
@@ -1323,6 +1355,79 @@ def committee_weekly_step(cur, now: datetime | None = None):
                     (corr, jid, Jsonb({"by": "supervisor", "kind": "committee_weekly", "week": week, "max_issues": weekly.get("max_issues", 4), "input": inp})))
         record(cur, "supervisor.committee_weekly_enqueued", corr, {"repo": repo, "week": week, "issue": issue, "job_id": jid}, key)
         log("committee weekly enqueued", repo, week, "job", jid)
+
+
+def retro_step(cur, now: datetime | None = None):
+    """振り返り（ADR 0061）: 製品ごとに、閉じたチケットを数える・数えないに分け、N 件たまったらスプリントを閉じる（retro.sprint_closed）。
+    振り返りのジョブは閉じたスプリントから積む（ADR 0061 の段取り 4）"""
+    if not RETRO or DRY_RUN:
+        return
+    try:
+        with open(KNOWLEDGE_DEFS, encoding="utf-8") as f:
+            defs = (yaml.safe_load(f) or {}).get("retro") or {}
+    except OSError:
+        return
+    if not defs:
+        return
+    now = now or datetime.now(timezone.utc)
+    for repo in REPOS:
+        if not knowledge_root_exists(repo):
+            continue
+        since = retro.started_at(cur, repo, now)
+        retro.classify(cur, repo, gh, defs.get("exclude_labels") or [], since)
+        s = retro.maybe_close(cur, repo, defs, now)
+        if s:
+            log("retro sprint closed", repo, s["sprint"], len(s["tickets"]), s["reason"])
+        enqueue_retro(cur, repo, defs)
+
+
+def knowledge_snapshot_step(cur):
+    """事業部の知見の写し（ADR 0061 の決定 8）: 製品ごとに 1 時間に 1 回ほど .factory-config/knowledge/ を読み、変わっていたら写しを残す。
+    操業コンソールの知見の一覧と窓口の knowledge_search・knowledge_read が読む（どちらも GitHub を見ない）"""
+    if DRY_RUN:
+        return
+    now = time.time()
+    for repo in REPOS:
+        if not knowledge_snapshot.due(repo, now):
+            continue
+        knowledge_snapshot._last[repo] = now
+        try:
+            if knowledge_snapshot.refresh(cur, gh, repo):
+                log("knowledge snapshot", repo)
+        except urllib.error.HTTPError as e:
+            if e.code != 404:   # 知見の置き場がない製品は写さない
+                log("knowledge snapshot failed", repo, repr(e)[:200])
+        except Exception as e:  # noqa: BLE001  次の時間に読み直す
+            log("knowledge snapshot failed", repo, repr(e)[:200])
+
+
+def enqueue_retro(cur, repo: str, defs: dict):
+    """閉じたスプリントのうち、まだ振り返りを積んでいないものを古い順に 1 つ積む（委員会は 1 つずつ。line.COMMITTEE_KINDS）"""
+    cur.execute("""select payload from events s where s.name='retro.sprint_closed' and s.payload->>'repo'=%s
+                     and not exists (select 1 from events e where e.dedupe_key = 'supervisor.retro:' || %s || ':' || (s.payload->>'sprint'))
+                   order by s.id limit 1""", (repo, repo))
+    r = cur.fetchone()
+    if not r:
+        return
+    sprint = r["payload"]
+    try:
+        issue = retro.retro_issue(gh, repo)
+    except Exception as e:  # noqa: BLE001  次の周回でやり直す
+        log("retro issue failed", repo, repr(e))
+        return
+    c = f"github:{repo}#{issue}"
+    inp = retro.build_input(cur, sprint, defs)
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','retro') returning id",
+                    (c, repo, issue))
+    except psycopg.errors.UniqueViolation:
+        return   # 固定 Issue のジョブが待ち・実行中（前の振り返り）。次の周回で積む
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (c, jid, Jsonb({"by": "supervisor", "kind": "retro", "sprint": sprint, "input": inp})))
+    record(cur, "supervisor.retro_enqueued", c, {"repo": repo, "sprint": sprint["sprint"], "issue": issue, "job_id": jid,
+                                                 "roles": [x["role"] for x in inp["roles"]]}, f"supervisor.retro:{repo}:{sprint['sprint']}")
+    log("retro enqueued", repo, sprint["sprint"], "job", jid)
 
 
 def ephemeral_step(cur):
@@ -1625,7 +1730,7 @@ def patrols_enabled() -> list[str]:
         "nightly_explore": bool(NIGHTLY_EXPLORE),
         "synthetic_users": bool(SYNTHETIC_USERS),
         "design_review": DESIGN_REVIEW and bool(QUALITY_REPOS) and os.path.exists(DESIGN_REVIEW_DEFS),
-        "committee_weekly": COMMITTEE_WEEKLY and os.path.exists(KNOWLEDGE_DEFS),
+        "committee_weekly": COMMITTEE_WEEKLY and not RETRO and os.path.exists(KNOWLEDGE_DEFS),
         "incident_daily": (incident.get("daily") or {}).get("enabled") is not False,
         "incident_weekly": bool(REPOS) and (incident.get("weekly") or {}).get("enabled") is not False,
         "daily_report": bool(DAILY_REPORT) and os.path.exists(DAILY_REPORT),
@@ -1682,6 +1787,8 @@ def tick():
         aggregate_issue_step(cur)
         design_review_step(cur)
         committee_weekly_step(cur)
+        retro_step(cur)
+        knowledge_snapshot_step(cur)
         incident_review_step(cur)
         quality_learn_step(cur)
 

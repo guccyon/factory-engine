@@ -736,6 +736,34 @@ events:
     source: control_plane
     required: [week, job_id, corr, signs, cases]
     note: "ADR 0046 の順番 3。supervisor が週 1 回、事故の調査委員会の週次の見回りのジョブ（kind=incident_review、governance の枠）を積んだ。dedupe は ISO 週"
+  retro.started:
+    source: control_plane
+    required: [repo, at]
+    note: "ADR 0061。製品の振り返りの数え始め。これより前に閉じたチケットは振り返らない。dedupe は製品ごと"
+  retro.ticket_classified:
+    source: control_plane
+    required: [repo, ref, closed_at, counted, excluded_by]
+    note: "ADR 0061。閉じたチケットを、振り返りで数える（ラインの仕事）・数えない（knowledge.yaml の retro.exclude_labels の工場の内部の Issue）に分けた。ラベルは 1 回だけ GitHub に聞く。dedupe はチケットごと"
+  retro.sprint_closed:
+    source: control_plane
+    required: [repo, sprint, size, reason, tickets, from, to]
+    note: "ADR 0061。数えたチケットが N 件たまった（reason=size）か、時間の下限に当たった（reason=time）ので、スプリントを閉じた。tickets は古い順。振り返りのジョブはここから積む。dedupe は製品×スプリントの番号"
+  retro.size_adjusted:
+    source: control_plane
+    required: [repo, sprint, prev, next, reason, metrics]
+    note: "ADR 0061 の決定 2。振り返りの結果の数（知見ごとの根拠のチケット数・議題の被覆率・差し戻しの理由・知見 0 件の連続）から次の N を決めた。dedupe は製品×スプリントの番号"
+  retro.held:
+    source: control_plane
+    required: [repo, sprint, tickets, roles, opinions, summary, knowledge, rejected, actions]
+    note: "ADR 0061。振り返りの議事録（対象のチケット・出席したロール・立場ごとの意見・得られた知見と置き場・採らなかった候補・打ち手・前回の効き目・棚卸し・費用）。同じ中身を artifacts の RetroMinutes に残す。filed は起票した Issue。dedupe は製品×スプリントの番号"
+  retro.filed:
+    source: control_plane
+    required: [repo, sprint, what, issue, target_repo]
+    note: "ADR 0061。振り返りの結果を起票した。what は knowledge（知見の変更セット。knowledge.case_filed にも source=retro で残して知見のキューに入れる）・docs（製品の docs/ にドメインの知識を足す）・action:<n>（打ち手。engine と process は工場のリポジトリへ）"
+  supervisor.retro_enqueued:
+    source: control_plane
+    required: [repo, sprint, issue, job_id, roles]
+    note: "ADR 0061。閉じたスプリントの振り返りのジョブ（kind=retro）を積んだ。roles はロールの委員。dedupe は製品×スプリントの番号"
   committee.weekly_reviewed:
     source: control_plane
     required: [repo, week, facts, report]

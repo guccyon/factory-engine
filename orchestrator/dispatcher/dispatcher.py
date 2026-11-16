@@ -65,6 +65,7 @@ import line
 import notify_inbox
 import fault
 import repeat_watch
+import retro
 import ops
 import pr_events
 import process_learn
@@ -182,18 +183,18 @@ def swap_label(repo: str, issue: int, remove: list[str], add: list[str]):
 
 # 始めるときに Issue のラベルを替えない種類（ADR 0004 / 0006 / 0022 / 0024 / 0025 / 0030 / 0048）。issue_number は PR か固定 Issue の番号か、
 # Issue のない仮の負の数（窓口の会話・一次調査とその評価セット）。仮の番号のラベルを替えると GitHub が 404 を返してジョブが落ちる（2026-11-10）
-NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
+NO_LABEL_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "retro", "incident_review", "committee_review",
                   "ui_design_review", "desk_consult", "desk_answer", "desk_task", "investigate", "onboard")
 # ジョブ専用の空の DB を作らない種類（製品のテストを流さない）。一次調査は制御プレーンを調査用の接続（INVESTIGATE_DATABASE_URL）で読むだけ。
 # 中継（relay_env）を使う種類は --network を中継の側で付けるので、ここに入れないと --network が 2 回付いて docker run が 125 で落ちる（2026-11-10）
-NO_JOB_DB_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "committee_review",
+NO_JOB_DB_KINDS = ("inspect", "judge", "body_fix", "design_review", "case_review", "committee_weekly", "retro", "incident_review", "committee_review",
                    "ui_design", "ui_design_review", "plan", "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike",
                    "onboard")
 # 入力（job.enqueued の input）を標準入力で渡す種類。ワーカーの入口が最初に標準入力を読む
-PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "incident_review", "ui_design", "ui_design_review", "plan",
+PIPED_KINDS = ("judge", "body_fix", "design_review", "case_review", "committee_weekly", "retro", "incident_review", "ui_design", "ui_design_review", "plan",
                "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike", "onboard")
 # PR を作らない種類で、終了コード 0 と結果の ok で成功とみなすもの
-OK_RESULT_KINDS = ("design_review", "case_review", "committee_weekly", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan",
+OK_RESULT_KINDS = ("design_review", "case_review", "committee_weekly", "retro", "incident_review", "committee_review", "ui_design", "ui_design_review", "plan",
                    "design_system", "desk_consult", "desk_answer", "desk_task", "qa", "investigate", "spike", "onboard")
 ISSUELESS_KINDS = ("desk_consult", "desk_answer", "desk_task", "investigate", "onboard")   # onboard はオンボーディングの解析（ADR 0045 の追記 2026-11-15）   # issue_number が仮の負の数の種類
 
@@ -525,6 +526,7 @@ def run_job(job: dict, reattaching: bool = False):
                    *(["-i", "--entrypoint", "/usr/local/bin/design_review.sh"] if kind == "design_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/case_review.sh"] if kind == "case_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/committee_weekly.sh"] if kind == "committee_weekly" else []),
+                   *(["-i", "--entrypoint", "/usr/local/bin/retro.sh"] if kind == "retro" else []),   # 振り返り（ADR 0061）
                    *(["-i", "--entrypoint", "/usr/local/bin/incident_review.sh"] if kind == "incident_review" else []),   # 事故の調査委員会の週次の見回り（ADR 0046）
                    *(["--entrypoint", "/usr/local/bin/committee_review.sh", "-e", f"PR_URL=https://github.com/{repo}/pull/{issue}"] if kind == "committee_review" else []),
                    *(["-i", "--entrypoint", "/usr/local/bin/ui_design.sh"] if kind == "ui_design" else []),
@@ -718,6 +720,16 @@ def run_job(job: dict, reattaching: bool = False):
                         committee.weekly_record(cur, repo, issue, corr, job_id, result, enq.get("week") or design.week_of(), gh, comment, int(enq.get("max_issues") or 4))
                     except Exception as e:  # noqa: BLE001  まとめは events に残る。ラインは止めない
                         log("committee weekly publish failed", repo, repr(e))
+            elif kind == "retro":
+                # 振り返り（ADR 0061）: 議事録を残し、固定 Issue にまとめを書き、知見の変更セット・docs/・打ち手を起票し、次の N を決める
+                if state == "succeeded":
+                    try:
+                        cur.execute("select payload from events where name='job.enqueued' and job_id=%s order by id limit 1", (job_id,))
+                        enq = (cur.fetchone() or {}).get("payload") or {}
+                        retro.record(cur, repo, issue, corr, job_id, enq.get("sprint") or {}, result, retro.load_defs(), gh, comment,
+                                     ENV.get("ENGINE_REPO", "guccyon/factory-engine"))
+                    except Exception as e:  # noqa: BLE001  結果は jobs に残っている。ラインは止めない
+                        log("retro record failed", repo, repr(e))
             elif kind == "incident_review":
                 # 事故の調査委員会の週次の見回り（ADR 0046）: 台帳を開く・足す、通った FIR の下書きを送り出し口に、Engine の改善 Issue の案を残す（起票は supervisor）
                 if state == "succeeded":
@@ -742,6 +754,8 @@ def run_job(job: dict, reattaching: bool = False):
                     if state == "succeeded" and result.get("mode") == "explore":   # 夜間の探索（nightly_explore）: 1 晩 1 件の qa.explore と Defect の起票
                         keys = qa_line.store_files(store_put, job_id, design_files)
                         qa_line.record_explore(cur, gh, comment, repo, issue, corr, job_id, result, keys)
+                    elif state == "succeeded" and result.get("mode") == "recheck":   # 差し止めの直しの確かめ直し（ADR 0062）: 解くかは supervisor の hold_lift
+                        comment(repo, issue, qa_line.recheck_summary(job_id, result))
                     elif state == "succeeded" and result.get("mode") == "synthetic":   # 合成の利用者（ADR 0043 の O4）: qa.synthetic と改善の提案
                         qa_line.record_synthetic(cur, gh, comment, repo, issue, corr, job_id, result)
                     elif state == "succeeded":

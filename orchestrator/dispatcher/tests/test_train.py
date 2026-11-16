@@ -97,3 +97,31 @@ def test_approval_is_once_per_train(cur):
     assert train.approve(cur, tid, "owner", "test")[0] is False                    # 2 回目はない
     assert train.recent(cur, 1)[0]["approved"]["by"] == "owner"
     assert train.approve(cur, "train:none", "owner", "test")[0] is False
+
+
+def test_dismiss_takes_a_train_off_the_pending_list(cur):
+    """11/16: 緊急便が続けて出て、後の便が先の便の中身ごと本番に出た。先の便は承認せずに見送れる"""
+    ship.observe_stage(cur, A, "launch")
+    merged(cur, A, 1)
+    tid, _ = train.regular(cur, [A], NOW)
+    assert train.dismiss(cur, tid, "owner", " ")[0] is False                      # 理由は必須
+    assert train.dismiss(cur, "train:none", "owner", "後の便に入った")[0] is False
+    ok, msg = train.dismiss(cur, tid, "owner", "中身は 0.2.0 で本番に出た")
+    assert ok, msg
+    t = train.recent(cur, 1)[0]
+    assert t["dismissed"]["reason"] == "中身は 0.2.0 で本番に出た" and t["approved"] is None
+    assert train.dismiss(cur, tid, "owner", "もう一度")[0] is False                # 2 回目はない
+    finish_ship(cur)
+    assert train.approve(cur, tid, "owner", "test")[0] is False                    # 見送った便は承認しない
+    cur.execute("select count(*) as n from events where name='release.approved'")
+    assert cur.fetchone()["n"] == 0
+
+
+def test_approved_train_cannot_be_dismissed(cur):
+    ship.observe_stage(cur, A, "launch")
+    merged(cur, A, 1)
+    tid, _ = train.regular(cur, [A], NOW)
+    finish_ship(cur)
+    assert train.approve(cur, tid, "owner", "test")[0]
+    ok, msg = train.dismiss(cur, tid, "owner", "後の便に入った")
+    assert not ok and "承認した" in msg

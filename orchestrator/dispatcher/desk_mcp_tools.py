@@ -7,7 +7,7 @@ import json
 SNAPSHOT = json.loads(r'''{
  "server": {
   "name": "factory-desk",
-  "version": "0.6.0"
+  "version": "0.7.0"
  },
  "setup": "事業部の窓口の MCP サーバー（stdio）。ADR 0030 の順番 3。\n\n依頼者の手元の Claude Code・Claude Desktop から窓口の API（orchestrator/dispatcher/desk_api.py）を呼ぶための薄い包み。\n判断も状態も持たない。道具ごとに API を 1 回呼び、返ってきた JSON をそのまま返す（API が正本）。\n相談役（プランナー）の返事は非同期に来るので、会話を読む道具は最大の待ち時間（wait、60 秒まで）を渡せる。\n\n依存: python3（3.9 以上、標準ライブラリだけ）。どこに置いても動く（工場のリポジトリの外に写してよい）。\n\n設定（環境変数）:\n  FACTORY_DESK_URL         窓口の API（既定 http://localhost:8792）\n  FACTORY_DESK_TOKEN       窓口のトークン（factoryctl desk token create で発行。fdk_...）\n  FACTORY_DESK_TOKEN_FILE  トークンを置いたファイル（FACTORY_DESK_TOKEN がなければこれを読む）\n\nClaude Code への登録の例:\n  claude mcp add factory-desk -e FACTORY_DESK_TOKEN_FILE=$HOME/.config/factory/desk.token -- python3 /path/to/factory_desk_mcp.py",
  "tools": [
@@ -407,6 +407,59 @@ SNAPSHOT = json.loads(r'''{
     "required": [
      "product",
      "name"
+    ]
+   }
+  },
+  {
+   "name": "knowledge_search",
+   "description": "事業部の知見（工場の開発者が全員知っておく、ドメインならではの開発の知見や工程の知見）を探す。チケットの振り返りで見つけ、知見のレビューを通したもの。id・主張・テーマ・確かさ（hypothesis 仮説／confirmed 確認済み／settled 定着）・状態・効く範囲・ワーカーに渡した回数を返す。ドメインの業務知識（工場に依存しない業務・利用者・法律）は製品の docs/ にあり、products[].docs_url を案内する",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "product": {
+      "type": "string",
+      "description": "製品（owner/repo）で絞る"
+     },
+     "q": {
+      "type": "string",
+      "description": "言葉（空白で区切るとすべてを含むもの）"
+     },
+     "theme": {
+      "type": "integer",
+      "description": "テーマ（1 利用者の体験・2 信頼性と性能・3 ドメインの理解・4 役割間の言葉と伝達・5 成果物の品質・6 工程の進め方・7 判断の精度・8 人の意図と好み）"
+     },
+     "confidence": {
+      "type": "string",
+      "enum": [
+       "hypothesis",
+       "confirmed",
+       "settled"
+      ]
+     },
+     "status": {
+      "type": "string",
+      "description": "draft・active・stale・superseded・retired・all。省くと廃止と置き換え済みは出さない"
+     }
+    }
+   }
+  },
+  {
+   "name": "knowledge_read",
+   "description": "事業部の知見を 1 件読む（主張・効く範囲・確かさ・根拠・無効になる条件・関わる知見・決めた記録・製品リポの URL）",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "K-NNNN"
+     },
+     "product": {
+      "type": "string",
+      "description": "製品（owner/repo）。省くと最初に見つかったもの"
+     }
+    },
+    "required": [
+     "id"
     ]
    }
   },
