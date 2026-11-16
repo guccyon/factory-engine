@@ -274,3 +274,52 @@ def test_restart_and_rollback_do_not_reseed(cur, monkeypatch):
     no_reset = {**TOUCH_CFG, "touch": {k: v for k, v in TOUCH_CFG["touch"].items() if k != "reset"}}
     ship.touch_points(cur, no_reset, REPO, "staging", {"release_id": rid}, {"repo": REPO, "request_id": 1}, source_path="/src")
     assert state["reseeded"] == 0   # 入れ直せない環境（DB を空にするコマンドがない）は入れ直さない
+
+
+# ---------------------------------------------------------------- 直しだけの版のソース（ADR 0064）
+def _git(path, *args):
+    import subprocess
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", path, *args],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _upstream(tmp_path):
+    """本番の版（base）・main の別の変更（other）・直し（fix）を持つリポジトリ"""
+    up = str(tmp_path / "up")
+    os.makedirs(up)
+    _git(up, "init", "-q", "-b", "main")
+    open(os.path.join(up, "a.txt"), "w").write("1\n")
+    open(os.path.join(up, "b.txt"), "w").write("x\n")
+    _git(up, "add", "."); _git(up, "commit", "-qm", "base")
+    base = _git(up, "rev-parse", "HEAD")
+    open(os.path.join(up, "b.txt"), "w").write("y\n")
+    _git(up, "commit", "-qam", "other")
+    other = _git(up, "rev-parse", "HEAD")
+    open(os.path.join(up, "a.txt"), "w").write("2\n")
+    _git(up, "commit", "-qam", "fix")
+    fix = _git(up, "rev-parse", "HEAD")
+    _git(up, "config", "receive.denyCurrentBranch", "ignore")
+    return up, base, other, fix
+
+
+def test_source_hotfix_picks_only_the_fix_and_pushes_the_branch(tmp_path, monkeypatch):
+    import ship as s
+    up, base, _other, fix = _upstream(tmp_path)
+    monkeypatch.setattr(s, "WORK", str(tmp_path / "work"))
+    monkeypatch.setattr(s, "clone_url", lambda repo: up)
+    path, commit = s.source_hotfix("o/app", "0.1.1", base, [fix])
+    assert open(os.path.join(path, "a.txt")).read() == "2\n"     # 直しは入る
+    assert open(os.path.join(path, "b.txt")).read() == "x\n"     # main の別の変更は入らない
+    assert _git(up, "rev-parse", "refs/heads/hotfix/0.1.1") == commit
+
+
+def test_source_hotfix_conflict_is_reported_not_resolved(tmp_path, monkeypatch):
+    import ship as s
+    up, base, other, fix = _upstream(tmp_path)
+    open(os.path.join(up, "b.txt"), "w").write("z\n")             # other の上で b.txt を変える直し → base には載らない
+    _git(up, "commit", "-qam", "fix-on-other")
+    fix2 = _git(up, "rev-parse", "HEAD")
+    monkeypatch.setattr(s, "WORK", str(tmp_path / "work"))
+    monkeypatch.setattr(s, "clone_url", lambda repo: up)
+    with pytest.raises(s.HotfixConflict):
+        s.source_hotfix("o/app", "0.1.1", base, [fix2])

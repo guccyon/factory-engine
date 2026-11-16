@@ -25,6 +25,8 @@
 本番を立てる段階の製品の運用（ADR 0057）: 本番に出す前に DB の控えを取り（backup）、本番への出荷が途中で落ちたら前の版に自動で戻す
 （release.rolled_back の auto: true と Incident S2）。本番の見張りは prod_watch.py（shipper の常駐から周回ごとに呼ぶ）。
 
+直しだけの版（Release の mode: hotfix、ADR 0064）は、本番の版のコミットに直しのコミットだけを cherry-pick して製品のリポジトリの hotfix/<版> に push し、
+そこからイメージを作る。ぶつかったら release.ship_failed の hotfix_conflict を残し、停止には開かない（supervisor が切り替える）。
 製品の出荷の形は製品の .factory-config/ship.yaml（compose のファイル、部品ごとのイメージの作り方、環境ごとの値、確かめ方）。
 """
 from __future__ import annotations
@@ -131,9 +133,9 @@ def record(cur, name: str, release_id: str, payload: dict):
 
 
 # ------------------------------------------------------------------ Release を切る（factoryctl・supervisor の出荷の列車）
-def create_release(cur, repo: str, version: str, prs: list[str] | None = None) -> tuple[str | None, list[str]]:
+def create_release(cur, repo: str, version: str, prs: list[str] | None = None, extra: dict | None = None) -> tuple[str | None, list[str]]:
     """Release を作る（ADR 0007）。prs がなければ、まだどの Release にも入っていないマージ済みの工場の PR をまとめる。
-    すでにあれば (None, [])"""
+    extra は Release に足す項目（直しだけの版の mode・base_release・base_commit・picks。ADR 0064）。すでにあれば (None, [])"""
     rid = f"{repo}@{version}"
     if prs is None:
         cur.execute("select payload->>'pr_url' as u from events e where name='pr.merged' and payload->>'pr_url' like %s "
@@ -141,25 +143,65 @@ def create_release(cur, repo: str, version: str, prs: list[str] | None = None) -
                     "order by payload->>'merged_at'", (f"https://github.com/{repo}/pull/%",))
         prs = [r["u"] for r in cur.fetchall()]
     cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.created',%s,%s,%s) on conflict (dedupe_key) do nothing returning id",
-                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs}), f"release.created:{rid}"))
+                (f"release:{rid}", Jsonb({**(extra or {}), "release_id": rid, "repo": repo, "app_version": version, "prs": prs}), f"release.created:{rid}"))
     if cur.fetchone() is None:
         return None, []
     cur.execute("insert into artifacts(type, correlation_id, produced_by, payload) values ('Release',%s,'ship',%s)",
-                (f"release:{rid}", Jsonb({"release_id": rid, "repo": repo, "app_version": version, "prs": prs})))
+                (f"release:{rid}", Jsonb({**(extra or {}), "release_id": rid, "repo": repo, "app_version": version, "prs": prs})))
     for u in prs:   # 1 つの PR が入る Release は最初の 1 つ
         cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('release.included',%s,%s,%s) on conflict (dedupe_key) do nothing",
                     (f"release:{rid}", Jsonb({"release_id": rid, "app_version": version, "pr_url": u}), f"release.included:{u}"))
     return rid, prs
 
 
-def next_version(cur, repo: str) -> str:
-    """直近の Release の版の minor を 1 つ上げる（0.1.0 → 0.2.0）。数字 3 つでない版や Release がなければ 0.1.0 から"""
-    cur.execute("select payload->>'app_version' as v from events where name='release.created' and payload->>'repo'=%s order by id desc", (repo,))
+def _versions(cur, repo: str) -> list[tuple[int, int, int]]:
+    cur.execute("select payload->>'app_version' as v from events where name='release.created' and payload->>'repo'=%s", (repo,))
+    out = []
     for r in cur.fetchall():
         m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", r["v"] or "")
         if m:
-            return f"{m.group(1)}.{int(m.group(2)) + 1}.0"
-    return "0.1.0"
+            out.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    return out
+
+
+def next_version(cur, repo: str) -> str:
+    """いちばん大きい版の minor を 1 つ上げる（0.1.0 → 0.2.0）。数字 3 つの版の Release がなければ 0.1.0 から。
+    直しだけの版（0.53.1 など、ADR 0064）が後から作られても、main の次の版は 0.54.0 のあとの 0.55.0 になるよう、作った順ではなく大きさで見る"""
+    vs = _versions(cur, repo)
+    if not vs:
+        return "0.1.0"
+    major, minor, _ = max(vs)
+    return f"{major}.{minor + 1}.0"
+
+
+def patch_version(cur, repo: str, base: str) -> str | None:
+    """直しだけの版（ADR 0064）。土台の版の patch を 1 つ上げ、もう使った版は飛ばす（0.53.0 → 0.53.1）。数字 3 つでなければ None"""
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", base or "")
+    if not m:
+        return None
+    used = set(_versions(cur, repo))
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3)) + 1
+    while (major, minor, patch) in used:
+        patch += 1
+    return f"{major}.{minor}.{patch}"
+
+
+def built_commit(cur, release_id: str) -> str | None:
+    """その Release のイメージを作ったコミット（release.built）"""
+    cur.execute("select payload->>'commit' as c from events where name='release.built' and correlation_id=%s order by id desc limit 1",
+                (f"release:{release_id}",))
+    r = cur.fetchone()
+    return r["c"] if r else None
+
+
+def prod_base(cur, repo: str) -> dict | None:
+    """いま本番に出ている版と、そのコミット（直しだけの版の土台。ADR 0064）。本番がない・コミットが分からなければ None"""
+    rid = status(cur, repo)["environments"].get("prod", {}).get("release_id")
+    rel = release_of(cur, rid) if rid else None
+    commit = built_commit(cur, rid) if rid else None
+    if not rel or not commit:
+        return None
+    return {"release_id": rid, "version": rel["app_version"], "commit": commit}
 
 
 def unreleased(cur, repo: str) -> int:
@@ -376,16 +418,51 @@ def sh(args: list[str], cwd: str | None = None, env: dict | None = None, timeout
     return r.stdout
 
 
+def clone_url(repo: str) -> str:
+    token = ghapp.token(repo) if ghapp.available() else ""
+    return f"https://x-access-token:{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
+
+
 def source(repo: str, version: str, commit: str | None = None) -> tuple[str, str]:
     """その版のソース（製品の既定ブランチの先頭、または記録したコミット）。版ごとに残す"""
     path = os.path.join(WORK, "src", repo.replace("/", "__"), version)
     if not os.path.isdir(os.path.join(path, ".git")):
         shutil.rmtree(path, ignore_errors=True)
-        token = ghapp.token(repo) if ghapp.available() else ""
-        url = f"https://x-access-token:{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
+        url = clone_url(repo)
         sh(["git", "clone", "--quiet", url, path], timeout=600)
         if commit:
             sh(["git", "-C", path, "checkout", "--quiet", commit])
+    return path, sh(["git", "-C", path, "rev-parse", "HEAD"]).strip()
+
+
+class HotfixConflict(RuntimeError):
+    """直しのコミットを本番の版の上に cherry-pick できなかった（ADR 0064 の決定 2。工場は自分で解かない）"""
+
+
+HOTFIX_BRANCH = "hotfix/{version}"
+
+
+def source_hotfix(repo: str, version: str, base_commit: str, picks: list[str]) -> tuple[str, str]:
+    """直しだけの版のソース（ADR 0064）。本番の版のコミットから hotfix/<版> を切り、直しのコミットだけを順に cherry-pick して、
+    そのブランチを製品のリポジトリに push する（あとで同じコミットから出し直せるように。prod への出荷・Rollback も同じコミットを使う）。
+    ぶつかったら cherry-pick をやめて HotfixConflict"""
+    if not picks:
+        raise HotfixConflict("載せる直しのコミットがない")
+    path = os.path.join(WORK, "src", repo.replace("/", "__"), version)
+    shutil.rmtree(path, ignore_errors=True)
+    url = clone_url(repo)
+    sh(["git", "clone", "--quiet", url, path], timeout=600)
+    branch = HOTFIX_BRANCH.format(version=version)
+    sh(["git", "-C", path, "checkout", "--quiet", "-B", branch, base_commit])
+    ident = ["-c", "user.name=factory-shipper", "-c", "user.email=factory-shipper@users.noreply.github.com"]
+    for c in picks:
+        parents = sh(["git", "-C", path, "rev-list", "--parents", "-n", "1", c]).split()
+        mainline = ["-m", "1"] if len(parents) > 2 else []   # マージコミットなら 1 本目の親を土台に
+        r = subprocess.run(["git", *ident, "-C", path, "cherry-pick", "-x", *mainline, c], capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            subprocess.run(["git", "-C", path, "cherry-pick", "--abort"], capture_output=True, text=True, timeout=120)
+            raise HotfixConflict(f"{c[:12]} を {base_commit[:12]} の上に載せられない: {(r.stderr or r.stdout)[-600:]}")
+    sh(["git", "-C", path, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}"], timeout=600)
     return path, sh(["git", "-C", path, "rev-parse", "HEAD"]).strip()
 
 
@@ -475,8 +552,9 @@ def verify(cfg: dict, repo: str, env: str, rel: dict):
 def added_contracts(cur, path: str, repo: str, commit: str) -> list[str]:
     """前に作った Release のコミットからこのコミットまでに足された contract のマイグレーション（ファイル名に _contract_）。
     前の Release がなければ空（まだどの環境の DB にも当たっていない）"""
-    cur.execute("select payload->>'commit' as c from events where name='release.built' and payload->>'repo'=%s order by id desc limit 1", (repo,))
-    r = cur.fetchone()
+    cur.execute("select payload->>'commit' as c from events where name='release.built' and payload->>'repo'=%s "
+                "and not coalesce((payload->>'hotfix')::boolean, false) order by id desc limit 1", (repo,))
+    r = cur.fetchone()   # 直しだけの版（ADR 0064）は main の流れの外なので、比べる相手にしない
     if not r or not r["c"]:
         return []
     out = sh(["git", "-C", path, "diff", "--name-only", "--diff-filter=A", f"{r['c']}..{commit}"])
@@ -671,7 +749,7 @@ def auto_rollback(cur, repo: str, rid: str, before: dict, common: dict, error: s
         try:
             target = release_of(cur, target_id)
             t0 = time.monotonic()
-            tpath, _ = source(repo, target["app_version"])
+            tpath, _ = source(repo, target["app_version"], built_commit(cur, target_id))
             deploy(ship_config(tpath), tpath, repo, "prod", target)
             record(cur, "release.rolled_back", target_id, {**common, "env": "prod", "ok": True, "from": rid, "auto": True,
                                                            "seconds": round(time.monotonic() - t0, 1), "by": "shipper", "via": "auto_rollback"})
@@ -696,14 +774,23 @@ def handle(cur, ev: dict):
     common = {"repo": repo, "request_id": ev["id"]}
     try:
         if name == "release.ship_requested":
-            path, commit = source(repo, rel["app_version"])
+            hotfix = rel.get("mode") == "hotfix"
+            if hotfix:
+                try:
+                    path, commit = source_hotfix(repo, rel["app_version"], rel["base_commit"], rel.get("picks") or [])
+                except HotfixConflict as e:
+                    # 停止には開かない。supervisor が main をまるごと載せる便に切り替え、承認者に知らせる（ADR 0064 の決定 2）
+                    record(cur, "release.ship_failed", rid, {**common, "request": name, "error": str(e)[-1500:], "hotfix_conflict": True})
+                    return
+            else:
+                path, commit = source(repo, rel["app_version"])
             cfg = ship_config(path)
             t0 = time.monotonic()
             for part, spec in cfg["images"].items():
                 args = [a for k, v in (spec.get("build_args") or {}).items() for a in ("--build-arg", f"{k}={v}")]
                 sh(["docker", "build", "-q", "-t", image(repo, part, rel["app_version"]), *args, os.path.join(path, spec["context"])],
                    env={"DOCKER_BUILDKIT": "1"}, timeout=3600)
-            record(cur, "release.built", rid, {**common, "commit": commit, "seconds": round(time.monotonic() - t0, 1),
+            record(cur, "release.built", rid, {**common, "commit": commit, "seconds": round(time.monotonic() - t0, 1), "hotfix": hotfix,
                                                "contract_migrations": added_contracts(cur, path, repo, commit),
                                                "images": [image(repo, part, rel["app_version"]) for part in cfg["images"]]})
             secs = deploy(cfg, path, repo, "staging", rel)
@@ -715,7 +802,7 @@ def handle(cur, ev: dict):
             record(cur, "release.ship_failed", rid, {**common, "request": name, "error": held_msg(cur, repo), "held": True,
                                                "stage": stage_of(cur, repo)["stage"]})
         elif name == "release.approved":
-            path, _ = source(repo, rel["app_version"])
+            path, _ = source(repo, rel["app_version"], built_commit(cur, rid))
             cfg = ship_config(path)
             before = status(cur, repo)["environments"].get("prod") or {}
             take_backup(cur, cfg, repo, "prod", rel, common, running=before.get("release_id"))
@@ -729,7 +816,7 @@ def handle(cur, ev: dict):
             env = p["env"]
             target_id = status(cur, repo)["environments"][env]["previous"]
             target = release_of(cur, target_id)
-            path, _ = source(repo, target["app_version"])
+            path, _ = source(repo, target["app_version"], built_commit(cur, target_id))
             cfg = ship_config(path)
             deploy(cfg, path, repo, env, target)
             secs = round((now() - ev["occurred_at"]).total_seconds(), 1)   # 押してから確かめ終わるまで
@@ -740,7 +827,7 @@ def handle(cur, ev: dict):
             env = p["env"]
             if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:
                 raise RuntimeError(f"{env} のバージョンが依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
-            path, _ = source(repo, rel["app_version"])
+            path, _ = source(repo, rel["app_version"], built_commit(cur, rid))
             cfg = ship_config(path)
             secs = reseed(cur, cfg, path, repo, env, rel, common)
             record(cur, "release.reseeded", rid, {**common, "env": env, "ok": True, "seconds": secs, "by": p.get("by"), "via": p.get("via")})
@@ -749,7 +836,7 @@ def handle(cur, ev: dict):
             env = p["env"]
             if env == "prod":
                 raise RuntimeError("本番には仕込まない")
-            path, _ = source(repo, rel["app_version"])
+            path, _ = source(repo, rel["app_version"], built_commit(cur, rid))
             secs = plant_drill(ship_config(path), repo, env, str(p.get("drill")))
             record(cur, "release.drill_planted", rid, {**common, "env": env, "ok": True, "drill": p.get("drill"), "seconds": secs,
                                                        "by": p.get("by"), "via": p.get("via")})
@@ -761,7 +848,7 @@ def handle(cur, ev: dict):
                 offset = int(p["offset_seconds"])
             else:
                 offset = 0 if p.get("reset_clock") else clock_offset(cur, repo, env) + int(p.get("advance_seconds") or 0)
-            path, _ = source(repo, rel["app_version"])
+            path, _ = source(repo, rel["app_version"], built_commit(cur, rid))
             cfg = ship_config(path)
             secs, services = restart(cfg, path, repo, env, rel, offset)
             record(cur, "release.restarted", rid, {**common, "env": env, "ok": True, "seconds": secs, "services": services,
@@ -771,7 +858,7 @@ def handle(cur, ev: dict):
         elif name == "release.kpi_requested":
             env = p["env"]
             try:
-                path, _ = source(repo, rel["app_version"])
+                path, _ = source(repo, rel["app_version"], built_commit(cur, rid))
                 metrics, err = measure_kpi(ship_config(path), repo, env), None
             except Exception as e:  # noqa: BLE001  測れなかったことを残すだけ（報告の欠けで出荷を止めない）
                 metrics, err = [], str(e)[-800:]

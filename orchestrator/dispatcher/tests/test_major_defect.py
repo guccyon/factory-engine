@@ -191,3 +191,88 @@ def test_planner_sees_other_open_defects(cur):
     s1(cur, gh, severity="s2", issue=f"https://github.com/{REPO}/issues/8")
     rows = planner.open_defects(cur, REPO, f"github:{REPO}#8")
     assert rows == [{"issue": 7, "severity": "s2", "title": "完了を記録できない"}]
+
+
+# ---------------------------------------------------------------- 直しだけの便（ADR 0064）
+# 2026-11-16 rally 0.53.0: S1 の緊急便が main をまるごと載せ、QA の関門を通っていない別の直し（#1768）が新しい S1（#1798）を本番に持ち込んだ
+
+def merged_for(cur, n, issue, commit):
+    url = f"https://github.com/{REPO}/pull/{n}"
+    cur.execute("insert into events(name, correlation_id, payload, dedupe_key) values ('pr.merged', %s, %s, %s)",
+                (f"github:{REPO}#{issue}", Jsonb({"pr_url": url, "merged_at": f"2026-11-16T00:00:{n:02d}Z", "merge_commit": commit}),
+                 f"pr.merged:{url}"))
+
+
+def in_prod(cur, commit="base000"):
+    """本番を立てる段階で、1 つの版を staging と本番に出した状態にする"""
+    ship.observe_stage(cur, REPO, "launch")
+    merged(cur, 40)
+    rid, _ = ship.create_release(cur, REPO, ship.next_version(cur, REPO))
+    ship.record(cur, "release.built", rid, {"repo": REPO, "commit": commit})
+    for env in ("staging", "prod"):
+        ship.record(cur, "release.deployed", rid, {"repo": REPO, "env": env, "ok": True})
+    cur.execute("insert into events(name, payload) values ('release.ship_requested', %s) returning id", (Jsonb({"release_id": rid}),))
+    ship.record(cur, "release.deployed", rid, {"repo": REPO, "env": "staging", "ok": True, "request_id": cur.fetchone()["id"]})
+    return rid
+
+
+def test_s1_with_prod_ships_only_the_fix_on_the_prod_version(cur):
+    base = in_prod(cur)
+    merged(cur, 41)                                       # QA の関門を通っていない別の変更
+    gh = FakeGh("closed")
+    s1(cur, gh)
+    merged_for(cur, 42, 7, "fix0001")
+    [tid] = major_defect.rerelease_step(cur, gh)
+    t = train.train_of(cur, tid)
+    assert t["mode"] == "hotfix" and t["base_release"] == base
+    rel = ship.release_of(cur, t["releases"][0]["release_id"])
+    assert rel["app_version"] == "0.1.1" and rel["mode"] == "hotfix" and rel["base_commit"] == "base000"
+    assert rel["prs"] == [f"https://github.com/{REPO}/pull/42"] and rel["picks"] == ["fix0001"]
+    assert ship.unreleased(cur, REPO) == 1                # #41 は次の定期便で関門を通って出る
+    finish_ship(cur)
+    assert major_defect.approve_step(cur) == [tid]        # 直しだけの便は今までどおり本番まで工場が承認する
+    assert ship.next_version(cur, REPO) == "0.2.0"        # 直しの版が後に作られても main の次の版は大きさで決まる
+
+
+def test_hotfix_conflict_switches_to_full_main_without_auto_approval(cur):
+    import inbox
+    in_prod(cur)
+    merged(cur, 41)
+    gh = FakeGh("closed")
+    s1(cur, gh)
+    merged_for(cur, 42, 7, "fix0001")
+    [hid] = major_defect.rerelease_step(cur, gh)
+    hrid = train.train_of(cur, hid)["releases"][0]["release_id"]
+    [ev] = [e for e in ship.pending(cur) if e["payload"]["release_id"] == hrid]
+    ship.record(cur, "release.ship_failed", hrid, {"repo": REPO, "request_id": ev["id"], "hotfix_conflict": True, "error": "conflict"})
+    [fid] = major_defect.fallback_step(cur)
+    f = train.train_of(cur, fid)
+    assert f["mode"] == "fallback" and f["auto_approve"] is False and f["fallback_of"] == hid
+    assert any(r["train_id"] == hid and r["dismissed"] for r in train.recent(cur))
+    assert major_defect.fallback_step(cur) == []          # 1 回だけ
+    finish_ship(cur)
+    assert major_defect.approve_step(cur) == []           # 本番は関門と承認者を待つ
+    cur.execute("select 1 from events where name='release.approved'")
+    assert cur.fetchone() is None
+    assert any(i.get("task_kind") == major_defect.FALLBACK_KIND for i in inbox.items(cur))
+
+
+def test_no_fix_pr_found_ships_full_main_without_auto_approval(cur):
+    in_prod(cur)
+    gh = FakeGh("closed")
+    s1(cur, gh)
+    merged(cur, 41)                                       # Issue に結びつかない PR だけ
+    [tid] = major_defect.rerelease_step(cur, gh)
+    t = train.train_of(cur, tid)
+    assert t["mode"] == "fallback" and t["auto_approve"] is False
+    finish_ship(cur)
+    assert major_defect.approve_step(cur) == []
+
+
+def test_s2_with_prod_keeps_the_full_emergency_train(cur):
+    in_prod(cur)
+    gh = FakeGh("closed")
+    s1(cur, gh, severity="s2")
+    merged_for(cur, 42, 7, "fix0001")
+    [tid] = major_defect.rerelease_step(cur, gh)
+    assert train.train_of(cur, tid).get("mode") is None
