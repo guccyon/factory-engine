@@ -1,4 +1,4 @@
-// 委員会（工場の委員会の開催と議事録）。知見の委員会（審査・定例、ADR 0024）と事故の調査委員会（週次の見回り、ADR 0046）
+// 委員会（工場の委員会の開催と議事録）。知見の委員会（チケットの振り返り ADR 0061、審査・定例 ADR 0024）と事故の調査委員会（週次の見回り、ADR 0046）
 // 一覧は新しい順。PC は左に一覧・右に議事録、スマホは一覧から議事録へ移る。中身は GET /api/committees・/api/committees/<id>（console_committee.py）
 // console.js の esc・put・dur・link・route・S を使う（console.js の後に読む）
 let cmList = null, cmAt = 0, cmOf = "", cmDoc = {}, cmFilter = "";
@@ -40,7 +40,7 @@ function cmRender(arg) {
   put("cm-f", `<div class="tabs">${[["", "すべて"], ...Object.entries(cs)].map(([k, n]) => `<button data-cmf="${k}" class="${k === cmFilter ? "on" : ""}" aria-pressed="${k === cmFilter}">${esc(n)}</button>`).join("")}</div>`);
   if (cmList && !cmList.error) {
     const xs = cmList.meetings.filter(m => !cmFilter || m.committee === cmFilter);
-    put("cm-list", xs.length ? xs.map(m => cmRow(m, String(m.id) === arg)).join("") : '<div class="c-empty"><b>まだ開かれていません</b><span>知見の委員会は知見の PR ごとと週 1 回、事故の調査委員会は週 1 回開かれます</span></div>');
+    put("cm-list", xs.length ? xs.map(m => cmRow(m, String(m.id) === arg)).join("") : '<div class="c-empty"><b>まだ開かれていません</b><span>知見の委員会は閉じたチケットが一定の件数たまるごとに振り返りを開き、事故の調査委員会は週 1 回開かれます</span></div>');
   } else if (cmList) put("cm-list", '<div class="m">読み込めませんでした</div>');
   if (arg) { if (!cmDoc[arg]) cmLoadDoc(arg); put("cm-d", cmDetail(arg)) }
   else put("cm-d", '<div class="c-empty cm-none"><b>開催を選ぶと議事録が出ます</b></div>');

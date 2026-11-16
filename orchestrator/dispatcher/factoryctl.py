@@ -84,7 +84,7 @@ QA 役（ADR 0028 の決定 2）。触れる環境にユーザーストーリー
       # 合成の利用者（ADR 0043 の O4）を今すぐ 1 回積む。仕込みは --friction か工場の SYNTH_FRICTION（staging だけ）。提案は受信トレイに出る
   factoryctl qa learn <repo>                                  # 品質の Learn（ADR 0043 の O9）を今すぐ回す（その週にまだ回っていなければ）
 
-障害の重要度とエラーバジェット（ADR 0043 の O5）。QA 役が S1 の Incident を開くとラインを差し止める（一時停止とは別の札）。解除は人だけ:
+障害の重要度とエラーバジェット（ADR 0043 の O5）。QA 役が S1 の Incident を開くとラインを差し止める（一時停止とは別の札）。直しが本番に出たら QA 役が確かめ直して解く（ADR 0062）。人の解除:
   factoryctl line release --reason "..." [--by 名前]   # QA 役の差し止めを解除する（直した・演習を終えた）。理由は必須
   factoryctl incident list [<repo>] [--limit 20]       # 最近の Incident（重要度・演習か・閉じたか）と差し止めの状態
   factoryctl incident budget <repo>                    # エラーバジェット（製品の quality_policy.yaml の error_budget）と期間の中の件数（演習を除く）

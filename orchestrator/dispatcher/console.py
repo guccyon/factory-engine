@@ -12,6 +12,7 @@
   GET  /api/stream                      サーバーからの知らせ（SSE）。工場の記録が動いたら event: changed（画面は /api/state を読み直す。console_stream.py）
   GET  /api/ask と /api/ask/<id>          問い合わせ: 窓口の相談の一覧と会話（ADR 0059。POST で開く・返事・確認・閉じる。console_ask.py）
   GET  /api/committees と /api/committees/<id>  委員会の開催の一覧（?committee=knowledge|incident）と議事録（console_committee.py）
+  GET  /api/knowledge と /api/knowledge/<K-NNNN>  事業部の知見の一覧（?repo=&q=&theme=&confidence=&status=）と 1 件（supervisor が残す写しを読む。console_knowledge.py）
   GET  /api/live                        稼働状況: 工程とジョブの種類の対応、直近 6 時間の作業中・順番待ちの推移（console_live.py）
   GET  /api/maint                       稼働状況の保守のタブ: 見回りの結果・事故の台帳・最近うまくいかなかったジョブ（ADR 0059、#477。console_maint.py）
   GET  /api/products/<owner>/<repo>/intake   オンボーディングで渡すもの（問いと答え・足りないもの・製品の構成・解析の要約。ADR 0045 の追記 2026-11-15）
@@ -94,6 +95,7 @@ import version
 from console_page import PAGE, APP_PATH, CATALOG, static_file
 import console_ask
 import console_committee
+import console_knowledge
 import console_live
 import console_maint
 import console_stream
@@ -551,6 +553,11 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path.startswith("/api/committees"):   # 委員会の開催と議事録（console_committee.py）
             with db() as conn, conn.cursor() as cur:
                 r = console_committee.get(cur, self.path)
+            if r:
+                return self._json(*r)
+        if urlsplit(self.path).path.startswith("/api/knowledge"):   # 事業部の知見の一覧と 1 件（ADR 0061 の決定 8。console_knowledge.py）
+            with db() as conn, conn.cursor() as cur:
+                r = console_knowledge.get(cur, self.path)
             if r:
                 return self._json(*r)
         if self.path == "/api/live":   # 稼働状況の工程の対応と推移（console_live.py）

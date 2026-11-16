@@ -36,6 +36,9 @@ API（JSON）が正本で、MCP のサーバー（orchestrator/desk-mcp/factory_
                                                        鍵・パスワード・トークンの値は受け取らない（置き場の名前を渡す）。repos は {repo, role, access, main?}
   POST /api/desk/onboarding/<owner>/<repo>/run         {"reason"?} 棚卸しと解析をすぐにやり直す（答えを足したときは工場が自分で流す）
   GET  /api/desk/onboarding/<owner>/<repo>/docs/<名前>  解析が起こした文書（architecture.md・api.yaml・screens.md・glossary.yaml）
+  GET  /api/desk/knowledge?product=&q=&theme=&confidence=&status=   事業部の知見の一覧（ADR 0061 の決定 8。トークンの製品の範囲。
+                                                       supervisor が残す写しを読む。status を渡さなければ廃止・置き換え済みは出さない）
+  GET  /api/desk/knowledge/<K-NNNN>?product=           知見 1 件（主張・効く範囲・確かさ・根拠・無効になる条件・ワーカーに渡した回数）
   （参照の # は URL では %23、key の / は %2F にする）
 
 守り:
@@ -55,6 +58,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+import console_knowledge
 import desk
 import onboarding_intake
 import requester_prefs
@@ -143,6 +147,30 @@ def _int(v, name: str, default: int = 0) -> int:
         raise desk.DeskError(400, f"{name} は整数")
 
 
+def knowledge_route(cur, who: dict, rest: list[str], query: dict) -> tuple[int, dict]:
+    """事業部の知見（ADR 0061 の決定 8）。トークンの製品の範囲だけ出す"""
+    product = query.get("product") or None
+    if product and not desk.can_product(who, product):
+        return 403, {"error": f"{product} はこのトークンの範囲の外"}
+    if len(rest) == 0:
+        th = query.get("theme")
+        out = console_knowledge.search(cur, product, query.get("q") or "", _int(th, "theme") or None,
+                                       query.get("confidence") or None, query.get("status") or None,
+                                       limit=min(max(_int(query.get("limit"), "limit", 50), 1), 200))
+        out["products"] = [p for p in out["products"] if desk.can_product(who, p["repo"])]
+        out["items"] = [i for i in out["items"] if desk.can_product(who, i["repo"])]
+        out["total"] = len(out["items"])
+        return 200, out
+    if len(rest) == 1:
+        repos = [product] if product else [x["repo"] for x in console_knowledge.ks.latest(cur) if desk.can_product(who, x["repo"])]
+        for r in repos:
+            d = console_knowledge.read(cur, r, rest[0])
+            if d:
+                return 200, {"knowledge": d}
+        return 404, {"error": "知見が見つからない"}
+    return 404, {"error": "not found"}
+
+
 def route(method: str, path: str, query: dict, body: dict, token: str | None, connect=db, put=None, get=None) -> tuple[int, dict]:
     """要求を 1 つ処理して (状態コード, JSON)。HTTP から切り離してテストできるようにしてある"""
     parts = [unquote(p) for p in path.strip("/").split("/")]
@@ -205,6 +233,8 @@ def route(method: str, path: str, query: dict, body: dict, token: str | None, co
                 return 200, {"preference": requester_prefs.update(cur, who, rest[1], body.get("statement"), body.get("work"))}
             if method == "POST" and len(rest) == 3 and rest[2] == "delete":
                 return 200, requester_prefs.delete(cur, who, rest[1])
+        if rest[:1] == ["knowledge"] and method == "GET":
+            return knowledge_route(cur, who, rest[1:], query)
         if rest[:1] == ["onboarding"]:
             r = onboarding_route(cur, who, method, rest[1:], body, put=put, get=get)
             if r:

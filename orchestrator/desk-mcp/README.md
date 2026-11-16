@@ -39,6 +39,8 @@ Claude Desktop（`claude_desktop_config.json`）:
 | `inbox_answer` | `POST /api/desk/inbox/<key>/answer` | 本人がはっきり選んだ答えを返す。先に別の入口で答えられていれば、誰が何と答えたかが返る |
 | `desk_preferences` | `GET /api/desk/preferences` | 本人の好みの一覧（ADR 0040 の決定 6。id・好み・効く業務・確かさ）。工場が会話から覚えたものも入る |
 | `desk_preference_set` | `POST /api/desk/preferences`（id があれば `/<P-NNNN>`） | 好みを足す・直す。本人が言ったものは確認済み |
+| `knowledge_search` | `GET /api/desk/knowledge` | 事業部の知見を探す（ADR 0061 の決定 8。製品・言葉・テーマ・確かさ・状態で絞る）。ドメインの業務知識は製品の docs/ を案内する |
+| `knowledge_read` | `GET /api/desk/knowledge/<K-NNNN>` | 知見を 1 件読む（主張・効く範囲・確かさ・根拠・無効になる条件・製品リポの URL） |
 | `desk_preference_delete` | `POST /api/desk/preferences/<P-NNNN>/delete` | 好みを消す（行ごと） |
 
 流れの例: `desk_open`（依頼）→ `desk_read`（wait 60）で問いを受けて依頼者に見せる → `desk_reply` → … → 下書きが来たら依頼者に見せ、同意を得て `desk_confirm` → `desk_read` で作ったチケットを確かめる → 以後は `desk_ticket`。

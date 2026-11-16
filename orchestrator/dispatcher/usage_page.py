@@ -36,28 +36,34 @@ def when(s: str | None) -> str:
     return "—" if not s else datetime.fromisoformat(s).strftime("%m/%d %H:%M")
 
 
-def bars(daily: list[dict]) -> str:
-    """日ごとの費用の棒と、その日の予算の線（SVG）"""
+def _short(d: dict, grain: str) -> str:
+    """棒の下の短い名前。日は 11-16、週は始めの日 11/8〜、月は 11月"""
+    k = d.get("start") or d["date"]
+    return f"{int(k[5:7])}月" if grain == "month" else f"{int(k[5:7])}/{int(k[8:10])}〜" if grain == "week" else k[5:]
+
+
+def bars(daily: list[dict], grain: str = "day") -> str:
+    """期間ごと（日・週・月）の費用の棒と、その期間の予算の線（SVG）。daily は日ごとか periods の並び"""
     w, h, pad = 640, 180, 28
     top = max([d["cost_usd"] for d in daily] + [d["budget_usd"] or 0 for d in daily] + [1])
     bw = (w - pad) / max(len(daily), 1)
-    out = [f'<svg viewBox="0 0 {w} {h + 24}" role="img" aria-label="日ごとの費用と予算" class="chart">']
+    out = [f'<svg viewBox="0 0 {w} {h + 24}" role="img" aria-label="期間ごとの費用と予算" class="chart">']
     for i, d in enumerate(daily):
         x = pad + i * bw
         bh = d["cost_usd"] / top * h
         cls = "bar over" if d["budget_usd"] and d["cost_usd"] >= d["budget_usd"] else "bar"
-        out.append(f'<rect class="{cls}" x="{x + 2:.1f}" y="{h - bh:.1f}" width="{max(bw - 4, 1):.1f}" height="{bh:.1f}"><title>{esc(d["date"])}: {usd(d["cost_usd"])}'
+        out.append(f'<rect class="{cls}" x="{x + 2:.1f}" y="{h - bh:.1f}" width="{max(bw - 4, 1):.1f}" height="{bh:.1f}"><title>{esc(d.get("label") or d["date"])}: {usd(d["cost_usd"])}'
                    f'（予算 {usd(d["budget_usd"])}、{d["jobs"]} ジョブ）</title></rect>')
         if d["budget_usd"]:
             y = h - d["budget_usd"] / top * h
             out.append(f'<line class="budget" x1="{x:.1f}" x2="{x + bw:.1f}" y1="{y:.1f}" y2="{y:.1f}"/>')
         if i % max(1, -(-len(daily) // 16)) == 0:
-            out.append(f'<text x="{x + bw / 2:.1f}" y="{h + 16}" text-anchor="middle">{esc(d["date"][5:])}</text>')
+            out.append(f'<text x="{x + bw / 2:.1f}" y="{h + 16}" text-anchor="middle">{esc(_short(d, grain))}</text>')
     out.append(f'<text x="0" y="12">{usd(top)}</text></svg>')
     return "".join(out)
 
 
-GRAIN_JA = [("day", "日別"), ("week", "週別（日〜土）"), ("month", "月別")]
+GRAIN_JA = [("day", "日別"), ("week", "週別"), ("month", "月別")]
 
 
 def presets(today: str) -> list[tuple[str, str, str]]:
@@ -127,8 +133,8 @@ def body(v: dict) -> str:
 <section><h2>今週（{esc(when(wk["start"]))} 〜 {esc(when(wk["end"]))}、契約の週の区切り）</h2><div class="tiles">{tiles}</div>
 <p class="m">{limit}。最後に上限に当たったのは {esc(when(wk["last_usage_limited"]))}</p></section>
 {f'<section><h2>期間を選ぶ</h2>{controls(v)}</section>' if v.get("start") else ""}
-<section><h2>{unit}ごとの消費（{esc(span)}、1 日は {v["day_start_hour"]}:00 区切り）</h2>{bars(v["daily"])}
-<p class="m">棒が日ごとの費用、赤い破線がその日の予算の枠の合計。予算に届いた日は橙。下の表は{esc(dict(GRAIN_JA)[g])}にまとめた数</p>
+<section><h2>{unit}ごとの消費（{esc(span)}、1 日は {v["day_start_hour"]}:00 区切り）</h2>{bars(v.get("periods") or v["daily"], g)}
+<p class="m">棒が{unit}ごとの費用、赤い破線がその{unit}の予算の枠の合計。予算に届いた{unit}は橙{'。週は日曜から土曜まで' if g == 'week' else ''}</p>
 {table([("label", unit), ("cost_usd", "費用"), ("budget_usd", "予算"), ("billable_tokens", "課金対象"), ("total_tokens", "キャッシュ読み込み含む"),
         ("jobs", "ジョブ"), ("failed_cost_usd", "失敗したジョブの費用"), ("budget_stopped_hours", "予算で止めた時間"), ("usage_limited", "上限")],
        per, {"cost_usd": usd, "budget_usd": usd, "failed_cost_usd": usd, "billable_tokens": mtok, "total_tokens": mtok,

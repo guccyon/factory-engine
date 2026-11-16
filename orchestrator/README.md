@@ -272,7 +272,8 @@ docker compose exec dispatcher factoryctl report stoppages --from 2026-10-20 --t
   - 製品 `/products`・`/products/<owner>/<repo>?tab=`: 概要・見通し・障害と問題・利用状況（上位プランの置き場）・リリースと環境（出荷先のカード。前の `/ship` はここへ送り直す）・準備度（`GET /products/body?p=` の断片）
   - ライン `/line`: 状態ごとの一覧（既定）とかんばん。上には工場の不調の件数だけ。カードに元のチケットと PR。リポジトリと出どころで絞れる
   - 稼働状況の保守 `/live?tab=maint`（前の `/maint` は送り直す。`GET /api/maint`、console_maint.py）: 工場の不調（下に別記）・建設者宛ての判断の件・見回りごとの最後に動いた時刻と期限・事故の台帳・直近 24 時間にうまくいかなかったジョブ（作業の記録・積み直す）
-  - 委員会 `/committees`・`/committees/<id>`（`GET /api/committees*`、console_committee.py）: 委員会の開催の一覧と議事録。知見の委員会の審査（`committee.decided`・`committee.revise`）と定例（`committee.weekly_reviewed`）、事故の調査委員会の週次（`fincident.reviewed`）を events から組み直す（読むだけ）
+  - 委員会 `/committees`・`/committees/<id>`（`GET /api/committees*`、console_committee.py）: 委員会の開催の一覧と議事録。知見の委員会のチケットの振り返り（`retro.held`。ADR 0061 の決定 9: 対象のチケット・出席・立場ごとの意見・得られた知見と置き場・打ち手・知見のレビューの結果・次の N）、審査（`committee.decided`・`committee.revise`）と定例（`committee.weekly_reviewed`）、事故の調査委員会の週次（`fincident.reviewed`）を events から組み直す（読むだけ）
+  - 知見 `/knowledge`・`/knowledge/<owner>/<repo>/<K-NNNN>`（`GET /api/knowledge*`、console_knowledge.py）: 事業部の知見の一覧と 1 件（ADR 0061 の決定 8）。テーマ・確かさ・言葉で絞る。supervisor が 1 時間に 1 回ほど製品の `.factory-config/knowledge/` を読んで残す写し（artifacts の `KnowledgeSnapshot`、knowledge_snapshot.py）を読む。製品の `docs/`（ドメインの知識）へのリンクも出す。窓口では `GET /api/desk/knowledge*` と MCP の `knowledge_search`・`knowledge_read`
   - 費用 `/cost`（前の `/usage` は送り直す）: 下に別記。中身は `GET /usage/body` の HTML の断片
   - ヘルプ `/help`: ワークベンチとページ、工場の状態の数字、工場の不調の種類、ラインの列の意味
   - 工場の不調（2026-11-08、`dispatcher/alerts.py`）: 開いている停止を 1 行ずつ「何が止まり・どれのことか（チケット・PR・更新の依頼）・何分前から」で出す（最初の 5 件、残りは「ほか N 件」）。押すと次にすること・対応する人・記録・リンク・「やり直す」（失敗した作業の積み直し。`factoryctl rerun` と同じ `rerun.py`）・作業の記録の最後の部分（`GET /api/jobs/<id>/log`、鍵らしい文字列は伏せる）。× で画面から消せる（`POST /api/alerts/dismiss`。停止そのものは閉じない）。消したものは「消したもの」で見られ、戻せる。人の判断待ちの停止（human）は受信トレイに出すのでここには出さない
@@ -576,7 +577,7 @@ supervisor が週に 1 回（`definitions/defects.yaml` の `learn`。既定は�
 重要度の基準（S1 の条件と S2〜S4）とエラーバジェットは製品の `.factory-config/quality_policy.yaml`（欄の型は `definitions/quality_policy.yaml`）。QA 役のワーカーはその条件を重要度の説明に足して読む。
 
 - Gen1 は本番を立てないので staging を本番の代わりにし、QA 役（判定・夜間の探索）が起票した Defect（known_gap を除く）を同じ重要度の Incident として残す（`dispatcher/incident.py`、events の `incident.opened` と artifacts の `Incident`）。同じ Defect の Issue は 1 件
-- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人だけ**（操業コンソールの「差し止めを解除」か下の `line release`。QA 役と工場の常駐は解除できない）
+- S1 なら QA 役がラインを差し止める（`line.held_by_qa`）。ラインの一時停止とは別の札で、差し止めの間は S1 の Defect の Issue（`factory:priority:p0` を付ける）・QA の固定 Issue・p0 のジョブだけ流す。停止（human）も開く。**解除は人か、直しを確かめ直した QA 役**（人は操業コンソールの「差し止めを解除」か下の `line release`。名前だけで QA 役や工場の常駐を名乗る解除は断る。直しの緊急便が本番に出たら、supervisor が QA のジョブ（mode: recheck）を p0 で積み、QA 役が再現の手順で直ったと答えれば差し止めを解く。ADR 0062。`HOLD_AUTO_LIFT=0` で人だけに戻る）
 - エラーバジェット: 期間の中の Incident（演習を除く）が許容件数を超えたら `incident.budget_exceeded` を期間と重要度ごとに 1 回残し、工場の状況に知らせる
 
 ```bash

@@ -212,3 +212,4 @@ def test_view_range_and_grain(cur, monkeypatch):
     assert sum(k["cost_usd"] for k in v["by_kind"]) == 40.0 and {m["model"] for m in v["by_model"]} == {"claude-x", "claude-y"}
     page = usage_page.body(v)
     assert 'value="2026-11-01"' in page and "週別" in page and "11/8（日）〜11/14（土）" in page
+    assert page.count("<rect") == 2 and ">11/8〜<" in page   # グラフも週ごとの棒

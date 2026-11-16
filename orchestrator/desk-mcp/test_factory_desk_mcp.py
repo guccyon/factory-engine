@@ -38,7 +38,8 @@ def test_initialize_and_list():
     names = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
     assert names == ["desk_open", "desk_reply", "desk_read", "desk_confirm", "desk_list", "desk_ticket", "desk_set_priority",
                      "inbox_list", "inbox_read", "inbox_answer", "desk_preferences", "desk_preference_set",
-                     "onboarding_status", "onboarding_provide", "onboarding_run", "onboarding_doc", "desk_preference_delete"]
+                     "onboarding_status", "onboarding_provide", "onboarding_run", "onboarding_doc", "knowledge_search", "knowledge_read",
+                     "desk_preference_delete"]
     assert "inbox_answer" in r["instructions"] and "本人がはっきり選んだ" in r["instructions"]
     assert rpc("nope")["error"]["code"] == -32601
 
@@ -68,6 +69,11 @@ def test_initialize_and_list():
     ("desk_preference_set", {"id": "P-0003", "statement": "数字は税抜きの表で"},
      ("POST", "/api/desk/preferences/P-0003", {"statement": "数字は税抜きの表で"}, None)),
     ("desk_preference_delete", {"id": "P-0003"}, ("POST", "/api/desk/preferences/P-0003/delete", {}, None)),
+    ("knowledge_search", {}, ("GET", "/api/desk/knowledge", None, None)),
+    ("knowledge_search", {"product": "o/r", "q": "動画 キーフレーム", "theme": 3, "status": ""},
+     ("GET", "/api/desk/knowledge", None, {"product": "o/r", "q": "動画 キーフレーム", "theme": 3})),
+    ("knowledge_read", {"id": "K-0012"}, ("GET", "/api/desk/knowledge/K-0012", None, None)),
+    ("knowledge_read", {"id": "K-0012", "product": "o/r"}, ("GET", "/api/desk/knowledge/K-0012", None, {"product": "o/r"})),
 ])
 def test_tools_map_to_api(name, args, want):
     rec = Rec()
