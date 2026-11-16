@@ -61,6 +61,7 @@ import fault
 import judgment
 import knowledge_snapshot
 import line
+import hold_lift
 import major_defect
 import ticket_sync
 import learn
@@ -935,6 +936,10 @@ def major_defect_step(cur):
         major_defect.approve_step(cur, log=log)
     except Exception as e:  # noqa: BLE001  周回は止めない
         log("major defect step failed", repr(e))
+    try:   # 直しが出たのを QA 役が確かめ直して差し止めを解く（ADR 0062）
+        hold_lift.step(cur, gh, log=log)
+    except Exception as e:  # noqa: BLE001  周回は止めない
+        log("hold lift step failed", repr(e))
 
 
 def changelog_due(n: int, now_jst: datetime, compiled_today: bool) -> bool:
