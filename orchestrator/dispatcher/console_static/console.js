@@ -124,7 +124,8 @@ function route(){const p=location.pathname.replace(/\/+$/,"")||"/";let m;
  if((m=p.match(/^\/inbox(?:\/(.+))?$/)))return["inbox",m[1]?decodeURIComponent(m[1]):""];
  if((m=p.match(/^\/ask(?:\/(new|\d+))?$/)))return["ask",m[1]||""];
  if((m=p.match(/^\/committees(?:\/(\d+))?$/)))return["committees",m[1]||""];
- if(p==="/line"||p==="/ship"||p==="/cost"||p==="/live"||p==="/maint")return[p.slice(1),""];
+ if(p==="/line"||p==="/ship"||p==="/cost"||p==="/live")return[p.slice(1),""];
+ if(p==="/maint"){history.replaceState(null,"","/live?tab=maint");return["live",""]}   // 工場の保守は稼働状況の「保守」タブへ（2026-11-16）
  if(p==="/usage"){history.replaceState(null,"","/cost");return["cost",""]}   // 前の名前（使用量）のリンクは費用へ（ADR 0059、#478）
  if((m=p.match(/^\/products(?:\/([\w.-]+\/[\w.-]+))?$/)))return["products",m[1]||""];
  if((m=p.match(/^\/help(?:\/(api|cli|mobile))?$/)))return["help",m[1]||""];
@@ -166,10 +167,10 @@ const HOME_ORDER={factory:["notice","todo","stats","line","trend","prod","ship"]
 function homeStats(s){const f=s.factory,hum=s.items.filter(i=>i.stage==="human").length,run=s.items.filter(i=>i.stage==="running").length,low=f.line_low_below>0&&f.planned<f.line_low_below;
  const t=(k,v,href,cls,d)=>`<a class="c-tile${cls?" "+cls:""}" href="${href}" data-nav><div class="k">${k}</div><div class="v">${v}${d?`<span class="d">${d}</span>`:""}</div></a>`;
  return `<div class="c-tiles">${t("対応が必要な作業",hum,"/line",hum?"is-bad":"")}${t("作業中",run,"/line")}${t("着手待ちのチケット",f.planned,"/line",low?"is-warn":"",low?`${f.line_low_below} 件を切った`:"")}${t("今日の費用","$"+f.cost_today_usd.toFixed(2),"/cost")}</div>`}
-// ラインには工場の不調の件数とリンクだけ（中身は工場の保守のページ、ADR 0059、#477）
-function lineStops(s){const n=((s.alerts||{}).open||[]).filter(a=>!a.inbox).length;return n?`<a class="c-notice is-warn" href="/maint" data-nav><span class="c-g">工場の不調が ${n} 件。工場の保守で見る</span><span aria-hidden="true">→</span></a>`:""}
+// ラインには工場の不調の件数とリンクだけ（中身は稼働状況の「保守」タブ、ADR 0059、#477）
+function lineStops(s){const n=((s.alerts||{}).open||[]).filter(a=>!a.inbox).length;return n?`<a class="c-notice is-warn" href="/live?tab=maint" data-nav><span class="c-g">工場の不調が ${n} 件。稼働状況の保守で見る</span><span aria-hidden="true">→</span></a>`:""}
 function homeNotice(s){const xs=((s.alerts||{}).open||[]).filter(a=>!a.inbox);if(!xs.length)return"";
- return `<a class="c-notice is-warn" href="/maint" data-nav><span class="c-g">工場の不調が ${xs.length} 件あります。提供元が対応しています</span><span aria-hidden="true">→</span></a>`}
+ return `<a class="c-notice is-warn" href="/live?tab=maint" data-nav><span class="c-g">工場の不調が ${xs.length} 件あります。提供元が対応しています</span><span aria-hidden="true">→</span></a>`}
 function lineSummary(items){const c=k=>items.filter(i=>i.stage===k).length;
  return `<h2><a href="/line" data-nav>ライン →</a></h2><div class="kv">${LANES.map(([k,n])=>`<span>${esc(n)} <b>${c(k)}</b></span>`).join("")}</div>`}
 function shipSummary(rs){return `<h2><a href="/products" data-nav>出荷 →</a></h2>${rs.length?rs.map(r=>`<div class="kv"><b><a href="/products/${esc(r.repo)}?tab=release" data-nav>${esc(r.repo)}</a></b><span>Web 検証 <b>${VER((r.environments.staging||{}).release_id)}</b></span><span>本番 <b>${VER((r.environments.prod||{}).release_id)}</b></span>${r.pending.length?'<span class="m">処理中</span>':""}</div>`).join(""):'<div class="m">出荷した製品はまだない</div>'}`}
@@ -225,14 +226,14 @@ function beltFig(title,cases,kind){const W=330,H=kind==="tickets"?90:150;let out
 // ---- ヘルプ（11-08）。ヘッダの数字と、コンソールの言葉の意味
 const HELP=`<h2>ヘルプ: 画面の言葉</h2>
 <h3>ワークベンチとページ</h3><dl>
-<dt>ワークベンチ</dt><dd>右上（スマホは「その他」）で選ぶ、仕事の見え方。「工場」は工場を動かす人向けで、ライン・工場の保守が前に出る。「製品」は製品の持ち主向けで、製品・問い合わせが前に出て、受信トレイは提供元宛てを除いて出す。どちらでもすべてのページを開ける。選んだものはこの端末に覚える</dd>
+<dt>ワークベンチ</dt><dd>右上（スマホは「その他」）で選ぶ、仕事の見え方。「工場」は工場を動かす人向けで、ライン・稼働状況が前に出る。「製品」は製品の持ち主向けで、製品・問い合わせが前に出て、受信トレイは提供元宛てを除いて出す。どちらでもすべてのページを開ける。選んだものはこの端末に覚える</dd>
 <dt>ホーム</dt><dd>いま見るべき件の数と入口。1 つの件は 1 つのページで片付けるので、ホームには件数とリンクだけを置く</dd>
 <dt>受信トレイ</dt><dd>工場が人に判断を求めている件（判断待ち）と、見たら消せるお知らせ</dd>
 <dt>問い合わせ</dt><dd>工場への依頼や質問（窓口）。新しい依頼を出し、対応の状況と返事を見る。Claude（窓口の MCP）や API から出した相談も同じ一覧に並ぶ</dd>
-<dt>事業部の様子</dt><dd>ジョブの種類ごとのレーンの上をチケットが流れていく様子と、作業中・順番待ちの数の推移</dd>
+<dt>稼働状況</dt><dd>「流れ」と「保守」の 2 つのタブ。流れは、工程（計画・実装・検査・QA・出荷）ごとの段の上を、チケットが流れていく様子。丸 1 つがチケット 1 件で、段の中の左から「待ち」「作業中」（経過に合わせて右へ進む）「次へ渡す待ち」。点滅は作業中、赤は人の対応待ち。丸に触れると番号・状態・ジョブ・経過が出る。下のグラフは直近 6 時間の作業中と順番待ちの数（ジョブの記録から 10 分ごとに数える）</dd>
 <dt>製品</dt><dd>製品ごとの概要・見通し・障害と問題・利用状況・リリースと環境・準備度。出荷（Web 検証・本番・前の版へ戻す）は「リリースと環境」で</dd>
 <dt>ライン</dt><dd>チケットの一覧（状態ごと）とかんばん。優先度の変更・保留・止める</dd>
-<dt>工場の保守</dt><dd>提供元（建設者）が直す工場の側の件。工場の不調・建設者宛ての件・見回りの結果・うまくいかなかったジョブ</dd>
+<dt>稼働状況の保守</dt><dd>提供元（建設者）が直す工場の側の件。工場の不調・建設者宛ての件・見回りの結果・うまくいかなかったジョブ</dd>
 <dt>委員会</dt><dd>工場の委員会の開催と議事録。知見の委員会（知見の PR ごとの審査と週 1 回の定例）と事故の調査委員会（週 1 回の見回り）。委員会は自分で実装せず、決めたことは Issue にして工場のラインで作る</dd>
 <dt>費用</dt><dd>日ごとの費用と予算、役割・モデルごとの消費、契約の週の進み（前の「使用量」）</dd>
 </dl>
@@ -251,7 +252,7 @@ const HELP=`<h2>ヘルプ: 画面の言葉</h2>
 <dt>着手待ちのチケット</dt><dd>依存や上限で、まだ手を付けていないチケットの数（保留にしたものは除く）。少なくなる（既定は 2 件を切る）と赤くなり、番人が知らせる。積まないとラインが空になる</dd>
 <dt>ライン</dt><dd>スイッチがオンなら、順番待ちの作業を取り出して流している。オフ（一時停止）にすると新しく取り出さない。工場の更新の前に使う</dd>
 </dl>
-<h3>受信トレイの「判断待ち」と、工場の保守の「工場の不調」</h3><dl>
+<h3>受信トレイの「判断待ち」と、稼働状況の保守の「工場の不調」</h3><dl>
 <dt>判断待ち</dt><dd>プロダクトの判断（画面の案・マージ・工場が決めきれなかった点など）。受信トレイで答える。答える人はプロダクトの持ち主（オーナー）か、件ごとの宛先</dd>
 <dt>工場の不調</dt><dd>番人（ラインを見張る仕組み）が見つけた、工場の側の止まり（作業の失敗・PR が CI や衝突で進めない・指示役の不在など）。工場の保守の担当（建設者）が直すもの。1 行を押すと、対象・次にすること・記録・やり直すボタンが出る。× で画面から消せる（止まり自体は解けない）。消したものは「消したもの」で見られ、戻せる。止まりが解けると自動で一覧から消える</dd>
 <dt>作業の失敗</dt><dd>1 つの作業（ジョブ）が失敗した。作業ごとに 1 件出る。同じチケットで何度も失敗すると同じチケットの行が並ぶ。「やり直す」で同じ作業を積み直す</dd>
@@ -466,9 +467,9 @@ const ICON={home:'<path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/>',inbox:'<path d="M4 5
  cost:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
  help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01"/>',more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'};
 const icon=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]||ICON.more}</svg>`;
-const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","事業部の様子"],products:["/products","製品"],line:["/line","ライン"],maint:["/maint","工場の保守"],committees:["/committees","委員会"],cost:["/cost","費用"]};
+const PAGES={home:["/","ホーム"],inbox:["/inbox","受信トレイ"],ask:["/ask","問い合わせ"],live:["/live","稼働状況"],products:["/products","製品"],line:["/line","ライン"],committees:["/committees","委員会"],cost:["/cost","費用"]};
 // main は主のメニュー、それ以外は「すべてのページ」の下。tabs はスマホの下のタブ（最後に「その他」が付く）
-const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","maint","committees","ask","products","cost"],tabs:["home","inbox","ask","products"]},
+const WORKBENCHES={factory:{name:"工場",main:["home","inbox","live","line","committees","ask","products","cost"],tabs:["home","inbox","ask","products"]},
  product:{name:"製品",main:["home","inbox","ask","products","live","cost"],tabs:["home","inbox","ask","products"]}};
 const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 let wb=WORKBENCHES[store.get("console.workbench")]?store.get("console.workbench"):"factory";
@@ -507,7 +508,6 @@ function skeleton(v,arg){
  if(v==="inbox")return `<div class="ibx ${arg?"open":""}"><div class="ib-l"><div class="ib-f" id="ib-f"></div><div id="ib-list"></div></div><div class="ib-r" id="ib-d"></div></div>`;
  if(v==="ask")return askSkeleton(arg);
  if(v==="live")return liveSkeleton();
- if(v==="maint")return mtSkeleton();
  if(v==="committees")return cmSkeleton(arg);
  if(v==="line")return `<div id="l-stops"></div><div class="filters" id="l-f"></div><div id="lanes"></div>`;
  if(v==="ship")return `<div id="ship"></div>`;
@@ -544,7 +544,6 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
    :LANES.map(([k,n])=>{const ys=xs.filter(i=>i.stage===k);return ys.length?`<section class="card lnsec ${k}"><h2>${n}（${ys.length}）</h2>${ys.map(card).join("")}</section>`:""}).join("")||'<div class="c-empty"><b>ラインにチケットはありません</b></div>')}
  else if(v==="ask")askRender(arg)
  else if(v==="live")liveRender(s)
- else if(v==="maint")mtRender(s)
  else if(v==="committees")cmRender(arg)
  else if(v==="ship"){if(force||!busy("ship"))put("ship",shipPage(s.releases||[]))}
  else if(v==="products"&&arg)ppRender(s,arg)
@@ -561,7 +560,7 @@ async function load(){if(document.hidden&&!force)return;let s;try{s=await (await
   scaleView(f.scale,f.line),
   `<span class="stat">今日の費用 <b>$${f.cost_today_usd.toFixed(2)}</b></span>`,
   `<span class="stat ${f.line_low_below>0&&f.planned<f.line_low_below?"bad":""}" title="まだ手を付けていないチケット（保留を除く）。${f.line_low_below} 件を切ると番人が知らせる">着手待ちのチケット <b>${f.planned}</b></span>`,
-  lineView(f.line),holdView(f.qa_hold),`<a class="stat" href="/maint" data-nav>工場の保守 →</a>`].join(" "));
+  lineView(f.line),holdView(f.qa_hold),`<a class="stat" href="/live?tab=maint" data-nav>工場の保守 →</a>`].join(" "));
  setCounts();factoryView(s);
  document.title=(ib.count?`(${ib.count}) `:"")+"操業コンソール";
  render()}
