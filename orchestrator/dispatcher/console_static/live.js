@@ -141,7 +141,7 @@ function liveRender(s) {
   if (!liveMeta || Date.now() - liveMetaAt > 60000) { if (!liveLoadMeta._p) liveLoadMeta._p = liveLoadMeta().finally(() => liveLoadMeta._p = null) }
   const f = s.factory || {}, c = k => (s.items || []).filter(i => i.stage === k).length;
   const t = (k, v, cls) => `<div class="c-tile${cls ? " " + cls : ""}"><div class="k">${k}</div><div class="v">${v}</div></div>`;
-  put("live-tiles", `<div class="c-tiles">${t("作業中", c("running"))}${t("順番待ち", c("queued") + c("ready"))}${t("検査・マージ待ち", c("review"))}${t("今日の済み", c("done"))}${t("人の対応待ち", c("human"), c("human") ? "is-bad" : "")}${t("今日の費用", "$" + (f.cost_today_usd || 0).toFixed(2))}</div>`);
+  put("live-tiles", `<div class="c-tiles">${t("作業中", c("running"))}${t("順番待ち", c("queued") + c("ready"))}${t("検査・マージ待ち", c("review"))}${t("本日完了分", c("done"))}${t("人の対応待ち", c("human"), c("human") ? "is-bad" : "")}${t("今日の費用", "$" + (f.cost_today_usd || 0).toFixed(2))}</div>`);
   put("live-lanes", liveLanes(s));
   put("live-leg", liveLegend());
   if (liveMeta) put("live-ch", `直近 ${liveMeta.trend_hours} 時間`);

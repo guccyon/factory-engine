@@ -233,8 +233,11 @@ def snapshot(cur) -> dict:
             stage, note = "review", {None: "CI 待ち", "supervisor.merge_decided": "検査中", "gate.evaluated": "判定待ち",
                                      "supervisor.judge_enqueued": "検査役の承認待ち" if pl.get("skipped") else "判定中",
                                      "judgment.judged": "検査役の承認待ち", "supervisor.inspector_approved": "マージ待ち"}[name]
+        # レーンを分ける目印（検査 → 判定 → マージ待ち）。CI 待ちは検査に入れる
+        step = {"gate.evaluated": "judge", "supervisor.judge_enqueued": "judge", "judgment.judged": "judge",
+                "supervisor.inspector_approved": "merge"}.get(name, "inspect")
         items.append(item(stage, ticket_id=t.get("id"), ref=ref, title=t.get("title") or "", pr_url=p["pr_url"], note=note, priority=t.get("priority"),
-                          url=t.get("url"), source="github"))
+                          url=t.get("url"), source="github", step=step))
     # 今日の済み・失敗
     cur.execute("select e.payload->>'pr_url' as pr_url, e.correlation_id, e.occurred_at, t.title, t.url from events e "
                 "left join tickets t on t.source='github' and t.source_ref=split_part(e.correlation_id, ':', 2) "
