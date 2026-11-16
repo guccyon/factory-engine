@@ -33,6 +33,11 @@ def test_by_files_maps_paths_to_stories():
     assert f(["apps/student-app/lib/features/scheduling.dart"], DOCS) == {"booking", "trace"}                  # ファイル名でも当たる
     assert f(["apps/admin-web/src/components/Button.tsx"], DOCS) == {"chat", "trace"}                           # コンテキスト不明はアプリで
     assert f(["specs/stories/trace.yaml"], DOCS) == {"trace"}
+    assert f([".factory-config/knowledge/K-0010.yaml", ".factory-config/overlay/rules/OV-010.yaml", "tools/conflict-check/engine.py",
+              ".github/workflows/ci.yml"], DOCS) == set()                                                        # 工場の設定・道具・CI
+    assert f(["apps/backend/crates/infra/tests/db.rs", "apps/student-app/test/state/logout_test.dart",
+              "apps/admin-web/src/components/Button.test.tsx"], DOCS) == set()                                   # テストのコードだけ
+    assert f([".factory-config/ship.yaml"], DOCS) == qa_select.ALL                                              # 配備の決まりは全部
     assert f(["apps/backend/crates/infra/src/db.rs"], DOCS) == qa_select.ALL                                    # 共通の土台は全部
     assert f(["deploy/compose.yaml", "apps/backend/crates/domain/src/messaging/x.rs"], DOCS) == qa_select.ALL   # 1 つでも当たらなければ全部
 
