@@ -212,5 +212,5 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 }
 .live .pp-tabs{margin-top:var(--space-3)}.live .pp-tabs .c-count{margin-left:6px}.live-s>.mt,.live-s>#live-tiles{margin-top:var(--space-3)}
 /* かんばんは左から右へ 1 列に並べる（折り返すと流れの順が崩れる）。入りきらなければ横に送る */
-#lanes.kanban{grid-auto-flow:column;grid-template-columns:none;grid-auto-columns:minmax(210px,1fr);overflow-x:auto;padding-bottom:8px;align-items:start}
+#lanes.kanban{grid-auto-flow:column;grid-template-columns:none;grid-auto-columns:minmax(190px,1fr);overflow-x:auto;padding-bottom:8px;align-items:start}
 #lanes.kanban .lane{min-height:calc(100vh - 180px)}
