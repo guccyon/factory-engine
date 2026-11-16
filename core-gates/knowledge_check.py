@@ -53,12 +53,12 @@ WORK_NODES = [
     "dev", "dev.design", "dev.design.system", "dev.design.screen", "dev.design.proposal", "dev.contract",
     "dev.build", "dev.describe", "dev.ci", "dev.review", "dev.review.inspect", "dev.review.judge", "dev.review.design",
     "ops", "ops.qa", "ops.diagnose", "ops.release", "ops.runtime", "ops.incident", "ops.operate",
-    "desk", "desk.converse", "govern", "govern.design_review", "govern.health", "govern.patrol", "govern.incident_review", "govern.investigate", "govern.watch", "govern.budget", "learn", "learn.case", "learn.committee", "learn.signals",
+    "desk", "desk.converse", "govern", "govern.design_review", "govern.health", "govern.patrol", "govern.incident_review", "govern.investigate", "govern.watch", "govern.budget", "learn", "learn.case", "learn.committee", "learn.retro", "learn.signals",
 ]
 ARTIFACT_TYPES = [
     "Signal", "Request", "TaskSetDraft", "Opportunity", "Requirements", "Ticket", "PR", "InspectionReport", "Release", "Incident",
     "KPIReport", "Retrospective", "ProcessRetrospective", "HumanChoice", "DesignConcept", "DesignSystemSpec", "Plan", "DesignReview",
-    "CaseAnalysis", "CommitteeDecision", "CommitteeWeekly", "Lesson", "Question", "Approval", "Routine", "Judgment", "Stoppage",
+    "CaseAnalysis", "CommitteeDecision", "CommitteeWeekly", "RetroMinutes", "Lesson", "Question", "Approval", "Routine", "Judgment", "Stoppage",
     "FactoryHealthReport", "PR.code", "PR.body",
 ]
 CLOSED_AXES = {

@@ -18,7 +18,7 @@ STEPS = [
     {"id": "qa", "name": "QA", "fixed": True, "kinds": ["qa"]},
     {"id": "ship", "name": "出荷", "fixed": True, "kinds": []},
     {"id": "governance", "name": "委員会・分析", "fixed": False,
-     "kinds": ["committee_review", "committee_weekly", "case_review", "design_review", "incident_review", "investigate", "onboard"]},
+     "kinds": ["committee_review", "committee_weekly", "retro", "case_review", "design_review", "incident_review", "investigate", "onboard"]},
     {"id": "desk", "name": "窓口", "fixed": False, "kinds": ["desk_consult", "desk_answer", "desk_task"]},
 ]
 KIND_JA = {**usage.KIND_JA, "qa": "QA", "investigate": "一次調査", "onboard": "オンボーディングの解析",

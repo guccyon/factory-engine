@@ -71,7 +71,7 @@ WORK_NODES = (
     "desk", "desk.converse",
     "govern", "govern.design_review", "govern.health", "govern.patrol", "govern.incident_review", "govern.investigate",
     "govern.watch", "govern.budget",
-    "learn", "learn.case", "learn.committee", "learn.signals",
+    "learn", "learn.case", "learn.committee", "learn.retro", "learn.signals",
 )
 MAX_STATEMENT = 400
 MAX_PER_REQUESTER = 50       # 1 人の 1 製品に持つ好みの上限（active）。会話から際限なく増やさない

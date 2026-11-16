@@ -68,6 +68,10 @@ steps:
     tier: tier-judge
   committee_weekly:           # 知見の委員会の週 1 の定例の議長（core-gates/committee_weekly.py。材料の写しを読むだけ。ADR 0024）
     tier: tier-judge
+  retro.role:                 # 振り返りのロールの委員（core-gates/retro.py。議題と規範の写しを読むだけ。そのロールの立場から意見を出す。ADR 0061）
+    tier: tier-small
+  retro.lead:                 # 振り返りの議長＝事業部のリーダー（同上。委員の意見を突き合わせて知見を抽出し、棚卸しも行う）
+    tier: tier-judge
   incident.patrol:            # 事故の調査委員会の見回り＋調査（core-gates/incident_review.py。その週の費用の記録と既存の FIR の写しを読むだけ。ADR 0046）
     tier: tier-judge
   incident.record:            # 事故の調査委員会の記録役（同上。所見から製品の情報を抜いた FIR の下書きと Engine の改善 Issue の文を書く）

@@ -138,7 +138,8 @@ retro:
     min_tickets: 3         # この件数以上たまっていれば、N に届かなくても閉じる
   # 数えないチケット（工場の内部の Issue）。GitHub のラベルで見る。窓口の単発の仕事はチケットにならないので元から入らない
   exclude_labels: ["factory:learn", "factory:process-proposal", "factory:aggregate", "factory:changelog",
-                   "factory:knowledge-committee", "factory:investigation", "factory:investigation-handoff", "factory:design-review"]
+                   "factory:knowledge-committee", "factory:investigation", "factory:investigation-handoff", "factory:design-review",
+                   "factory:domain-docs"]   # 振り返りが起票する製品の docs/ の追記
   # N の自動調整の合図（ADR 0061 の決定 2）。振り返りの結果から決定論で数える
   adjust:
     local_median_evidence: 1      # 知見 1 件あたりの根拠のチケット数の中央値がこれ以下 → 局所的すぎる → N を上げる

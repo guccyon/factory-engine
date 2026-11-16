@@ -189,6 +189,7 @@ def test_supervisor_files_knowledge_issues_one_at_a_time(cur, monkeypatch):
     calls = []
     monkeypatch.setattr(supervisor, "REPOS", ["o/r"])
     monkeypatch.setattr(supervisor, "DRY_RUN", False)
+    monkeypatch.setattr(supervisor, "RETRO", False)   # 振り返り（ADR 0061）を止めたときだけ事例から直接起票する
     monkeypatch.setattr(supervisor, "KNOWLEDGE_ISSUES", True)
     monkeypatch.setattr(supervisor, "KNOWLEDGE_ISSUES_PER_DAY", 2)
     monkeypatch.setattr(supervisor, "CASE_REVIEW_DEFS", TAX)

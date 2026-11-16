@@ -1139,8 +1139,8 @@ def knowledge_issue_step(cur, now: datetime | None = None):
     """事例の分析（case.analyzed）のうち、最初に回すテーマの学びがあるものを、知見の変更セットの Issue にする（ADR 0024 の 3）。
     工場の implement ジョブが事例記録と知見の下書き（draft・hypothesis）を 1 本の PR に書く。PR は change_type_rules の knowledge 種別。
     まだ起票していない分析がキューで、製品ごとに 1 件ずつ取り出す（committee.turn）。前の知見がマージされてから書くので、番号がぶつからない"""
-    if not KNOWLEDGE_ISSUES or DRY_RUN:
-        return
+    if not KNOWLEDGE_ISSUES or RETRO or DRY_RUN:
+        return   # 振り返り（ADR 0061）が動いている間は、事例の分析は振り返りの材料にする（単独で知見にしない）
     now = now or datetime.now(timezone.utc)
     day = f"{now.astimezone(timezone(timedelta(hours=9))):%Y-%m-%d}"
     cur.execute("select count(*) as n from events where name='knowledge.case_filed' and payload->>'day'=%s", (day,))
@@ -1316,8 +1316,8 @@ def design_review_step(cur, now: datetime | None = None):
 
 def committee_weekly_step(cur, now: datetime | None = None):
     """週 1 回、製品ごとに知見の委員会の定例のジョブを積む（ADR 0024）。固定 Issue に積み、まとめと起票は dispatcher が行う"""
-    if not COMMITTEE_WEEKLY or DRY_RUN:
-        return
+    if not COMMITTEE_WEEKLY or RETRO or DRY_RUN:
+        return   # 振り返り（ADR 0061）が動いている間は、置き場の棚卸しは振り返りの最後の議題にする
     now = (now or datetime.now(timezone.utc)).astimezone(design.JST)
     try:
         with open(KNOWLEDGE_DEFS, encoding="utf-8") as f:
@@ -1372,6 +1372,36 @@ def retro_step(cur, now: datetime | None = None):
         s = retro.maybe_close(cur, repo, defs, now)
         if s:
             log("retro sprint closed", repo, s["sprint"], len(s["tickets"]), s["reason"])
+        enqueue_retro(cur, repo, defs)
+
+
+def enqueue_retro(cur, repo: str, defs: dict):
+    """閉じたスプリントのうち、まだ振り返りを積んでいないものを古い順に 1 つ積む（委員会は 1 つずつ。line.COMMITTEE_KINDS）"""
+    cur.execute("""select payload from events s where s.name='retro.sprint_closed' and s.payload->>'repo'=%s
+                     and not exists (select 1 from events e where e.dedupe_key = 'supervisor.retro:' || %s || ':' || (s.payload->>'sprint'))
+                   order by s.id limit 1""", (repo, repo))
+    r = cur.fetchone()
+    if not r:
+        return
+    sprint = r["payload"]
+    try:
+        issue = retro.retro_issue(gh, repo)
+    except Exception as e:  # noqa: BLE001  次の周回でやり直す
+        log("retro issue failed", repo, repr(e))
+        return
+    c = f"github:{repo}#{issue}"
+    inp = retro.build_input(cur, sprint, defs)
+    try:
+        cur.execute("insert into jobs(correlation_id, repo, issue_number, enqueued_by, model_tier, kind) values (%s,%s,%s,'supervisor','tier-judge','retro') returning id",
+                    (c, repo, issue))
+    except psycopg.errors.UniqueViolation:
+        return   # 固定 Issue のジョブが待ち・実行中（前の振り返り）。次の周回で積む
+    jid = cur.fetchone()["id"]
+    cur.execute("insert into events(name, correlation_id, job_id, payload) values ('job.enqueued',%s,%s,%s)",
+                (c, jid, Jsonb({"by": "supervisor", "kind": "retro", "sprint": sprint, "input": inp})))
+    record(cur, "supervisor.retro_enqueued", c, {"repo": repo, "sprint": sprint["sprint"], "issue": issue, "job_id": jid,
+                                                 "roles": [x["role"] for x in inp["roles"]]}, f"supervisor.retro:{repo}:{sprint['sprint']}")
+    log("retro enqueued", repo, sprint["sprint"], "job", jid)
 
 
 def ephemeral_step(cur):
@@ -1674,7 +1704,7 @@ def patrols_enabled() -> list[str]:
         "nightly_explore": bool(NIGHTLY_EXPLORE),
         "synthetic_users": bool(SYNTHETIC_USERS),
         "design_review": DESIGN_REVIEW and bool(QUALITY_REPOS) and os.path.exists(DESIGN_REVIEW_DEFS),
-        "committee_weekly": COMMITTEE_WEEKLY and os.path.exists(KNOWLEDGE_DEFS),
+        "committee_weekly": COMMITTEE_WEEKLY and not RETRO and os.path.exists(KNOWLEDGE_DEFS),
         "incident_daily": (incident.get("daily") or {}).get("enabled") is not False,
         "incident_weekly": bool(REPOS) and (incident.get("weekly") or {}).get("enabled") is not False,
         "daily_report": bool(DAILY_REPORT) and os.path.exists(DAILY_REPORT),
