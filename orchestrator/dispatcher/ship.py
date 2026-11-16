@@ -18,6 +18,7 @@
   release.built / release.deployed / release.rolled_back / release.reseeded / release.restarted / release.drill_planted / release.kpi_measured /
   release.ship_failed（payload に request_id。処理済みの印も兼ねる。KPI を測れなかったときは release.kpi_measured の ok: false で、停止には開かない）
   release.seeded（合成シードを書いた。ship.yaml の seed の環境に 1 回だけ。入れ直しのたびにも）
+  release.reseeded の via: auto_login_hints は、新しい版を staging に出したあとログインの手がかりを読めず、shipper が自分で入れ直した印
   release.touchable（触れる環境の入口。ship.yaml の touch の環境に出す・戻す・入れ直すたびに。URL・QR を付ける入口・ログインの手がかり）
   release.backed_up（本番に出す直前に取った DB の控え。ship.yaml の backup の環境だけ。ADR 0057 の決定 3）
 
@@ -549,8 +550,32 @@ def align(compose: list[str], e: dict):
     sh(compose + ["up", "-d", "--wait"], env=e, timeout=600)
 
 
-def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
-    """触れる環境なら、入口（URL）とログインの手がかりを release.touchable に残す。失敗しても出荷は失敗にしない（手がかりが欠けるだけ）"""
+def login_hints(t: dict, repo: str, env: str) -> tuple[list[dict], str | None]:
+    """ログインの手がかり（ship.yaml の touch.accounts のコマンドの出力）と、読めなかったときの理由"""
+    if not t.get("accounts"):
+        return [], None
+    try:
+        out = sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", t["accounts"]["service"], *t["accounts"]["command"]],
+                 timeout=60)
+        return [{"label": str(a.get("label")), "value": str(a.get("value"))} for a in json.loads(out.strip() or "[]")][:20], None
+    except Exception as e:  # noqa: BLE001
+        return [], f"ログインの手がかりを読めなかった: {str(e)[-300:]}"
+
+
+def reseedable(cfg: dict, env: str) -> bool:
+    """シードから入れ直せる環境か（ship.yaml の touch.environments・touch.reset・seed.environments。reseed と同じ条件）"""
+    t = touch_config(cfg, env)
+    return bool(t and t.get("reset") and env in seed_envs(cfg))
+
+
+def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict, source_path: str | None = None):
+    """触れる環境なら、入口（URL）とログインの手がかりを release.touchable に残す。失敗しても出荷は失敗にしない（手がかりが欠けるだけ）。
+
+    source_path（その版のソース）を渡したとき（新しい版を出した直後だけ）は、手がかりを読めなければ、シードから 1 回だけ入れ直して読み直す。
+    合成シードは環境ごとに 1 回しか書かないので、あとの版でシードに足したアカウント（本部など）は古い DB に入らず、
+    製品が「そろっていない」と断ると QA にコーチ・本部の手がかりが 1 つも渡らない（rally 0.53.0）。入れ直せるのは合成シードしか
+    ない環境だけで、新しい版を出したときは前の版の QA は打ち切られているので、QA の途中のデータは消さない。
+    時計の再起動・戻しのあとは入れ直さない（QA が作った前提を消すため）"""
     t = touch_config(cfg, env)
     if not t:
         return
@@ -564,14 +589,14 @@ def touch_points(cur, cfg: dict, repo: str, env: str, rel: dict, common: dict):
         path = str(x.get("path") or "/")
         entries.append({"label": str(x.get("label") or x.get("port_env")), "url": f"http://{host}:{int(port)}{path}",
                         "qr": bool(x.get("qr"))})
-    accounts, note = [], None
-    if t.get("accounts"):
-        try:
-            out = sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", t["accounts"]["service"], *t["accounts"]["command"]],
-                     timeout=60)
-            accounts = [{"label": str(a.get("label")), "value": str(a.get("value"))} for a in json.loads(out.strip() or "[]")][:20]
-        except Exception as e:  # noqa: BLE001
-            note = f"ログインの手がかりを読めなかった: {str(e)[-300:]}"
+    accounts, note = login_hints(t, repo, env)
+    if note and source_path and reseedable(cfg, env):
+        # 入れ直しが落ちたら DB が空のままかもしれないので、出荷の失敗として停止に開く（手がかりの欠けより重い）
+        secs = reseed(cur, cfg, source_path, repo, env, rel, common)
+        record(cur, "release.reseeded", rel["release_id"], {**common, "env": env, "ok": True, "seconds": secs, "by": "shipper",
+                                                            "via": "auto_login_hints", "reason": note})
+        accounts, again = login_hints(t, repo, env)
+        note = f"{again}（シードから入れ直したあとも）" if again else None
     record(cur, "release.touchable", rel["release_id"], {
         "repo": repo, "env": env, "host": host, "bind": TOUCH_BIND if t.get("bind_env") and TOUCH_BIND and HOST_RE.match(TOUCH_BIND) else None,
         "reachable_from_phone": bool(TOUCH_BIND and TOUCH_BIND != "127.0.0.1" and host != "127.0.0.1"),
@@ -684,7 +709,7 @@ def handle(cur, ev: dict):
             secs = deploy(cfg, path, repo, "staging", rel)
             record(cur, "release.deployed", rid, {**common, "env": "staging", "ok": True, "seconds": secs, "commit": commit})
             seed_once(cur, cfg, repo, "staging", rel, common)
-            touch_points(cur, cfg, repo, "staging", rel, common)
+            touch_points(cur, cfg, repo, "staging", rel, common, source_path=path)
         elif (name == "release.approved" or (name == "release.rollback_requested" and p.get("env") == "prod")) and prod_held(cur, repo):
             # 受け付けた後で止めた・直接書かれた承認も、本番は起動しない（停止には開かない。止めているのは意図どおり）
             record(cur, "release.ship_failed", rid, {**common, "request": name, "error": held_msg(cur, repo), "held": True,
