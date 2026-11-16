@@ -212,5 +212,9 @@ a.c-notice{text-decoration:none}a.c-notice:hover{filter:brightness(.98)}
 }
 .live .pp-tabs{margin-top:var(--space-3)}.live .pp-tabs .c-count{margin-left:6px}.live-s>.mt,.live-s>#live-tiles{margin-top:var(--space-3)}
 /* かんばんは左から右へ 1 列に並べる（折り返すと流れの順が崩れる）。入りきらなければ横に送る */
-#lanes.kanban{grid-auto-flow:column;grid-template-columns:none;grid-auto-columns:minmax(210px,1fr);overflow-x:auto;padding-bottom:8px;align-items:start}
+#lanes.kanban{grid-auto-flow:column;grid-template-columns:none;grid-auto-columns:minmax(190px,1fr);overflow-x:auto;padding-bottom:8px;align-items:start}
 #lanes.kanban .lane{min-height:calc(100vh - 180px)}
+/* 「対応が必要」は流れの外（人の判断・対応を待つ）。色を変え、右に区切りの線を入れて依存待ち以降の流れと分ける */
+#lanes.kanban .lane.human{background:var(--info-soft);border-color:var(--info);position:relative;margin-right:14px}
+#lanes.kanban .lane.human h2{color:var(--info)}
+#lanes.kanban .lane.human::after{content:"";position:absolute;top:0;bottom:0;right:-21px;border-right:2px dashed var(--ink-sub);opacity:.5}

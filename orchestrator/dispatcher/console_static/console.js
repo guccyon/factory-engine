@@ -1,7 +1,7 @@
 const TOKEN=document.querySelector('meta[name="console-token"]').content;
-// ラインのレーン。「対応が必要」を左端に置き、ほかは左から右へ進む順（11-16 オーナー）。PR のあとは検査 → 判定 → マージ待ち
-const LANES=[["human","対応が必要"],["waiting","依存待ち"],["ready","投入待ち（上限）"],["queued","順番待ち"],["running","作業中"],["review_inspect","検査"],["review_judge","判定"],["review_merge","マージ待ち"],["done","今日の済み"]];
-const laneOf=i=>i.stage==="review"?"review_"+(i.step||"inspect"):i.stage;
+// ラインのレーン。「対応が必要」を左端に置き、ほかは左から右へ進む順（11-16 オーナー）。PR のあとは検査・判定（1 組）→ マージ待ち
+const LANES=[["human","対応が必要"],["waiting","依存待ち"],["ready","投入待ち（上限）"],["queued","順番待ち"],["running","作業中"],["review_inspect","検査・判定"],["review_merge","マージ待ち"],["done","本日完了分"]];
+const laneOf=i=>i.stage==="review"?(i.step==="merge"?"review_merge":"review_inspect"):i.stage;
 let levels={};
 const CAT={env:"実行環境",perm:"権限",human:"判断待ち","factory-bug":"工場の不具合",ticket:"チケット",external:"外部",budget:"予算・上限",idle:"ラインが空"};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -552,7 +552,7 @@ function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=
   const xs=s.items.filter(i=>(!lnRepo||repoOf(i)===lnRepo)&&(!lnSrc||i.source===lnSrc));
   // ラインは状態ごとの一覧が既定（止まっているものが先頭）、かんばんは切り替え（ADR 0059、#476）
   document.getElementById("lanes").className=lnView==="kanban"?"kanban":"lnlist";
-  put("lanes",lnView==="kanban"?LANES.map(([k,n])=>{const ys=xs.filter(i=>laneOf(i)===k);return `<section class="lane"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")
+  put("lanes",lnView==="kanban"?LANES.map(([k,n])=>{const ys=xs.filter(i=>laneOf(i)===k);return `<section class="lane ${k}"><h2><span>${n}</span><span>${ys.length}</span></h2>${ys.map(card).join("")||'<div class="m">なし</div>'}</section>`}).join("")
    :LANES.map(([k,n])=>{const ys=xs.filter(i=>laneOf(i)===k);return ys.length?`<section class="card lnsec ${k}"><h2>${n}（${ys.length}）</h2>${ys.map(card).join("")}</section>`:""}).join("")||'<div class="c-empty"><b>ラインにチケットはありません</b></div>')}
  else if(v==="ask")askRender(arg)
  else if(v==="live")liveRender(s)
