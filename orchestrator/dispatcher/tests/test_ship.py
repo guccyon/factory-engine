@@ -211,3 +211,66 @@ def test_declared_stage_reads_both_forms():
     assert ship.declared_stage({"product_stage": {"stage": "launch", "since": "2026-12-01"}}) == "launch"
     assert ship.declared_stage({"product_stage": "operating"}) == "operating"
     assert ship.declared_stage({}) is None
+
+
+TOUCH_CFG = {"environments": {"staging": {"env": {"ADMIN_WEB_PORT": 13000}}},
+             "seed": {"environments": ["staging"]},
+             "touch": {"environments": ["staging"], "entries": [{"label": "管理画面", "port_env": "ADMIN_WEB_PORT"}],
+                       "accounts": {"service": "backend", "command": ["access-token", "--hints"]},
+                       "reset": {"service": "postgres", "command": ["psql"]}}}
+
+
+def hints_until_reseed(monkeypatch, fixed_by_reseed=True):
+    """手がかりのコマンドは、入れ直すまで（fixed_by_reseed が偽なら入れ直しても）「本部が 0 人」で落ちる"""
+    state = {"reseeded": 0}
+
+    def sh(args, **kw):
+        assert args[-2:] == ["access-token", "--hints"]
+        if state["reseeded"] and fixed_by_reseed:
+            return '[{"label": "本部: 本部 01", "value": "v1.headquarters.x.sig"}]'
+        raise RuntimeError("ログインの手がかりが足りない: 本部が 1 人必要なのに 0 人")
+
+    def reseed(cur, cfg, path, repo, env, rel, common):
+        state["reseeded"] += 1
+        return 1.0
+    monkeypatch.setattr(ship, "sh", sh)
+    monkeypatch.setattr(ship, "reseed", reseed)
+    return state
+
+
+def last_touchable(cur, rid):
+    cur.execute("select payload from events where name='release.touchable' and payload->>'release_id'=%s order by id desc", (rid,))
+    return [r["payload"] for r in cur.fetchall()]
+
+
+def test_new_version_reseeds_once_when_login_hints_are_missing(cur, monkeypatch):
+    state = hints_until_reseed(monkeypatch)
+    rid = release(cur, "1.0.0")
+    ship.touch_points(cur, TOUCH_CFG, REPO, "staging", {"release_id": rid}, {"repo": REPO, "request_id": 1}, source_path="/src")
+    assert state["reseeded"] == 1
+    cur.execute("select payload from events where name='release.reseeded'")
+    p = cur.fetchone()["payload"]
+    assert p["via"] == "auto_login_hints" and p["by"] == "shipper" and "本部" in p["reason"]
+    touchable = last_touchable(cur, rid)
+    assert len(touchable) == 1   # 欠けた手がかりの記録は残さず、入れ直したあとの 1 件だけ
+    assert touchable[0]["accounts"] == [{"label": "本部: 本部 01", "value": "v1.headquarters.x.sig"}] and touchable[0]["note"] is None
+
+
+def test_still_missing_after_reseed_is_noted_without_retrying(cur, monkeypatch):
+    state = hints_until_reseed(monkeypatch, fixed_by_reseed=False)
+    rid = release(cur, "1.0.0")
+    ship.touch_points(cur, TOUCH_CFG, REPO, "staging", {"release_id": rid}, {"repo": REPO, "request_id": 1}, source_path="/src")
+    assert state["reseeded"] == 1
+    t = last_touchable(cur, rid)[0]
+    assert t["accounts"] == [] and "本部が 1 人必要なのに 0 人" in t["note"] and "入れ直したあとも" in t["note"]
+
+
+def test_restart_and_rollback_do_not_reseed(cur, monkeypatch):
+    state = hints_until_reseed(monkeypatch)
+    rid = release(cur, "1.0.0")
+    ship.touch_points(cur, TOUCH_CFG, REPO, "staging", {"release_id": rid}, {"repo": REPO, "request_id": 1})   # path なし＝QA の途中
+    assert state["reseeded"] == 0
+    assert "読めなかった" in last_touchable(cur, rid)[0]["note"]
+    no_reset = {**TOUCH_CFG, "touch": {k: v for k, v in TOUCH_CFG["touch"].items() if k != "reset"}}
+    ship.touch_points(cur, no_reset, REPO, "staging", {"release_id": rid}, {"repo": REPO, "request_id": 1}, source_path="/src")
+    assert state["reseeded"] == 0   # 入れ直せない環境（DB を空にするコマンドがない）は入れ直さない
