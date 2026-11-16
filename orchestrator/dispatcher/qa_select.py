@@ -16,8 +16,13 @@ import re
 from datetime import datetime, timedelta
 
 ALL = "all"
-IGNORED_PREFIXES = ("docs/", "changelog.d/")         # 利用者の流れに触らないパス
+# 利用者の流れに触らないパス。文書、工場の設定と知見（.factory-config/。配備を決める ship.yaml だけは別）、開発の道具、CI、テストのコード。
+# 2026-11-16 の実績: 知見の担保・ルール化の PR（.factory-config/knowledge・overlay・evals と tools/）と、テストだけを変える PR が
+# 「どれにも当たらない」に落ち、便のたびに全部のストーリーを流していた
+IGNORED_PREFIXES = ("docs/", "changelog.d/", "tools/", ".github/", ".factory-config/")
+NOT_IGNORED = (".factory-config/ship.yaml",)   # 配備と触れる環境の決まり。変われば全部に効きうる
 IGNORED_NAMES = ("CHANGELOG.md",)
+TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|e2e|integration_test)/|(_test|\.test|\.spec)\.[A-Za-z0-9]+$")
 STORY_FILE = re.compile(r"^specs/stories/([A-Za-z0-9_-]+)\.yaml$")
 APP_DIR = re.compile(r"^apps/([A-Za-z0-9_.-]+)/")
 PR_URL = re.compile(r"/pull/(\d+)$")
@@ -71,7 +76,7 @@ def by_files(files: list[str], docs: list[dict]) -> set[str] | str:
     contexts = {_norm(c): c for d in docs for c in (d.get("touches") or {}).get("contexts") or []}
     out: set[str] = set()
     for f in files:
-        if f.endswith(".md") or f in IGNORED_NAMES or f.startswith(IGNORED_PREFIXES):
+        if f not in NOT_IGNORED and (f.endswith(".md") or f in IGNORED_NAMES or f.startswith(IGNORED_PREFIXES) or TEST_PATH.search(f)):
             continue
         m = STORY_FILE.match(f)
         if m:
