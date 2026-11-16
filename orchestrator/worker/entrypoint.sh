@@ -126,15 +126,19 @@ if [ -n "${CONTINUE_BRANCH}" ]; then
     fi
   fi
   SEEN_CONFLICTS="${CONFLICTS:-}"   # 機械的に解く前に衝突していたファイル。dispatcher が工程の信号（ADR 0027 の 3）に残す
-  # 衝突の解消で、衝突が CHANGELOG.md の追記どうしだけ（または衝突がない）なら、エージェントを使わずに機械的に解く。
-  # 同時に流した PR が同じ CHANGELOG に追記し合い、1 日に 345 回・$1,420 の衝突の解消が走った（2026-11-02）
+  # 衝突の解消で、衝突したファイルがすべて製品の宣言した「機械的に解いてよいパス」（.factory-config/continuation.yaml の
+  # conflict.mechanical.paths。なければ CHANGELOG.md）に当たり、書き足しどうしの衝突なら、エージェントを使わずに両方を残して解く。
+  # 同時に流した PR が同じ CHANGELOG に追記し合い、1 日に 345 回・$1,420 の衝突の解消が走った（2026-11-02）。
+  # 知見の K-*.yaml と道具の README でも、1 週間に約 150 件・約 $27 走っていた（工程の改善案 #504・#524、2026-11-16）
   if [ "${CONTINUE_REASON:-}" = "conflict" ]; then
-    if [ "${CONFLICTS}" = "CHANGELOG.md " ]; then
-      git show :1:CHANGELOG.md > /work/cl.base 2>/dev/null || : > /work/cl.base
-      git show :2:CHANGELOG.md > /work/cl.ours && git show :3:CHANGELOG.md > /work/cl.theirs \
-        && git merge-file --union /work/cl.ours /work/cl.base /work/cl.theirs \
-        && cp /work/cl.ours CHANGELOG.md && git add CHANGELOG.md && MECHANICAL="CHANGELOG.md の追記どうしの衝突を、両方の行を残して機械的に解きました（エージェントは使っていません）。" \
-        && CONFLICTS=""
+    # shellcheck disable=SC2086  # CONFLICTS は空白区切りのファイルの列
+    if [ -n "${CONFLICTS}" ] && MERGED=$(python3 /work/engine/core-gates/mechanical_merge.py --repo . ${CONFLICTS}); then
+      if [ "${MERGED}" = "CHANGELOG.md" ]; then
+        MECHANICAL="CHANGELOG.md の追記どうしの衝突を、両方の行を残して機械的に解きました（エージェントは使っていません）。"
+      else
+        MECHANICAL="${MERGED} の書き足しどうしの衝突を、両方を残して機械的に解きました（エージェントは使っていません。core-gates/mechanical_merge.py）。"
+      fi
+      CONFLICTS=""
     elif [ -z "${CONFLICTS}" ]; then
       MECHANICAL="既定ブランチを衝突なく取り込みました（エージェントは使っていません）。"
     fi
