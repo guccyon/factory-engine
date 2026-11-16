@@ -124,6 +124,47 @@ committee:
     max_issues: 4                # 1 回の定例で起票する Issue の上限（見直しの変更セット 1 本＋担保＋構造）
   implements: false              # 委員会は実装しない。担保や改善は Issue にして工場のラインで作る
 
+# 振り返り（ADR 0061、2026-11-16 オーナー）。委員会は、工場が消化したチケット N 件ごとの振り返り（スプリント）として開く。
+# 委員はチケットに関わったロールのエージェントと事業部のリーダー（議長）。上の committee の 4 役は「知見のレビュー」として残る。
+# 数値は仮置き。調整の決まりを変えるのは定義の PR（学ぶ側が自分で動かさない。ADR 0013 の 8）。N そのものは工場が自動で動かす
+retro:
+  size:
+    initial: 12            # 最初のスプリントの件数（オーナーの例は 10〜20）
+    min: 8
+    max: 24
+    step: 2                # 1 回の振り返りのあとに動かす幅
+  time_floor:
+    days: 14               # 最後のスプリントを閉じてから（最初は数え始めてから）この日数がたち、
+    min_tickets: 3         # この件数以上たまっていれば、N に届かなくても閉じる
+  # 数えないチケット（工場の内部の Issue）。GitHub のラベルで見る。窓口の単発の仕事はチケットにならないので元から入らない
+  exclude_labels: ["factory:learn", "factory:process-proposal", "factory:aggregate", "factory:changelog",
+                   "factory:knowledge-committee", "factory:investigation", "factory:investigation-handoff", "factory:design-review"]
+  # N の自動調整の合図（ADR 0061 の決定 2）。振り返りの結果から決定論で数える
+  adjust:
+    local_median_evidence: 1      # 知見 1 件あたりの根拠のチケット数の中央値がこれ以下 → 局所的すぎる → N を上げる
+    abstract_coverage: 0.3        # 議題のチケットのうち、どれかの知見の根拠になった割合がこれ未満 → 抽象的すぎる → N を下げる
+    abstract_sendback_ratio: 0.5  # レビューの差し戻しのうち「範囲が広すぎる・根拠がたどれない」の割合がこれ以上 → N を下げる
+    empty_streak: 2               # 知見 0 件がこの回数続いたら N を上げる
+  committee:
+    max_roles: 6           # ロールの委員の上限（関わったチケットの数の多い順）
+    lead: 1                # 事業部のリーダー（議長）
+    budget_usd: 10         # 1 回の上限
+  # 委員に渡す取っ掛かりの例（ADR 0061 の決定 5）。観点は決め打ちしない。委員は材料から別の観点を立ててよい
+  prompts:
+    production:  { ja: 生産の問題, question: "どこで詰まったか・差し戻されたか・止まったか。なぜか。複数のチケットに共通するか" }
+    efficiency:  { ja: 効率, question: "どうすれば、もっと少ない手戻り・時間・費用で作れたか" }
+    quality:     { ja: 品質, question: "どうすれば、検査や QA で見つかる前に防げたか。見逃したものはないか" }
+    domain:      { ja: ドメインの気づき, question: "このプロダクトのドメインについて、作業の中で分かったこと。工場をやめても製品に残すべき知識か（製品の docs/）、事業部の開発の知見か" }
+    planning:    { ja: 計画と分割, question: "チケットからジョブへの分割の単位は正しかったか（大きすぎ・小さすぎ・誤った振り分け）" }
+    ordering:    { ja: 着手の順, question: "着手の順は適切だったか。依存や衝突の見込みは当たったか" }
+    prevention:  { ja: 再発防止, question: "予期しない問題が起きたとき、その場の対処で終わらずに再発防止に取り組んだか。前回の打ち手は効いたか" }
+    operations:  { ja: 運用と障害, question: "本番の障害・重大な不具合は、どのチケットのどの工程で入り、どこで防げたか" }
+    incident:    { ja: 事故（お金の損）, question: "事故調査委員会の記録に出た損の兆しを、開発のやり方のどこで減らせるか" }
+  # ドメインの気づきの置き場（ADR 0061 の決定 7）
+  domain_destinations:
+    product_docs: "ドメインの知識（工場に依存しない業務・利用者の特性・法律）。製品リポの docs/ に工場がラインで書く。仕様・業務ルールを変えるものは事業主"
+    knowledge:    "ドメインならではの開発の知見・要素技術のノウハウ。事業部の知見（テーマ 3）。ロールを絞らずに渡す"
+
 # 個人情報（2026-10-31 オーナー: git に一切置かない。抽象化で切る）
 personal_data:
   git: forbidden
