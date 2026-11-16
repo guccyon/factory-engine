@@ -933,6 +933,7 @@ def major_defect_step(cur):
         return
     try:
         major_defect.rerelease_step(cur, gh, log=log)
+        major_defect.fallback_step(cur, log=log)
         major_defect.approve_step(cur, log=log)
     except Exception as e:  # noqa: BLE001  周回は止めない
         log("major defect step failed", repr(e))
