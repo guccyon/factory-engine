@@ -23,7 +23,7 @@ SECTIONS = {
     "done": ("済んだもの", ("provider", "business_owner")),
     "doing": ("進めているもの", ("provider", "business_owner")),
     "next": ("次に流すもの", ("provider", "business_owner")),
-    "releases": ("版", ("provider", "business_owner")),
+    "releases": ("バージョン", ("provider", "business_owner")),
     "kpi": ("製品の KPI（週次）", ("provider", "business_owner")),
 }
 ANOMALY_JA = {"range": "目安の外", "prev": "前回より悪化", "forecast": "見込みと食い違い"}   # report_kpi.find_anomalies の kind
@@ -130,7 +130,7 @@ def releases(cur, repo: str, start: datetime, end: datetime):
     cur.execute("select payload from events where name = 'release.created' and payload->>'repo' = %s and occurred_at >= %s and occurred_at < %s "
                 "order by id", (repo, start, end))
     rows = cur.fetchall()
-    return [entry(f"版 {r['payload'].get('app_version')}", f"PR {len(r['payload'].get('prs') or [])} 件") for r in rows] or [note("なし")]
+    return [entry(f"バージョン {r['payload'].get('app_version')}", f"PR {len(r['payload'].get('prs') or [])} 件") for r in rows] or [note("なし")]
 
 
 def kpi(cur, repo: str, start: datetime, end: datetime):

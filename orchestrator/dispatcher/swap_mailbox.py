@@ -230,7 +230,7 @@ def step_text(s: dict, e: dict) -> str:
     head = f"更新 {s['id']}: **{swap.STATUS_JA[swap.STATUS[e['name']]]}**"
     bits = []
     if p.get("prev") and p.get("target_sha"):
-        bits.append(f"版 `{p['prev']}` → `{p['target_sha']}`")
+        bits.append(f"バージョン `{p['prev']}` → `{p['target_sha']}`")
     if p.get("kind"):
         bits.append(f"種類 `{p['kind']}`" + (f"（申告 `{p['kind_declared']}`）" if p.get("kind_declared") and p["kind_declared"] != p["kind"] else ""))
     if p.get("stopped_sec") is not None:
@@ -240,9 +240,9 @@ def step_text(s: dict, e: dict) -> str:
     if why:
         text += f"\n\n> {redact(str(why))[:600]}"
     if e["name"] in ("swap.escalated", "swap.failed"):
-        text += "\n\n確認が要ります（停止の記録か受信トレイに出しています）。直した版で依頼し直すときは、ラベル `factory:swap` を付け直してください。"
+        text += "\n\n確認が要ります（停止の記録か受信トレイに出しています）。直したバージョンで依頼し直すときは、ラベル `factory:swap` を付け直してください。"
     elif e["name"] in ("swap.rolled_back", "swap.preflight_failed"):
-        text += "\n\n工場は前の版のまま動いています。直した版で依頼し直すときは、ラベル `factory:swap` を付け直してください。"
+        text += "\n\n工場は前のバージョンのまま動いています。直したバージョンで依頼し直すときは、ラベル `factory:swap` を付け直してください。"
     return text
 
 

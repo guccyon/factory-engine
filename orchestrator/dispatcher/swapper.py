@@ -167,7 +167,7 @@ class Swapper:
     # -------------------------------------------------------------- 1. 事前の確かめ
     def preflight(self) -> dict:
         if self.git("status", "--porcelain", "--untracked-files=no"):
-            raise Stop("工場の作業ツリーに未コミットの変更がある（版のラベルと中身がずれるので更新しない）", escalate="human",
+            raise Stop("工場の作業ツリーに未コミットの変更がある（バージョンのラベルと中身がずれるので更新しない）", escalate="human",
                        waiting_for="作業ツリーの変更を片付けてから依頼し直す")
         url = fetch_url(self.git("remote", "get-url", "origin"))
         self.git("fetch", "--quiet", url, "+refs/heads/main:refs/remotes/origin/main", timeout=300)
@@ -176,22 +176,22 @@ class Swapper:
         if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
             raise Stop(f"{self.req['target']} が見つからない")
         if self.run(["git", "merge-base", "--is-ancestor", sha, "origin/main"], cwd=self.root, check=False).returncode != 0:
-            raise Stop(f"{sha[:7]} は main に入っていない（main に入った版だけ更新する）")
+            raise Stop(f"{sha[:7]} は main に入っていない（main に入ったバージョンだけ更新する）")
         head = self.git("rev-parse", "HEAD")
         anc = lambda a, b: self.run(["git", "merge-base", "--is-ancestor", a, b], cwd=self.root, check=False).returncode == 0
         if head != sha and not anc(head, sha) and anc(sha, head):
             # 頼んだ版より新しい版がもう入っている（11-14 e56feb2 を頼んだまま 51d8a90 が動いていて「作業ツリーが外れている」と人に回り、
             # その後の更新が止まった）。人に回さず失敗にして、次の依頼（最新の main）を通す
-            raise Stop(f"頼んだ版 {sha[:7]} はもう入っている（今の版 {head[:7]} の方が新しい）。最新にするなら main を頼み直す")
+            raise Stop(f"頼んだバージョン {sha[:7]} はもう入っている（今のバージョン {head[:7]} の方が新しい）。最新にするなら main を頼み直す")
         if not anc(head, sha):
-            raise Stop(f"今の版 {head[:7]} から {sha[:7]} へ早送りできない（作業ツリーが main から外れている）", escalate="human",
-                       waiting_for="作業ツリーの版を確かめる（git log）")
+            raise Stop(f"今のバージョン {head[:7]} から {sha[:7]} へ早送りできない（作業ツリーが main から外れている）", escalate="human",
+                       waiting_for="作業ツリーのバージョンを確かめる（git log）")
         # 前の版は動いているイメージの版から取る（#237）。作業ツリーを先に進めてあると、HEAD から比べたのでは差分が空になり、
         # 人に回す判定を素通りし、戻し先も誤る
         prev = self.running_base(head)
         if prev != head and self.run(["git", "merge-base", "--is-ancestor", prev, sha], cwd=self.root, check=False).returncode != 0:
-            raise Stop(f"動いている版 {prev[:7]} から {sha[:7]} へ早送りできない", escalate="human",
-                       waiting_for="動いているサービスの版を確かめる（factoryctl version）")
+            raise Stop(f"動いているバージョン {prev[:7]} から {sha[:7]} へ早送りできない", escalate="human",
+                       waiting_for="動いているサービスのバージョンを確かめる（factoryctl version）")
         files = [f for f in self.git("diff", "--name-only", prev, sha).splitlines() if f]
         judged = swap.classify(files, self.rules)
         kind = swap.heavier(self.req["kind"] or "code", judged)
@@ -247,7 +247,7 @@ class Swapper:
                 args += ["--env-file", env_file]
             r = self.run(args + ["config", "-q"], cwd=self.orch, check=False, timeout=60)
             if r.returncode != 0:
-                raise Stop("新しい版の compose.yaml が今の .env で通らない（足りない環境変数は手で入れる）", escalate="human",
+                raise Stop("新しいバージョンの compose.yaml が今の .env で通らない（足りない環境変数は手で入れる）", escalate="human",
                            waiting_for=".env に値を足してから依頼し直す", detail={"error": (r.stderr or r.stdout).strip()[-400:]})
             self.run(["bash", "scripts/build.sh"], cwd=f"{src}/orchestrator", timeout=5400)
             self.docker("run", "--rm", "--entrypoint", "python", f"factory-dispatcher:p0-{sha[:7]}", "-m", "compileall", "-q", "/app", timeout=120)
@@ -372,7 +372,7 @@ class Swapper:
     # -------------------------------------------------------------- 5. 前の版に戻す
     def rollback(self, plan: dict, checks: dict, before: dict) -> int:
         failed = [k for k, v in checks.items() if not v and k != "version_gaps"]
-        reason = "確かめに通らない: " + "・".join(failed) + (f"（版のずれ {', '.join(checks.get('version_gaps') or [])}）" if checks.get("version_gaps") else "")
+        reason = "確かめに通らない: " + "・".join(failed) + (f"（バージョンのずれ {', '.join(checks.get('version_gaps') or [])}）" if checks.get("version_gaps") else "")
         log("rollback", reason)
         t1 = datetime.now(timezone.utc)
         try:
@@ -388,13 +388,13 @@ class Swapper:
                                           "stopped_sec": self.stopped_sec()})
             with self.db() as conn, conn.cursor() as cur:
                 inbox.request(cur, f"swap:{self.sid}:rolled_back", "swap_rolled_back", "builder",
-                              f"工場の更新 {self.sid}（{plan['short']}）が確かめに通らず、前の版 {plan['prev_short']} に戻した",
-                              action=f"{reason}。直した版で依頼し直す（同じ版では自動で更新しない）", correlation_id=swap.corr(self.sid), by="swapper")
+                              f"工場の更新 {self.sid}（{plan['short']}）が確かめに通らず、前のバージョン {plan['prev_short']} に戻した",
+                              action=f"{reason}。直したバージョンで依頼し直す（同じバージョンでは自動で更新しない）", correlation_id=swap.corr(self.sid), by="swapper")
             return 1
         with self.db() as conn, conn.cursor() as cur:
             drain.set_drain(cur, True, "swapper", f"更新 {self.sid} の戻しも確かめに通らない")   # 壊れた工場では流さない
-        return self.stop(Stop(f"新しい版が {reason}。前の版 {plan['prev_short']} に戻しても通らない", escalate="human",
-                              waiting_for="factoryctl version で版を見て、手で上げ直す。直ったら factoryctl resume",
+        return self.stop(Stop(f"新しいバージョンが {reason}。前のバージョン {plan['prev_short']} に戻しても通らない", escalate="human",
+                              waiting_for="factoryctl version でバージョンを見て、手で上げ直す。直ったら factoryctl resume",
                               detail={"checks": checks, "rollback_checks": back}))
 
     # -------------------------------------------------------------- 人に回す・止める

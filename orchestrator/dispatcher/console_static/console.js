@@ -16,11 +16,11 @@ function acts(i){let h="";
  return h?`<div class="acts">${h}</div>`:""}
 const VER=r=>r?esc(r.split("@").pop()):"なし";
 function shipView(rs){return rs.map(r=>{const st=r.environments.staging||{},pr=r.environments.prod||{};
- const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前の版へ戻す",reseed_requested:"シードから入れ直す",restart_requested:"再起動（時計を進める）"}[p.request]||p.request)).join("・")}</span>`:"";
+ const busy=r.pending.length?`<span class="m">処理中: ${r.pending.map(p=>({ship_requested:"staging へ出荷",approved:"本番へ出荷",rollback_requested:"前のバージョンへ戻す",reseed_requested:"シードから入れ直す",restart_requested:"再起動（時計を進める）"}[p.request]||p.request)).join("・")}</span>`:"";
  let b="";if(!r.pending.length){
   if(r.prod_held)b+=`<span class="m">本番には出さない（段階: ${esc(r.stage.stage)}＝${esc(r.stage.ja)}。staging だけ動かす）</span>`;
   else if(st.release_id&&st.release_id!==pr.release_id)b+=`<button class="go" data-ship="approve" data-r="${esc(st.release_id)}">本番に出す（${VER(st.release_id)}）</button>`;
-  if(!r.prod_held&&pr.previous&&!pr.rollback_blocked)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前の版に戻す（${VER(pr.previous)} へ）</button>`;
+  if(!r.prod_held&&pr.previous&&!pr.rollback_blocked)b+=`<button class="danger" data-ship="rollback" data-repo="${esc(r.repo)}">本番を前のバージョンに戻す（${VER(pr.previous)} へ）</button>`;
   if(pr.rollback_blocked)b+=`<span class="m">戻せない: ${esc(pr.rollback_blocked)}</span>`;
   if(r.touch)b+=`<button class="danger" data-ship="reseed" data-repo="${esc(r.repo)}">検証の DB をシードから入れ直す</button>`}
  const t=r.touch,tv=t?`<div class="touch"><span class="m">触れる環境 ${VER(t.release_id)}${t.reachable_from_phone?"":"（この機械からだけ開ける。SHIP_TOUCH_HOST・SHIP_TOUCH_BIND が未設定）"}</span>${(t.entries||[]).map(e=>`<div class="e"><div>${esc(e.label)}</div><a href="${/^https?:\/\//.test(e.url)?esc(e.url):"#"}" target="_blank" rel="noopener">${esc(e.url)}</a>${e.qr_svg||""}</div>`).join("")}${(t.accounts||[]).length?`<div class="e"><div>ログインの手がかり</div>${t.accounts.map(a=>`<div class="m">${esc(a.label)}</div><code>${esc(a.value)}</code>`).join("")}</div>`:""}${t.note?`<span class="m">${esc(t.note)}</span>`:""}</div>`:"";
@@ -30,7 +30,7 @@ function pairsView(ps){return ps.map(p=>`<div class="rn" style="border-color:var
  <div style="font-size:28px;font-weight:700;letter-spacing:.08em;margin:6px 0">${esc(p.code)}</div><div class="m">Mac のターミナルに同じ番号が出ていれば「許可」を押し、Mac 側でも y を押す。違えば「拒否」。10 分で切れる</div>
  <div class="acts"><button class="go" data-pair="approve" data-p="${esc(p.pair_id)}">許可</button><button class="danger" data-pair="reject" data-p="${esc(p.pair_id)}">拒否</button></div></div>`).join("")}
 function runnersView(rs){if(!rs.length)return"";
- return `<div class="rn"><h2>登録済みのランナー（工場の外の機械に入れた常駐プロセス）</h2><table><tr><th>機械</th><th>状態</th><th>版・道具</th><th>置き場</th><th></th></tr>${rs.map(r=>`<tr>
+ return `<div class="rn"><h2>登録済みのランナー（工場の外の機械に入れた常駐プロセス）</h2><table><tr><th>機械</th><th>状態</th><th>バージョン・道具</th><th>置き場</th><th></th></tr>${rs.map(r=>`<tr>
   <td><b>${esc(r.name||"?")}</b><div class="m">${esc(r.kind||"")} ${esc(r.platform||"")}</div></td>
   <td><span class="dot ${r.online?"on":""}"></span>${r.uninstall_pending?"外す依頼の処理待ち":r.online?"動いている":r.last_seen_age_sec==null?"連絡待ち":"連絡なし（"+dur(r.last_seen_age_sec)+"前）"}<div class="m">登録 ${esc((r.registered_at||"").slice(0,16).replace("T"," "))}</div></td>
   <td>${esc(r.version||"")}<div class="m">${esc(r.tools||"")}${r.devices?" · 端末 "+esc(r.devices)+" 台":""}</div></td>
@@ -113,7 +113,7 @@ document.addEventListener("keydown",e=>{if(Z.hidden)return;if(e.key==="Escape"){
 // ---------------------------------------------------------------- ページ（11-07 の構成。ADR 0009 の決定 5 の簡易画面）
 // URL がページ: / ホーム（ダッシュボード）・/inbox と /inbox/<key>（受信トレイとメッセージの詳細の 2 ペイン）・/line・/ship・/settings/<項目>
 const SRC={github:"GitHub",jira:"Jira",redmine:"Redmine",backlog:"Backlog",console:"コンソール"};   // チケットの出どころ（tickets.source）
-const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","費用の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場の版"]];
+const SETTINGS=[["runners","ランナー"],["mode","モード"],["line","ラインと流量"],["budget","費用の予算"],["connectors","サービスとの連携"],["mac","Mac"],["version","工場のバージョン"]];
 // 設定の並び（ADR 0059、#478）。事業主が決めるものと、提供元（工場を動かす人）が決めるものに分ける。鍵やトークンの値はどちらにも出さない
 const SET_GROUPS=[["事業主向け",["mode","budget","connectors"]],["提供元向け",["runners","line","mac","version"]]];
 const LATER=["credential","Claude からのアクセス（OAuth）","工場の更新"];   // 設定に足していく予定の項目（まだ中身はない）
@@ -231,7 +231,7 @@ const HELP=`<h2>ヘルプ: 画面の言葉</h2>
 <dt>受信トレイ</dt><dd>工場が人に判断を求めている件（判断待ち）と、見たら消せるお知らせ</dd>
 <dt>問い合わせ</dt><dd>工場への依頼や質問（窓口）。新しい依頼を出し、対応の状況と返事を見る。Claude（窓口の MCP）や API から出した相談も同じ一覧に並ぶ</dd>
 <dt>稼働状況</dt><dd>「流れ」と「保守」の 2 つのタブ。流れは、工程（計画・実装・検査・QA・出荷）ごとの段の上を、チケットが流れていく様子。丸 1 つがチケット 1 件で、段の中の左から「待ち」「作業中」（経過に合わせて右へ進む）「次へ渡す待ち」。点滅は作業中、赤は人の対応待ち。丸に触れると番号・状態・ジョブ・経過が出る。下のグラフは直近 6 時間の作業中と順番待ちの数（ジョブの記録から 10 分ごとに数える）</dd>
-<dt>製品</dt><dd>製品ごとの概要・見通し・障害と問題・利用状況・リリースと環境・準備度。出荷（Web 検証・本番・前の版へ戻す）は「リリースと環境」で</dd>
+<dt>製品</dt><dd>製品ごとの概要・見通し・障害と問題・利用状況・リリースと環境・準備度。出荷（Web 検証・本番・前のバージョンへ戻す）は「リリースと環境」で</dd>
 <dt>ライン</dt><dd>チケットの一覧（状態ごと）とかんばん。優先度の変更・保留・止める</dd>
 <dt>稼働状況の保守</dt><dd>提供元（建設者）が直す工場の側の件。工場の不調・建設者宛ての件・見回りの結果・うまくいかなかったジョブ</dd>
 <dt>委員会</dt><dd>工場の委員会の開催と議事録。知見の委員会（知見の PR ごとの審査と週 1 回の定例）と事故の調査委員会（週 1 回の見回り）。委員会は自分で実装せず、決めたことは Issue にして工場のラインで作る</dd>
@@ -257,7 +257,7 @@ const HELP=`<h2>ヘルプ: 画面の言葉</h2>
 <dt>工場の不調</dt><dd>番人（ラインを見張る仕組み）が見つけた、工場の側の止まり（作業の失敗・PR が CI や衝突で進めない・指示役の不在など）。工場の保守の担当（建設者）が直すもの。1 行を押すと、対象・次にすること・記録・やり直すボタンが出る。× で画面から消せる（止まり自体は解けない）。消したものは「消したもの」で見られ、戻せる。止まりが解けると自動で一覧から消える</dd>
 <dt>作業の失敗</dt><dd>1 つの作業（ジョブ）が失敗した。作業ごとに 1 件出る。同じチケットで何度も失敗すると同じチケットの行が並ぶ。「やり直す」で同じ作業を積み直す</dd>
 <dt>PR が進めない</dt><dd>工場の PR が衝突・CI 落ち・検査の指摘などで先に進めない</dd>
-<dt>工場の更新</dt><dd>工場自身の新しい版への更新を、決まりにより自動では進めず、確認に回したもの</dd>
+<dt>工場の更新</dt><dd>工場自身の新しいバージョンへの更新を、決まりにより自動では進めず、確認に回したもの</dd>
 </dl>
 <h3>ライン（チケットの流れ）</h3><dl>
 <dt>依存待ち</dt><dd>先に片付けるチケットが残っている</dd><dt>投入待ち（上限）</dt><dd>依存は片付いたが、流量のチケットの上限で待っている</dd>
@@ -281,7 +281,7 @@ const HELP_MOBILE=`<h2>モバイルアプリの配布（Android・Firebase App D
 <li>プロジェクトの設定 →「マイアプリ」の「アプリ ID」（<code>1:…:android:…</code>）を控え、製品のページの「リリースと環境」の「配布先」に入れて保存する（秘密ではない）</li></ol>
 <h3>はじめに 1 回だけ: Mac（工場を動かしている Mac）</h3>
 <ol><li><b>Android の道具</b>: Android Studio を入れる（<code>brew install --cask android-studio</code>）。起動して Android SDK・SDK Command-line Tools・Platform-Tools・Build-Tools を入れ、<code>flutter doctor --android-licenses</code> で同意する。<code>flutter doctor</code> の Android の行が ✓ になればよい</li>
-<li><b>Firebase CLI</b>: <code>npm install -g firebase-tools</code> のあと <code>firebase login</code>（ブラウザで、Firebase のプロジェクトに触れる Google アカウントでログイン）。<code>firebase projects:list</code> にプロジェクトが出ればよい。node を mise などで入れているときは、node の版を替えると常駐のランナーから firebase が見えなくなるので、替えたら下の 4 をやり直す</li>
+<li><b>Firebase CLI</b>: <code>npm install -g firebase-tools</code> のあと <code>firebase login</code>（ブラウザで、Firebase のプロジェクトに触れる Google アカウントでログイン）。<code>firebase projects:list</code> にプロジェクトが出ればよい。node を mise などで入れているときは、node のバージョンを替えると常駐のランナーから firebase が見えなくなるので、替えたら下の 4 をやり直す</li>
 <li><b>署名の鍵</b>: factory-engine の orchestrator で <code>scripts/macrunner.sh android-key</code>。鍵は <code>~/.config/factory/android-upload.jks</code>、パスワードはキーチェーン（<code>factory-macrunner-android-keystore</code>）に入る。keytool が見つからないときは Android Studio の JDK を PATH に足す（<code>/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin</code>）。<b>鍵はバックアップする</b>（なくすと、同じアプリの更新を配れない）</li>
 <li><b>ランナーを入れ直す</b>: orchestrator で <code>scripts/macrunner.sh install</code>。<code>scripts/macrunner.sh status</code> の最後に「審査前の配布は閉じている」が出なければよい</li></ol>
 <p class="m">fish など zsh 以外のシェルでも上のコマンドはそのまま打てる。Mac の設定は Mac にだけ残り、工場の DB には入らない。</p>
@@ -458,7 +458,7 @@ function settingsBody(sec,s){const f=s.factory;
  if(sec==="budget")return `<h2>費用の予算</h2>${budgetForm(f.budget)}<div class="m"><a href="/cost" data-nav>日ごとの費用と予算 →</a></div>`;
  if(sec==="connectors")return `<h2>サービスとの連携</h2>${connView(s.connectors||[])}`;
  if(sec==="mac")return `<h2>Mac</h2>${f.host?`<div class="acts"><label class="stat sw" title="オンの間は工場の稼働中に Mac を眠らせない">起こしたまま <input type="checkbox" role="switch" id="keepawake" ${f.host.prevent_sleep?"checked":""}><b class="${f.host.sleep_prevented?"on":""}">${f.host.sleep_prevented?"起こしたまま":"スリープできる"}</b></label></div><div class="m">Mac 上の見張り（keep-awake.sh）が ${dur(f.host.agent_age_sec)}前に連絡</div>`:'<div class="m">Mac 上の見張り（keep-awake.sh）から連絡がない。Mac 以外で動いているか、見張りが止まっている</div>'}`;
- return `<h2>工場の版</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
+ return `<h2>工場のバージョン</h2><div class="kv"><span>Engine <b><code>${esc(s.engine_version||"unknown")}</code></b></span></div><div class="m">工場の更新は Issue にラベル factory:swap を付けて頼む（この画面からの更新は今後）</div>`}
 
 // ---- 描画
 // 骨組み（ADR 0059、#471）。PC は左の縦のメニュー、タブレットはアイコンだけ、スマホは下のタブ。並びはワークベンチで変わり、どのページにもたどれる
@@ -522,7 +522,15 @@ function prodTab(){if(!prodTgt)return;const b=document.querySelector(`#prod-b bu
 document.addEventListener("click",e=>{const b=e.target.closest("button[data-tgt-b]");if(!b)return;const t=b.dataset.tgtB;prodTgt=t;
  b.parentNode.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));b.closest("section").querySelectorAll("[data-tgt]").forEach(x=>x.hidden=x.dataset.tgt!==t)});
 // 使用量（11-08）。前は別の 1 枚のページで、開くとタブが消えて戻れなかった。ほかのページと同じ画面の中に中身（/usage/body）を読み込む
-async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body")).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">費用を読み込めませんでした</div>')}}
+// 期間（start・end）とまとめ方（grain）は /cost の問い合わせに持つ（再読み込み・リンクで同じ期間を開ける）
+async function loadUsage(){usageAt=Date.now();try{const h=await (await fetch("/usage/body"+location.search)).text();put("usage-b",h)}catch(e){put("usage-b",'<div class="m">費用を読み込めませんでした</div>')}}
+function usageGo(o){const f=document.querySelector("#usage-b form.usage-q");const q=new URLSearchParams(location.search);
+ const v={start:f?f.start.value:"",end:f?f.end.value:"",grain:f?f.dataset.grain:"",...o};
+ for(const k of ["start","end","grain"])v[k]?q.set(k,v[k]):q.delete(k);q.delete("days");
+ history.replaceState(null,"","/cost"+(q.toString()?"?"+q:""));loadUsage()}
+document.addEventListener("submit",e=>{if(!e.target.matches("form.usage-q"))return;e.preventDefault();usageGo({})});
+document.addEventListener("click",e=>{const g=e.target.closest("#usage-b [data-ugrain]"),p=e.target.closest("#usage-b [data-ustart]");
+ if(g)usageGo({grain:g.dataset.ugrain});else if(p)usageGo({start:p.dataset.ustart,end:p.dataset.uend})});
 function render(){if(!S)return;if(route()[0]==="ship")ppShipRedirect(S);const s=S,[v,arg]=route(),sig=v+"|"+wb+"|"+(v==="settings"||v==="help"?arg:"")+"|"+(v==="inbox"?(arg?"open":""):v==="ask"||v==="products"?arg:v==="committees"?(arg?"open":""):"");
  const ib=s.inbox||{count:0,items:[],who:{},kinds:{}};
  document.querySelectorAll("#side a[data-v],#tabs a[data-v],#more a[data-v]").forEach(a=>a.dataset.v===v?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"));

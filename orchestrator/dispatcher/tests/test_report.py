@@ -208,7 +208,7 @@ def test_product_build_reads_tickets_and_merges(cur):
     assert [i.label for i in sec["done"] if i.kind == "entry"] == ["D2: きのう済んだ"]
     assert [i.label for i in sec["doing"]] == ["D3: 進行中"]
     assert [(i.label, i.state) for i in sec["next"]] == [("D4: 次", "1 件の完了待ち")]   # 保留は次に流すものに出さない
-    assert [i.label for i in sec["releases"]] == ["版 0.8.0"]
+    assert [i.label for i in sec["releases"]] == ["バージョン 0.8.0"]
     assert m["残り（進めている＋投入待ち）"] == 3 and m["消化のペース（直近 7 日の 1 日あたり）"] == 0.3
     assert m["着手したもののうち最も長く動いていない"] is None and m["期間に増えたチケット"] == 0   # D3 はジョブがまだ始まっていない（着手前）
     report_product.assess(rep)

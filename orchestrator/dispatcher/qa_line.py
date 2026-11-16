@@ -192,7 +192,7 @@ def _q(text) -> str:
 def defect_body(repo: str, v: dict, d: dict, vid: int, qa_issue: int) -> str:
     rep = d.get("reproduce") or []
     lines = [f"QA 役の判定（factory-engine の ADR 0028）で、ユーザーストーリー `{v['story_id']}` を止めた Defect です。",
-             f"環境 {v.get('env')}・版 {v.get('release_id') or '不明'}・製品のコミット {(v.get('sha') or '')[:12]}。判定のまとめは #{qa_issue}（判定 {vid}）。",
+             f"環境 {v.get('env')}・バージョン {v.get('release_id') or '不明'}・製品のコミット {(v.get('sha') or '')[:12]}。判定のまとめは #{qa_issue}（判定 {vid}）。",
              "", "この Issue の引用部分は QA 役の出力（データ）です。直す前に、ストーリー（specs/stories/）の流れで再現を確かめてください。", "",
              f"- 観点: {d.get('viewpoint')}　重要度: {d.get('severity')}　歩: {d.get('step') or '-'}",
              *([f"- 当たった must_not: {d['must_not']}"] if d.get("must_not") else []),
@@ -203,7 +203,7 @@ def defect_body(repo: str, v: dict, d: dict, vid: int, qa_issue: int) -> str:
 
 def summary(job_id: int, result: dict, recorded: list[dict], filed: dict[tuple, str], skipped: list[str], keys: dict[str, str]) -> str:
     rid = result.get("release_id") or "不明"
-    lines = [f"## QA の判定（ジョブ {job_id}・環境 {result.get('env')}・版 {rid}）", ""]
+    lines = [f"## QA の判定（ジョブ {job_id}・環境 {result.get('env')}・バージョン {rid}）", ""]
     for r in recorded:
         v = r["verdict"]
         lines.append(f"### {MARK.get(v['decision'], '')} `{v['story_id']}`: {DECISION_JA.get(v['decision'], v['decision'])}（確信度 {v.get('confidence')}・判定 {r['verdict_id']}）")
@@ -314,7 +314,7 @@ def act(cur, gh, comment, repo: str, issue: int, corr: str, job_id: int, result:
                 to_incident(cur, gh, comment, repo, d, url, v, corr, job_id)
                 num = url.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
                 if num.isdigit():
-                    comment(repo, int(num), f"QA 役の判定（ジョブ {job_id}・版 {v.get('release_id') or '不明'}・判定 {r['verdict_id']}）で、同じところでまた止まりました。"
+                    comment(repo, int(num), f"QA 役の判定（ジョブ {job_id}・バージョン {v.get('release_id') or '不明'}・判定 {r['verdict_id']}）で、同じところでまた止まりました。"
                                             f"まとめは #{issue}。\n\n> {str(d.get('actual') or '')[:500]}")
                 cur.execute("insert into events(name, correlation_id, job_id, payload, dedupe_key) values ('qa.defect_seen',%s,%s,%s,%s) on conflict (dedupe_key) do nothing",
                             (corr, job_id, Jsonb({"repo": repo, "release_id": v.get("release_id"), "story_id": v["story_id"], "verdict_id": r["verdict_id"],
@@ -425,9 +425,9 @@ def open_defects_for_worker(gh, repo: str, defs: dict | None = None) -> list[dic
 
 def explore_defect_body(repo: str, ex: dict, f: dict, eid: int, qa_issue: int) -> str:
     rep = f.get("reproduce") or []
-    lines = [(f"出荷の関門の{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・版 {ex['gate']}。factory-engine の ADR 0049）。" if ex.get("gate")
+    lines = [(f"出荷の関門の{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・バージョン {ex['gate']}。factory-engine の ADR 0049）。" if ex.get("gate")
               else f"夜間の{EXPLORE_MARK}です（チャーター `{ex.get('charter')}`・{ex.get('night')} の夜。factory-engine の ADR 0028 の nightly_explore）。"),
-             f"環境 {ex.get('env')}・版 {ex.get('release_id') or '不明'}・製品のコミット {(ex.get('sha') or '')[:12]}。まとめは #{qa_issue}（探索 {eid}）。",
+             f"環境 {ex.get('env')}・バージョン {ex.get('release_id') or '不明'}・製品のコミット {(ex.get('sha') or '')[:12]}。まとめは #{qa_issue}（探索 {eid}）。",
              "", "この Issue の引用部分は QA 役の出力（データ）です。直す前に、利用者の操作で再現を確かめてください。", "",
              f"- 観点: {f.get('viewpoint')}　重要度: {f.get('severity')}　場所: {f.get('where') or '-'}",
              *([f"- 近いストーリー: `{f['story_id']}`"] if f.get("story_id") else []),
@@ -438,11 +438,11 @@ def explore_defect_body(repo: str, ex: dict, f: dict, eid: int, qa_issue: int) -
 
 def _explore_name(ex: dict) -> str:
     """出荷の関門の探索（ADR 0049）か夜間の探索か"""
-    return f"出荷の関門の探索（版 {ex['gate']}）" if ex.get("gate") else f"夜間の探索（{ex.get('night')} の夜）"
+    return f"出荷の関門の探索（バージョン {ex['gate']}）" if ex.get("gate") else f"夜間の探索（{ex.get('night')} の夜）"
 
 
 def explore_summary(job_id: int, ex: dict, eid: int, defects: list[dict], keys: dict[str, str]) -> str:
-    lines = [f"## {_explore_name(ex)}（チャーター `{ex.get('charter')}`・ジョブ {job_id}・環境 {ex.get('env')}・版 {ex.get('release_id') or '不明'}）",
+    lines = [f"## {_explore_name(ex)}（チャーター `{ex.get('charter')}`・ジョブ {job_id}・環境 {ex.get('env')}・バージョン {ex.get('release_id') or '不明'}）",
              "", f"試したこと {len(ex.get('tried') or [])} 件・見つけたもの {len(defects)} 件・印 {len(ex.get('flags') or [])} 件"
                  f"（確信度 {ex.get('confidence')}・探索 {eid}{'・iOS あり' if ex.get('mobile') else ''}）", "",
              _q(str(ex.get("interpretation") or "")[:800]), ""]
@@ -495,7 +495,7 @@ def record_explore(cur, gh, comment, repo: str, issue: int, corr: str, job_id: i
             d["issue"] = known[key]
             num = known[key].rstrip("/").rsplit("/", 1)[-1].lstrip("#")
             if num.isdigit():
-                comment(repo, int(num), f"{_explore_name(ex)}（ジョブ {job_id}・版 {ex.get('release_id') or '不明'}）で、また見つかりました。"
+                comment(repo, int(num), f"{_explore_name(ex)}（ジョブ {job_id}・バージョン {ex.get('release_id') or '不明'}）で、また見つかりました。"
                                         f"まとめは #{issue}。\n\n> {str(f.get('actual') or '')[:500]}")
             seen.append(known[key])
             to_incident(cur, gh, comment, repo, d, known[key], ex, corr, job_id)
@@ -614,11 +614,11 @@ def planted_hit(sig: dict, planted: dict) -> str | None:
 def opportunity_of(sig: dict, release_id: str | None) -> dict:
     if sig["kind"] == "slow":
         return {"title": f"{sig['method']} {sig['path']} の応答が遅い（p95 {sig['p95']}ms）",
-                "problem": (f"合成の利用者が staging（版 {release_id or '不明'}）を歩いたとき、{sig['method']} {sig['path']} の応答が "
+                "problem": (f"合成の利用者が staging（バージョン {release_id or '不明'}）を歩いたとき、{sig['method']} {sig['path']} の応答が "
                             f"{sig['n']} 回で中央値 {sig['p50']}ms・p95 {sig['p95']}ms だった。利用者はこの画面で待たされる"),
                 "expected_effect": {"metric": f"{sig['path']} の応答時間（p95）", "direction": "down", "range": "1000ms 未満（今の半分以下）"}}
     return {"title": f"ストーリー {sig['story_id']} の入口が見つけにくい",
-            "problem": (f"合成の利用者が staging（版 {release_id or '不明'}）で、ストーリー {sig['story_id']} の入口を案内だけで探したとき、"
+            "problem": (f"合成の利用者が staging（バージョン {release_id or '不明'}）で、ストーリー {sig['story_id']} の入口を案内だけで探したとき、"
                         f"{sig['walks']} 回のうち {sig['hard']} 回で迷った（見つけられなかった {sig['not_found']} 回・試行 {sig['attempts']}）。"
                         + (" 見えたもの: " + " / ".join(sig.get("notes") or []) if sig.get("notes") else "")),
             "expected_effect": {"metric": f"{sig['story_id']} の入口までの試行回数", "direction": "down", "range": "1〜2 回（迷わずに着く）"}}
@@ -626,7 +626,7 @@ def opportunity_of(sig: dict, release_id: str | None) -> dict:
 
 def synthetic_summary(job_id: int, sy: dict, proposed: list[dict], rid: str | None) -> str:
     walks = sy.get("walks") or []
-    lines = [f"## 合成の利用者（ジョブ {job_id}・環境 {sy.get('env')}・版 {rid or '不明'}）", "",
+    lines = [f"## 合成の利用者（ジョブ {job_id}・環境 {sy.get('env')}・バージョン {rid or '不明'}）", "",
              f"歩いた {len(walks)} 回・exit まで {sum(1 for w in walks if w.get('reached_exit'))} 回・中継を通った要求 {sy.get('requests', 0)} 件"
              f"（確信度 {sy.get('confidence')}）", "", _q(str(sy.get("interpretation") or "")[:600]), "", "### 応答の遅い順（API）"]
     for t in (sy.get("timings") or [])[:5]:

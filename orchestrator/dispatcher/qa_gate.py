@@ -278,9 +278,9 @@ def open_gate(cur, repo: str, release_id: str, now: datetime | None = None, gh=N
             pl = og.get("plan") or {}
             if not _ev(cur, "qa.gate_superseded", {"release_id": old, "repo": repo, "by_release": release_id}, f"qa.gate_superseded:{old}", now):
                 continue
-            stop_jobs(cur, og, f"次の版 {release_id} が staging に出た")
+            stop_jobs(cur, og, f"次のバージョン {release_id} が staging に出た")
             if gh and pl.get("issue"):
-                close_issue(gh, repo, pl["issue"], f"次の版 {release_id} が staging に出たので、この版の QA は打ち切りました。")
+                close_issue(gh, repo, pl["issue"], f"次のバージョン {release_id} が staging に出たので、このバージョンの QA は打ち切りました。")
     return _ev(cur, "qa.gate_opened", {"release_id": release_id, "repo": repo, "env": "staging"}, f"qa.gate_opened:{release_id}", now)
 
 
@@ -334,7 +334,7 @@ def plan_units(cur, gh, p: dict, defs: dict, gd: dict, selection: dict | None = 
     units += [{"unit": f"{TIME}:{s}", "which": TIME, "story": s} for s in timed]   # 時刻をまたぐストーリーは最後に 1 本ずつ（ADR 0055 の決定 3）
     cap = ticket_cap(units, gd)
     try:
-        body = (f"工場の QA 役が、staging に出た版 {rid} をシナリオごとに確かめます（factory-engine の ADR 0049・0054）。\n\n"
+        body = (f"工場の QA 役が、staging に出たバージョン {rid} をシナリオごとに確かめます（factory-engine の ADR 0049・0054）。\n\n"
                 f"- 判定: ストーリー {len(stories) + len(timed)} 本（1 本につき 1 ジョブ"
                 + (f"。うち時刻をまたぐもの {len(timed)} 本は最後に流す" if timed else "") + "）\n"
                 f"- 探索: チャーター {charter}\n- 費用の上限: ${cap:.2f}\n\n"
@@ -344,7 +344,7 @@ def plan_units(cur, gh, p: dict, defs: dict, gd: dict, selection: dict | None = 
                 + "結果がそろったら、ここに報告を書いて閉じます。見つけた Defect は別の Issue（factory:qa-defect）に起票します。")
         issue = gh("POST", f"repos/{repo}/issues", {"title": f"QA: {rid.split('@')[-1]}", "body": body, "labels": [gd["release_issue_label"]]})["number"]
     except Exception as e:  # noqa: BLE001
-        return {"legacy_why": f"版ごとの Issue を作れなかった: {repr(e)[:120]}"}
+        return {"legacy_why": f"バージョンごとの Issue を作れなかった: {repr(e)[:120]}"}
     return {"issue": issue, "corr": f"github:{repo}#{issue}", "cap_usd": cap, "units": units,
             **({"selection": selection, "skipped": skipped} if selection is not None else {})}
 
@@ -541,7 +541,7 @@ def report(results: dict, timed_out: bool) -> list[dict]:
         rows.append({"label": "そろわなかったシナリオ", "text": "；".join(f"{m['story_id']}（{str(m['why'])[:60]}）" for m in missing[:8])
                      + (f" ほか {len(missing) - 8} 件" if len(missing) > 8 else "")})
     if results.get("capped"):
-        rows.append({"label": "費用の上限", "text": "版のチケットの費用の上限に当たったので、残りのシナリオは流していない"})
+        rows.append({"label": "費用の上限", "text": "バージョンのチケットの費用の上限に当たったので、残りのシナリオは流していない"})
     if results.get("skipped"):   # 変更に関係がなく、最近確かめたので流さなかったストーリー（ADR 0060）
         sk = results["skipped"]
         rows.append({"label": "流さなかったシナリオ", "text": "；".join(sk[:8]) + (f" ほか {len(sk) - 8} 件" if len(sk) > 8 else "")})
@@ -574,7 +574,7 @@ def decide(cur, gh, repo: str, release_id: str, results: dict, timed_out: bool, 
         payload[TIME] = results[TIME]
     if not _ev(cur, "qa.gate_decided", payload, f"qa.gate_decided:{release_id}", now):
         return payload
-    body = [f"## 出荷の QA の関門（版 {release_id}、factory-engine の ADR 0049）", ""]
+    body = [f"## 出荷の QA の関門（バージョン {release_id}、factory-engine の ADR 0049）", ""]
     body += [f"- **{r['label']}**: {r['text']}" for r in rep]
     body += ["", "関門は合否を決めません。ブロッカーにするかは承認者が決めます（本番を立てない段階の製品では記録だけ）。"]
     if plan:   # 版ごとの Issue に報告を書いて閉じる（ADR 0054 の決定 2）。チケットの費用の集計もここで締まる
@@ -593,7 +593,7 @@ def block(cur, release_id: str, by: str, via: str, note: str) -> tuple[bool, str
     """承認者が候補をブロッカーにして、この版を本番に出さないと決めた（受信トレイの「見送る」）"""
     g = gate(cur, release_id)
     if not g:
-        return False, "この版には QA の関門がない"
+        return False, "このバージョンには QA の関門がない"
     if not (note or "").strip():
         return False, "どれをブロッカーにしたか、コメントが要る"
     _ev(cur, "qa.gate_blocked", {"release_id": release_id, "repo": g["repo"], "by": by, "via": via, "note": note.strip()[:500]},
@@ -686,10 +686,10 @@ def open_ticket(cur, gh, repo: str, n: int, decl: dict, now: datetime, log=print
         return False
     stories = "、".join(decl["stories"]) if decl["stories"] else "全部"
     if staged:
-        _comment(gh, repo, n, f"工場の QA 役: マージ済みの変更を版 {staged.split('@')[-1]} にして staging に出します。"
-                              f"出た版の QA（出荷の関門）の結果から、このチケットのストーリー（{stories}）の結果を抜き出して返します（ADR 0056）。")
+        _comment(gh, repo, n, f"工場の QA 役: マージ済みの変更をバージョン {staged.split('@')[-1]} にして staging に出します。"
+                              f"出たバージョンの QA（出荷の関門）の結果から、このチケットのストーリー（{stories}）の結果を抜き出して返します（ADR 0056）。")
     else:
-        _comment(gh, repo, n, f"工場の QA 役: いま staging にある版 {(on or '-').split('@')[-1]} で、ストーリー（{stories}）を流します"
+        _comment(gh, repo, n, f"工場の QA 役: いま staging にあるバージョン {(on or '-').split('@')[-1]} で、ストーリー（{stories}）を流します"
                               + ("。探索（推論）も 1 つ流します" if decl["explore"] else "") + "（ADR 0056）。")
     return True
 
@@ -796,9 +796,9 @@ def ticket_decide(cur, gh, repo: str, g: dict, results: dict, timed_out: bool, n
     if (g.get("plan") or {}).get("note"):
         rep.append({"label": "メモ", "text": g["plan"]["note"]})
     if results.get("whole"):
-        rep.append({"label": "注", "text": "出した版の QA がストーリーごとの形でなかったので、版全体の結果をそのまま載せた"})
+        rep.append({"label": "注", "text": "出したバージョンの QA がストーリーごとの形でなかったので、バージョン全体の結果をそのまま載せた"})
     if began and on and began != on and not via:
-        rep.append({"label": "注", "text": f"流している間に staging の版が {began.split('@')[-1]} から {on.split('@')[-1]} に替わった"})
+        rep.append({"label": "注", "text": f"流している間に staging のバージョンが {began.split('@')[-1]} から {on.split('@')[-1]} に替わった"})
     cands = [c for w in ALL for c in (results.get(w) or {}).get("candidates") or []]
     payload = {"release_id": key, "repo": repo, "ticket": n, "candidates": len(cands), "blockers": cands, "verdict": results.get("verdict"),
                "explore": results.get("explore"), "report": rep, "timed_out": timed_out, "on_release": began, **({"via_release": via} if via else {})}
@@ -807,10 +807,10 @@ def ticket_decide(cur, gh, repo: str, g: dict, results: dict, timed_out: bool, n
     if not _ev(cur, "qa.gate_decided", payload, f"qa.gate_decided:{key}", now):
         return payload
     rep[0] = {"label": "見つけた不具合", "text": f"{len(cands)} 件" + ("" if cands else "（見つからなかった）")}
-    body = [f"## QA だけのチケットの結果（staging の版 {(began or '-').split('@')[-1]}、factory-engine の ADR 0056）", ""]
+    body = [f"## QA だけのチケットの結果（staging のバージョン {(began or '-').split('@')[-1]}、factory-engine の ADR 0056）", ""]
     body += [f"- **{r['label']}**: {r['text']}" for r in rep]
     if via:
-        body += ["", f"結果は、出した版の QA（出荷の関門）から抜き出しました。"]
+        body += ["", f"結果は、出したバージョンの QA（出荷の関門）から抜き出しました。"]
     body += ["", "見つけた不具合は別のチケット（factory:qa-defect）に起票しています。本番への出荷には何もしていません。"]
     close_issue(gh, repo, n, "\n".join(body))
     return payload
@@ -852,8 +852,8 @@ def ticket_step(cur, gh, repo: str, *, defs: dict, gd: dict, now: datetime, may_
             waited = now - g["opened_at"] > timedelta(hours=2 * float(gd["hours"]))
             if not (failed or (rg and rg["state"] == "superseded") or waited):
                 continue   # 出荷と版の関門を待つ
-            note = (f"版 {staged.split('@')[-1]} を staging に出せなかった" if failed else
-                    f"版 {staged.split('@')[-1]} の QA が使えなかった（" + ("次の版に置き換わった" if rg and rg["state"] == "superseded" else "時間切れ") + "）") \
+            note = (f"バージョン {staged.split('@')[-1]} を staging に出せなかった" if failed else
+                    f"バージョン {staged.split('@')[-1]} の QA が使えなかった（" + ("次のバージョンに置き換わった" if rg and rg["state"] == "superseded" else "時間切れ") + "）") \
                 + "ので、いまの staging で流した"
         pl = ticket_plan(cur, gh, g, n, decl, defs, gd, now, log, note) if may_enqueue or g.get("plan") else None
         if not pl:

@@ -3,7 +3,7 @@
 
 - 操業 API（JSON）が正本で、画面はその利用者の 1 つ。将来の顧客向けアプリも同じ API を使う
   GET  /api/inbox                         受信トレイ: 人が対応するものの一覧（ADR 0026 の決定 7。inbox.py）。/api/state にも inbox として入る
-  GET  /api/usage?days=14                 使用量: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
+  GET  /api/usage?days=14|start=&end=&grain= 使用量（期間は最長 92 日、grain は day・week・month）: トークンの消費と費用（日ごと・役割・モデル・契約の週）とアカウントを足すかの判断の材料（usage.py）
   GET  /usage                             同じ中身のページ（画面の中のページ。中身は GET /usage/body の HTML の断片。usage_page.py）
   GET  /api/reference                     ヘルプの「API と MCP」「コマンド」の中身。この説明・desk_api.py の説明・MCP の道具・factoryctl の使い方から作る（reference.py）
   GET  /api/products                      製品の一覧（オンボーディングの判定の記録の製品ごとの最新。ADR 0045 の追記、onboarding.py）。/api/state にも products として入る
@@ -573,9 +573,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, inbox.view(cur))
         if urlsplit(self.path).path in ("/api/usage", usage_page.BODY_PATH):
             u = urlsplit(self.path)
-            days = parse_qs(u.query).get("days", ["14"])[0]
             with db() as conn, conn.cursor() as cur:
-                v = usage.view(cur, days=min(max(int(days) if days.isdigit() else 14, 1), 90))
+                v = usage.view(cur, **usage.query_args(parse_qs(u.query)))
             if u.path == usage_page.BODY_PATH:   # 使用量のページの中身（画面の中の /usage が読み込む。タブとヘッダはほかのページと同じ）
                 return self._send(200, usage_page.body(v).encode(), "text/html; charset=utf-8")
             return self._json(200, v)

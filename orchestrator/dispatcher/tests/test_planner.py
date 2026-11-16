@@ -139,7 +139,7 @@ def test_ready_verify_labels_qa_ticket(cur):
                      "caps": {}, "caps_declared": {}, "handoff": {"ship": "none", "learn": "signals"}, "start": {"mode": "now"}}
     run(cur, c, r)
     assert c.labels == [(ISSUE, ("factory:running",), ("factory:qa-ticket",))]
-    assert "QA だけ" in c.comments[0] and "a-prejoin" in c.comments[0] and "今の版のまま" in c.comments[0]
+    assert "QA だけ" in c.comments[0] and "a-prejoin" in c.comments[0] and "今のバージョンのまま" in c.comments[0]
     assert pn.verify_scope(r["workflow"]) == {"stage": False, "stories": ["a-prejoin"], "explore": False, "cap_usd": None}
 
 

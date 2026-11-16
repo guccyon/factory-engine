@@ -170,3 +170,45 @@ def test_supervisor_over_budget_reads_declaration(cur, monkeypatch):
     usage.set_budget(cur, "test", daily_usd=10)
     ob = supervisor.over_budget(cur)
     assert ob and ob["budget_usd"] == 10 and ob["spent_usd"] == 50
+
+
+def _day(d, cost=1.0, budget=10.0):
+    return {"date": d, "jobs": 1, "cost_usd": cost, "billable_tokens": 10, "total_tokens": 30, "failed_cost_usd": 0.0,
+            "usage_limited": 0, "budget_usd": budget, "budget_stopped_hours": 0.5}
+
+
+def test_periods_week_is_sunday_to_saturday_and_month():
+    days = [_day(f"2026-11-{n:02d}") for n in range(6, 17)]   # 11/6（金）〜11/16（月）
+    wk = usage.periods(days, "week")
+    assert [(p["start"], p["end"], p["days"]) for p in wk] == [("2026-11-06", "2026-11-07", 2), ("2026-11-08", "2026-11-14", 7), ("2026-11-15", "2026-11-16", 2)]
+    assert wk[1]["label"] == "11/8（日）〜11/14（土）" and wk[1]["cost_usd"] == 7.0 and wk[1]["budget_usd"] == 70.0 and wk[1]["budget_stopped_hours"] == 3.5
+    assert usage.periods(days, "day")[-1]["label"] == "11/16（月）"
+    mo = usage.periods([_day("2026-10-31", budget=None), _day("2026-11-01", budget=None)], "month")
+    assert [p["label"] for p in mo] == ["2026年10月", "2026年11月"] and mo[0]["budget_usd"] is None
+
+
+def test_range_and_query_args():
+    t = date(2026, 11, 16)
+    assert usage.range_of(t, 14) == (date(2026, 11, 3), t)
+    assert usage.range_of(t, 14, date(2026, 11, 1), date(2026, 12, 31)) == (date(2026, 11, 1), t)   # 先の日は今日まで
+    assert usage.range_of(t, 14, date(2026, 11, 10), date(2026, 11, 5)) == (date(2026, 11, 5), date(2026, 11, 10))   # 逆なら入れ替える
+    first, last = usage.range_of(t, 14, date(2026, 1, 1), t)
+    assert (last - first).days + 1 == usage.MAX_RANGE_DAYS   # 長すぎれば終わりから 92 日
+    q = usage.query_args({"start": ["2026-11-01"], "end": ["x"], "grain": ["week"], "days": ["500"]})
+    assert q == {"grain": "week", "days": 92, "start": date(2026, 11, 1), "end": None}
+    assert usage.query_args({"grain": ["year"]})["grain"] == "day"
+
+
+def test_view_range_and_grain(cur, monkeypatch):
+    monkeypatch.setenv("BUDGET_WINDOWS_WEEKDAY", "07:700")
+    monkeypatch.setenv("BUDGET_WINDOWS_WEEKEND", "07:700")
+    now = datetime(2026, 11, 16, 12, 0, tzinfo=JST)
+    _job(cur, "implement", datetime(2026, 11, 4, 8, 0, tzinfo=JST), 30.0, 1_000)
+    _job(cur, "judge", datetime(2026, 11, 10, 9, 0, tzinfo=JST), 10.0, 1_000, model="claude-y")
+    _job(cur, "implement", datetime(2026, 11, 16, 9, 0, tzinfo=JST), 5.0, 1_000)   # 期間の外（役割・モデルにも入らない）
+    v = usage.view(cur, now=now, start=date(2026, 11, 1), end=date(2026, 11, 14), grain="week")
+    assert (v["start"], v["end"], v["grain"], len(v["daily"])) == ("2026-11-01", "2026-11-14", "week", 14)
+    assert [p["cost_usd"] for p in v["periods"]] == [30.0, 10.0]
+    assert sum(k["cost_usd"] for k in v["by_kind"]) == 40.0 and {m["model"] for m in v["by_model"]} == {"claude-x", "claude-y"}
+    page = usage_page.body(v)
+    assert 'value="2026-11-01"' in page and "週別" in page and "11/8（日）〜11/14（土）" in page

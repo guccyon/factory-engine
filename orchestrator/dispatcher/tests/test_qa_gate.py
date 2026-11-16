@@ -463,7 +463,7 @@ def test_qa_ticket_runs_scope_on_current_staging_and_closes(cur):
     assert tickets(qa_gate.step(cur, gh, REPO, now=NOW))["opened"] == []   # 道 verify の計画がなければ何もしない
     verify_plan(cur)
     assert tickets(qa_gate.step(cur, gh, REPO, now=NOW))["opened"] == [True]
-    assert "いま staging にある版 0.9.0" in gh.comments(30)[0]
+    assert "いま staging にあるバージョン 0.9.0" in gh.comments(30)[0]
     out = qa_gate.step(cur, gh, REPO, now=NOW)
     key = qa_gate.ticket_key(REPO, 30)
     pl = qa_gate.gate(cur, key)["plan"]

@@ -200,7 +200,7 @@ def request_ship(cur, release_id: str, by: str, via: str) -> tuple[bool, str]:
     if not rel:
         return False, "その Release はない"
     if not VERSION_RE.match(rel["app_version"]):
-        return False, "版の形が出荷できない（英数字と . _ - だけ）"
+        return False, "バージョンの形が出荷できない（英数字と . _ - だけ）"
     record(cur, "release.ship_requested", release_id, {"by": by, "via": via})
     return True, "staging への出荷を依頼した"
 
@@ -215,7 +215,7 @@ def request_approve(cur, release_id: str, by: str, via: str, skip_qa: str | None
         return False, held_msg(cur, repo)
     staged = st["environments"].get("staging", {}).get("release_id")
     if staged != release_id:
-        return False, "staging でいま確かめられている版ではない"
+        return False, "staging でいま確かめられているバージョンではない"
     import qa_gate
     ok, why, qa = qa_gate.approval_check(cur, release_id, skip_qa)
     if not ok:
@@ -230,7 +230,7 @@ def request_reseed(cur, repo: str, env: str, by: str, via: str) -> tuple[bool, s
         return False, "本番の DB は入れ直さない"
     rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
     if not rid:
-        return False, f"{env} にまだ版が出ていない"
+        return False, f"{env} にまだバージョンが出ていない"
     record(cur, "release.reseed_requested", rid, {"repo": repo, "env": env, "by": by, "via": via})
     return True, f"{env} の DB を空にして、{rid} の合成シードから入れ直す依頼をした"
 
@@ -243,7 +243,7 @@ def request_drill(cur, repo: str, env: str, drill: str, by: str, via: str) -> tu
         return False, "仕込みの id は英小文字・数字・_・-"
     rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
     if not rid:
-        return False, f"{env} にまだ版が出ていない"
+        return False, f"{env} にまだバージョンが出ていない"
     record(cur, "release.drill_requested", rid, {"repo": repo, "env": env, "drill": drill, "by": by, "via": via})
     return True, f"{env}（{rid}）に演習の仕込み {drill} を依頼した"
 
@@ -291,7 +291,7 @@ def request_restart(cur, repo: str, env: str, by: str, via: str, advance_seconds
         return False, f"進めた時計の合計が {OFFSET_MAX_SECONDS // 86400} 日を超える。reset_clock で 0 に戻してから進める"
     rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
     if not rid:
-        return False, f"{env} にまだ版が出ていない"
+        return False, f"{env} にまだバージョンが出ていない"
     record(cur, "release.restart_requested", rid, {"repo": repo, "env": env, "advance_seconds": advance_seconds,
                                                    "reset_clock": bool(reset_clock), "offset_seconds": offset_seconds, "by": by, "via": via})
     if offset_seconds is not None:
@@ -308,7 +308,7 @@ def request_kpi(cur, repo: str, env: str, week: str, by: str, via: str) -> tuple
         return False, "週は 2026-W46 の形"
     rid = status(cur, repo)["environments"].get(env, {}).get("release_id")
     if not rid:
-        return False, f"{env} にまだ版が出ていない"
+        return False, f"{env} にまだバージョンが出ていない"
     record(cur, "release.kpi_requested", rid, {"repo": repo, "env": env, "week": week, "by": by, "via": via})
     return True, f"{env}（{rid}）で {week} の KPI を測る依頼をした"
 
@@ -319,7 +319,7 @@ def request_rollback(cur, repo: str, env: str, by: str, via: str) -> tuple[bool,
     st = status(cur, repo)
     cur_env = st["environments"].get(env)
     if not cur_env or not cur_env.get("previous"):
-        return False, "戻す先の版がない"
+        return False, "戻す先のバージョンがない"
     if cur_env.get("rollback_blocked"):
         return False, cur_env["rollback_blocked"]
     record(cur, "release.rollback_requested", cur_env["release_id"], {"repo": repo, "env": env, "by": by, "via": via})
@@ -468,7 +468,7 @@ def verify(cfg: dict, repo: str, env: str, rel: dict):
     out = sh(["docker", "compose", "-p", project(repo, env), "exec", "-T", v["service"], "curl", "-fsS", v["url"]], timeout=60)
     got = json.loads(out).get("app_version")
     if got != rel["app_version"]:
-        raise RuntimeError(f"{env} の {v['service']} が答えた版が {got}（期待 {rel['app_version']}）")
+        raise RuntimeError(f"{env} の {v['service']} が答えたバージョンが {got}（期待 {rel['app_version']}）")
 
 
 def added_contracts(cur, path: str, repo: str, commit: str) -> list[str]:
@@ -641,7 +641,7 @@ def auto_rollback(cur, repo: str, rid: str, before: dict, common: dict, error: s
     target_id = before.get("release_id")
     note = ""
     if not target_id or target_id == rid:
-        note = "（前の版がないので戻していない）"
+        note = "（前のバージョンがないので戻していない）"
     else:
         try:
             target = release_of(cur, target_id)
@@ -714,7 +714,7 @@ def handle(cur, ev: dict):
         elif name == "release.reseed_requested":
             env = p["env"]
             if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:
-                raise RuntimeError(f"{env} の版が依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
+                raise RuntimeError(f"{env} のバージョンが依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
             path, _ = source(repo, rel["app_version"])
             cfg = ship_config(path)
             secs = reseed(cur, cfg, path, repo, env, rel, common)
@@ -731,7 +731,7 @@ def handle(cur, ev: dict):
         elif name == "release.restart_requested":
             env = p["env"]
             if status(cur, repo)["environments"].get(env, {}).get("release_id") != rid:
-                raise RuntimeError(f"{env} の版が依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
+                raise RuntimeError(f"{env} のバージョンが依頼のあとで替わった（{rid} ではない）。もう一度依頼する")
             if p.get("offset_seconds") is not None:   # 時刻を指定して合わせる（ADR 0055）
                 offset = int(p["offset_seconds"])
             else:

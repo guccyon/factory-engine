@@ -51,10 +51,38 @@ def bars(daily: list[dict]) -> str:
         if d["budget_usd"]:
             y = h - d["budget_usd"] / top * h
             out.append(f'<line class="budget" x1="{x:.1f}" x2="{x + bw:.1f}" y1="{y:.1f}" y2="{y:.1f}"/>')
-        if len(daily) <= 16 or i % 2 == 0:
+        if i % max(1, -(-len(daily) // 16)) == 0:
             out.append(f'<text x="{x + bw / 2:.1f}" y="{h + 16}" text-anchor="middle">{esc(d["date"][5:])}</text>')
     out.append(f'<text x="0" y="12">{usd(top)}</text></svg>')
     return "".join(out)
+
+
+GRAIN_JA = [("day", "日別"), ("week", "週別（日〜土）"), ("month", "月別")]
+
+
+def presets(today: str) -> list[tuple[str, str, str]]:
+    """期間の早見（名前, 始め, 終わり）。終わりは今日（予算の日）"""
+    from datetime import date, timedelta
+    t = date.fromisoformat(today)
+    m1 = t.replace(day=1)
+    pm_end = m1 - timedelta(days=1)
+    return [("直近 7 日", (t - timedelta(days=6)).isoformat(), t.isoformat()), ("直近 30 日", (t - timedelta(days=29)).isoformat(), t.isoformat()),
+            ("今月", m1.isoformat(), t.isoformat()), ("先月", pm_end.replace(day=1).isoformat(), pm_end.isoformat()),
+            ("直近 3 か月", (t - timedelta(days=91)).isoformat(), t.isoformat())]
+
+
+def controls(v: dict) -> str:
+    """期間（カレンダー）とまとめ方の切り替え。送ると画面が /usage/body を読み直す（console.js の usage-q）"""
+    s, e, g, today, mx = v["start"], v["end"], v.get("grain", "day"), v.get("today", v["end"]), v.get("max_days", 92)
+    grains = "".join(f'<button type="button" class="seg{" on" if k == g else ""}" data-ugrain="{k}" aria-pressed="{str(k == g).lower()}">{esc(j)}</button>'
+                     for k, j in GRAIN_JA)
+    pre = "".join(f'<button type="button" class="chip{" on" if (a, b) == (s, e) else ""}" data-ustart="{a}" data-uend="{b}">{esc(n)}</button>'
+                  for n, a, b in presets(today))
+    return (f'<form class="usage-q" data-grain="{esc(g)}"><div class="row"><span class="seggroup" role="group" aria-label="まとめ方">{grains}</span></div>'
+            f'<div class="row"><label>始め <input type="date" name="start" value="{esc(s)}" max="{esc(today)}"></label>'
+            f'<label>終わり <input type="date" name="end" value="{esc(e)}" max="{esc(today)}"></label>'
+            f'<button type="submit">この期間で見る</button></div><div class="row">{pre}</div>'
+            f'<p class="m">選べる長さは最長 {mx} 日（約 3 か月）。長く選ぶと終わりの日から {mx} 日にそろえる</p></form>')
 
 
 def table(cols: list[tuple[str, str]], rows: list[dict], fmt: dict) -> str:
@@ -73,7 +101,10 @@ def body(v: dict) -> str:
     tiles = "".join(f'<div class="tile"><span>{esc(k)}</span><b>{val}</b></div>' for k, val in (
         ("今週の消費", usd(wk["cost_usd"])), ("1 日あたり", usd(wk["per_day_usd"])), ("週の見込み", usd(wk["projected_usd"])),
         ("課金対象のトークン", mtok(wk["billable_tokens"])), ("ジョブ", f'{wk["jobs"]:,}'), ("上限に当たった回数", f'{wk["usage_limited"]}')))
-    daily = list(reversed(v["daily"]))
+    per = list(reversed(v.get("periods") or [dict(d, label=d["date"]) for d in v["daily"]]))
+    g = v.get("grain", "day")
+    span = f'{v["start"]} 〜 {v["end"]}' if v.get("start") else "直近 7 日"
+    unit = {"day": "日", "week": "週", "month": "月"}[g]
     css = """
 .usage .m{color:var(--ink-sub);font-size:12px}.usage .note{margin:12px 0 0}.usage section{margin-top:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px}
 .usage h2{font-size:14px;margin:0 0 8px}.usage ul.sig{list-style:none;margin:0;padding:0;display:grid;gap:6px}
@@ -81,7 +112,13 @@ def body(v: dict) -> str:
 .usage ul.sig b{margin-right:6px}.usage .tiles{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
 .usage .tile{border:1px solid var(--line);border-radius:8px;padding:8px}.usage .tile span{display:block;color:var(--ink-sub);font-size:12px}.usage .tile b{font-size:18px}
 .usage .chart{width:100%;max-width:760px;height:auto;display:block}.usage .chart .bar{fill:var(--accent)}.usage .chart .bar.over{fill:var(--warn)}.usage .chart .budget{stroke:var(--p0);stroke-width:2;stroke-dasharray:4 3}
-.usage .chart text{fill:var(--ink-sub);font-size:11px}.usage .scroll{overflow-x:auto}.usage table{border-collapse:collapse;width:100%;font-size:13px}
+.usage .chart text{fill:var(--ink-sub);font-size:11px}
+.usage .usage-q{display:grid;gap:8px}.usage .usage-q .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.usage .usage-q label{display:flex;gap:6px;align-items:center;font-size:13px}
+.usage .usage-q input[type=date]{font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);min-height:36px}
+.usage .usage-q button{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);cursor:pointer;min-height:36px}
+.usage .usage-q button[type=submit]{background:var(--accent);border-color:var(--accent);color:#fff}
+.usage .usage-q .seggroup{display:inline-flex}.usage .usage-q .seg{border-radius:0;margin-left:-1px}.usage .usage-q .seg:first-child{border-radius:6px 0 0 6px;margin-left:0}.usage .usage-q .seg:last-child{border-radius:0 6px 6px 0}
+.usage .usage-q .on{background:var(--accent);border-color:var(--accent);color:#fff}.usage .usage-q .chip{border-radius:999px;padding:4px 12px;min-height:32px}.usage .scroll{overflow-x:auto}.usage table{border-collapse:collapse;width:100%;font-size:13px}
 .usage th,.usage td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--line);white-space:nowrap}.usage th:first-child,.usage td:first-child{text-align:left}.usage th{color:var(--ink-sub);font-weight:600}
 """
     return f"""<style>{css}</style><div class="usage">
@@ -89,16 +126,17 @@ def body(v: dict) -> str:
 <section><h2>アカウントを足すかの判断の材料</h2><ul class="sig">{sig}</ul></section>
 <section><h2>今週（{esc(when(wk["start"]))} 〜 {esc(when(wk["end"]))}、契約の週の区切り）</h2><div class="tiles">{tiles}</div>
 <p class="m">{limit}。最後に上限に当たったのは {esc(when(wk["last_usage_limited"]))}</p></section>
-<section><h2>日ごとの消費（{v["day_start_hour"]}:00 区切り）</h2>{bars(v["daily"])}
-<p class="m">棒が費用、赤い破線がその日の予算の枠の合計。予算に届いた日は橙</p>
-{table([("date", "日"), ("cost_usd", "費用"), ("budget_usd", "予算"), ("billable_tokens", "課金対象"), ("total_tokens", "キャッシュ読み込み含む"),
+{f'<section><h2>期間を選ぶ</h2>{controls(v)}</section>' if v.get("start") else ""}
+<section><h2>{unit}ごとの消費（{esc(span)}、1 日は {v["day_start_hour"]}:00 区切り）</h2>{bars(v["daily"])}
+<p class="m">棒が日ごとの費用、赤い破線がその日の予算の枠の合計。予算に届いた日は橙。下の表は{esc(dict(GRAIN_JA)[g])}にまとめた数</p>
+{table([("label", unit), ("cost_usd", "費用"), ("budget_usd", "予算"), ("billable_tokens", "課金対象"), ("total_tokens", "キャッシュ読み込み含む"),
         ("jobs", "ジョブ"), ("failed_cost_usd", "失敗したジョブの費用"), ("budget_stopped_hours", "予算で止めた時間"), ("usage_limited", "上限")],
-       daily, {"cost_usd": usd, "budget_usd": usd, "failed_cost_usd": usd, "billable_tokens": mtok, "total_tokens": mtok,
+       per, {"cost_usd": usd, "budget_usd": usd, "failed_cost_usd": usd, "billable_tokens": mtok, "total_tokens": mtok,
                "budget_stopped_hours": lambda h: f"{h:.1f} 時間" if h else "—"})}</section>
-<section><h2>役割ごと（直近 7 日）</h2>
+<section><h2>役割ごと（{esc(span)}）</h2>
 {table([("ja", "役割"), ("cost_usd", "費用"), ("share", "割合"), ("billable_tokens", "課金対象"), ("jobs", "ジョブ")], v["by_kind"],
        {"cost_usd": usd, "share": pct, "billable_tokens": mtok})}</section>
-<section><h2>モデルごと（直近 7 日）</h2>
+<section><h2>モデルごと（{esc(span)}）</h2>
 {table([("model", "モデル"), ("cost_usd", "費用"), ("input_tokens", "入力"), ("output_tokens", "出力"), ("cache_write_tokens", "キャッシュ書き込み"),
         ("cache_read_tokens", "キャッシュ読み込み"), ("sessions", "セッション")], v["by_model"],
        {"cost_usd": usd, "input_tokens": mtok, "output_tokens": mtok, "cache_write_tokens": mtok, "cache_read_tokens": mtok})}</section>

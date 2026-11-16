@@ -29,7 +29,7 @@ STATUS = {"swap.requested": "requested", "swap.confirmed": "confirmed", "swap.la
           "swap.preflight_failed": "preflight_failed", "swap.cancelled": "cancelled"}
 STATUS_JA = {"requested": "受付済", "confirmed": "時刻確定済", "launched": "更新役起動済", "started": "事前確認中",
              "drained": "一時停止済", "applied": "上げ直し済（確認中）", "verified": "確認済", "completed": "反映済",
-             "rolled_back": "前の版に戻し済", "escalated": "人に回し済", "failed": "失敗", "preflight_failed": "事前確認で中止",
+             "rolled_back": "前のバージョンに戻し済", "escalated": "人に回し済", "failed": "失敗", "preflight_failed": "事前確認で中止",
              "cancelled": "取り消し済"}
 REF = re.compile(r"^(main|[0-9a-f]{7,40})$")
 CONTAINER_PREFIX = "factory-swap-"
@@ -78,7 +78,7 @@ def _request(cur, target, by, kind, urgency, note, confirm_now, source="manual",
     if act:
         raise SwapError(f"更新 {act['id']}（{act['target']}、{STATUS_JA[act['status']]}）が終わっていない。終わるか取り消してから")
     if target != "main" and rolled_back_before(cur, target):
-        raise SwapError(f"{target} の更新は前の版に戻った。直した新しい版で依頼する（同じ版では自動で更新しない。決定 6）")
+        raise SwapError(f"{target} の更新は前のバージョンに戻った。直した新しいバージョンで依頼する（同じバージョンでは自動で更新しない。決定 6）")
     cur.execute("insert into events(name, payload) values ('swap.requested', %s) returning id",
                 (Jsonb({"target": target, "kind": kind, "urgency": urgency, "by": by, "note": note[:300], "source": source}),))
     sid = cur.fetchone()["id"]
@@ -280,8 +280,8 @@ def tick(cur, log=print, *, launch_fn=launch, alive_fn=alive, now: datetime | No
     if (now - s["last_at"]).total_seconds() < LOST_AFTER_SEC or alive_fn(sid):
         return
     record(cur, sid, "swap.failed", {"error": f"更新役が結果を書かずに終わった（最後は {STATUS_JA[s['status']]}）"})
-    stoppage.open_stoppage(cur, f"swap:{sid}", "human", f"工場の更新 {sid}（{s['target']}）の更新役が途中で消えた。工場の版が中途半端かもしれない",
-                           waiting_for="factoryctl version で版を確かめ、手で上げ直すか前の版に戻す", correlation_id=corr(sid))
+    stoppage.open_stoppage(cur, f"swap:{sid}", "human", f"工場の更新 {sid}（{s['target']}）の更新役が途中で消えた。工場のバージョンが中途半端かもしれない",
+                           waiting_for="factoryctl version でバージョンを確かめ、手で上げ直すか前のバージョンに戻す", correlation_id=corr(sid))
     log("swap lost", sid)
 
 

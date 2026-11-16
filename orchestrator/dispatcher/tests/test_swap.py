@@ -107,7 +107,7 @@ def test_request_is_one_at_a_time_and_cancellable(cur):
 def test_rolled_back_version_is_not_retried(cur):
     sid = swap.request(cur, "main", "builder")
     swap.record(cur, sid, "swap.rolled_back", {"target_sha": "bbbbbbb", "prev": "aaaaaaa"})
-    with pytest.raises(swap.SwapError, match="前の版に戻った"):
+    with pytest.raises(swap.SwapError, match="前のバージョンに戻った"):
         swap.request(cur, TARGET, "builder")
     assert swap.request(cur, "c" * 40, "builder")
 

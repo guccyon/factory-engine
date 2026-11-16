@@ -193,15 +193,16 @@ def _f(v) -> float:
     return float(v or 0)
 
 
-def view(cur, now: datetime | None = None, days: int = 14) -> dict:
-    """使用量の 1 枚。cur は dict_row のカーソル"""
-    now = (now or datetime.now(JST)).astimezone(JST)
-    today = budget_day(now)
-    first = today - timedelta(days=days - 1)
-    since = datetime(first.year, first.month, first.day, DAY_START_HOUR, tzinfo=JST)
-    shift = f"{DAY_START_HOUR} hours"
-    decl = declared(cur)   # 過去の日も今の決め方で予算の線を引く（日ごとの宣言の履歴はまだ見ない）
+MAX_RANGE_DAYS = 92   # 期間を指定するときの最長（約 3 か月）
+GRAINS = ("day", "week", "month")
+WEEKDAY_JA = "月火水木金土日"
 
+
+def _daily(cur, first, last, now: datetime, decl: dict | None) -> list[dict]:
+    """first〜last（予算の日）の日ごとの消費。last は今日まで"""
+    since = datetime(first.year, first.month, first.day, DAY_START_HOUR, tzinfo=JST)
+    until = min(since + timedelta(days=(last - first).days + 1), now)
+    shift = f"{DAY_START_HOUR} hours"
     cur.execute(
         "select ((e.occurred_at at time zone 'Asia/Tokyo') - %s::interval)::date as d, count(*) as jobs, "
         "sum(coalesce((e.payload->>'cost_usd')::numeric, 0)) as usd, "
@@ -209,29 +210,94 @@ def view(cur, now: datetime | None = None, days: int = 14) -> dict:
         "sum(case when e.payload->>'state' = 'failed' then coalesce((e.payload->>'cost_usd')::numeric, 0) else 0 end) as failed_usd, "
         "count(*) filter (where (e.payload->>'usage_limited')::boolean) as limited "
         "from events e where e.name = 'job.finished' and e.occurred_at >= %s and e.occurred_at <= %s group by 1",
-        (shift, since, now))
+        (shift, since, until))
     by_day = {r["d"]: r for r in cur.fetchall()}
     cur.execute(
         "select ((greatest(started_at, %s) at time zone 'Asia/Tokyo') - %s::interval)::date as d, "
         "sum(extract(epoch from least(coalesce(ended_at, %s), %s) - greatest(started_at, %s))) as sec "
-        "from stoppages where category = 'budget' and coalesce(ended_at, %s) > %s group by 1",
-        (since, shift, now, now, since, now, since))
+        "from stoppages where category = 'budget' and coalesce(ended_at, %s) > %s and started_at < %s group by 1",
+        (since, shift, until, until, since, until, since, until))
     stopped = {r["d"]: _f(r["sec"]) for r in cur.fetchall()}
     daily = []
-    for i in range(days):
+    for i in range((last - first).days + 1):
         d = first + timedelta(days=i)
         r = by_day.get(d) or {}
         daily.append({"date": d.isoformat(), "jobs": int(r.get("jobs") or 0), "cost_usd": round(_f(r.get("usd")), 2),
                       "billable_tokens": int(_f(r.get("billable"))), "total_tokens": int(_f(r.get("total"))),
                       "failed_cost_usd": round(_f(r.get("failed_usd")), 2), "usage_limited": int(r.get("limited") or 0),
                       "budget_usd": day_budget(d, decl), "budget_stopped_hours": round(stopped.get(d, 0) / 3600, 1)})
+    return daily
 
-    last7 = now - timedelta(days=7)
+
+def _md(d) -> str:
+    return f"{d.month}/{d.day}（{WEEKDAY_JA[d.weekday()]}）"
+
+
+def periods(daily: list[dict], grain: str = "day") -> list[dict]:
+    """日ごとを、日・週（日曜〜土曜）・月にまとめる。label は表に出す名前（日と週は曜日つき）"""
+    from datetime import date
+    groups: dict = {}
+    for d in daily:
+        day = date.fromisoformat(d["date"])
+        key = day if grain == "day" else day - timedelta(days=(day.weekday() + 1) % 7) if grain == "week" else day.replace(day=1)
+        groups.setdefault(key, []).append((day, d))
+    out = []
+    for key, xs in groups.items():
+        lo, hi = xs[0][0], xs[-1][0]
+        rows = [d for _, d in xs]
+        label = _md(lo) if grain == "day" else f"{lo.year}年{lo.month}月" if grain == "month" else f"{_md(lo)}〜{_md(hi)}"
+        budgets = [d["budget_usd"] for d in rows if d["budget_usd"] is not None]
+        out.append({"key": key.isoformat(), "start": lo.isoformat(), "end": hi.isoformat(), "days": len(rows), "label": label,
+                    **{k: sum(d[k] for d in rows) for k in ("jobs", "billable_tokens", "total_tokens", "usage_limited")},
+                    **{k: round(sum(d[k] for d in rows), 2) for k in ("cost_usd", "failed_cost_usd")},
+                    "budget_stopped_hours": round(sum(d["budget_stopped_hours"] for d in rows), 1),
+                    "budget_usd": round(sum(budgets), 2) if budgets else None})
+    return out
+
+
+def range_of(today, days: int = 14, start=None, end=None) -> tuple:
+    """表示する期間（予算の日）。end は今日まで、長さは MAX_RANGE_DAYS まで。start が end より後なら入れ替える"""
+    last = min(end or today, today)
+    first = start or (last - timedelta(days=max(days, 1) - 1))
+    if first > last:
+        first, last = last, min(first, today)
+    first = max(first, last - timedelta(days=MAX_RANGE_DAYS - 1))
+    return first, last
+
+
+def query_args(q: dict) -> dict:
+    """URL の問い合わせ（parse_qs の結果）を view の引数に。days・start・end（YYYY-MM-DD）・grain。読めない値は捨てる"""
+    from datetime import date
+    one = lambda k: (q.get(k) or [""])[0]
+    out: dict = {"grain": one("grain") if one("grain") in GRAINS else "day"}
+    days = one("days")
+    out["days"] = min(max(int(days), 1), MAX_RANGE_DAYS) if days.isdigit() else 14
+    for k in ("start", "end"):
+        try:
+            out[k] = date.fromisoformat(one(k)) if one(k) else None
+        except ValueError:
+            out[k] = None
+    return out
+
+
+def view(cur, now: datetime | None = None, days: int = 14, start=None, end=None, grain: str = "day") -> dict:
+    """使用量の 1 枚。cur は dict_row のカーソル。start / end（date）で期間を、grain（day / week / month）でまとめ方を選ぶ。
+    指定がなければ今日までの days 日。判断の材料（signals）と今週は期間によらず今の値"""
+    now = (now or datetime.now(JST)).astimezone(JST)
+    today = budget_day(now)
+    grain = grain if grain in GRAINS else "day"
+    first, last = range_of(today, days, start, end)
+    decl = declared(cur)   # 過去の日も今の決め方で予算の線を引く（日ごとの宣言の履歴はまだ見ない）
+    daily = _daily(cur, first, last, now, decl)
+    recent = daily[-7:] if last == today and len(daily) >= 7 else _daily(cur, today - timedelta(days=6), today, now, decl)
+    since = datetime(first.year, first.month, first.day, DAY_START_HOUR, tzinfo=JST)
+    until = min(since + timedelta(days=(last - first).days + 1), now)
+
     cur.execute(
         "select coalesce(j.kind, 'implement') as kind, count(*) as jobs, sum(coalesce((e.payload->>'cost_usd')::numeric, 0)) as usd, "
         "sum(coalesce((e.payload->>'billable_tokens')::numeric, 0)) as billable "
-        "from events e join jobs j on j.id = e.job_id where e.name = 'job.finished' and e.occurred_at >= %s group by 1 order by usd desc",
-        (last7,))
+        "from events e join jobs j on j.id = e.job_id where e.name = 'job.finished' and e.occurred_at >= %s and e.occurred_at <= %s group by 1 order by usd desc",
+        (since, until))
     kinds = cur.fetchall()
     k_total = sum(_f(r["usd"]) for r in kinds) or 1
     by_kind = [{"kind": r["kind"], "ja": KIND_JA.get(r["kind"], r["kind"]), "jobs": int(r["jobs"]), "cost_usd": round(_f(r["usd"]), 2),
@@ -242,7 +308,7 @@ def view(cur, now: datetime | None = None, days: int = 14) -> dict:
         "sum(coalesce((payload->'usage'->>'input_tokens')::numeric, 0)) as inp, sum(coalesce((payload->'usage'->>'output_tokens')::numeric, 0)) as outp, "
         "sum(coalesce((payload->'usage'->>'cache_creation_input_tokens')::numeric, 0)) as cw, "
         "sum(coalesce((payload->'usage'->>'cache_read_input_tokens')::numeric, 0)) as cr "
-        "from events where name = 'session.cost_recorded' and occurred_at >= %s group by 1 order by usd desc", (last7,))
+        "from events where name = 'session.cost_recorded' and occurred_at >= %s and occurred_at <= %s group by 1 order by usd desc", (since, until))
     by_model = [{"model": r["model"], "sessions": int(r["n"]), "cost_usd": round(_f(r["usd"]), 2), "input_tokens": int(_f(r["inp"])),
                  "output_tokens": int(_f(r["outp"])), "cache_write_tokens": int(_f(r["cw"])), "cache_read_tokens": int(_f(r["cr"]))}
                 for r in cur.fetchall()]
@@ -268,8 +334,10 @@ def view(cur, now: datetime | None = None, days: int = 14) -> dict:
         if pace > 0 and projected > PLAN_WEEKLY_LIMIT_USD:
             week["exhausted_at"] = (now + timedelta(days=max(PLAN_WEEKLY_LIMIT_USD - spent, 0) / pace)).isoformat()
 
-    return {"generated_at": now.isoformat(), "day_start_hour": DAY_START_HOUR, "budget": budget_spec(cur, now), "daily": daily, "by_kind": by_kind,
-            "by_model": by_model, "week": week, "signals": signals(daily, week)}
+    return {"generated_at": now.isoformat(), "day_start_hour": DAY_START_HOUR, "budget": budget_spec(cur, now),
+            "start": first.isoformat(), "end": last.isoformat(), "today": today.isoformat(), "grain": grain, "max_days": MAX_RANGE_DAYS,
+            "daily": daily, "periods": periods(daily, grain), "by_kind": by_kind,
+            "by_model": by_model, "week": week, "signals": signals(recent, week)}
 
 
 def signals(daily: list[dict], week: dict) -> list[dict]:
@@ -302,9 +370,10 @@ def report_lines(v: dict) -> list[str]:
     for d in v["daily"]:
         b = f"${d['budget_usd']:,.0f}" if d["budget_usd"] else "—"
         out.append(f"| {d['date']} | ${d['cost_usd']:,.2f} | {b} | {d['billable_tokens'] / 1e6:,.1f}M | {d['jobs']} | ${d['failed_cost_usd']:,.2f} | {d['budget_stopped_hours']:.1f} | {d['usage_limited']} |")
-    out += ["", "## 役割ごと（直近 7 日）", "", "| 役割 | 費用 | 割合 | 課金対象 | ジョブ |", "|---|---|---|---|---|"]
+    span = f"{v['start']} 〜 {v['end']}" if v.get("start") else "直近 7 日"
+    out += ["", f"## 役割ごと（{span}）", "", "| 役割 | 費用 | 割合 | 課金対象 | ジョブ |", "|---|---|---|---|---|"]
     out += [f"| {r['ja']} | ${r['cost_usd']:,.2f} | {r['share'] * 100:.0f}% | {r['billable_tokens'] / 1e6:,.1f}M | {r['jobs']} |" for r in v["by_kind"]]
-    out += ["", "## モデルごと（直近 7 日）", "", "| モデル | 費用 | 入力 | 出力 | キャッシュ書き込み | キャッシュ読み込み |", "|---|---|---|---|---|---|"]
+    out += ["", f"## モデルごと（{span}）", "", "| モデル | 費用 | 入力 | 出力 | キャッシュ書き込み | キャッシュ読み込み |", "|---|---|---|---|---|---|"]
     out += [f"| {r['model']} | ${r['cost_usd']:,.2f} | {r['input_tokens'] / 1e6:,.2f}M | {r['output_tokens'] / 1e6:,.2f}M | {r['cache_write_tokens'] / 1e6:,.2f}M | {r['cache_read_tokens'] / 1e6:,.2f}M |"
             for r in v["by_model"]]
     return out

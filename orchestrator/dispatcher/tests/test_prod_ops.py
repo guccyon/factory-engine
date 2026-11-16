@@ -143,7 +143,7 @@ def test_failed_prod_deploy_rolls_back_automatically(cur, env):
 def test_failed_first_prod_deploy_has_nothing_to_roll_back(cur, env):
     env["fail_deploy"].add("1.0.0")
     approve(cur, release(cur, "1.0.0"))
-    assert names(cur, "release.rolled_back") == [] and "前の版がない" in names(cur, "release.ship_failed")[-1]["error"]
+    assert names(cur, "release.rolled_back") == [] and "前のバージョンがない" in names(cur, "release.ship_failed")[-1]["error"]
 
 
 def test_failed_rollback_is_reported(cur, env):

@@ -85,7 +85,7 @@ def choose(cur, repo: str, release_id: str | None) -> tuple[str | None, bool, st
             return rid, True, f"{rid} を切った（PR {len(prs)} 件）"
     if staged:
         return staged, False, f"まだ Release に入っていない PR がないので、いま staging に出ている {staged} のまま"
-    return None, False, "立てる版がない（Release もマージ済みの PR もない）"
+    return None, False, "立てるバージョンがない（Release もマージ済みの PR もない）"
 
 
 def wait(cur, request_id: int, timeout: float, poll: float = 3.0, settle: float = 960, log=print) -> tuple[bool, str]:
@@ -110,7 +110,7 @@ def wait(cur, request_id: int, timeout: float, poll: float = 3.0, settle: float 
             if r["name"] in ship.RESULTS:
                 done_at = time.monotonic()
         if done_at is not None and time.monotonic() - done_at > settle:
-            return True, "出したが、入口の記録が出なかった（ship.yaml に touch がない版）"
+            return True, "出したが、入口の記録が出なかった（ship.yaml に touch がないバージョン）"
         time.sleep(poll)
     return False, f"{int(timeout)} 秒待っても終わらなかった（shipper が動いているか factoryctl release status で見る）"
 
@@ -153,7 +153,7 @@ def up(cur, repo: str, release_id: str | None = None, fresh: bool = False, by: s
             return 1
     t = latest(cur, repo)
     if not t:
-        log("入口の記録がない（ship.yaml に touch がない版か、まだ出していない）")
+        log("入口の記録がない（ship.yaml に touch がないバージョンか、まだ出していない）")
         return 1 if needs_ship or fresh else 0
     log("\n" + render(t))
     return 0

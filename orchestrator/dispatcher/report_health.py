@@ -161,7 +161,7 @@ def ship(cur, start: datetime, end: datetime):
     merged, closed = int(r["merged"] or 0), int(r["closed"] or 0)
     return [metric("マージした PR", merged, "件"), metric("マージせずに閉じた PR", closed, "件"),
             metric("マージできた割合", round(100 * merged / (merged + closed), 1) if merged + closed else None, "%"),
-            metric("切った版", rel, "件")]
+            metric("切ったバージョン", rel, "件")]
 
 
 def inbox(cur, start: datetime, end: datetime):
@@ -225,7 +225,7 @@ def stages(cur, start: datetime, end: datetime):
         items.append(entry(f"{r['ja']}（{r['model']}）", f"{r['jobs']} 件・${r['cost_usd']:,.2f}・一発 {pc(r['first_pass'])}%・"
                                                          f"待ち {stage_roi._m(r['wait_min'])}・Defect {r['defects']}"))
     items.append(note(f"直近 {ROI_DAYS} 日（期間の終わりまで）。一発で通った: 実装は後から直し（CI 落ち・指摘・途中終了の続き）が要らなかった割合。"
-                      "Defect は PR の最新の版を書いた実装のジョブに付けて数える"))
+                      "Defect は PR の最新のバージョンを書いた実装のジョブに付けて数える"))
     return items
 
 
